@@ -2,7 +2,7 @@
 
 import logging
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 
 from yinshi.db import get_db
 from yinshi.exceptions import RepoNotFoundError, WorkspaceNotFoundError
@@ -29,11 +29,13 @@ def list_workspaces(repo_id: str) -> list[dict]:
     response_model=WorkspaceOut,
     status_code=201,
 )
-async def create_workspace(repo_id: str, body: WorkspaceCreate) -> dict:
+async def create_workspace(repo_id: str, body: WorkspaceCreate, request: Request) -> dict:
     """Create a new worktree workspace."""
+    email = getattr(request.state, "user_email", None)
+    username = email.split("@")[0] if email else None
     with get_db() as db:
         try:
-            workspace = await create_workspace_for_repo(db, repo_id, body.name)
+            workspace = await create_workspace_for_repo(db, repo_id, body.name, username=username)
             return workspace
         except RepoNotFoundError:
             raise HTTPException(status_code=404, detail="Repo not found")

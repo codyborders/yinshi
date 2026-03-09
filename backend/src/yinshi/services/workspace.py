@@ -14,13 +14,14 @@ async def create_workspace_for_repo(
     db: sqlite3.Connection,
     repo_id: str,
     name: str | None = None,
+    username: str | None = None,
 ) -> dict:
     """Create a new worktree workspace for a repo."""
     repo = db.execute("SELECT * FROM repos WHERE id = ?", (repo_id,)).fetchone()
     if not repo:
         raise RepoNotFoundError(f"Repo {repo_id} not found")
 
-    branch = generate_branch_name()
+    branch = generate_branch_name(username=username)
     if not name:
         name = branch
 

@@ -22,12 +22,15 @@ _NOUNS = [
 ]
 
 
-def generate_branch_name() -> str:
-    """Generate a random branch name like 'swift-fox-a3f2'."""
+def generate_branch_name(username: str | None = None) -> str:
+    """Generate a random branch name like 'username/swift-fox-a3f2'."""
     adj = random.choice(_ADJECTIVES)
     noun = random.choice(_NOUNS)
     suffix = "".join(random.choices(string.ascii_lowercase + string.digits, k=4))
-    return f"{adj}-{noun}-{suffix}"
+    bare = f"{adj}-{noun}-{suffix}"
+    if username:
+        return f"{username}/{bare}"
+    return bare
 
 
 async def _run_git(args: list[str], cwd: str | None = None) -> str:

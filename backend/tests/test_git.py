@@ -15,6 +15,19 @@ def test_generate_branch_name():
     assert len(parts[2]) == 4
 
 
+def test_generate_branch_name_with_username():
+    """Branch names should be prefixed with username/ when provided."""
+    from yinshi.services.git import generate_branch_name
+
+    name = generate_branch_name(username="codyborders")
+    assert name.startswith("codyborders/")
+    # The part after the prefix should still be adjective-noun-suffix
+    bare = name.split("/", 1)[1]
+    parts = bare.split("-")
+    assert len(parts) == 3
+    assert len(parts[2]) == 4
+
+
 def test_generate_branch_name_unique():
     """Branch names should be unique across calls."""
     from yinshi.services.git import generate_branch_name

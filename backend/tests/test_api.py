@@ -315,6 +315,84 @@ def test_cancel_no_active_stream(client, session_id):
     assert resp.status_code == 409
 
 
+def test_first_prompt_updates_workspace_name(client, git_repo):
+    """The first prompt should update the workspace name to a summary of the prompt."""
+    repo = client.post(
+        "/api/repos", json={"name": "test-repo", "local_path": git_repo}
+    ).json()
+    ws = client.post(f"/api/repos/{repo['id']}/workspaces", json={}).json()
+    sess = client.post(f"/api/workspaces/{ws['id']}/sessions", json={}).json()
+
+    # Workspace name should equal branch initially
+    assert ws["name"] == ws["branch"]
+
+    async def fake_query(sid, prompt, model, cwd):
+        yield {
+            "type": "message",
+            "data": {"type": "result", "usage": {}},
+        }
+
+    with patch(
+        "yinshi.api.stream.create_sidecar_connection",
+        return_value=_make_mock_sidecar(fake_query),
+    ):
+        client.post(
+            f"/api/sessions/{sess['id']}/prompt",
+            json={"prompt": "Fix the login page authentication bug"},
+        )
+
+    # Workspace name should now be updated
+    updated_ws = client.get(f"/api/repos/{repo['id']}/workspaces").json()
+    target = [w for w in updated_ws if w["id"] == ws["id"]][0]
+    assert target["name"] != target["branch"]
+    assert "login" in target["name"].lower() or "auth" in target["name"].lower() or "fix" in target["name"].lower()
+
+
+def test_second_prompt_does_not_update_workspace_name(client, git_repo):
+    """Only the first prompt should update the workspace name."""
+    repo = client.post(
+        "/api/repos", json={"name": "test-repo", "local_path": git_repo}
+    ).json()
+    ws = client.post(f"/api/repos/{repo['id']}/workspaces", json={}).json()
+    sess = client.post(f"/api/workspaces/{ws['id']}/sessions", json={}).json()
+
+    async def fake_query(sid, prompt, model, cwd):
+        yield {
+            "type": "message",
+            "data": {"type": "result", "usage": {}},
+        }
+
+    mock_sidecar = _make_mock_sidecar(fake_query)
+
+    # First prompt
+    with patch(
+        "yinshi.api.stream.create_sidecar_connection",
+        return_value=mock_sidecar,
+    ):
+        client.post(
+            f"/api/sessions/{sess['id']}/prompt",
+            json={"prompt": "Fix the login page"},
+        )
+
+    updated_ws = client.get(f"/api/repos/{repo['id']}/workspaces").json()
+    target = [w for w in updated_ws if w["id"] == ws["id"]][0]
+    name_after_first = target["name"]
+
+    # Second prompt -- name should NOT change
+    with patch(
+        "yinshi.api.stream.create_sidecar_connection",
+        return_value=_make_mock_sidecar(fake_query),
+    ):
+        client.post(
+            f"/api/sessions/{sess['id']}/prompt",
+            json={"prompt": "Now add unit tests for everything"},
+        )
+
+    updated_ws = client.get(f"/api/repos/{repo['id']}/workspaces").json()
+    target = [w for w in updated_ws if w["id"] == ws["id"]][0]
+    assert target["name"] == name_after_first
+
+
 def test_turn_id_index_exists(db_path, monkeypatch):
     """The messages table should have an index on turn_id."""
     import sqlite3

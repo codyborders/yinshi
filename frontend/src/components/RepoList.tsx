@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, type Repo, type Workspace } from "../api/client";
+import { deriveRepoName, isGitUrl, isLocalPath } from "../utils/repo";
 import WorkspaceView from "./WorkspaceView";
 
 export default function RepoList() {
@@ -119,23 +120,6 @@ function RepoCard({
       )}
     </div>
   );
-}
-
-function isGitUrl(s: string): boolean {
-  return /^https?:\/\/.+\/.+/.test(s) || s.startsWith("git@");
-}
-
-function isLocalPath(s: string): boolean {
-  return s.startsWith("/") || s.startsWith("~") || s.startsWith("./");
-}
-
-function deriveRepoName(input: string): string {
-  // Extract repo name from URL: https://github.com/user/repo -> repo
-  const match = input.match(/\/([^/]+?)(?:\.git)?$/);
-  if (match) return match[1];
-  // Or from local path: /foo/bar/my-repo -> my-repo
-  const parts = input.replace(/\/+$/, "").split("/");
-  return parts[parts.length - 1] || input;
 }
 
 function ImportForm({ onDone }: { onDone: (repo: Repo | null) => void }) {

@@ -29,6 +29,18 @@ class PromptRequest(BaseModel):
     model: str | None = None
 
 
+def _summarize_prompt(prompt: str, max_len: int = 50) -> str:
+    """Derive a short workspace display name from a user prompt."""
+    # Strip leading filler words
+    text = prompt.strip()
+    # Truncate to max_len at a word boundary
+    if len(text) > max_len:
+        text = text[:max_len].rsplit(" ", 1)[0]
+    # Clean up trailing punctuation
+    text = text.rstrip(".,;:!?-")
+    return text or prompt[:max_len]
+
+
 @router.post("/api/sessions/{session_id}/prompt")
 async def prompt_session(session_id: str, body: PromptRequest) -> StreamingResponse:
     """Send a prompt and stream agent events as SSE."""
@@ -65,6 +77,19 @@ async def prompt_session(session_id: str, body: PromptRequest) -> StreamingRespo
             "UPDATE sessions SET status = 'running' WHERE id = ?",
             (session_id,),
         )
+        # Update workspace name on first prompt (when name == branch)
+        workspace = db.execute(
+            "SELECT w.id, w.name, w.branch FROM workspaces w "
+            "JOIN sessions s ON s.workspace_id = w.id "
+            "WHERE s.id = ?",
+            (session_id,),
+        ).fetchone()
+        if workspace and workspace["name"] == workspace["branch"]:
+            display_name = _summarize_prompt(prompt)
+            db.execute(
+                "UPDATE workspaces SET name = ? WHERE id = ?",
+                (display_name, workspace["id"]),
+            )
         db.commit()
 
     async def event_stream() -> AsyncGenerator[str, None]:

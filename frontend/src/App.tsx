@@ -1,6 +1,6 @@
 import { Route, Routes } from "react-router-dom";
 import Layout from "./components/Layout";
-import Dashboard from "./pages/Dashboard";
+import EmptyState from "./pages/EmptyState";
 import Login from "./pages/Login";
 import Session from "./pages/Session";
 
@@ -9,9 +9,9 @@ export default function App() {
     <Routes>
       <Route path="/login" element={<Login />} />
       <Route element={<Layout />}>
-        <Route path="/" element={<Dashboard />} />
+        <Route path="/" element={<EmptyState />} />
+        <Route path="/session/:id" element={<Session />} />
       </Route>
-      <Route path="/session/:id" element={<Session />} />
     </Routes>
   );
 }

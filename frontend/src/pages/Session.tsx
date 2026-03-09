@@ -1,12 +1,11 @@
 import { useEffect, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useParams } from "react-router-dom";
 import { api, type Message } from "../api/client";
 import ChatView from "../components/ChatView";
 import { useAgentStream, type ChatMessage } from "../hooks/useAgentStream";
 
 export default function Session() {
   const { id } = useParams<{ id: string }>();
-  const navigate = useNavigate();
   const { messages, sendPrompt, cancel, streaming, setMessages } =
     useAgentStream(id);
   const [loadingHistory, setLoadingHistory] = useState(true);
@@ -43,28 +42,9 @@ export default function Session() {
   }, [id, setMessages]);
 
   return (
-    <div className="flex h-screen flex-col bg-gray-900">
+    <>
       {/* Header */}
-      <header className="flex items-center gap-3 border-b border-gray-800 bg-gray-900/95 px-3 py-2 backdrop-blur-sm">
-        <button
-          onClick={() => navigate("/")}
-          className="flex h-10 w-10 items-center justify-center rounded-lg active:bg-gray-800"
-          aria-label="Back"
-        >
-          <svg
-            className="h-5 w-5 text-gray-400"
-            fill="none"
-            viewBox="0 0 24 24"
-            strokeWidth={2}
-            stroke="currentColor"
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              d="M15.75 19.5 8.25 12l7.5-7.5"
-            />
-          </svg>
-        </button>
+      <header className="flex items-center gap-3 border-b border-gray-800 px-4 py-2">
         <div className="flex-1 min-w-0">
           <div className="text-sm font-medium text-white truncate">
             Session {id?.slice(0, 8)}
@@ -93,6 +73,6 @@ export default function Session() {
           />
         )}
       </div>
-    </div>
+    </>
   );
 }
