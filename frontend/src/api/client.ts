@@ -59,7 +59,7 @@ async function request<T>(
 ): Promise<T> {
   const opts: RequestInit = {
     method,
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", "X-Requested-With": "XMLHttpRequest" },
     credentials: "include",
   };
   if (body !== undefined) {
@@ -105,6 +105,18 @@ export interface ContentBlock {
   input?: unknown;
 }
 
+function normalizeEvent(raw: Record<string, unknown>): SSEEvent {
+  if (raw.type === "tool_use") {
+    return {
+      type: "tool_use",
+      name: ((raw.toolName || raw.name || raw.tool_name || "unknown") as string),
+      id: raw.id as string,
+      input: raw.toolInput ?? raw.input,
+    } as SSEEvent;
+  }
+  return raw as SSEEvent;
+}
+
 export async function* streamPrompt(
   sessionId: string,
   prompt: string,
@@ -113,7 +125,7 @@ export async function* streamPrompt(
 ): AsyncGenerator<SSEEvent> {
   const res = await fetch(`/api/sessions/${sessionId}/prompt`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", "X-Requested-With": "XMLHttpRequest" },
     credentials: "include",
     body: JSON.stringify({ prompt, model }),
     signal,
@@ -146,7 +158,7 @@ export async function* streamPrompt(
         const trimmed = line.trim();
         if (trimmed.startsWith("data: ")) {
           try {
-            yield JSON.parse(trimmed.slice(6)) as SSEEvent;
+            yield normalizeEvent(JSON.parse(trimmed.slice(6)));
           } catch {
             /* ignore malformed events */
           }

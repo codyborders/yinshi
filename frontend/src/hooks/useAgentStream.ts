@@ -26,6 +26,16 @@ function nextId(): string {
   return `msg-${Date.now()}-${++messageIdCounter}`;
 }
 
+/** Append text to the last block if it matches type, otherwise create a new block. */
+function appendOrCreate(blocks: TurnBlock[], type: "text" | "thinking", text: string) {
+  const last = blocks[blocks.length - 1];
+  if (last && last.type === type) {
+    last.text = (last.text || "") + text;
+  } else {
+    blocks.push({ id: nextId(), type, text });
+  }
+}
+
 export function useAgentStream(sessionId: string | undefined) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [streaming, setStreaming] = useState(false);
@@ -52,6 +62,7 @@ export function useAgentStream(sessionId: string | undefined) {
 
       const turnId = nextId();
       const blocks: TurnBlock[] = [];
+      let rafId: number | null = null;
 
       function upsertTurn(done = false) {
         const allText = blocks
@@ -79,6 +90,20 @@ export function useAgentStream(sessionId: string | undefined) {
         });
       }
 
+      function scheduleUpsert(done = false) {
+        if (done) {
+          if (rafId) cancelAnimationFrame(rafId);
+          rafId = null;
+          upsertTurn(true);
+          return;
+        }
+        if (rafId) return;
+        rafId = requestAnimationFrame(() => {
+          rafId = null;
+          upsertTurn(false);
+        });
+      }
+
       try {
         for await (const event of streamPrompt(
           sessionId,
@@ -88,67 +113,42 @@ export function useAgentStream(sessionId: string | undefined) {
         )) {
           if (event.type === "error") {
             blocks.push({ id: nextId(), type: "error", text: event.error });
-            upsertTurn(true);
+            scheduleUpsert(true);
             break;
           }
 
           if (event.type === "assistant") {
             for (const block of event.message?.content ?? []) {
               if (block.type === "text" && block.text) {
-                const last = blocks[blocks.length - 1];
-                if (last && last.type === "text") {
-                  last.text = (last.text || "") + block.text;
-                } else {
-                  blocks.push({ id: nextId(), type: "text", text: block.text });
-                }
+                appendOrCreate(blocks, "text", block.text);
               } else if (
                 block.type === "thinking" &&
                 (block.thinking || block.text)
               ) {
-                const text = block.thinking || block.text || "";
-                const last = blocks[blocks.length - 1];
-                if (last && last.type === "thinking") {
-                  last.text = (last.text || "") + text;
-                } else {
-                  blocks.push({ id: nextId(), type: "thinking", text });
-                }
+                appendOrCreate(blocks, "thinking", block.thinking || block.text || "");
               } else if (block.type === "tool_use") {
-                const b = block as unknown as Record<string, unknown>;
-                const name =
-                  (b.name as string) ||
-                  (b.tool_name as string) ||
-                  (b.tool as string) ||
-                  "unknown";
                 blocks.push({
                   id: block.id || nextId(),
                   type: "tool_use",
-                  toolName: name,
+                  toolName: block.name || "unknown",
                   toolInput: block.input,
                   toolId: block.id,
                 });
               }
             }
-            upsertTurn();
+            scheduleUpsert();
           } else if (event.type === "tool_use") {
-            // Standalone tool_use event -- sidecar uses camelCase toolName
-            const ev = event as Record<string, unknown>;
-            const toolName =
-              (ev.toolName as string) ||
-              (ev.name as string) ||
-              (ev.tool_name as string) ||
-              "unknown";
             blocks.push({
-              id: (ev.id as string) || nextId(),
+              id: event.id || nextId(),
               type: "tool_use",
-              toolName,
-              toolInput: ev.toolInput ?? ev.input,
-              toolId: ev.id as string,
+              toolName: event.name || "unknown",
+              toolInput: event.input,
+              toolId: event.id,
             });
-            upsertTurn();
+            scheduleUpsert();
           } else if (
             (event as Record<string, unknown>).type === "content_block_start"
           ) {
-            // Anthropic streaming format: content_block_start with nested content_block
             const ev = event as Record<string, unknown>;
             const cb = ev.content_block as Record<string, unknown> | undefined;
             if (cb?.type === "tool_use" && cb.name) {
@@ -159,14 +159,14 @@ export function useAgentStream(sessionId: string | undefined) {
                 toolInput: cb.input,
                 toolId: cb.id as string,
               });
-              upsertTurn();
+              scheduleUpsert();
             } else if (cb?.type === "thinking") {
               blocks.push({
                 id: nextId(),
                 type: "thinking",
                 text: (cb.thinking as string) || "",
               });
-              upsertTurn();
+              scheduleUpsert();
             }
           } else if (
             (event as Record<string, unknown>).type === "content_block_delta"
@@ -174,43 +174,23 @@ export function useAgentStream(sessionId: string | undefined) {
             const ev = event as Record<string, unknown>;
             const delta = ev.delta as Record<string, unknown> | undefined;
             if (delta?.type === "text_delta" && delta.text) {
-              const last = blocks[blocks.length - 1];
-              if (last && last.type === "text") {
-                last.text = (last.text || "") + (delta.text as string);
-              } else {
-                blocks.push({
-                  id: nextId(),
-                  type: "text",
-                  text: delta.text as string,
-                });
-              }
-              upsertTurn();
+              appendOrCreate(blocks, "text", delta.text as string);
+              scheduleUpsert();
             } else if (delta?.type === "input_json_delta") {
-              // Tool input streaming -- find last tool_use block and append
               const last = blocks[blocks.length - 1];
               if (last && last.type === "tool_use") {
                 const partial = (delta.partial_json as string) || "";
                 last.toolInput =
                   ((last.toolInput as string) || "") + partial;
               }
-              upsertTurn();
+              scheduleUpsert();
             } else if (delta?.type === "thinking_delta" && delta.thinking) {
-              const last = blocks[blocks.length - 1];
-              if (last && last.type === "thinking") {
-                last.text = (last.text || "") + (delta.thinking as string);
-              } else {
-                blocks.push({
-                  id: nextId(),
-                  type: "thinking",
-                  text: delta.thinking as string,
-                });
-              }
-              upsertTurn();
+              appendOrCreate(blocks, "thinking", delta.thinking as string);
+              scheduleUpsert();
             }
           } else if (
             (event as Record<string, unknown>).type === "content_block_stop"
           ) {
-            // Finalize tool input if it was streamed as JSON string
             const last = blocks[blocks.length - 1];
             if (
               last &&
@@ -223,7 +203,7 @@ export function useAgentStream(sessionId: string | undefined) {
                 /* keep as string */
               }
             }
-            upsertTurn();
+            scheduleUpsert();
           } else if (event.type === "tool_result") {
             const output =
               typeof event.content === "string"
@@ -237,12 +217,12 @@ export function useAgentStream(sessionId: string | undefined) {
               matching.toolOutput = output;
               matching.toolError = event.is_error;
             }
-            upsertTurn();
+            scheduleUpsert();
           } else if (
             event.type === "result" ||
             (event as Record<string, unknown>).type === "message_stop"
           ) {
-            upsertTurn(true);
+            scheduleUpsert(true);
           }
         }
       } catch (e) {
@@ -252,9 +232,10 @@ export function useAgentStream(sessionId: string | undefined) {
             type: "error",
             text: e instanceof Error ? e.message : "Stream failed",
           });
-          upsertTurn(true);
+          scheduleUpsert(true);
         }
       } finally {
+        if (rafId) cancelAnimationFrame(rafId);
         setStreaming(false);
         abortRef.current = null;
       }

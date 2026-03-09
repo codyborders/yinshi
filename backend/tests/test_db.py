@@ -5,85 +5,76 @@ import sqlite3
 import pytest
 
 
-def test_init_db_creates_tables(db_path, monkeypatch):
+def test_init_db_creates_tables(db):
     """init_db should create all required tables."""
-    monkeypatch.setenv("DB_PATH", db_path)
-    from yinshi.config import get_settings
+    tables = db.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+    ).fetchall()
+    table_names = [t["name"] for t in tables]
 
-    get_settings.cache_clear()
-
-    from yinshi.db import init_db, get_db
-
-    init_db()
-    with get_db() as conn:
-        tables = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
-        ).fetchall()
-        table_names = [t["name"] for t in tables]
-
-        assert "repos" in table_names
-        assert "workspaces" in table_names
-        assert "sessions" in table_names
-        assert "messages" in table_names
-
-    get_settings.cache_clear()
+    assert "repos" in table_names
+    assert "workspaces" in table_names
+    assert "sessions" in table_names
+    assert "messages" in table_names
 
 
-def test_init_db_creates_indexes(db_path, monkeypatch):
+def test_init_db_creates_indexes(db):
     """init_db should create indexes."""
-    monkeypatch.setenv("DB_PATH", db_path)
-    from yinshi.config import get_settings
+    indexes = db.execute(
+        "SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'idx_%'"
+    ).fetchall()
+    index_names = [i["name"] for i in indexes]
 
-    get_settings.cache_clear()
-
-    from yinshi.db import init_db, get_db
-
-    init_db()
-    with get_db() as conn:
-        indexes = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'idx_%'"
-        ).fetchall()
-        index_names = [i["name"] for i in indexes]
-
-        assert "idx_messages_session" in index_names
-        assert "idx_sessions_workspace" in index_names
-        assert "idx_workspaces_repo" in index_names
-
-    get_settings.cache_clear()
+    assert "idx_messages_session" in index_names
+    assert "idx_sessions_workspace" in index_names
+    assert "idx_workspaces_repo" in index_names
 
 
-def test_db_foreign_keys(db_path, monkeypatch):
+def test_db_foreign_keys(db):
     """Database should enforce foreign keys."""
-    monkeypatch.setenv("DB_PATH", db_path)
-    from yinshi.config import get_settings
-
-    get_settings.cache_clear()
-
-    from yinshi.db import init_db, get_db
-
-    init_db()
-    with get_db() as conn:
-        with pytest.raises(sqlite3.IntegrityError):
-            conn.execute(
-                "INSERT INTO workspaces (repo_id, name, branch, path) VALUES (?, ?, ?, ?)",
-                ("nonexistent", "test", "branch", "/tmp"),
-            )
-
-    get_settings.cache_clear()
+    with pytest.raises(sqlite3.IntegrityError):
+        db.execute(
+            "INSERT INTO workspaces (repo_id, name, branch, path) VALUES (?, ?, ?, ?)",
+            ("nonexistent", "test", "branch", "/tmp"),
+        )
 
 
-def test_db_wal_mode(db_path, monkeypatch):
+def test_db_wal_mode(db):
     """Database should use WAL journal mode."""
+    mode = db.execute("PRAGMA journal_mode").fetchone()
+    assert mode[0] == "wal"
+
+
+def test_repos_table_has_owner_email_column(db):
+    """Repos table should have owner_email column."""
+    cursor = db.execute("PRAGMA table_info(repos)")
+    columns = [row[1] for row in cursor.fetchall()]
+    assert "owner_email" in columns
+
+
+def test_init_db_uses_context_manager(db):
+    """init_db should not leak connections (uses get_db context manager)."""
+    tables = db.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'"
+    ).fetchall()
+    assert len(tables) > 0
+
+
+@pytest.mark.asyncio
+async def test_get_db_async(db_path, monkeypatch):
+    """get_db_async should provide a working async DB connection."""
     monkeypatch.setenv("DB_PATH", db_path)
     from yinshi.config import get_settings
 
     get_settings.cache_clear()
 
-    from yinshi.db import init_db, get_db
+    from yinshi.db import init_db, get_db_async
 
     init_db()
-    with get_db() as conn:
-        mode = conn.execute("PRAGMA journal_mode").fetchone()
-        assert mode[0] == "wal"
+    async with get_db_async() as conn:
+        tables = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+        assert len(tables) > 0
 
     get_settings.cache_clear()

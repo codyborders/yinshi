@@ -11,7 +11,7 @@ interface ToolCallBlockProps {
 function toolSummary(
   name: string,
   input: unknown,
-): { label: string; diffStats?: string } {
+): { label: string; added?: number; removed?: number } {
   const inp = input as Record<string, unknown> | null;
   if (!inp) return { label: "" };
 
@@ -25,31 +25,27 @@ function toolSummary(
       const path = (inp.file_path || "") as string;
       const oldStr = ((inp.old_string || "") as string).split("\n").length;
       const newStr = ((inp.new_string || "") as string).split("\n").length;
-      const added = Math.max(0, newStr - 1);
-      const removed = Math.max(0, oldStr - 1);
       return {
         label: shortPath(path),
-        diffStats: `+${added} -${removed}`,
+        added: Math.max(0, newStr - 1),
+        removed: Math.max(0, oldStr - 1),
       };
     }
     case "Write": {
       const path = (inp.file_path || "") as string;
       const lines = ((inp.content || "") as string).split("\n").length;
-      return { label: shortPath(path), diffStats: `+${lines}` };
+      return { label: shortPath(path), added: lines };
     }
     case "Bash": {
       const cmd = (inp.command || "") as string;
       const preview = cmd.length > 60 ? cmd.slice(0, 60) + "..." : cmd;
       return { label: preview };
     }
-    case "Glob": {
-      return { label: (inp.pattern || "") as string };
-    }
+    case "Glob":
     case "Grep": {
       return { label: (inp.pattern || "") as string };
     }
     default: {
-      // Try common field names
       const path = (inp.file_path || inp.path || inp.url || "") as string;
       return { label: path ? shortPath(path) : "" };
     }
@@ -64,7 +60,7 @@ function shortPath(path: string): string {
 }
 
 /** Icon for tool type */
-function ToolIcon({ name }: { name: string }) {
+export function ToolIcon({ name }: { name: string }) {
   switch (name) {
     case "Read":
       return (
@@ -248,6 +244,61 @@ function BashContent({
   );
 }
 
+function ExpandedContent({
+  toolName,
+  toolInput,
+  toolOutput,
+  toolError,
+}: ToolCallBlockProps) {
+  const inp = toolInput as Record<string, unknown> | null;
+
+  if ((toolName === "Edit" || toolName === "MultiEdit") && inp) {
+    return (
+      <>
+        <InlineDiff input={inp} />
+        {toolOutput && (
+          <div
+            className={`rounded-md px-3 py-2 text-xs font-mono ${
+              toolError
+                ? "bg-red-900/30 text-red-300"
+                : "bg-gray-900/40 text-gray-600"
+            }`}
+          >
+            {toolOutput.length > 500
+              ? toolOutput.slice(0, 500) + "..."
+              : toolOutput}
+          </div>
+        )}
+      </>
+    );
+  }
+
+  if (toolName === "Bash" && inp) {
+    return <BashContent input={inp} output={toolOutput} />;
+  }
+
+  return (
+    <>
+      {inp && (
+        <div className="rounded-md bg-gray-900/60 px-3 py-2">
+          <pre className="overflow-x-auto text-xs text-gray-500 whitespace-pre-wrap break-all font-mono">
+            {JSON.stringify(inp, null, 2)}
+          </pre>
+        </div>
+      )}
+      {toolOutput && (
+        <div className="rounded-md bg-gray-900/40 px-3 py-2 max-h-48 overflow-y-auto">
+          <pre className="overflow-x-auto text-xs text-gray-600 whitespace-pre-wrap break-all font-mono">
+            {toolOutput.length > 2000
+              ? toolOutput.slice(0, 2000) + "\n..."
+              : toolOutput}
+          </pre>
+        </div>
+      )}
+    </>
+  );
+}
+
 const ToolCallBlock = memo(function ToolCallBlock({
   toolName,
   toolInput,
@@ -256,9 +307,6 @@ const ToolCallBlock = memo(function ToolCallBlock({
 }: ToolCallBlockProps) {
   const [expanded, setExpanded] = useState(false);
   const summary = toolSummary(toolName, toolInput);
-  const inp = toolInput as Record<string, unknown> | null;
-  const isEdit = toolName === "Edit" || toolName === "MultiEdit";
-  const isBash = toolName === "Bash";
 
   return (
     <div className="mx-2">
@@ -286,15 +334,13 @@ const ToolCallBlock = memo(function ToolCallBlock({
             {summary.label}
           </span>
         )}
-        {summary.diffStats && (
+        {(summary.added !== undefined || summary.removed !== undefined) && (
           <span className="shrink-0 text-xs font-mono">
-            <span className="text-green-500">
-              +{summary.diffStats.match(/\+(\d+)/)?.[1] || 0}
-            </span>
-            {summary.diffStats.includes("-") && (
-              <span className="text-red-500 ml-1">
-                -{summary.diffStats.match(/-(\d+)/)?.[1] || 0}
-              </span>
+            {summary.added !== undefined && (
+              <span className="text-green-500">+{summary.added}</span>
+            )}
+            {summary.removed !== undefined && summary.removed > 0 && (
+              <span className="text-red-500 ml-1">-{summary.removed}</span>
             )}
           </span>
         )}
@@ -334,45 +380,12 @@ const ToolCallBlock = memo(function ToolCallBlock({
       {/* Expanded content */}
       {expanded && (
         <div className="mt-1 space-y-1">
-          {isEdit && inp ? (
-            <InlineDiff input={inp} />
-          ) : isBash && inp ? (
-            <BashContent input={inp} output={toolOutput} />
-          ) : (
-            <>
-              {inp && (
-                <div className="rounded-md bg-gray-900/60 px-3 py-2">
-                  <pre className="overflow-x-auto text-xs text-gray-500 whitespace-pre-wrap break-all font-mono">
-                    {JSON.stringify(inp, null, 2)}
-                  </pre>
-                </div>
-              )}
-              {toolOutput && (
-                <div className="rounded-md bg-gray-900/40 px-3 py-2 max-h-48 overflow-y-auto">
-                  <pre className="overflow-x-auto text-xs text-gray-600 whitespace-pre-wrap break-all font-mono">
-                    {toolOutput.length > 2000
-                      ? toolOutput.slice(0, 2000) + "\n..."
-                      : toolOutput}
-                  </pre>
-                </div>
-              )}
-            </>
-          )}
-
-          {/* Show tool output/error for Edit tools */}
-          {isEdit && toolOutput && (
-            <div
-              className={`rounded-md px-3 py-2 text-xs font-mono ${
-                toolError
-                  ? "bg-red-900/30 text-red-300"
-                  : "bg-gray-900/40 text-gray-600"
-              }`}
-            >
-              {toolOutput.length > 500
-                ? toolOutput.slice(0, 500) + "..."
-                : toolOutput}
-            </div>
-          )}
+          <ExpandedContent
+            toolName={toolName}
+            toolInput={toolInput}
+            toolOutput={toolOutput}
+            toolError={toolError}
+          />
         </div>
       )}
     </div>

@@ -21,6 +21,8 @@ _NOUNS = [
     "maple", "river", "stone", "flame", "frost", "storm", "ridge", "grove", "brook",
 ]
 
+_ALLOWED_URL_SCHEMES = ("https://", "ssh://", "git@")
+
 
 def generate_branch_name(username: str | None = None) -> str:
     """Generate a random branch name like 'username/swift-fox-a3f2'."""
@@ -31,6 +33,16 @@ def generate_branch_name(username: str | None = None) -> str:
     if username:
         return f"{username}/{bare}"
     return bare
+
+
+def _validate_clone_url(url: str) -> None:
+    """Reject dangerous git URL schemes."""
+    if url.startswith("-"):
+        raise GitError("Invalid repository URL")
+    if url.startswith(("ext::", "file://")):
+        raise GitError("URL scheme not allowed")
+    if not any(url.startswith(s) for s in _ALLOWED_URL_SCHEMES):
+        raise GitError(f"URL must start with https://, ssh://, or git@")
 
 
 async def _run_git(args: list[str], cwd: str | None = None) -> str:
@@ -54,6 +66,8 @@ async def clone_repo(url: str, dest: str) -> str:
 
     If dest already exists and is a valid git repo with matching remote, reuse it.
     """
+    _validate_clone_url(url)
+
     dest_path = Path(dest)
     if dest_path.exists():
         if await validate_local_repo(dest):

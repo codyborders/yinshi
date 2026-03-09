@@ -1,9 +1,10 @@
 """SQLite database connection and schema management."""
 
+import asyncio
 import logging
 import sqlite3
-from contextlib import contextmanager
-from typing import Iterator
+from contextlib import asynccontextmanager, contextmanager
+from collections.abc import AsyncIterator, Iterator
 
 from yinshi.config import get_settings
 
@@ -20,7 +21,8 @@ CREATE TABLE IF NOT EXISTS repos (
     name TEXT NOT NULL,
     remote_url TEXT,
     root_path TEXT NOT NULL,
-    custom_prompt TEXT
+    custom_prompt TEXT,
+    owner_email TEXT
 );
 
 CREATE TABLE IF NOT EXISTS workspaces (
@@ -82,11 +84,27 @@ def get_db() -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
+@asynccontextmanager
+async def get_db_async() -> AsyncIterator[sqlite3.Connection]:
+    """Async wrapper around get_db for use in async handlers."""
+    def _connect() -> sqlite3.Connection:
+        settings = get_settings()
+        conn = sqlite3.connect(settings.db_path, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON")
+        return conn
+
+    conn = await asyncio.to_thread(_connect)
+    try:
+        yield conn
+    finally:
+        await asyncio.to_thread(conn.close)
+
+
 def init_db() -> None:
     """Initialize the database schema."""
     settings = get_settings()
     logger.info("Initializing database at %s", settings.db_path)
-    conn = sqlite3.connect(settings.db_path)
-    conn.executescript(SCHEMA_SQL)
-    conn.close()
+    with get_db() as conn:
+        conn.executescript(SCHEMA_SQL)
     logger.info("Database initialized")

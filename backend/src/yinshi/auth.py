@@ -84,4 +84,10 @@ class AuthMiddleware(BaseHTTPMiddleware):
             return Response(status_code=401, content="Invalid session")
 
         request.state.user_email = email
+
+        # CSRF protection for mutating methods
+        if request.method in ("POST", "PATCH", "PUT", "DELETE"):
+            if request.headers.get("X-Requested-With") != "XMLHttpRequest":
+                return Response(status_code=403, content="CSRF validation failed")
+
         return await call_next(request)

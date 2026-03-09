@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { ChatMessage } from "../hooks/useAgentStream";
 import AssistantTurn from "./AssistantTurn";
 import MessageBubble from "./MessageBubble";
+import StreamingDots from "./StreamingDots";
 
 interface ChatViewProps {
   messages: ChatMessage[];
@@ -19,12 +20,22 @@ export default function ChatView({
   const [input, setInput] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const isNearBottom = useRef(true);
 
-  // Auto-scroll to bottom on new messages
-  useEffect(() => {
+  const handleScroll = useCallback(() => {
     const el = scrollRef.current;
     if (el) {
-      el.scrollTop = el.scrollHeight;
+      isNearBottom.current = el.scrollTop + el.clientHeight >= el.scrollHeight - 100;
+    }
+  }, []);
+
+  // Auto-scroll to bottom only when near bottom
+  useEffect(() => {
+    if (isNearBottom.current) {
+      requestAnimationFrame(() => {
+        const el = scrollRef.current;
+        if (el) el.scrollTop = el.scrollHeight;
+      });
     }
   }, [messages]);
 
@@ -67,6 +78,7 @@ export default function ChatView({
       {/* Messages area */}
       <div
         ref={scrollRef}
+        onScroll={handleScroll}
         className="flex-1 overflow-y-auto scrollbar-hide px-3 py-4 space-y-3"
       >
         {messages.length === 0 && (
@@ -114,11 +126,7 @@ export default function ChatView({
         {streaming &&
           !messages.some((m) => m.role === "assistant" && m.streaming) && (
             <div className="flex items-center gap-2 px-2 py-1">
-              <div className="flex gap-1">
-                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-blue-400" />
-                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-blue-400 [animation-delay:0.2s]" />
-                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-blue-400 [animation-delay:0.4s]" />
-              </div>
+              <StreamingDots />
             </div>
           )}
       </div>

@@ -4,6 +4,8 @@ import os
 
 import pytest
 
+from yinshi.exceptions import GitError
+
 
 def test_generate_branch_name():
     """Branch names should follow adjective-noun-suffix pattern."""
@@ -34,6 +36,59 @@ def test_generate_branch_name_unique():
 
     names = {generate_branch_name() for _ in range(50)}
     assert len(names) == 50
+
+
+def test_validate_clone_url_rejects_ext_scheme():
+    """ext:: URLs should be rejected."""
+    from yinshi.services.git import _validate_clone_url
+
+    with pytest.raises(GitError, match="URL scheme not allowed"):
+        _validate_clone_url("ext::sh -c evil")
+
+
+def test_validate_clone_url_rejects_file_scheme():
+    """file:// URLs should be rejected."""
+    from yinshi.services.git import _validate_clone_url
+
+    with pytest.raises(GitError, match="URL scheme not allowed"):
+        _validate_clone_url("file:///etc/passwd")
+
+
+def test_validate_clone_url_rejects_argument_injection():
+    """URLs starting with - should be rejected."""
+    from yinshi.services.git import _validate_clone_url
+
+    with pytest.raises(GitError, match="Invalid repository URL"):
+        _validate_clone_url("--upload-pack=evil")
+
+
+def test_validate_clone_url_rejects_unknown_scheme():
+    """Unknown URL schemes should be rejected."""
+    from yinshi.services.git import _validate_clone_url
+
+    with pytest.raises(GitError, match="URL must start with"):
+        _validate_clone_url("ftp://example.com/repo.git")
+
+
+def test_validate_clone_url_allows_https():
+    """https:// URLs should be allowed."""
+    from yinshi.services.git import _validate_clone_url
+
+    _validate_clone_url("https://github.com/user/repo.git")
+
+
+def test_validate_clone_url_allows_ssh():
+    """ssh:// URLs should be allowed."""
+    from yinshi.services.git import _validate_clone_url
+
+    _validate_clone_url("ssh://git@github.com/user/repo.git")
+
+
+def test_validate_clone_url_allows_git_at():
+    """git@ URLs should be allowed."""
+    from yinshi.services.git import _validate_clone_url
+
+    _validate_clone_url("git@github.com:user/repo.git")
 
 
 @pytest.mark.asyncio

@@ -5,16 +5,18 @@ Tests: test_prompt_session_not_found, test_prompt_streams_sidecar_events,
        test_cancel_no_active_stream in tests/test_api.py
 """
 
+import asyncio
 import json
 import logging
 import uuid
-from typing import AsyncGenerator
+from collections.abc import AsyncGenerator
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from yinshi.db import get_db
+from yinshi.exceptions import GitError, SidecarError
 from yinshi.services.sidecar import SidecarClient, create_sidecar_connection
 
 logger = logging.getLogger(__name__)
@@ -22,10 +24,14 @@ router = APIRouter()
 
 # Active sessions: maps session_id -> SidecarClient for cancel support
 _active_sessions: dict[str, SidecarClient] = {}
+_active_sessions_lock = asyncio.Lock()
+
+# Batch DB writes every N chunks to reduce I/O
+_PERSIST_BATCH_SIZE = 10
 
 
 class PromptRequest(BaseModel):
-    prompt: str
+    prompt: str = Field(..., max_length=100_000)
     model: str | None = None
 
 
@@ -45,17 +51,22 @@ def _summarize_prompt(prompt: str, max_len: int = 50) -> str:
 async def prompt_session(session_id: str, body: PromptRequest) -> StreamingResponse:
     """Send a prompt and stream agent events as SSE."""
 
-    # Look up session + workspace path
+    # Look up session + workspace path (merged query)
     with get_db() as db:
         session = db.execute(
-            "SELECT s.*, w.path as workspace_path FROM sessions s "
-            "JOIN workspaces w ON s.workspace_id = w.id "
+            "SELECT s.*, w.path as workspace_path, w.id as workspace_id, "
+            "w.name as workspace_name, w.branch as workspace_branch "
+            "FROM sessions s JOIN workspaces w ON s.workspace_id = w.id "
             "WHERE s.id = ?",
             (session_id,),
         ).fetchone()
 
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
+
+    # Concurrency guard: reject if already streaming
+    if session["status"] == "running":
+        raise HTTPException(status_code=409, detail="Session already has an active stream")
 
     workspace_path = session["workspace_path"]
     model = body.model or session["model"]
@@ -78,29 +89,24 @@ async def prompt_session(session_id: str, body: PromptRequest) -> StreamingRespo
             (session_id,),
         )
         # Update workspace name on first prompt (when name == branch)
-        workspace = db.execute(
-            "SELECT w.id, w.name, w.branch FROM workspaces w "
-            "JOIN sessions s ON s.workspace_id = w.id "
-            "WHERE s.id = ?",
-            (session_id,),
-        ).fetchone()
-        if workspace and workspace["name"] == workspace["branch"]:
+        if session["workspace_name"] == session["workspace_branch"]:
             display_name = _summarize_prompt(prompt)
             db.execute(
                 "UPDATE workspaces SET name = ? WHERE id = ?",
-                (display_name, workspace["id"]),
+                (display_name, session["workspace_id"]),
             )
         db.commit()
 
     async def event_stream() -> AsyncGenerator[str, None]:
         sidecar: SidecarClient | None = None
-        assistant_chunks: list[str] = []
+        accumulated = ""
         assistant_msg_id: str | None = None
         chunk_count = 0
 
         try:
             sidecar = await create_sidecar_connection()
-            _active_sessions[session_id] = sidecar
+            async with _active_sessions_lock:
+                _active_sessions[session_id] = sidecar
             await sidecar.warmup(session_id, model=model, cwd=workspace_path)
 
             logger.info("Streaming started: session=%s turn_id=%s", session_id, turn_id)
@@ -126,12 +132,11 @@ async def prompt_session(session_id: str, body: PromptRequest) -> StreamingRespo
                             if isinstance(block, dict) and block.get("type") == "text":
                                 text = block.get("text", "")
                                 if text:
-                                    assistant_chunks.append(text)
+                                    accumulated += text
                                     chunk_count += 1
 
-                        # Incremental persistence: INSERT on first chunk, UPDATE after
-                        accumulated = "".join(assistant_chunks)
-                        if accumulated:
+                        # Batched incremental persistence
+                        if accumulated and chunk_count % _PERSIST_BATCH_SIZE == 0:
                             with get_db() as db:
                                 if assistant_msg_id is None:
                                     assistant_msg_id = uuid.uuid4().hex
@@ -168,7 +173,7 @@ async def prompt_session(session_id: str, body: PromptRequest) -> StreamingRespo
                     # Forward any other event types (content_block_start, tool_use, etc.)
                     yield f"data: {json.dumps(event)}\n\n"
 
-        except Exception as e:
+        except (ConnectionError, OSError, GitError, SidecarError) as e:
             logger.error(
                 "Sidecar error: session=%s turn_id=%s error=%s",
                 session_id, turn_id, e, exc_info=True,
@@ -176,8 +181,6 @@ async def prompt_session(session_id: str, body: PromptRequest) -> StreamingRespo
             yield f"data: {json.dumps({'type': 'error', 'error': 'An internal error occurred'})}\n\n"
 
         finally:
-            accumulated = "".join(assistant_chunks)
-
             with get_db() as db:
                 # Save any unsaved partial content
                 if accumulated and assistant_msg_id is None:
@@ -186,6 +189,12 @@ async def prompt_session(session_id: str, body: PromptRequest) -> StreamingRespo
                         "VALUES (?, 'assistant', ?, ?)",
                         (session_id, accumulated, turn_id),
                     )
+                elif accumulated and assistant_msg_id:
+                    # Final flush of accumulated content
+                    db.execute(
+                        "UPDATE messages SET content = ? WHERE id = ?",
+                        (accumulated, assistant_msg_id),
+                    )
                 # Reset session status
                 db.execute(
                     "UPDATE sessions SET status = 'idle' WHERE id = ?",
@@ -193,7 +202,8 @@ async def prompt_session(session_id: str, body: PromptRequest) -> StreamingRespo
                 )
                 db.commit()
 
-            _active_sessions.pop(session_id, None)
+            async with _active_sessions_lock:
+                _active_sessions.pop(session_id, None)
             if sidecar:
                 await sidecar.disconnect()
 

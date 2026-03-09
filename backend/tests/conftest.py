@@ -1,26 +1,22 @@
 """Shared pytest fixtures for Yinshi tests."""
 
 import os
+import sqlite3
 import subprocess
-from unittest.mock import AsyncMock
+from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 
 
 @pytest.fixture
-def tmp_dir(tmp_path):
-    """Provide a temporary directory."""
-    return str(tmp_path)
-
-
-@pytest.fixture
-def db_path(tmp_path):
+def db_path(tmp_path: Path) -> str:
     """Provide a temporary database path."""
     return str(tmp_path / "test.db")
 
 
 @pytest.fixture
-def db(db_path, monkeypatch):
+def db(db_path: str, monkeypatch: pytest.MonkeyPatch) -> Iterator[sqlite3.Connection]:
     """Provide an initialized test database."""
     monkeypatch.setenv("DB_PATH", db_path)
     from yinshi.config import get_settings
@@ -36,13 +32,7 @@ def db(db_path, monkeypatch):
 
 
 @pytest.fixture
-def mock_sidecar():
-    """Provide a mock sidecar client."""
-    return AsyncMock()
-
-
-@pytest.fixture
-def git_repo(tmp_path):
+def git_repo(tmp_path: Path) -> str:
     """Create a temporary git repository for testing."""
     repo_path = str(tmp_path / "test-repo")
     os.makedirs(repo_path)

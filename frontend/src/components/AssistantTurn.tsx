@@ -2,8 +2,9 @@ import { memo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { TurnBlock } from "../hooks/useAgentStream";
+import StreamingDots from "./StreamingDots";
 import ThinkingBlock from "./ThinkingBlock";
-import ToolCallBlock from "./ToolCallBlock";
+import ToolCallBlock, { ToolIcon } from "./ToolCallBlock";
 
 interface AssistantTurnProps {
   blocks: TurnBlock[];
@@ -12,19 +13,6 @@ interface AssistantTurnProps {
   fallbackContent?: string;
 }
 
-/** Icon components for the turn summary */
-const TOOL_ICONS: Record<string, string> = {
-  Read: "\u{1F4C4}",
-  Edit: "\u{270F}\u{FE0F}",
-  Write: "\u{1F4DD}",
-  MultiEdit: "\u{270F}\u{FE0F}",
-  Bash: "\u{1F4BB}",
-  Glob: "\u{1F50D}",
-  Grep: "\u{1F50E}",
-  Search: "\u{1F50E}",
-  Agent: "\u{1F916}",
-};
-
 function turnSummary(blocks: TurnBlock[]) {
   const tools = blocks.filter((b) => b.type === "tool_use");
   const thinking = blocks.filter((b) => b.type === "thinking");
@@ -32,10 +20,7 @@ function turnSummary(blocks: TurnBlock[]) {
     (b) => b.type === "error" || b.toolError,
   );
 
-  const toolNames = new Set(tools.map((t) => t.toolName || ""));
-  const icons = [...toolNames]
-    .map((name) => TOOL_ICONS[name])
-    .filter(Boolean);
+  const toolNames = [...new Set(tools.map((t) => t.toolName || ""))];
 
   const parts: string[] = [];
   if (tools.length > 0) {
@@ -48,7 +33,7 @@ function turnSummary(blocks: TurnBlock[]) {
     parts.push(`${errors.length} error${errors.length !== 1 ? "s" : ""}`);
   }
 
-  return { text: parts.join(", "), icons, toolCount: tools.length };
+  return { text: parts.join(", "), toolNames, toolCount: tools.length };
 }
 
 const AssistantTurn = memo(function AssistantTurn({
@@ -97,18 +82,16 @@ const AssistantTurn = memo(function AssistantTurn({
             />
           </svg>
           <span>{summary.text}</span>
-          {summary.icons.length > 0 && (
-            <span className="flex gap-0.5 text-[10px]">
-              {summary.icons.map((icon, i) => (
-                <span key={i}>{icon}</span>
+          {summary.toolNames.length > 0 && (
+            <span className="flex gap-1 text-gray-600">
+              {summary.toolNames.map((name) => (
+                <ToolIcon key={name} name={name} />
               ))}
             </span>
           )}
           {streaming && (
-            <span className="flex gap-0.5 ml-1">
-              <span className="h-1 w-1 animate-pulse rounded-full bg-blue-400" />
-              <span className="h-1 w-1 animate-pulse rounded-full bg-blue-400 [animation-delay:0.15s]" />
-              <span className="h-1 w-1 animate-pulse rounded-full bg-blue-400 [animation-delay:0.3s]" />
+            <span className="ml-1">
+              <StreamingDots size="sm" />
             </span>
           )}
         </button>
@@ -173,9 +156,7 @@ const AssistantTurn = memo(function AssistantTurn({
       {/* Streaming cursor when no summary header */}
       {streaming && !hasDetails && (
         <div className="flex items-center gap-1 px-2 py-1">
-          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-blue-400" />
-          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-blue-400 [animation-delay:0.2s]" />
-          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-blue-400 [animation-delay:0.4s]" />
+          <StreamingDots />
         </div>
       )}
     </div>

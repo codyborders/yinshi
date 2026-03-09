@@ -1,7 +1,6 @@
 """Pydantic models for API request/response schemas."""
 
 from datetime import datetime
-from typing import Optional
 
 from pydantic import BaseModel
 
@@ -10,9 +9,9 @@ class RepoCreate(BaseModel):
     """Request to import a repository."""
 
     name: str
-    remote_url: Optional[str] = None
-    local_path: Optional[str] = None
-    custom_prompt: Optional[str] = None
+    remote_url: str | None = None
+    local_path: str | None = None
+    custom_prompt: str | None = None
 
 
 class RepoOut(BaseModel):
@@ -22,22 +21,23 @@ class RepoOut(BaseModel):
     created_at: datetime
     updated_at: datetime
     name: str
-    remote_url: Optional[str] = None
+    remote_url: str | None = None
     root_path: str
-    custom_prompt: Optional[str] = None
+    custom_prompt: str | None = None
+    owner_email: str | None = None
 
 
 class RepoUpdate(BaseModel):
     """Request to update a repository."""
 
-    name: Optional[str] = None
-    custom_prompt: Optional[str] = None
+    name: str | None = None
+    custom_prompt: str | None = None
 
 
 class WorkspaceCreate(BaseModel):
     """Request to create a worktree workspace."""
 
-    name: Optional[str] = None
+    name: str | None = None
 
 
 class WorkspaceOut(BaseModel):
@@ -77,9 +77,9 @@ class MessageOut(BaseModel):
     created_at: datetime
     session_id: str
     role: str
-    content: Optional[str] = None
-    full_message: Optional[str] = None
-    turn_id: Optional[str] = None
+    content: str | None = None
+    full_message: str | None = None
+    turn_id: str | None = None
 
 
 class WSPrompt(BaseModel):
@@ -87,7 +87,7 @@ class WSPrompt(BaseModel):
 
     type: str = "prompt"
     prompt: str
-    model: Optional[str] = None
+    model: str | None = None
 
 
 class WSCancel(BaseModel):
