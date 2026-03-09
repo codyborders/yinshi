@@ -78,6 +78,47 @@ def test_import_local_repo(client: TestClient, git_repo: str) -> None:
     assert data["id"]
 
 
+def test_list_repos_includes_null_owner(db_path: str, git_repo: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Repos with NULL owner_email should still appear when user is authenticated."""
+    monkeypatch.setenv("DB_PATH", db_path)
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", "fake-client-id")
+    monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "fake-secret")
+    monkeypatch.setenv("DISABLE_AUTH", "false")
+    from yinshi.config import get_settings
+
+    get_settings.cache_clear()
+
+    from yinshi.db import init_db, get_db
+
+    init_db()
+
+    # Insert a repo with NULL owner_email (simulating pre-migration data)
+    with get_db() as db:
+        db.execute(
+            "INSERT INTO repos (name, root_path, owner_email) VALUES (?, ?, NULL)",
+            ("legacy-repo", git_repo),
+        )
+        db.commit()
+
+    from yinshi.auth import create_session_token
+    from yinshi.main import app
+    from fastapi.testclient import TestClient
+
+    token = create_session_token("user@example.com")
+
+    with TestClient(app) as client:
+        resp = client.get(
+            "/api/repos",
+            cookies={"yinshi_session": token},
+        )
+        assert resp.status_code == 200
+        repos = resp.json()
+        assert len(repos) >= 1
+        assert any(r["name"] == "legacy-repo" for r in repos)
+
+    get_settings.cache_clear()
+
+
 def test_import_repo_invalid_path(client: TestClient, tmp_path) -> None:
     """POST /api/repos with invalid path should fail."""
     resp = client.post(

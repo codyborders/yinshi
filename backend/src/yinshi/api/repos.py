@@ -35,7 +35,7 @@ def list_repos(request: Request) -> list[dict]:
     with get_db() as db:
         if email:
             rows = db.execute(
-                "SELECT * FROM repos WHERE owner_email = ? ORDER BY created_at DESC",
+                "SELECT * FROM repos WHERE owner_email = ? OR owner_email IS NULL ORDER BY created_at DESC",
                 (email,),
             ).fetchall()
         else:
