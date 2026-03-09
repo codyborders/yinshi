@@ -25,6 +25,7 @@ export default function Session() {
           id: m.id,
           role: m.role as ChatMessage["role"],
           content: m.content || "",
+          blocks: [],
           timestamp: new Date(m.created_at).getTime(),
         }));
         setMessages(mapped);

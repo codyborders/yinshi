@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ChatMessage } from "../hooks/useAgentStream";
+import AssistantTurn from "./AssistantTurn";
 import MessageBubble from "./MessageBubble";
-import ToolCallCard from "./ToolCallCard";
 
 interface ChatViewProps {
   messages: ChatMessage[];
@@ -35,7 +35,6 @@ export default function ChatView({
       if (!text || streaming) return;
       onSend(text);
       setInput("");
-      // Reset textarea height
       if (inputRef.current) {
         inputRef.current.style.height = "auto";
       }
@@ -53,7 +52,6 @@ export default function ChatView({
     [handleSubmit],
   );
 
-  // Auto-resize textarea
   const handleInputChange = useCallback(
     (e: React.ChangeEvent<HTMLTextAreaElement>) => {
       setInput(e.target.value);
@@ -69,7 +67,7 @@ export default function ChatView({
       {/* Messages area */}
       <div
         ref={scrollRef}
-        className="flex-1 overflow-y-auto scrollbar-hide px-3 py-4 space-y-2"
+        className="flex-1 overflow-y-auto scrollbar-hide px-3 py-4 space-y-3"
       >
         {messages.length === 0 && (
           <div className="flex h-full items-center justify-center">
@@ -80,34 +78,49 @@ export default function ChatView({
         )}
 
         {messages.map((msg) => {
-          if (msg.role === "tool_use") {
+          if (msg.role === "user") {
             return (
-              <ToolCallCard
+              <MessageBubble
                 key={msg.id}
-                toolName={msg.toolName || "unknown"}
-                input={msg.toolInput}
+                role="user"
+                content={msg.content}
               />
             );
           }
-          return (
-            <MessageBubble
-              key={msg.id}
-              role={msg.role}
-              content={msg.content}
-              streaming={msg.streaming}
-            />
-          );
+          if (msg.role === "assistant") {
+            return (
+              <AssistantTurn
+                key={msg.id}
+                blocks={msg.blocks}
+                streaming={msg.streaming}
+                fallbackContent={
+                  msg.blocks.length === 0 ? msg.content : undefined
+                }
+              />
+            );
+          }
+          if (msg.role === "error") {
+            return (
+              <MessageBubble
+                key={msg.id}
+                role="error"
+                content={msg.content}
+              />
+            );
+          }
+          return null;
         })}
 
-        {streaming && (
-          <div className="flex items-center gap-2 px-2 py-1">
-            <div className="flex gap-1">
-              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-blue-400" />
-              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-blue-400 [animation-delay:0.2s]" />
-              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-blue-400 [animation-delay:0.4s]" />
+        {streaming &&
+          !messages.some((m) => m.role === "assistant" && m.streaming) && (
+            <div className="flex items-center gap-2 px-2 py-1">
+              <div className="flex gap-1">
+                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-blue-400" />
+                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-blue-400 [animation-delay:0.2s]" />
+                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-blue-400 [animation-delay:0.4s]" />
+              </div>
             </div>
-          </div>
-        )}
+          )}
       </div>
 
       {/* Input bar */}

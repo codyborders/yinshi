@@ -86,12 +86,14 @@ export const api = {
 export type SSEEvent =
   | { type: "assistant"; message: { content: ContentBlock[] } }
   | { type: "tool_use"; name: string; tool_name?: string; id?: string; input: unknown }
+  | { type: "tool_result"; tool_use_id: string; content: string | ContentBlock[] | unknown; is_error?: boolean }
   | { type: "result"; [key: string]: unknown }
   | { type: "error"; error: string };
 
 export interface ContentBlock {
   type: string;
   text?: string;
+  thinking?: string;
   id?: string;
   name?: string;
   input?: unknown;

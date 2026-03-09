@@ -1,12 +1,22 @@
 import { useCallback, useRef, useState } from "react";
 import { cancelSession, streamPrompt, type SSEEvent } from "../api/client";
 
-export interface ChatMessage {
+export interface TurnBlock {
   id: string;
-  role: "user" | "assistant" | "tool_use" | "result" | "error";
-  content: string;
+  type: "text" | "thinking" | "tool_use" | "error";
+  text?: string;
   toolName?: string;
   toolInput?: unknown;
+  toolId?: string;
+  toolOutput?: string;
+  toolError?: boolean;
+}
+
+export interface ChatMessage {
+  id: string;
+  role: "user" | "assistant" | "error";
+  content: string;
+  blocks: TurnBlock[];
   streaming?: boolean;
   timestamp: number;
 }
@@ -25,13 +35,13 @@ export function useAgentStream(sessionId: string | undefined) {
     async (prompt: string, model?: string) => {
       if (!sessionId || streaming) return;
 
-      // Add user message to state
       setMessages((prev) => [
         ...prev,
         {
           id: nextId(),
           role: "user",
           content: prompt,
+          blocks: [],
           timestamp: Date.now(),
         },
       ]);
@@ -40,8 +50,34 @@ export function useAgentStream(sessionId: string | undefined) {
       const controller = new AbortController();
       abortRef.current = controller;
 
-      let assistantBuf = "";
-      let assistantMsgId: string | null = null;
+      const turnId = nextId();
+      const blocks: TurnBlock[] = [];
+
+      function upsertTurn(done = false) {
+        const allText = blocks
+          .filter((b) => b.type === "text")
+          .map((b) => b.text || "")
+          .join("");
+        const snapshot = blocks.map((b) => ({ ...b }));
+
+        setMessages((prev) => {
+          const msg: ChatMessage = {
+            id: turnId,
+            role: "assistant",
+            content: allText,
+            blocks: snapshot,
+            streaming: !done,
+            timestamp: Date.now(),
+          };
+          const idx = prev.findIndex((m) => m.id === turnId);
+          if (idx >= 0) {
+            const next = [...prev];
+            next[idx] = msg;
+            return next;
+          }
+          return [...prev, msg];
+        });
+      }
 
       try {
         for await (const event of streamPrompt(
@@ -51,102 +87,77 @@ export function useAgentStream(sessionId: string | undefined) {
           controller.signal,
         )) {
           if (event.type === "error") {
-            setMessages((prev) => [
-              ...prev,
-              {
-                id: nextId(),
-                role: "error",
-                content: event.error,
-                timestamp: Date.now(),
-              },
-            ]);
+            blocks.push({ id: nextId(), type: "error", text: event.error });
+            upsertTurn(true);
             break;
           }
 
           if (event.type === "assistant") {
-            const blocks = event.message?.content ?? [];
-            let text = "";
-            const toolUseBlocks: { name: string; input: unknown }[] = [];
-
-            for (const block of blocks) {
+            for (const block of event.message?.content ?? []) {
               if (block.type === "text" && block.text) {
-                text += block.text;
+                const last = blocks[blocks.length - 1];
+                if (last && last.type === "text") {
+                  last.text = (last.text || "") + block.text;
+                } else {
+                  blocks.push({ id: nextId(), type: "text", text: block.text });
+                }
+              } else if (
+                block.type === "thinking" &&
+                (block.thinking || block.text)
+              ) {
+                const text = block.thinking || block.text || "";
+                const last = blocks[blocks.length - 1];
+                if (last && last.type === "thinking") {
+                  last.text = (last.text || "") + text;
+                } else {
+                  blocks.push({ id: nextId(), type: "thinking", text });
+                }
               } else if (block.type === "tool_use" && block.name) {
-                toolUseBlocks.push({ name: block.name, input: block.input });
+                blocks.push({
+                  id: block.id || nextId(),
+                  type: "tool_use",
+                  toolName: block.name,
+                  toolInput: block.input,
+                  toolId: block.id,
+                });
               }
             }
-
-            if (text) {
-              assistantBuf += text;
-              const mid: string = assistantMsgId ?? nextId();
-              assistantMsgId = mid;
-
-              setMessages((prev) => {
-                const updated: ChatMessage = {
-                  id: mid,
-                  role: "assistant",
-                  content: assistantBuf,
-                  streaming: true,
-                  timestamp: Date.now(),
-                };
-                const existing = prev.findIndex((m) => m.id === mid);
-                if (existing >= 0) {
-                  const next = [...prev];
-                  next[existing] = updated;
-                  return next;
-                }
-                return [...prev, updated];
-              });
-            }
-
-            for (const tool of toolUseBlocks) {
-              setMessages((prev) => [
-                ...prev,
-                {
-                  id: nextId(),
-                  role: "tool_use",
-                  content: "",
-                  toolName: tool.name,
-                  toolInput: tool.input,
-                  timestamp: Date.now(),
-                },
-              ]);
-            }
+            upsertTurn();
           } else if (event.type === "tool_use") {
-            setMessages((prev) => [
-              ...prev,
-              {
-                id: nextId(),
-                role: "tool_use",
-                content: "",
-                toolName: event.name || event.tool_name || "unknown",
-                toolInput: event.input,
-                timestamp: Date.now(),
-              },
-            ]);
-          } else if (event.type === "result") {
-            // Finalize the assistant message as non-streaming
-            if (assistantMsgId) {
-              const mid = assistantMsgId;
-              setMessages((prev) =>
-                prev.map((m) =>
-                  m.id === mid ? { ...m, streaming: false } : m,
-                ),
-              );
+            blocks.push({
+              id: event.id || nextId(),
+              type: "tool_use",
+              toolName: event.name || event.tool_name || "unknown",
+              toolInput: event.input,
+              toolId: event.id,
+            });
+            upsertTurn();
+          } else if (event.type === "tool_result") {
+            const output =
+              typeof event.content === "string"
+                ? event.content
+                : JSON.stringify(event.content, null, 2);
+            const matching = blocks.find(
+              (b) =>
+                b.type === "tool_use" && b.toolId === event.tool_use_id,
+            );
+            if (matching) {
+              matching.toolOutput = output;
+              matching.toolError = event.is_error;
             }
+            upsertTurn();
+          } else if (event.type === "result") {
+            upsertTurn(true);
           }
         }
       } catch (e) {
         if (!(e instanceof DOMException && e.name === "AbortError")) {
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: nextId(),
-              role: "error",
-              content: e instanceof Error ? e.message : "Stream failed",
-              timestamp: Date.now(),
-            },
-          ]);
+          blocks.push({
+            id: nextId(),
+            type: "error",
+            text: e instanceof Error ? e.message : "Stream failed",
+          });
+          upsertTurn(true);
         }
       } finally {
         setStreaming(false);
@@ -157,10 +168,8 @@ export function useAgentStream(sessionId: string | undefined) {
   );
 
   const cancel = useCallback(async () => {
-    // Abort the fetch to stop reading the stream
     abortRef.current?.abort();
     setStreaming(false);
-    // Tell the backend to cancel the sidecar
     if (sessionId) {
       try {
         await cancelSession(sessionId);
