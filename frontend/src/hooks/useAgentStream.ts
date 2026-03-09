@@ -86,6 +86,9 @@ export function useAgentStream(sessionId: string | undefined) {
           model,
           controller.signal,
         )) {
+          // Debug: log raw SSE events to browser console
+          console.log("[SSE]", JSON.stringify(event).slice(0, 500));
+
           if (event.type === "error") {
             blocks.push({ id: nextId(), type: "error", text: event.error });
             upsertTurn(true);
