@@ -87,6 +87,12 @@ export type SSEEvent =
   | { type: "assistant"; message: { content: ContentBlock[] } }
   | { type: "tool_use"; name: string; tool_name?: string; id?: string; input: unknown }
   | { type: "tool_result"; tool_use_id: string; content: string | ContentBlock[] | unknown; is_error?: boolean }
+  | { type: "content_block_start"; content_block: ContentBlock; index?: number }
+  | { type: "content_block_delta"; delta: { type: string; text?: string; partial_json?: string; thinking?: string }; index?: number }
+  | { type: "content_block_stop"; index?: number }
+  | { type: "message_start"; message?: unknown }
+  | { type: "message_delta"; delta?: unknown }
+  | { type: "message_stop" }
   | { type: "result"; [key: string]: unknown }
   | { type: "error"; error: string };
 

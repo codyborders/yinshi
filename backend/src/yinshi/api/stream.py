@@ -109,9 +109,15 @@ async def prompt_session(session_id: str, body: PromptRequest) -> StreamingRespo
                 session_id, prompt, model=model, cwd=workspace_path
             ):
                 event_type = event.get("type")
+                logger.debug(
+                    "Sidecar event: type=%s keys=%s",
+                    event_type,
+                    list(event.keys()),
+                )
 
                 if event_type == "message":
                     data = event.get("data", {})
+                    logger.debug("SSE data: type=%s keys=%s", data.get("type"), list(data.keys()))
 
                     # Extract assistant text for persistence
                     if data.get("type") == "assistant":
@@ -157,6 +163,10 @@ async def prompt_session(session_id: str, body: PromptRequest) -> StreamingRespo
                 elif event_type == "error":
                     error_msg = event.get("error", "Unknown sidecar error")
                     yield f"data: {json.dumps({'type': 'error', 'error': error_msg})}\n\n"
+
+                else:
+                    # Forward any other event types (content_block_start, tool_use, etc.)
+                    yield f"data: {json.dumps(event)}\n\n"
 
         except Exception as e:
             logger.error(

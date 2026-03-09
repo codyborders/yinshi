@@ -124,13 +124,100 @@ export function useAgentStream(sessionId: string | undefined) {
             }
             upsertTurn();
           } else if (event.type === "tool_use") {
+            // Standalone tool_use event -- try multiple field names
+            const ev = event as Record<string, unknown>;
+            const toolName =
+              (ev.name as string) ||
+              (ev.tool_name as string) ||
+              (ev.tool as string) ||
+              ((ev.function as Record<string, unknown>)?.name as string) ||
+              "unknown";
             blocks.push({
               id: event.id || nextId(),
               type: "tool_use",
-              toolName: event.name || event.tool_name || "unknown",
+              toolName,
               toolInput: event.input,
               toolId: event.id,
             });
+            upsertTurn();
+          } else if (
+            (event as Record<string, unknown>).type === "content_block_start"
+          ) {
+            // Anthropic streaming format: content_block_start with nested content_block
+            const ev = event as Record<string, unknown>;
+            const cb = ev.content_block as Record<string, unknown> | undefined;
+            if (cb?.type === "tool_use" && cb.name) {
+              blocks.push({
+                id: (cb.id as string) || nextId(),
+                type: "tool_use",
+                toolName: cb.name as string,
+                toolInput: cb.input,
+                toolId: cb.id as string,
+              });
+              upsertTurn();
+            } else if (cb?.type === "thinking") {
+              blocks.push({
+                id: nextId(),
+                type: "thinking",
+                text: (cb.thinking as string) || "",
+              });
+              upsertTurn();
+            }
+          } else if (
+            (event as Record<string, unknown>).type === "content_block_delta"
+          ) {
+            const ev = event as Record<string, unknown>;
+            const delta = ev.delta as Record<string, unknown> | undefined;
+            if (delta?.type === "text_delta" && delta.text) {
+              const last = blocks[blocks.length - 1];
+              if (last && last.type === "text") {
+                last.text = (last.text || "") + (delta.text as string);
+              } else {
+                blocks.push({
+                  id: nextId(),
+                  type: "text",
+                  text: delta.text as string,
+                });
+              }
+              upsertTurn();
+            } else if (delta?.type === "input_json_delta") {
+              // Tool input streaming -- find last tool_use block and append
+              const last = blocks[blocks.length - 1];
+              if (last && last.type === "tool_use") {
+                const partial = (delta.partial_json as string) || "";
+                last.toolInput =
+                  ((last.toolInput as string) || "") + partial;
+              }
+              upsertTurn();
+            } else if (delta?.type === "thinking_delta" && delta.thinking) {
+              const last = blocks[blocks.length - 1];
+              if (last && last.type === "thinking") {
+                last.text = (last.text || "") + (delta.thinking as string);
+              } else {
+                blocks.push({
+                  id: nextId(),
+                  type: "thinking",
+                  text: delta.thinking as string,
+                });
+              }
+              upsertTurn();
+            }
+          } else if (
+            (event as Record<string, unknown>).type === "content_block_stop"
+          ) {
+            // Finalize tool input if it was streamed as JSON string
+            const last = blocks[blocks.length - 1];
+            if (
+              last &&
+              last.type === "tool_use" &&
+              typeof last.toolInput === "string"
+            ) {
+              try {
+                last.toolInput = JSON.parse(last.toolInput);
+              } catch {
+                /* keep as string */
+              }
+            }
             upsertTurn();
           } else if (event.type === "tool_result") {
             const output =
@@ -146,7 +233,10 @@ export function useAgentStream(sessionId: string | undefined) {
               matching.toolError = event.is_error;
             }
             upsertTurn();
-          } else if (event.type === "result") {
+          } else if (
+            event.type === "result" ||
+            (event as Record<string, unknown>).type === "message_stop"
+          ) {
             upsertTurn(true);
           }
         }
