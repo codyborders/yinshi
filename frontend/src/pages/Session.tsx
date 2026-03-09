@@ -2,13 +2,13 @@ import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { api, type Message } from "../api/client";
 import ChatView from "../components/ChatView";
-import { useWebSocket, type ChatMessage } from "../hooks/useWebSocket";
+import { useAgentStream, type ChatMessage } from "../hooks/useAgentStream";
 
 export default function Session() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { messages, sendPrompt, cancel, connected, streaming, setMessages } =
-    useWebSocket(id);
+  const { messages, sendPrompt, cancel, streaming, setMessages } =
+    useAgentStream(id);
   const [loadingHistory, setLoadingHistory] = useState(true);
 
   // Load existing message history
@@ -70,16 +70,12 @@ export default function Session() {
             Session {id?.slice(0, 8)}
           </div>
         </div>
-        <div className="flex items-center gap-2">
-          <div
-            className={`h-2 w-2 rounded-full ${
-              connected ? "bg-green-500" : "bg-gray-600"
-            }`}
-          />
-          <span className="text-xs text-gray-500">
-            {connected ? "Connected" : "Connecting..."}
-          </span>
-        </div>
+        {streaming && (
+          <div className="flex items-center gap-2">
+            <div className="h-2 w-2 animate-pulse rounded-full bg-blue-500" />
+            <span className="text-xs text-gray-500">Streaming</span>
+          </div>
+        )}
       </header>
 
       {/* Chat */}

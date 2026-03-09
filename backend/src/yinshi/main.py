@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from yinshi.api import auth_routes, repos, sessions, workspaces, ws
+from yinshi.api import auth_routes, repos, sessions, stream, workspaces
 from yinshi.auth import AuthMiddleware, setup_oauth
 from yinshi.config import get_settings
 from yinshi.db import init_db
@@ -55,7 +55,7 @@ app.include_router(auth_routes.router)
 app.include_router(repos.router)
 app.include_router(workspaces.router)
 app.include_router(sessions.router)
-app.include_router(ws.router)
+app.include_router(stream.router)
 
 
 @app.get("/health")

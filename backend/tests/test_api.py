@@ -1,6 +1,7 @@
-"""Tests for REST API endpoints."""
+"""Tests for REST API endpoints including SSE streaming."""
 
-import os
+import json
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -26,6 +27,17 @@ def client(db_path, monkeypatch):
         yield c
 
     get_settings.cache_clear()
+
+
+@pytest.fixture
+def session_id(client, git_repo):
+    """Create a repo -> workspace -> session and return the session ID."""
+    repo = client.post(
+        "/api/repos", json={"name": "test-repo", "local_path": git_repo}
+    ).json()
+    ws = client.post(f"/api/repos/{repo['id']}/workspaces", json={}).json()
+    sess = client.post(f"/api/workspaces/{ws['id']}/sessions", json={}).json()
+    return sess["id"]
 
 
 def test_health_endpoint(client):
@@ -184,3 +196,144 @@ def test_get_session_messages(client, git_repo):
     resp = client.get(f"/api/sessions/{sess_id}/messages")
     assert resp.status_code == 200
     assert resp.json() == []
+
+
+# --- SSE prompt endpoint tests ---
+
+
+def _parse_sse_events(response_text: str) -> list[dict]:
+    """Parse SSE text/event-stream body into list of JSON objects."""
+    events = []
+    for line in response_text.strip().split("\n"):
+        line = line.strip()
+        if line.startswith("data: "):
+            events.append(json.loads(line[6:]))
+    return events
+
+
+def test_prompt_session_not_found(client):
+    """POST /api/sessions/:id/prompt with bad session should 404."""
+    resp = client.post(
+        "/api/sessions/nonexistent/prompt",
+        json={"prompt": "hello"},
+    )
+    assert resp.status_code == 404
+
+
+def _make_mock_sidecar(query_fn) -> AsyncMock:
+    """Build a mock SidecarClient with the given query async generator."""
+    mock = AsyncMock()
+    mock.query = query_fn
+    mock.warmup = AsyncMock()
+    mock.disconnect = AsyncMock()
+    return mock
+
+
+def test_prompt_streams_sidecar_events(client, session_id):
+    """POST /api/sessions/:id/prompt should stream SSE events and persist messages."""
+
+    async def fake_query(sid, prompt, model, cwd):
+        yield {
+            "type": "message",
+            "data": {
+                "type": "assistant",
+                "message": {"content": [{"type": "text", "text": "Hello world"}]},
+            },
+        }
+        yield {
+            "type": "message",
+            "data": {"type": "result", "usage": {}},
+        }
+
+    with patch(
+        "yinshi.api.stream.create_sidecar_connection",
+        return_value=_make_mock_sidecar(fake_query),
+    ):
+        resp = client.post(
+            f"/api/sessions/{session_id}/prompt",
+            json={"prompt": "say hello"},
+        )
+
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/event-stream")
+
+    events = _parse_sse_events(resp.text)
+    types = [e.get("type") for e in events]
+    assert "assistant" in types
+    assert "result" in types
+
+    # Verify user + assistant messages persisted
+    msgs = client.get(f"/api/sessions/{session_id}/messages").json()
+    roles = [m["role"] for m in msgs]
+    assert "user" in roles
+    assert "assistant" in roles
+
+
+def test_prompt_saves_partial_on_sidecar_error(client, session_id):
+    """If the sidecar errors mid-stream, partial content is still saved."""
+
+    async def failing_query(sid, prompt, model, cwd):
+        yield {
+            "type": "message",
+            "data": {
+                "type": "assistant",
+                "message": {"content": [{"type": "text", "text": "partial "}]},
+            },
+        }
+        raise ConnectionError("sidecar died")
+
+    with patch(
+        "yinshi.api.stream.create_sidecar_connection",
+        return_value=_make_mock_sidecar(failing_query),
+    ):
+        resp = client.post(
+            f"/api/sessions/{session_id}/prompt",
+            json={"prompt": "do stuff"},
+        )
+
+    assert resp.status_code == 200
+    events = _parse_sse_events(resp.text)
+    # Should have an error event
+    assert any(e.get("type") == "error" for e in events)
+
+    # Partial assistant content should be saved
+    msgs = client.get(f"/api/sessions/{session_id}/messages").json()
+    assistant_msgs = [m for m in msgs if m["role"] == "assistant"]
+    assert len(assistant_msgs) == 1
+    assert "partial" in assistant_msgs[0]["content"]
+
+
+def test_cancel_session_not_found(client):
+    """POST /api/sessions/:id/cancel with no active session returns 404."""
+    resp = client.post("/api/sessions/nonexistent/cancel")
+    assert resp.status_code == 404
+
+
+def test_cancel_no_active_stream(client, session_id):
+    """POST /api/sessions/:id/cancel with no active stream returns 409."""
+    resp = client.post(f"/api/sessions/{session_id}/cancel")
+    assert resp.status_code == 409
+
+
+def test_turn_id_index_exists(db_path, monkeypatch):
+    """The messages table should have an index on turn_id."""
+    import sqlite3
+
+    monkeypatch.setenv("DB_PATH", db_path)
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", "")
+    monkeypatch.setenv("DISABLE_AUTH", "true")
+    from yinshi.config import get_settings
+
+    get_settings.cache_clear()
+    from yinshi.db import init_db
+
+    init_db()
+
+    conn = sqlite3.connect(db_path)
+    indexes = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='messages'"
+    ).fetchall()
+    index_names = [row[0] for row in indexes]
+    conn.close()
+    assert "idx_messages_turn_id" in index_names
+    get_settings.cache_clear()

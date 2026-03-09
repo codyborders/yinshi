@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_messages_turn_id ON messages(turn_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_workspace ON sessions(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_workspaces_repo ON workspaces(repo_id);
 

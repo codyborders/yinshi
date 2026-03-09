@@ -49,9 +49,121 @@
   .scrollbar-hide::-webkit-scrollbar {
     display: none;
   }
+
+  .animate-message-in {
+    animation: message-in 0.2s ease-out;
+  }
 }
 
-/* Message appear animation */
+/* Markdown prose styles for assistant messages */
+.markdown-prose {
+  line-height: 1.65;
+}
+
+.markdown-prose p {
+  margin: 0.5em 0;
+}
+
+.markdown-prose p:first-child {
+  margin-top: 0;
+}
+
+.markdown-prose p:last-child {
+  margin-bottom: 0;
+}
+
+.markdown-prose h1,
+.markdown-prose h2,
+.markdown-prose h3,
+.markdown-prose h4 {
+  font-weight: 600;
+  margin: 1em 0 0.5em;
+  color: #f3f4f6;
+}
+
+.markdown-prose h1 { font-size: 1.25em; }
+.markdown-prose h2 { font-size: 1.125em; }
+.markdown-prose h3 { font-size: 1em; }
+
+.markdown-prose ul,
+.markdown-prose ol {
+  margin: 0.5em 0;
+  padding-left: 1.5em;
+}
+
+.markdown-prose ul { list-style-type: disc; }
+.markdown-prose ol { list-style-type: decimal; }
+
+.markdown-prose li {
+  margin: 0.25em 0;
+}
+
+.markdown-prose code {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+  padding: 0.15em 0.35em;
+  font-size: 0.875em;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+}
+
+.markdown-prose pre {
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: 8px;
+  padding: 0.75em 1em;
+  margin: 0.5em 0;
+  overflow-x: auto;
+}
+
+.markdown-prose pre code {
+  background: none;
+  padding: 0;
+  border-radius: 0;
+  font-size: 0.8125em;
+}
+
+.markdown-prose blockquote {
+  border-left: 3px solid #4b5563;
+  padding-left: 0.75em;
+  margin: 0.5em 0;
+  color: #9ca3af;
+}
+
+.markdown-prose a {
+  color: #60a5fa;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.markdown-prose hr {
+  border: none;
+  border-top: 1px solid #374151;
+  margin: 0.75em 0;
+}
+
+.markdown-prose table {
+  border-collapse: collapse;
+  margin: 0.5em 0;
+  font-size: 0.875em;
+  width: 100%;
+}
+
+.markdown-prose th,
+.markdown-prose td {
+  border: 1px solid #374151;
+  padding: 0.35em 0.6em;
+  text-align: left;
+}
+
+.markdown-prose th {
+  background: rgba(255, 255, 255, 0.05);
+  font-weight: 600;
+}
+
+.markdown-prose strong {
+  font-weight: 600;
+  color: #f3f4f6;
+}
+
 @keyframes message-in {
   from {
     opacity: 0;
@@ -61,8 +173,4 @@
     opacity: 1;
     transform: translateY(0);
   }
-}
-
-.animate-message-in {
-  animation: message-in 0.2s ease-out;
 }

@@ -81,12 +81,12 @@ export const api = {
   delete: (path: string) => request<void>("DELETE", path),
 };
 
-/* ---------- WebSocket Manager ---------- */
+/* ---------- SSE Streaming ---------- */
 
-export type WSEvent =
-  | { type: "message"; data: { type: "assistant"; message: { content: ContentBlock[] } } }
-  | { type: "message"; data: { type: "tool_use"; tool_name: string; input: unknown } }
-  | { type: "message"; data: { type: "result"; [key: string]: unknown } }
+export type SSEEvent =
+  | { type: "assistant"; message: { content: ContentBlock[] } }
+  | { type: "tool_use"; tool_name: string; input: unknown }
+  | { type: "result"; [key: string]: unknown }
   | { type: "error"; error: string };
 
 export interface ContentBlock {
@@ -97,86 +97,59 @@ export interface ContentBlock {
   input?: unknown;
 }
 
-type EventCallback = (event: WSEvent) => void;
+export async function* streamPrompt(
+  sessionId: string,
+  prompt: string,
+  model?: string,
+  signal?: AbortSignal,
+): AsyncGenerator<SSEEvent> {
+  const res = await fetch(`/api/sessions/${sessionId}/prompt`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ prompt, model }),
+    signal,
+  });
 
-export class AgentSocket {
-  private ws: WebSocket | null = null;
-  private listeners = new Set<EventCallback>();
-  private _connected = false;
-  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-  private shouldReconnect = true;
-
-  constructor(private sessionId: string) {}
-
-  get connected(): boolean {
-    return this._connected;
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new ApiError(res.status, text || res.statusText);
   }
 
-  connect(): void {
-    this.shouldReconnect = true;
-    this.openSocket();
+  if (!res.body) {
+    throw new ApiError(res.status, "Response body is null");
   }
 
-  private openSocket(): void {
-    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const url = `${proto}//${window.location.host}/ws/${this.sessionId}`;
-    this.ws = new WebSocket(url);
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
 
-    this.ws.onopen = () => {
-      this._connected = true;
-      this.emit({ type: "message", data: { type: "result", connected: true } } as WSEvent);
-    };
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
 
-    this.ws.onmessage = (ev) => {
-      try {
-        const event = JSON.parse(ev.data) as WSEvent;
-        this.emit(event);
-      } catch {
-        /* ignore malformed messages */
+      // Parse complete SSE lines from buffer
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (trimmed.startsWith("data: ")) {
+          try {
+            yield JSON.parse(trimmed.slice(6)) as SSEEvent;
+          } catch {
+            /* ignore malformed events */
+          }
+        }
       }
-    };
-
-    this.ws.onclose = () => {
-      this._connected = false;
-      if (this.shouldReconnect) {
-        this.reconnectTimer = setTimeout(() => this.openSocket(), 2000);
-      }
-    };
-
-    this.ws.onerror = () => {
-      this.ws?.close();
-    };
+    }
+  } finally {
+    reader.releaseLock();
   }
+}
 
-  sendPrompt(prompt: string, model?: string): void {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
-    const msg: { type: string; prompt: string; model?: string } = {
-      type: "prompt",
-      prompt,
-    };
-    if (model) msg.model = model;
-    this.ws.send(JSON.stringify(msg));
-  }
-
-  cancel(): void {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
-    this.ws.send(JSON.stringify({ type: "cancel" }));
-  }
-
-  on(cb: EventCallback): () => void {
-    this.listeners.add(cb);
-    return () => this.listeners.delete(cb);
-  }
-
-  private emit(event: WSEvent): void {
-    this.listeners.forEach((cb) => cb(event));
-  }
-
-  disconnect(): void {
-    this.shouldReconnect = false;
-    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
-    this.ws?.close();
-    this.ws = null;
-    this._connected = false;
-  }
+export async function cancelSession(sessionId: string): Promise<void> {
+  await request<{ status: string }>("POST", `/api/sessions/${sessionId}/cancel`);
 }

@@ -1,7 +1,6 @@
 """Shared pytest fixtures for Yinshi tests."""
 
 import os
-import sqlite3
 import subprocess
 from unittest.mock import AsyncMock
 
@@ -39,10 +38,7 @@ def db(db_path, monkeypatch):
 @pytest.fixture
 def mock_sidecar():
     """Provide a mock sidecar client."""
-    client = AsyncMock()
-    client.connected = True
-    client.ping.return_value = True
-    return client
+    return AsyncMock()
 
 
 @pytest.fixture

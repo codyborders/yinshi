@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { ChatMessage } from "../hooks/useWebSocket";
+import type { ChatMessage } from "../hooks/useAgentStream";
 import MessageBubble from "./MessageBubble";
 import ToolCallCard from "./ToolCallCard";
 
