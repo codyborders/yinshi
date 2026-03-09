@@ -115,11 +115,17 @@ export function useAgentStream(sessionId: string | undefined) {
                 } else {
                   blocks.push({ id: nextId(), type: "thinking", text });
                 }
-              } else if (block.type === "tool_use" && block.name) {
+              } else if (block.type === "tool_use") {
+                const b = block as unknown as Record<string, unknown>;
+                const name =
+                  (b.name as string) ||
+                  (b.tool_name as string) ||
+                  (b.tool as string) ||
+                  "unknown";
                 blocks.push({
                   id: block.id || nextId(),
                   type: "tool_use",
-                  toolName: block.name,
+                  toolName: name,
                   toolInput: block.input,
                   toolId: block.id,
                 });
