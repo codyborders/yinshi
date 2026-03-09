@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { memo, useState } from "react";
 
 interface ToolCallBlockProps {
   toolName: string;
@@ -248,7 +248,7 @@ function BashContent({
   );
 }
 
-export default function ToolCallBlock({
+const ToolCallBlock = memo(function ToolCallBlock({
   toolName,
   toolInput,
   toolOutput,
@@ -377,4 +377,6 @@ export default function ToolCallBlock({
       )}
     </div>
   );
-}
+});
+
+export default ToolCallBlock;

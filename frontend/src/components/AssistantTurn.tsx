@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { memo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { TurnBlock } from "../hooks/useAgentStream";
@@ -51,7 +51,7 @@ function turnSummary(blocks: TurnBlock[]) {
   return { text: parts.join(", "), icons, toolCount: tools.length };
 }
 
-export default function AssistantTurn({
+const AssistantTurn = memo(function AssistantTurn({
   blocks,
   streaming,
   fallbackContent,
@@ -180,4 +180,6 @@ export default function AssistantTurn({
       )}
     </div>
   );
-}
+});
+
+export default AssistantTurn;

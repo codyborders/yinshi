@@ -173,7 +173,7 @@ async def prompt_session(session_id: str, body: PromptRequest) -> StreamingRespo
                 "Sidecar error: session=%s turn_id=%s error=%s",
                 session_id, turn_id, e, exc_info=True,
             )
-            yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
+            yield f"data: {json.dumps({'type': 'error', 'error': 'An internal error occurred'})}\n\n"
 
         finally:
             accumulated = "".join(assistant_chunks)
