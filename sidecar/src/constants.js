@@ -1,0 +1,1 @@
+export const HEALTH_CHECK_INTERVAL = 30000;

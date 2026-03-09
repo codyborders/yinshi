@@ -1,0 +1,12 @@
+{
+  "name": "yinshi-sidecar",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "@mariozechner/pi-coding-agent": "^0.57.1"
+  }
+}

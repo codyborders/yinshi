@@ -1,0 +1,106 @@
+"""Git operations: clone repos and manage worktrees."""
+
+import asyncio
+import logging
+import random
+import string
+from pathlib import Path
+
+from yinshi.exceptions import GitError
+
+logger = logging.getLogger(__name__)
+
+_ADJECTIVES = [
+    "swift", "bold", "calm", "dark", "keen", "warm", "cool", "pure", "wise", "fast",
+    "bright", "quiet", "sharp", "smooth", "steady", "gentle", "vivid", "grand", "noble",
+    "fresh", "prime", "lunar", "solar", "amber", "coral", "ivory", "olive", "azure",
+]
+_NOUNS = [
+    "fox", "owl", "elk", "wolf", "hawk", "bear", "lynx", "crane", "drake", "finch",
+    "heron", "raven", "otter", "tiger", "eagle", "falcon", "panda", "bison", "cedar",
+    "maple", "river", "stone", "flame", "frost", "storm", "ridge", "grove", "brook",
+]
+
+
+def generate_branch_name() -> str:
+    """Generate a random branch name like 'swift-fox-a3f2'."""
+    adj = random.choice(_ADJECTIVES)
+    noun = random.choice(_NOUNS)
+    suffix = "".join(random.choices(string.ascii_lowercase + string.digits, k=4))
+    return f"{adj}-{noun}-{suffix}"
+
+
+async def _run_git(args: list[str], cwd: str | None = None) -> str:
+    """Run a git command asynchronously and return stdout."""
+    cmd = ["git"] + args
+    logger.debug("Running: %s (cwd=%s)", " ".join(cmd), cwd)
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        cwd=cwd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        raise GitError(f"git {args[0]} failed: {stderr.decode().strip()}")
+    return stdout.decode().strip()
+
+
+async def clone_repo(url: str, dest: str) -> str:
+    """Clone a git repository. Returns the clone path.
+
+    If dest already exists and is a valid git repo with matching remote, reuse it.
+    """
+    dest_path = Path(dest)
+    if dest_path.exists():
+        if await validate_local_repo(dest):
+            # Already cloned -- pull latest instead
+            logger.info("Reusing existing clone at %s", dest)
+            try:
+                await _run_git(["fetch", "--all"], cwd=dest)
+            except GitError:
+                pass
+            return dest
+        raise GitError(f"Destination already exists but is not a git repo: {dest}")
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+    await _run_git(["clone", url, dest])
+    logger.info("Cloned %s to %s", url, dest)
+    return dest
+
+
+async def create_worktree(repo_path: str, worktree_path: str, branch: str) -> str:
+    """Create a git worktree with a new branch. Returns the worktree path."""
+    Path(worktree_path).parent.mkdir(parents=True, exist_ok=True)
+    await _run_git(["worktree", "add", "-b", branch, worktree_path], cwd=repo_path)
+    logger.info("Created worktree %s (branch: %s)", worktree_path, branch)
+    return worktree_path
+
+
+async def delete_worktree(repo_path: str, worktree_path: str) -> None:
+    """Remove a git worktree and its branch."""
+    try:
+        branch = await _run_git(
+            ["rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=worktree_path,
+        )
+    except GitError:
+        branch = None
+
+    await _run_git(["worktree", "remove", "--force", worktree_path], cwd=repo_path)
+
+    if branch and branch not in ("main", "master"):
+        try:
+            await _run_git(["branch", "-D", branch], cwd=repo_path)
+        except GitError:
+            pass
+
+    logger.info("Deleted worktree %s", worktree_path)
+
+
+async def validate_local_repo(path: str) -> bool:
+    """Check if a path is a valid git repository."""
+    try:
+        await _run_git(["rev-parse", "--git-dir"], cwd=path)
+        return True
+    except GitError:
+        return False
