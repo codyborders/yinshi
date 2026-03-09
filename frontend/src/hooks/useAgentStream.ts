@@ -66,9 +66,13 @@ export function useAgentStream(sessionId: string | undefined) {
           if (event.type === "assistant") {
             const blocks = event.message?.content ?? [];
             let text = "";
+            const toolUseBlocks: { name: string; input: unknown }[] = [];
+
             for (const block of blocks) {
               if (block.type === "text" && block.text) {
                 text += block.text;
+              } else if (block.type === "tool_use" && block.name) {
+                toolUseBlocks.push({ name: block.name, input: block.input });
               }
             }
 
@@ -94,6 +98,20 @@ export function useAgentStream(sessionId: string | undefined) {
                 return [...prev, updated];
               });
             }
+
+            for (const tool of toolUseBlocks) {
+              setMessages((prev) => [
+                ...prev,
+                {
+                  id: nextId(),
+                  role: "tool_use",
+                  content: "",
+                  toolName: tool.name,
+                  toolInput: tool.input,
+                  timestamp: Date.now(),
+                },
+              ]);
+            }
           } else if (event.type === "tool_use") {
             setMessages((prev) => [
               ...prev,
@@ -101,7 +119,7 @@ export function useAgentStream(sessionId: string | undefined) {
                 id: nextId(),
                 role: "tool_use",
                 content: "",
-                toolName: event.tool_name,
+                toolName: event.name || event.tool_name || "unknown",
                 toolInput: event.input,
                 timestamp: Date.now(),
               },

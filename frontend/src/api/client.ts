@@ -85,7 +85,7 @@ export const api = {
 
 export type SSEEvent =
   | { type: "assistant"; message: { content: ContentBlock[] } }
-  | { type: "tool_use"; tool_name: string; input: unknown }
+  | { type: "tool_use"; name: string; tool_name?: string; id?: string; input: unknown }
   | { type: "result"; [key: string]: unknown }
   | { type: "error"; error: string };
 
