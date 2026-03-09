@@ -133,20 +133,19 @@ export function useAgentStream(sessionId: string | undefined) {
             }
             upsertTurn();
           } else if (event.type === "tool_use") {
-            // Standalone tool_use event -- try multiple field names
+            // Standalone tool_use event -- sidecar uses camelCase toolName
             const ev = event as Record<string, unknown>;
             const toolName =
+              (ev.toolName as string) ||
               (ev.name as string) ||
               (ev.tool_name as string) ||
-              (ev.tool as string) ||
-              ((ev.function as Record<string, unknown>)?.name as string) ||
               "unknown";
             blocks.push({
-              id: event.id || nextId(),
+              id: (ev.id as string) || nextId(),
               type: "tool_use",
               toolName,
-              toolInput: event.input,
-              toolId: event.id,
+              toolInput: ev.toolInput ?? ev.input,
+              toolId: ev.id as string,
             });
             upsertTurn();
           } else if (

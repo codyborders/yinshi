@@ -91,10 +91,10 @@ export default function ChatView({
             return (
               <AssistantTurn
                 key={msg.id}
-                blocks={msg.blocks}
+                blocks={msg.blocks ?? []}
                 streaming={msg.streaming}
                 fallbackContent={
-                  msg.blocks.length === 0 ? msg.content : undefined
+                  (msg.blocks ?? []).length === 0 ? msg.content : undefined
                 }
               />
             );
