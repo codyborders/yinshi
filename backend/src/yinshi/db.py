@@ -101,10 +101,19 @@ async def get_db_async() -> AsyncIterator[sqlite3.Connection]:
         await asyncio.to_thread(conn.close)
 
 
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Apply schema migrations for existing databases."""
+    columns = [row[1] for row in conn.execute("PRAGMA table_info(repos)").fetchall()]
+    if "owner_email" not in columns:
+        logger.info("Migrating: adding owner_email column to repos")
+        conn.execute("ALTER TABLE repos ADD COLUMN owner_email TEXT")
+
+
 def init_db() -> None:
     """Initialize the database schema."""
     settings = get_settings()
     logger.info("Initializing database at %s", settings.db_path)
     with get_db() as conn:
         conn.executescript(SCHEMA_SQL)
+        _migrate(conn)
     logger.info("Database initialized")

@@ -45,6 +45,46 @@ def test_db_wal_mode(db):
     assert mode[0] == "wal"
 
 
+def test_init_db_migrates_owner_email_column(db_path, monkeypatch):
+    """init_db should add owner_email column to existing repos table that lacks it."""
+    monkeypatch.setenv("DB_PATH", db_path)
+    from yinshi.config import get_settings
+
+    get_settings.cache_clear()
+
+    import sqlite3
+
+    # Create a repos table WITHOUT owner_email (simulating pre-migration DB)
+    conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("""CREATE TABLE repos (
+        id TEXT PRIMARY KEY,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+        name TEXT NOT NULL,
+        remote_url TEXT,
+        root_path TEXT NOT NULL,
+        custom_prompt TEXT
+    )""")
+    conn.execute("INSERT INTO repos (id, name, root_path) VALUES ('test1', 'myrepo', '/tmp')")
+    conn.commit()
+    conn.close()
+
+    from yinshi.db import init_db, get_db
+
+    init_db()
+
+    with get_db() as db:
+        columns = [row[1] for row in db.execute("PRAGMA table_info(repos)").fetchall()]
+        assert "owner_email" in columns
+        # Existing data should be preserved
+        row = db.execute("SELECT * FROM repos WHERE id = 'test1'").fetchone()
+        assert row["name"] == "myrepo"
+        assert row["owner_email"] is None
+
+    get_settings.cache_clear()
+
+
 def test_repos_table_has_owner_email_column(db):
     """Repos table should have owner_email column."""
     cursor = db.execute("PRAGMA table_info(repos)")
