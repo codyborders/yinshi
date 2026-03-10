@@ -62,6 +62,9 @@ npm-debug.log*
 # Sidecar socket
 /tmp/yinshi-*.sock
 
+# Project docs (private)
+GOAL.md
+
 # Misc
 *.tgz
 *.tar.gz
