@@ -11,10 +11,11 @@ import logging
 import uuid
 from collections.abc import AsyncGenerator
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from yinshi.api.deps import check_owner, get_user_email
 from yinshi.db import get_db
 from yinshi.exceptions import GitError, SidecarError
 from yinshi.services.sidecar import SidecarClient, create_sidecar_connection
@@ -35,34 +36,76 @@ class PromptRequest(BaseModel):
     model: str | None = None
 
 
-def _summarize_prompt(prompt: str, max_len: int = 50) -> str:
-    """Derive a short workspace display name from a user prompt."""
-    # Strip leading filler words
+_FILLER_PREFIXES = [
+    "please ", "can you ", "could you ", "would you ",
+    "i want you to ", "i need you to ", "help me ",
+    "i\'d like you to ", "i would like you to ",
+    "go ahead and ", "let\'s ", "we need to ", "we should ",
+]
+
+_STOP_WORDS = frozenset({
+    "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for",
+    "of", "with", "by", "from", "is", "are", "was", "were", "be", "been",
+    "have", "has", "had", "do", "does", "did", "this", "that", "it", "its",
+    "my", "your", "our", "their", "some", "all", "any", "so", "up", "out",
+    "about", "into", "me", "him", "her", "us", "them", "i", "you", "he",
+    "she", "we", "they", "just", "also", "very", "really", "actually",
+    "basically", "need", "needs", "want", "make", "sure", "there", "using",
+    "how", "what", "when", "where", "which", "who", "why", "new", "now",
+})
+
+
+def _summarize_prompt(prompt: str, max_words: int = 3) -> str:
+    """Derive a 2-3 word workspace name from a user prompt."""
     text = prompt.strip()
-    # Truncate to max_len at a word boundary
-    if len(text) > max_len:
-        text = text[:max_len].rsplit(" ", 1)[0]
-    # Clean up trailing punctuation
-    text = text.rstrip(".,;:!?-")
-    return text or prompt[:max_len]
+    if not text:
+        return ""
+
+    lower = text.lower()
+    for prefix in _FILLER_PREFIXES:
+        if lower.startswith(prefix):
+            text = text[len(prefix):]
+            break
+
+    words = [w.strip(".,;:!?-\"\'()[]{}") for w in text.split()]
+    words = [w for w in words if w]
+    significant = [w for w in words if w.lower() not in _STOP_WORDS]
+
+    if not significant:
+        significant = words[:max_words] if words else [text[:30]]
+
+    result = significant[:max_words]
+    summary = "-".join(w.lower() for w in result)
+
+    if len(summary) > 50:
+        summary = summary[:50].rsplit("-", 1)[0]
+    return summary or text[:30].lower()
 
 
 @router.post("/api/sessions/{session_id}/prompt")
-async def prompt_session(session_id: str, body: PromptRequest) -> StreamingResponse:
+async def prompt_session(
+    session_id: str, body: PromptRequest, request: Request
+) -> StreamingResponse:
     """Send a prompt and stream agent events as SSE."""
+    email = get_user_email(request)
 
-    # Look up session + workspace path (merged query)
+    # Look up session + workspace path + owner (merged query)
     with get_db() as db:
         session = db.execute(
             "SELECT s.*, w.path as workspace_path, w.id as workspace_id, "
-            "w.name as workspace_name, w.branch as workspace_branch "
-            "FROM sessions s JOIN workspaces w ON s.workspace_id = w.id "
+            "w.name as workspace_name, w.branch as workspace_branch, "
+            "r.owner_email "
+            "FROM sessions s "
+            "JOIN workspaces w ON s.workspace_id = w.id "
+            "JOIN repos r ON w.repo_id = r.id "
             "WHERE s.id = ?",
             (session_id,),
         ).fetchone()
 
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
+
+    check_owner(session["owner_email"], email)
 
     # Concurrency guard: reject if already streaming
     if session["status"] == "running":
@@ -220,17 +263,24 @@ async def prompt_session(session_id: str, body: PromptRequest) -> StreamingRespo
 
 
 @router.post("/api/sessions/{session_id}/cancel")
-async def cancel_session(session_id: str) -> dict[str, str]:
+async def cancel_session(session_id: str, request: Request) -> dict[str, str]:
     """Cancel the active sidecar operation for a session."""
+    email = get_user_email(request)
 
-    # Verify session exists
+    # Verify session exists and check ownership
     with get_db() as db:
         session = db.execute(
-            "SELECT id FROM sessions WHERE id = ?", (session_id,)
+            "SELECT s.id, r.owner_email FROM sessions s "
+            "JOIN workspaces w ON s.workspace_id = w.id "
+            "JOIN repos r ON w.repo_id = r.id "
+            "WHERE s.id = ?",
+            (session_id,),
         ).fetchone()
 
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
+
+    check_owner(session["owner_email"], email)
 
     sidecar = _active_sessions.get(session_id)
     if not sidecar:

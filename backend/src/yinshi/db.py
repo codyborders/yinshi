@@ -10,9 +10,10 @@ from yinshi.config import get_settings
 
 logger = logging.getLogger(__name__)
 
+_SCHEMA_VERSION = 1
+
 SCHEMA_SQL = """
 PRAGMA journal_mode = WAL;
-PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS repos (
     id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
@@ -71,13 +72,20 @@ BEGIN UPDATE sessions SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id; END;
 """
 
 
+def _open_connection(db_path: str, *, check_same_thread: bool = True) -> sqlite3.Connection:
+    """Open a SQLite connection with standard settings."""
+    conn = sqlite3.connect(db_path, check_same_thread=check_same_thread)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA busy_timeout = 5000")
+    return conn
+
+
 @contextmanager
 def get_db() -> Iterator[sqlite3.Connection]:
     """Get a SQLite connection as a context manager."""
     settings = get_settings()
-    conn = sqlite3.connect(settings.db_path)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
+    conn = _open_connection(settings.db_path)
     try:
         yield conn
     finally:
@@ -86,15 +94,16 @@ def get_db() -> Iterator[sqlite3.Connection]:
 
 @asynccontextmanager
 async def get_db_async() -> AsyncIterator[sqlite3.Connection]:
-    """Async wrapper around get_db for use in async handlers."""
-    def _connect() -> sqlite3.Connection:
-        settings = get_settings()
-        conn = sqlite3.connect(settings.db_path, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys = ON")
-        return conn
+    """Async wrapper that opens/closes the connection off the event loop.
 
-    conn = await asyncio.to_thread(_connect)
+    The yielded connection is a standard sqlite3.Connection. Individual
+    execute() calls are fast enough for SQLite with WAL mode and busy_timeout
+    that they won't meaningfully block the event loop.
+    """
+    settings = get_settings()
+    conn = await asyncio.to_thread(
+        _open_connection, settings.db_path, check_same_thread=False
+    )
     try:
         yield conn
     finally:
@@ -102,18 +111,34 @@ async def get_db_async() -> AsyncIterator[sqlite3.Connection]:
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
-    """Apply schema migrations for existing databases."""
-    columns = [row[1] for row in conn.execute("PRAGMA table_info(repos)").fetchall()]
-    if "owner_email" not in columns:
-        logger.info("Migrating: adding owner_email column to repos")
-        conn.execute("ALTER TABLE repos ADD COLUMN owner_email TEXT")
+    """Apply versioned schema migrations."""
+    conn.execute("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)")
+    row = conn.execute("SELECT version FROM schema_version").fetchone()
+    current = row[0] if row else 0
+
+    if current < 1:
+        columns = [r[1] for r in conn.execute("PRAGMA table_info(repos)").fetchall()]
+        if "owner_email" not in columns:
+            logger.info("Migration v1: adding owner_email column to repos")
+            conn.execute("ALTER TABLE repos ADD COLUMN owner_email TEXT")
+
+    if current != _SCHEMA_VERSION:
+        conn.execute("DELETE FROM schema_version")
+        conn.execute(
+            "INSERT INTO schema_version (version) VALUES (?)", (_SCHEMA_VERSION,)
+        )
+        conn.commit()
 
 
 def init_db() -> None:
     """Initialize the database schema."""
     settings = get_settings()
     logger.info("Initializing database at %s", settings.db_path)
-    with get_db() as conn:
-        conn.executescript(SCHEMA_SQL)
-        _migrate(conn)
+    try:
+        with get_db() as conn:
+            conn.executescript(SCHEMA_SQL)
+            _migrate(conn)
+    except sqlite3.Error:
+        logger.exception("Failed to initialize database at %s", settings.db_path)
+        raise
     logger.info("Database initialized")

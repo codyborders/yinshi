@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Yinshi is a web app that mimics core features of . Users can import GitHub or local git repositories as "workspaces," spawn git worktrees with random branch names, and interact with a `pi` coding agent (https://github.com/badlogic/pi-mono/tree/main). All data (conversations, plans, pi configs, worktrees) is stored in SQLite.
+Yinshi is a web app for managing coding agent workspaces. Users can import GitHub or local git repositories as "workspaces," spawn git worktrees with random branch names, and interact with a `pi` coding agent (https://github.com/badlogic/pi-mono/tree/main). All data (conversations, plans, pi configs, worktrees) is stored in SQLite.
 
 ## Tech Stack
 

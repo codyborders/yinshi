@@ -147,6 +147,66 @@ def test_get_repo_not_found(client: TestClient) -> None:
     assert resp.status_code == 404
 
 
+def test_update_repo(client: TestClient, git_repo: str) -> None:
+    """PATCH /api/repos/:id should update allowed fields."""
+    create_resp = client.post(
+        "/api/repos",
+        json={"name": "test-repo", "local_path": git_repo},
+    )
+    repo_id = create_resp.json()["id"]
+
+    resp = client.patch(
+        f"/api/repos/{repo_id}",
+        json={"name": "updated-name"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["name"] == "updated-name"
+
+    resp = client.patch(
+        f"/api/repos/{repo_id}",
+        json={"custom_prompt": "Be concise"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["custom_prompt"] == "Be concise"
+
+
+def test_update_repo_no_changes(client: TestClient, git_repo: str) -> None:
+    """PATCH /api/repos/:id with empty body should return repo unchanged."""
+    create_resp = client.post(
+        "/api/repos",
+        json={"name": "test-repo", "local_path": git_repo},
+    )
+    repo_id = create_resp.json()["id"]
+
+    resp = client.patch(f"/api/repos/{repo_id}", json={})
+    assert resp.status_code == 200
+    assert resp.json()["name"] == "test-repo"
+
+
+def test_update_repo_filters_to_updatable_columns(client: TestClient, git_repo: str) -> None:
+    """PATCH /api/repos/:id filters to _UPDATABLE_COLUMNS before building SQL.
+
+    The dict comprehension in update_repo already filters keys to
+    _UPDATABLE_COLUMNS, so no secondary check is needed.
+    """
+    create_resp = client.post(
+        "/api/repos",
+        json={"name": "test-repo", "local_path": git_repo},
+    )
+    repo_id = create_resp.json()["id"]
+    original = create_resp.json()
+
+    resp = client.patch(
+        f"/api/repos/{repo_id}",
+        json={"name": "new-name", "custom_prompt": "be brief"},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["name"] == "new-name"
+    assert data["custom_prompt"] == "be brief"
+    assert data["root_path"] == original["root_path"]
+
+
 def test_delete_repo(client: TestClient, git_repo: str) -> None:
     """DELETE /api/repos/:id should remove the repo."""
     create_resp = client.post(
@@ -520,7 +580,20 @@ def test_git_url_validation(client: TestClient) -> None:
 def test_summarize_prompt_basic() -> None:
     from yinshi.api.stream import _summarize_prompt
 
-    assert _summarize_prompt("Fix the login page") == "Fix the login page"
+    assert _summarize_prompt("Fix the login page") == "fix-login-page"
+
+
+def test_summarize_prompt_strips_filler() -> None:
+    from yinshi.api.stream import _summarize_prompt
+
+    assert _summarize_prompt("Can you fix the authentication bug") == "fix-authentication-bug"
+
+
+def test_summarize_prompt_three_words_max() -> None:
+    from yinshi.api.stream import _summarize_prompt
+
+    result = _summarize_prompt("Refactor the database connection pool handling code")
+    assert result == "refactor-database-connection"
 
 
 def test_summarize_prompt_long() -> None:
@@ -534,7 +607,7 @@ def test_summarize_prompt_punctuation_only() -> None:
     from yinshi.api.stream import _summarize_prompt
 
     result = _summarize_prompt("...")
-    assert result == "..."  # falls back to prompt[:max_len]
+    assert result == "..."  # falls back to text[:30]
 
 
 def test_summarize_prompt_empty() -> None:
@@ -542,3 +615,10 @@ def test_summarize_prompt_empty() -> None:
 
     result = _summarize_prompt("")
     assert result == ""
+
+
+def test_summarize_prompt_short_input() -> None:
+    from yinshi.api.stream import _summarize_prompt
+
+    assert _summarize_prompt("auth") == "auth"
+    assert _summarize_prompt("fix tests") == "fix-tests"

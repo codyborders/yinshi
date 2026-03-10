@@ -2,16 +2,16 @@
 
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class RepoCreate(BaseModel):
     """Request to import a repository."""
 
-    name: str
-    remote_url: str | None = None
-    local_path: str | None = None
-    custom_prompt: str | None = None
+    name: str = Field(..., max_length=255)
+    remote_url: str | None = Field(None, max_length=2048)
+    local_path: str | None = Field(None, max_length=4096)
+    custom_prompt: str | None = Field(None, max_length=10_000)
 
 
 class RepoOut(BaseModel):
@@ -30,14 +30,14 @@ class RepoOut(BaseModel):
 class RepoUpdate(BaseModel):
     """Request to update a repository."""
 
-    name: str | None = None
-    custom_prompt: str | None = None
+    name: str | None = Field(None, max_length=255)
+    custom_prompt: str | None = Field(None, max_length=10_000)
 
 
 class WorkspaceCreate(BaseModel):
     """Request to create a worktree workspace."""
 
-    name: str | None = None
+    name: str | None = Field(None, max_length=255)
 
 
 class WorkspaceOut(BaseModel):
@@ -56,7 +56,7 @@ class WorkspaceOut(BaseModel):
 class SessionCreate(BaseModel):
     """Request to create an agent session."""
 
-    model: str = "minimax"
+    model: str = Field("minimax", max_length=100)
 
 
 class SessionOut(BaseModel):
@@ -86,8 +86,8 @@ class WSPrompt(BaseModel):
     """WebSocket message from client to send a prompt."""
 
     type: str = "prompt"
-    prompt: str
-    model: str | None = None
+    prompt: str = Field(..., max_length=100_000)
+    model: str | None = Field(None, max_length=100)
 
 
 class WSCancel(BaseModel):

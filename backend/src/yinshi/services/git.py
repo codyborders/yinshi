@@ -42,7 +42,7 @@ def _validate_clone_url(url: str) -> None:
     if url.startswith(("ext::", "file://")):
         raise GitError("URL scheme not allowed")
     if not any(url.startswith(s) for s in _ALLOWED_URL_SCHEMES):
-        raise GitError(f"URL must start with https://, ssh://, or git@")
+        raise GitError("URL must start with https://, ssh://, or git@")
 
 
 async def _run_git(args: list[str], cwd: str | None = None) -> str:
@@ -57,7 +57,8 @@ async def _run_git(args: list[str], cwd: str | None = None) -> str:
     )
     stdout, stderr = await proc.communicate()
     if proc.returncode != 0:
-        raise GitError(f"git {args[0]} failed: {stderr.decode().strip()}")
+        logger.error("git %s failed (cwd=%s): %s", args[0], cwd, stderr.decode().strip())
+        raise GitError(f"git {args[0]} failed")
     return stdout.decode().strip()
 
 
@@ -78,7 +79,7 @@ async def clone_repo(url: str, dest: str) -> str:
             except GitError:
                 pass
             return dest
-        raise GitError(f"Destination already exists but is not a git repo: {dest}")
+        raise GitError("Destination already exists but is not a git repository")
     dest_path.parent.mkdir(parents=True, exist_ok=True)
     await _run_git(["clone", url, dest])
     logger.info("Cloned %s to %s", url, dest)
