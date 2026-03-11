@@ -19,7 +19,7 @@ describe("Landing", () => {
 
   it("renders the tagline", () => {
     renderLanding();
-    expect(screen.getByText(/hidden scholar/i)).toBeInTheDocument();
+    expect(screen.getByText(/browser-based coding/i)).toBeInTheDocument();
   });
 
   it("renders the mascot image", () => {

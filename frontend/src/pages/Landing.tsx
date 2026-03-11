@@ -64,20 +64,20 @@ export default function Landing() {
           <div className="landing-seal" />
           <img
             src="/yinshi-scholar.jpg"
-            alt="Yinshi Scholar -- classical Chinese ink painting of a hermit scholar"
+            alt="Yinshi Scholar -- classical ink painting"
             className="landing-mascot"
           />
         </div>
         <div className="landing-hero-text">
           <h1 className="landing-title">Yinshi</h1>
-          <p className="landing-subtitle">The Hidden Scholar of Code</p>
+          <p className="landing-subtitle">Browser-based coding with AI agents</p>
           <p className="landing-desc">
-            A quiet workspace where AI agents read, write, and refactor your
-            code on isolated branches -- so you can review their work like any
-            other pull request.
+            Point Yinshi at a repo. An AI agent writes code on an isolated
+            branch while you review the diff. No local setup, no risk to
+            main -- just open a browser and go.
           </p>
           <a href="/auth/login" className="landing-cta">
-            Enter the Study
+            Sign In
           </a>
         </div>
       </section>
@@ -95,14 +95,13 @@ export default function Landing() {
         </svg>
       </div>
 
-      {/* ---- Philosophy ---- */}
+      {/* ---- How it works ---- */}
       <section className="landing-philosophy">
         <blockquote className="landing-quote">
           <p>
-            In the tradition of the <em>yinshi</em> -- the recluse scholar who
-            withdraws from the world to pursue mastery -- this tool works in
-            quiet seclusion on your codebase, producing results you review at
-            your own pace.
+            Import a GitHub repo. Yinshi creates a worktree on a throwaway
+            branch, connects an AI agent, and lets you chat with it about
+            your code -- from any device, anywhere.
           </p>
         </blockquote>
       </section>
@@ -124,7 +123,7 @@ export default function Landing() {
       {/* ---- Final CTA ---- */}
       <section className="landing-final">
         <p className="landing-final-text">
-          Quiet mastery. Isolated branches. Your code, refined.
+          No IDE required. Just a browser and a repo.
         </p>
         <a href="/auth/login" className="landing-cta">
           Get Started
