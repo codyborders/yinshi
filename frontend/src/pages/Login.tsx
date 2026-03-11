@@ -12,7 +12,7 @@ export default function Login() {
     <div className="flex min-h-screen flex-col items-center justify-center bg-gray-900 px-6">
       <div className="w-full max-w-sm space-y-8 text-center">
         <div>
-          <h1 className="text-3xl font-bold text-white">Yinshi</h1>
+          <h1 className="text-3xl font-bold text-gray-100">Yinshi</h1>
           <p className="mt-2 text-sm text-gray-500">
             Code with AI agents, anywhere.
           </p>

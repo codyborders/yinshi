@@ -323,7 +323,7 @@ function ImportForm({ onDone }: { onDone: (repo: Repo | null) => void }) {
         placeholder="GitHub URL, user/repo, or local path"
         value={input}
         onChange={(e) => setInput(e.target.value)}
-        className="w-full rounded-md bg-gray-800 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:ring-1 focus:ring-blue-500"
+        className="w-full rounded-md bg-gray-800 px-3 py-2 text-sm text-gray-100 placeholder-gray-500 outline-none focus:ring-1 focus:ring-blue-500"
         autoFocus
       />
       {error && <p className="text-xs text-red-400">{error}</p>}

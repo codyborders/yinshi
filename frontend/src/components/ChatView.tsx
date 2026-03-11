@@ -144,7 +144,7 @@ export default function ChatView({
             onKeyDown={handleKeyDown}
             placeholder="Describe what to build..."
             rows={1}
-            className="flex-1 resize-none rounded-xl bg-gray-800 px-4 py-3 text-sm text-white placeholder-gray-500 outline-none focus:ring-2 focus:ring-blue-500"
+            className="flex-1 resize-none rounded-xl bg-gray-800 px-4 py-3 text-sm text-gray-100 placeholder-gray-500 outline-none focus:ring-2 focus:ring-blue-500"
             style={{ maxHeight: "120px" }}
           />
           {streaming ? (

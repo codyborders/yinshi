@@ -91,7 +91,7 @@ function RepoCard({
         className="flex w-full items-center justify-between min-h-touch"
       >
         <div className="text-left">
-          <div className="font-medium text-white">{repo.name}</div>
+          <div className="font-medium text-gray-100">{repo.name}</div>
           <div className="text-xs text-gray-500 truncate max-w-[250px]">
             {repo.remote_url || repo.root_path}
           </div>
@@ -171,7 +171,7 @@ function ImportForm({ onDone }: { onDone: (repo: Repo | null) => void }) {
         placeholder="GitHub URL, user/repo, or local path"
         value={input}
         onChange={(e) => setInput(e.target.value)}
-        className="w-full rounded-lg bg-gray-700 px-3 py-3 text-white placeholder-gray-500 outline-none focus:ring-2 focus:ring-blue-500"
+        className="w-full rounded-lg bg-gray-700 px-3 py-3 text-gray-100 placeholder-gray-500 outline-none focus:ring-2 focus:ring-blue-500"
         autoFocus
       />
       {value && (
