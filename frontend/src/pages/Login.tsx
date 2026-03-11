@@ -1,6 +1,11 @@
+import { Navigate } from "react-router-dom";
+import { useAuth } from "../hooks/useAuth";
+
 export default function Login() {
-  function handleGoogleLogin() {
-    window.location.href = "/auth/login";
+  const { status } = useAuth();
+
+  if (status === "authenticated" || status === "disabled") {
+    return <Navigate to="/" replace />;
   }
 
   return (
@@ -14,7 +19,7 @@ export default function Login() {
         </div>
 
         <button
-          onClick={handleGoogleLogin}
+          onClick={() => { window.location.href = "/auth/login"; }}
           className="btn-primary w-full gap-3"
         >
           <svg className="h-5 w-5" viewBox="0 0 24 24">

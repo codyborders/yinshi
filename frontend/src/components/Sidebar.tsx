@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { api, type Repo, type SessionInfo, type Workspace } from "../api/client";
+import { useAuth } from "../hooks/useAuth";
 import { deriveRepoName, isGitUrl, isLocalPath } from "../utils/repo";
 
 const COLORS = [
@@ -35,6 +36,7 @@ const PlusIcon = (
 export default function Sidebar() {
   const { id: activeSessionId } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const { status, email, logout } = useAuth();
   const [repos, setRepos] = useState<Repo[]>([]);
   const [loading, setLoading] = useState(true);
   const [showImport, setShowImport] = useState(false);
@@ -98,6 +100,20 @@ export default function Sidebar() {
         {PlusIcon}
         Add repository
       </button>
+
+      {status === "authenticated" && email && (
+        <div className="flex items-center justify-between border-t border-gray-800 px-4 py-3">
+          <span className="truncate text-xs text-gray-500" title={email}>
+            {email}
+          </span>
+          <button
+            onClick={logout}
+            className="shrink-0 text-xs text-gray-600 hover:text-gray-400"
+          >
+            Logout
+          </button>
+        </div>
+      )}
     </aside>
   );
 }
@@ -252,7 +268,7 @@ function WorkspaceItem({
       />
       <div className="flex-1 min-w-0">
         <div className="truncate text-sm text-gray-300">
-          {workspace.name !== workspace.branch ? workspace.name : workspace.branch}
+          {workspace.name}
         </div>
       </div>
     </button>

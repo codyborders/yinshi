@@ -1,5 +1,3 @@
-/* ---------- Types ---------- */
-
 export interface Repo {
   id: string;
   created_at: string;
@@ -8,6 +6,7 @@ export interface Repo {
   remote_url: string | null;
   root_path: string;
   custom_prompt: string | null;
+  owner_email?: string | null;
 }
 
 export interface Workspace {
@@ -40,8 +39,6 @@ export interface Message {
   turn_id: string | null;
 }
 
-/* ---------- HTTP Client ---------- */
-
 class ApiError extends Error {
   constructor(
     public status: number,
@@ -67,6 +64,9 @@ async function request<T>(
   }
   const res = await fetch(path, opts);
   if (!res.ok) {
+    if (res.status === 401 && !window.location.pathname.startsWith("/login")) {
+      window.location.href = "/login";
+    }
     const text = await res.text().catch(() => "");
     throw new ApiError(res.status, text || res.statusText);
   }
@@ -80,8 +80,6 @@ export const api = {
   patch: <T>(path: string, body?: unknown) => request<T>("PATCH", path, body),
   delete: (path: string) => request<void>("DELETE", path),
 };
-
-/* ---------- SSE Streaming ---------- */
 
 export type SSEEvent =
   | { type: "assistant"; message: { content: ContentBlock[] } }
@@ -109,10 +107,10 @@ function normalizeEvent(raw: Record<string, unknown>): SSEEvent {
   if (raw.type === "tool_use") {
     return {
       type: "tool_use",
-      name: ((raw.toolName || raw.name || raw.tool_name || "unknown") as string),
+      name: (raw.toolName || raw.name || raw.tool_name || "unknown") as string,
       id: raw.id as string,
       input: raw.toolInput ?? raw.input,
-    } as SSEEvent;
+    };
   }
   return raw as SSEEvent;
 }
@@ -132,6 +130,9 @@ export async function* streamPrompt(
   });
 
   if (!res.ok) {
+    if (res.status === 401 && !window.location.pathname.startsWith("/login")) {
+      window.location.href = "/login";
+    }
     const text = await res.text().catch(() => "");
     throw new ApiError(res.status, text || res.statusText);
   }
