@@ -64,6 +64,7 @@ npm-debug.log*
 
 # Project docs (private)
 GOAL.md
+plans/
 
 # Misc
 *.tgz

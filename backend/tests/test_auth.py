@@ -144,3 +144,30 @@ def test_csrf_check_allows_with_header(auth_enabled_app):
             headers={"X-Requested-With": "XMLHttpRequest"},
         )
         assert resp.status_code != 403
+
+
+def test_session_middleware_is_registered():
+    """Verify SessionMiddleware is installed for authlib OAuth state storage."""
+    from starlette.middleware.sessions import SessionMiddleware
+
+    from yinshi.main import app
+
+    middleware_types = [m.cls for m in app.user_middleware]
+    assert SessionMiddleware in middleware_types
+
+
+def test_session_middleware_before_auth():
+    """SessionMiddleware must be registered before AuthMiddleware for OAuth state."""
+    from starlette.middleware.sessions import SessionMiddleware
+
+    from yinshi.auth import AuthMiddleware
+    from yinshi.main import app
+
+    middleware_types = [m.cls for m in app.user_middleware]
+    assert SessionMiddleware in middleware_types
+    assert AuthMiddleware in middleware_types
+    # In Starlette, middleware listed later wraps earlier ones,
+    # so SessionMiddleware should appear after AuthMiddleware in the list
+    session_idx = middleware_types.index(SessionMiddleware)
+    auth_idx = middleware_types.index(AuthMiddleware)
+    assert session_idx > auth_idx

@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.sessions import SessionMiddleware
 
 from yinshi.api import auth_routes, repos, sessions, stream, workspaces
 from yinshi.auth import AuthMiddleware, setup_oauth
@@ -46,6 +47,9 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PATCH", "DELETE"],
     allow_headers=["Content-Type"],
 )
+
+# Session (authlib OAuth state storage)
+app.add_middleware(SessionMiddleware, secret_key=settings.secret_key)
 
 # Auth
 app.add_middleware(AuthMiddleware)
