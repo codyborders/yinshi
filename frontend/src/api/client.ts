@@ -64,8 +64,8 @@ async function request<T>(
   }
   const res = await fetch(path, opts);
   if (!res.ok) {
-    if (res.status === 401 && !window.location.pathname.startsWith("/login")) {
-      window.location.href = "/login";
+    if (res.status === 401 && window.location.pathname.startsWith("/app")) {
+      window.location.href = "/";
     }
     const text = await res.text().catch(() => "");
     throw new ApiError(res.status, text || res.statusText);
@@ -130,8 +130,8 @@ export async function* streamPrompt(
   });
 
   if (!res.ok) {
-    if (res.status === 401 && !window.location.pathname.startsWith("/login")) {
-      window.location.href = "/login";
+    if (res.status === 401 && window.location.pathname.startsWith("/app")) {
+      window.location.href = "/";
     }
     const text = await res.text().catch(() => "");
     throw new ApiError(res.status, text || res.statusText);

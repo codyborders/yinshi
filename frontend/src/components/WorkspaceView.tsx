@@ -107,7 +107,7 @@ function WorkspaceCard({
         `/api/workspaces/${workspace.id}/sessions`,
         { model: "minimax" },
       );
-      navigate(`/session/${session.id}`);
+      navigate(`/app/session/${session.id}`);
     } catch {
       /* ignore */
     } finally {
@@ -164,7 +164,7 @@ function WorkspaceCard({
           {sessions.map((s) => (
             <button
               key={s.id}
-              onClick={() => navigate(`/session/${s.id}`)}
+              onClick={() => navigate(`/app/session/${s.id}`)}
               className="flex w-full items-center justify-between rounded-md bg-gray-700 p-2 min-h-touch active:bg-gray-600"
             >
               <span className="text-sm text-gray-300 truncate">

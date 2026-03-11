@@ -5,7 +5,7 @@ export default function RequireAuth() {
   const { status } = useAuth();
 
   if (status === "unauthenticated") {
-    return <Navigate to="/login" replace />;
+    return <Navigate to="/" replace />;
   }
 
   return <Outlet />;

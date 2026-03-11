@@ -34,7 +34,7 @@ async def callback(request: Request):
     session_token = create_session_token(email)
 
     settings = get_settings()
-    response = RedirectResponse(url="/")
+    response = RedirectResponse(url="/app")
     response.set_cookie(
         key="yinshi_session",
         value=session_token,
@@ -59,6 +59,6 @@ async def me(request: Request):
 @router.post("/logout")
 async def logout():
     """Clear session cookie."""
-    response = RedirectResponse(url="/login")
+    response = RedirectResponse(url="/")
     response.delete_cookie("yinshi_session")
     return response

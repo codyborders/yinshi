@@ -52,7 +52,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
     }).catch(() => {});
     setStatus("unauthenticated");
     setEmail(null);
-    window.location.href = "/login";
+    window.location.href = "/";
   }
 
   if (status === "loading") {

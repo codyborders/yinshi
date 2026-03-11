@@ -14,9 +14,9 @@ function renderWithRouter(initialEntry: string) {
   return render(
     <MemoryRouter initialEntries={[initialEntry]}>
       <Routes>
-        <Route path="/login" element={<div data-testid="login">Login</div>} />
+        <Route path="/" element={<div data-testid="landing">Landing</div>} />
         <Route element={<RequireAuth />}>
-          <Route path="/" element={<div data-testid="home">Home</div>} />
+          <Route path="/app" element={<div data-testid="home">Home</div>} />
         </Route>
       </Routes>
     </MemoryRouter>,
@@ -26,20 +26,20 @@ function renderWithRouter(initialEntry: string) {
 describe("RequireAuth", () => {
   it("renders children when authenticated", () => {
     mockUseAuth.mockReturnValue({ status: "authenticated", email: "u@t.com", logout: vi.fn() });
-    renderWithRouter("/");
+    renderWithRouter("/app");
     expect(screen.getByTestId("home")).toBeTruthy();
   });
 
   it("renders children when auth is disabled", () => {
     mockUseAuth.mockReturnValue({ status: "disabled", email: null, logout: vi.fn() });
-    renderWithRouter("/");
+    renderWithRouter("/app");
     expect(screen.getByTestId("home")).toBeTruthy();
   });
 
-  it("redirects to /login when unauthenticated", () => {
+  it("redirects to landing when unauthenticated", () => {
     mockUseAuth.mockReturnValue({ status: "unauthenticated", email: null, logout: vi.fn() });
-    renderWithRouter("/");
-    expect(screen.getByTestId("login")).toBeTruthy();
+    renderWithRouter("/app");
+    expect(screen.getByTestId("landing")).toBeTruthy();
     expect(screen.queryByTestId("home")).toBeNull();
   });
 });

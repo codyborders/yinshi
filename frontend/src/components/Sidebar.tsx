@@ -198,7 +198,7 @@ function RepoSection({
         `/api/workspaces/${ws.id}/sessions`,
         { model: "minimax" },
       );
-      navigate(`/session/${session.id}`);
+      navigate(`/app/session/${session.id}`);
       onNavigate?.();
     } catch {
       /* ignore */
@@ -281,7 +281,7 @@ function WorkspaceItem({
 
   async function openOrCreateSession() {
     if (sessions.length > 0) {
-      navigate(`/session/${sessions[0].id}`);
+      navigate(`/app/session/${sessions[0].id}`);
       onNavigate?.();
       return;
     }
@@ -292,7 +292,7 @@ function WorkspaceItem({
         { model: "minimax" },
       );
       setSessions([session]);
-      navigate(`/session/${session.id}`);
+      navigate(`/app/session/${session.id}`);
       onNavigate?.();
     } catch {
       /* ignore */
