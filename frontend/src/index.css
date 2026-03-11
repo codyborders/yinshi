@@ -1,3 +1,5 @@
+@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,600;0,700;1,300;1,400&family=EB+Garamond:ital,wght@0,400;0,500;0,600;1,400;1,500&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -168,6 +170,423 @@
   from {
     opacity: 0;
     transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* =================================================================
+   Landing Page – "The Hidden Scholar" 隐士
+   Ink-wash painting aesthetic: parchment, ink, vermillion
+   ================================================================= */
+
+:root {
+  --lp-parchment: #f0e6d3;
+  --lp-parchment-light: #f7f0e3;
+  --lp-ink: #1a1410;
+  --lp-ink-light: #3d3228;
+  --lp-ink-faded: #6b5d4f;
+  --lp-vermillion: #c23b22;
+  --lp-vermillion-dark: #a02e18;
+  --lp-gold: #b8963e;
+  --lp-wash: rgba(26, 20, 16, 0.06);
+}
+
+.landing-page {
+  position: relative;
+  min-height: 100vh;
+  background: var(--lp-parchment);
+  color: var(--lp-ink);
+  font-family: 'EB Garamond', 'Georgia', serif;
+  overflow-x: hidden;
+}
+
+/* Subtle paper grain texture */
+.landing-texture {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1;
+  opacity: 0.35;
+  background-image:
+    url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.5'/%3E%3C/svg%3E");
+  background-size: 256px 256px;
+}
+
+/* ---- Navigation ---- */
+
+.landing-nav {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1.25rem 2rem;
+  background: linear-gradient(
+    to bottom,
+    var(--lp-parchment) 60%,
+    transparent
+  );
+  backdrop-filter: blur(4px);
+}
+
+.landing-brand {
+  font-family: 'Cormorant Garamond', serif;
+  font-weight: 700;
+  font-size: 1.5rem;
+  letter-spacing: 0.05em;
+  color: var(--lp-ink);
+}
+
+.landing-nav-link {
+  font-size: 0.875rem;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--lp-ink-faded);
+  text-decoration: none;
+  padding: 0.5rem 1.25rem;
+  border: 1px solid var(--lp-ink-faded);
+  border-radius: 2px;
+  transition: all 0.3s ease;
+}
+
+.landing-nav-link:hover {
+  color: var(--lp-parchment);
+  background: var(--lp-ink);
+  border-color: var(--lp-ink);
+}
+
+/* ---- Hero ---- */
+
+.landing-hero {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3rem;
+  padding: 2rem 2rem 4rem;
+  max-width: 72rem;
+  margin: 0 auto;
+}
+
+@media (min-width: 768px) {
+  .landing-hero {
+    flex-direction: row;
+    gap: 5rem;
+    padding: 4rem 4rem 6rem;
+  }
+}
+
+.landing-hero-image {
+  position: relative;
+  flex-shrink: 0;
+  width: 280px;
+  animation: ink-fade-in 1.2s ease-out both;
+}
+
+@media (min-width: 768px) {
+  .landing-hero-image {
+    width: 360px;
+  }
+}
+
+.landing-mascot {
+  width: 100%;
+  height: auto;
+  border-radius: 4px;
+  box-shadow:
+    0 4px 24px rgba(26, 20, 16, 0.12),
+    0 1px 3px rgba(26, 20, 16, 0.08);
+  border: 1px solid rgba(26, 20, 16, 0.1);
+}
+
+/* Decorative vermillion seal mark */
+.landing-seal {
+  position: absolute;
+  top: -12px;
+  right: -12px;
+  width: 48px;
+  height: 48px;
+  background: var(--lp-vermillion);
+  border-radius: 3px;
+  opacity: 0.85;
+  transform: rotate(3deg);
+  box-shadow: 0 2px 8px rgba(194, 59, 34, 0.3);
+  z-index: 2;
+}
+
+.landing-seal::after {
+  content: '隐';
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--lp-parchment-light);
+  font-size: 1.5rem;
+  font-weight: 700;
+  font-family: serif;
+}
+
+.landing-hero-text {
+  flex: 1;
+  animation: ink-fade-in 1.2s ease-out 0.3s both;
+}
+
+.landing-title {
+  font-family: 'Cormorant Garamond', serif;
+  font-weight: 300;
+  font-size: 4rem;
+  line-height: 1;
+  letter-spacing: 0.04em;
+  color: var(--lp-ink);
+  margin: 0;
+}
+
+@media (min-width: 768px) {
+  .landing-title {
+    font-size: 5.5rem;
+  }
+}
+
+.landing-subtitle {
+  font-family: 'EB Garamond', serif;
+  font-style: italic;
+  font-weight: 400;
+  font-size: 1.35rem;
+  color: var(--lp-ink-faded);
+  margin: 0.75rem 0 0;
+  letter-spacing: 0.02em;
+}
+
+.landing-desc {
+  font-size: 1.125rem;
+  line-height: 1.7;
+  color: var(--lp-ink-light);
+  margin: 1.5rem 0 0;
+  max-width: 480px;
+}
+
+.landing-cta {
+  display: inline-block;
+  margin-top: 2rem;
+  padding: 0.875rem 2.5rem;
+  font-family: 'EB Garamond', serif;
+  font-size: 1rem;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  text-decoration: none;
+  color: var(--lp-parchment);
+  background: var(--lp-ink);
+  border: none;
+  border-radius: 2px;
+  transition: all 0.35s ease;
+  box-shadow: 0 2px 12px rgba(26, 20, 16, 0.15);
+}
+
+.landing-cta:hover {
+  background: var(--lp-vermillion-dark);
+  box-shadow: 0 4px 20px rgba(160, 46, 24, 0.25);
+  transform: translateY(-1px);
+}
+
+/* ---- Divider ---- */
+
+.landing-divider {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  justify-content: center;
+  padding: 0 2rem;
+}
+
+.landing-brush-stroke {
+  width: 100%;
+  max-width: 400px;
+  height: 20px;
+  color: var(--lp-ink);
+}
+
+/* ---- Philosophy ---- */
+
+.landing-philosophy {
+  position: relative;
+  z-index: 2;
+  max-width: 44rem;
+  margin: 0 auto;
+  padding: 4rem 2rem;
+}
+
+.landing-quote {
+  margin: 0;
+  padding: 0;
+  border: none;
+}
+
+.landing-quote p {
+  font-family: 'Cormorant Garamond', serif;
+  font-size: 1.4rem;
+  font-weight: 300;
+  line-height: 1.8;
+  color: var(--lp-ink-light);
+  text-align: center;
+}
+
+@media (min-width: 768px) {
+  .landing-quote p {
+    font-size: 1.65rem;
+  }
+}
+
+.landing-quote em {
+  font-style: italic;
+  color: var(--lp-vermillion);
+}
+
+/* ---- Capabilities ---- */
+
+.landing-capabilities {
+  position: relative;
+  z-index: 2;
+  max-width: 72rem;
+  margin: 0 auto;
+  padding: 2rem 2rem 4rem;
+}
+
+.landing-section-title {
+  font-family: 'Cormorant Garamond', serif;
+  font-weight: 600;
+  font-size: 1rem;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--lp-ink-faded);
+  text-align: center;
+  margin: 0 0 3rem;
+}
+
+.landing-section-title::after {
+  content: '';
+  display: block;
+  width: 40px;
+  height: 1px;
+  background: var(--lp-ink-faded);
+  margin: 0.75rem auto 0;
+}
+
+.landing-cap-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 1.5rem;
+}
+
+@media (min-width: 640px) {
+  .landing-cap-grid {
+    grid-template-columns: 1fr 1fr;
+    gap: 2rem;
+  }
+}
+
+.landing-cap-card {
+  padding: 2rem;
+  background: var(--lp-parchment-light);
+  border: 1px solid rgba(26, 20, 16, 0.08);
+  border-radius: 3px;
+  transition: all 0.3s ease;
+  animation: ink-fade-in 0.8s ease-out both;
+}
+
+.landing-cap-card:nth-child(1) { animation-delay: 0.1s; }
+.landing-cap-card:nth-child(2) { animation-delay: 0.2s; }
+.landing-cap-card:nth-child(3) { animation-delay: 0.3s; }
+.landing-cap-card:nth-child(4) { animation-delay: 0.4s; }
+
+.landing-cap-card:hover {
+  border-color: rgba(26, 20, 16, 0.2);
+  box-shadow: 0 4px 16px rgba(26, 20, 16, 0.06);
+  transform: translateY(-2px);
+}
+
+.landing-cap-icon {
+  color: var(--lp-vermillion);
+  margin-bottom: 1rem;
+}
+
+.landing-cap-title {
+  font-family: 'Cormorant Garamond', serif;
+  font-weight: 600;
+  font-size: 1.25rem;
+  color: var(--lp-ink);
+  margin: 0 0 0.5rem;
+}
+
+.landing-cap-desc {
+  font-size: 0.95rem;
+  line-height: 1.65;
+  color: var(--lp-ink-faded);
+  margin: 0;
+}
+
+/* ---- Final CTA ---- */
+
+.landing-final {
+  position: relative;
+  z-index: 2;
+  text-align: center;
+  padding: 4rem 2rem 5rem;
+  background: linear-gradient(
+    to bottom,
+    transparent,
+    rgba(26, 20, 16, 0.04) 40%,
+    rgba(26, 20, 16, 0.08)
+  );
+}
+
+.landing-final-text {
+  font-family: 'Cormorant Garamond', serif;
+  font-weight: 300;
+  font-size: 1.5rem;
+  color: var(--lp-ink-light);
+  margin: 0 0 2rem;
+  letter-spacing: 0.02em;
+}
+
+@media (min-width: 768px) {
+  .landing-final-text {
+    font-size: 1.75rem;
+  }
+}
+
+/* ---- Footer ---- */
+
+.landing-footer {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 2rem;
+  font-size: 0.8rem;
+  color: var(--lp-ink-faded);
+  letter-spacing: 0.04em;
+}
+
+.landing-footer-sep {
+  opacity: 0.4;
+}
+
+/* ---- Animations ---- */
+
+@keyframes ink-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
   }
   to {
     opacity: 1;
