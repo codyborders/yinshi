@@ -5,14 +5,14 @@ import { useAuth } from "../hooks/useAuth";
 import { deriveRepoName, isGitUrl, isLocalPath } from "../utils/repo";
 
 const COLORS = [
-  "bg-violet-600",
-  "bg-blue-600",
-  "bg-emerald-600",
-  "bg-amber-600",
-  "bg-rose-600",
-  "bg-cyan-600",
-  "bg-pink-600",
-  "bg-teal-600",
+  "bg-[#c23b22]",
+  "bg-[#8c6d3f]",
+  "bg-[#5a7247]",
+  "bg-[#7a5230]",
+  "bg-[#985a4a]",
+  "bg-[#4a6b5a]",
+  "bg-[#6b5040]",
+  "bg-[#8a6848]",
 ];
 
 function repoColor(name: string): string {
@@ -22,9 +22,9 @@ function repoColor(name: string): string {
 }
 
 function statusDotClass(hasRunning: boolean, workspaceState: string): string {
-  if (hasRunning) return "bg-blue-400 animate-pulse";
-  if (workspaceState === "ready") return "bg-green-500";
-  return "bg-yellow-500";
+  if (hasRunning) return "bg-[#d4543d] animate-pulse";
+  if (workspaceState === "ready") return "bg-[#5a7247]";
+  return "bg-[#b8963e]";
 }
 
 const PlusIcon = (
