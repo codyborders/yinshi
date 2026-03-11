@@ -80,7 +80,7 @@
 .markdown-prose h4 {
   font-weight: 600;
   margin: 1em 0 0.5em;
-  color: #1a1410;
+  color: var(--prose-heading);
 }
 
 .markdown-prose h1 { font-size: 1.25em; }
@@ -101,7 +101,7 @@
 }
 
 .markdown-prose code {
-  background: rgba(0, 0, 0, 0.07);
+  background: var(--prose-code-bg);
   border-radius: 4px;
   padding: 0.15em 0.35em;
   font-size: 0.875em;
@@ -109,7 +109,7 @@
 }
 
 .markdown-prose pre {
-  background: rgba(0, 0, 0, 0.06);
+  background: var(--prose-pre-bg);
   border-radius: 8px;
   padding: 0.75em 1em;
   margin: 0.5em 0;
@@ -124,10 +124,10 @@
 }
 
 .markdown-prose blockquote {
-  border-left: 3px solid #cbb89a;
+  border-left: 3px solid var(--prose-border);
   padding-left: 0.75em;
   margin: 0.5em 0;
-  color: #6b5d4f;
+  color: var(--prose-muted);
 }
 
 .markdown-prose a {
@@ -138,7 +138,7 @@
 
 .markdown-prose hr {
   border: none;
-  border-top: 1px solid #cbb89a;
+  border-top: 1px solid var(--prose-border);
   margin: 0.75em 0;
 }
 
@@ -151,19 +151,19 @@
 
 .markdown-prose th,
 .markdown-prose td {
-  border: 1px solid #cbb89a;
+  border: 1px solid var(--prose-border);
   padding: 0.35em 0.6em;
   text-align: left;
 }
 
 .markdown-prose th {
-  background: rgba(0, 0, 0, 0.04);
+  background: var(--prose-th-bg);
   font-weight: 600;
 }
 
 .markdown-prose strong {
   font-weight: 600;
-  color: #1a1410;
+  color: var(--prose-heading);
 }
 
 @keyframes message-in {
@@ -182,7 +182,30 @@
    Ink-wash painting aesthetic: parchment, ink, vermillion
    ================================================================= */
 
+/* ---- Theme: gray scale CSS variables ---- */
 :root {
+  /* Light mode (default): parchment background, ink text */
+  --gray-50: 15 12 9;
+  --gray-100: 26 20 16;
+  --gray-200: 45 37 32;
+  --gray-300: 74 63 53;
+  --gray-400: 107 93 79;
+  --gray-500: 140 122 100;
+  --gray-600: 168 148 120;
+  --gray-700: 203 184 154;
+  --gray-800: 224 209 184;
+  --gray-900: 240 230 211;
+  --gray-950: 247 240 227;
+
+  /* Prose theme tokens */
+  --prose-heading: rgb(var(--gray-100));
+  --prose-code-bg: rgba(0, 0, 0, 0.07);
+  --prose-pre-bg: rgba(0, 0, 0, 0.06);
+  --prose-border: rgb(var(--gray-700));
+  --prose-muted: rgb(var(--gray-400));
+  --prose-th-bg: rgba(0, 0, 0, 0.04);
+
+  /* Landing page tokens */
   --lp-parchment: #f0e6d3;
   --lp-parchment-light: #f7f0e3;
   --lp-ink: #1a1410;
@@ -192,6 +215,25 @@
   --lp-vermillion-dark: #a02e18;
   --lp-gold: #b8963e;
   --lp-wash: rgba(26, 20, 16, 0.06);
+}
+
+/* Dark mode: invert the gray scale */
+.dark {
+  --gray-50: 247 240 227;
+  --gray-100: 240 230 211;
+  --gray-200: 224 209 184;
+  --gray-300: 203 184 154;
+  --gray-400: 168 148 120;
+  --gray-500: 140 122 100;
+  --gray-600: 107 93 79;
+  --gray-700: 74 63 53;
+  --gray-800: 45 37 32;
+  --gray-900: 26 20 16;
+  --gray-950: 15 12 9;
+
+  --prose-code-bg: rgba(255, 255, 255, 0.1);
+  --prose-pre-bg: rgba(0, 0, 0, 0.3);
+  --prose-th-bg: rgba(255, 255, 255, 0.05);
 }
 
 .landing-page {

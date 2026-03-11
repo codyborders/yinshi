@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" class="dark">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta
@@ -10,6 +10,13 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="theme-color" content="#f0e6d3" />
     <title>Yinshi</title>
+    <script>
+      // Apply saved theme before first paint to prevent flash
+      if (localStorage.getItem('theme') === 'dark') {
+        document.documentElement.classList.add('dark');
+        document.querySelector('meta[name="theme-color"]').content = '#1a1410';
+      }
+    </script>
   </head>
   <body class="bg-gray-900 text-gray-100 antialiased">
     <div id="root"></div>
