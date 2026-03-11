@@ -33,7 +33,7 @@ const PlusIcon = (
   </svg>
 );
 
-export default function Sidebar() {
+export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const { id: activeSessionId } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { status, email, logout } = useAuth();
@@ -89,6 +89,7 @@ export default function Sidebar() {
             key={repo.id}
             repo={repo}
             activeSessionId={activeSessionId}
+            onNavigate={onNavigate}
           />
         ))}
       </div>
@@ -121,9 +122,11 @@ export default function Sidebar() {
 function RepoSection({
   repo,
   activeSessionId,
+  onNavigate,
 }: {
   repo: Repo;
   activeSessionId: string | undefined;
+  onNavigate?: () => void;
 }) {
   const navigate = useNavigate();
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
@@ -159,6 +162,7 @@ function RepoSection({
         { model: "minimax" },
       );
       navigate(`/session/${session.id}`);
+      onNavigate?.();
     } catch {
       /* ignore */
     } finally {
@@ -206,6 +210,7 @@ function RepoSection({
             key={ws.id}
             workspace={ws}
             activeSessionId={activeSessionId}
+            onNavigate={onNavigate}
           />
         ))}
     </div>
@@ -215,9 +220,11 @@ function RepoSection({
 function WorkspaceItem({
   workspace,
   activeSessionId,
+  onNavigate,
 }: {
   workspace: Workspace;
   activeSessionId: string | undefined;
+  onNavigate?: () => void;
 }) {
   const navigate = useNavigate();
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
@@ -238,6 +245,7 @@ function WorkspaceItem({
   async function openOrCreateSession() {
     if (sessions.length > 0) {
       navigate(`/session/${sessions[0].id}`);
+      onNavigate?.();
       return;
     }
 
@@ -248,6 +256,7 @@ function WorkspaceItem({
       );
       setSessions([session]);
       navigate(`/session/${session.id}`);
+      onNavigate?.();
     } catch {
       /* ignore */
     }

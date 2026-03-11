@@ -45,7 +45,7 @@ export default function Session() {
   return (
     <>
       {/* Header */}
-      <header className="flex items-center gap-3 border-b border-gray-800 px-4 py-2">
+      <header className="flex items-center gap-3 border-b border-gray-800 px-4 py-2 pl-14 md:pl-4">
         <div className="flex-1 min-w-0">
           <div className="text-sm font-medium text-white truncate">
             Session {id?.slice(0, 8)}
