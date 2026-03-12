@@ -1,6 +1,48 @@
-"""Shared API dependency helpers (auth checks, user extraction)."""
+"""Shared API dependency helpers (tenant extraction, DB context, legacy auth)."""
+
+import sqlite3
+from contextlib import contextmanager
+from collections.abc import Iterator
 
 from fastapi import HTTPException, Request
+
+from yinshi.db import get_db
+from yinshi.tenant import TenantContext, get_user_db
+
+
+def get_tenant(request: Request) -> TenantContext | None:
+    """Get the TenantContext from request state, or None if auth is disabled."""
+    return getattr(request.state, "tenant", None)
+
+
+def require_tenant(request: Request) -> TenantContext:
+    """Get the TenantContext from request state, raising 401 if missing.
+
+    Use this in endpoints that always require authentication.
+    """
+    tenant = get_tenant(request)
+    if tenant is None:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    return tenant
+
+
+@contextmanager
+def get_db_for_request(request: Request) -> Iterator[sqlite3.Connection]:
+    """Return the correct DB connection for the current request.
+
+    If a tenant is present (multi-tenant mode), returns the user's
+    per-tenant database. Otherwise falls back to the shared legacy DB.
+    """
+    tenant = get_tenant(request)
+    if tenant:
+        with get_user_db(tenant) as db:
+            yield db
+    else:
+        with get_db() as db:
+            yield db
+
+
+# --- Legacy helpers (kept for backward compatibility during migration) ---
 
 
 def get_user_email(request: Request) -> str | None:

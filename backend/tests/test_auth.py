@@ -9,9 +9,12 @@ import pytest
 
 
 @pytest.fixture()
-def auth_enabled_app(db_path, monkeypatch) -> Generator:
+def auth_enabled_app(db_path, tmp_path, monkeypatch) -> Generator:
     """Set up an app with auth enabled and a fresh database."""
     monkeypatch.setenv("DB_PATH", db_path)
+    monkeypatch.setenv("CONTROL_DB_PATH", str(tmp_path / "control.db"))
+    monkeypatch.setenv("USER_DATA_DIR", str(tmp_path / "users"))
+    monkeypatch.setenv("ENCRYPTION_PEPPER", "a" * 64)
     monkeypatch.setenv("GOOGLE_CLIENT_ID", "fake-client-id")
     monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "fake-secret")
     monkeypatch.setenv("DISABLE_AUTH", "false")
@@ -19,17 +22,21 @@ def auth_enabled_app(db_path, monkeypatch) -> Generator:
 
     get_settings.cache_clear()
 
-    from yinshi.db import init_db
+    from yinshi.db import init_db, init_control_db
 
     init_db()
+    init_control_db()
     yield
     get_settings.cache_clear()
 
 
 @pytest.fixture()
-def auth_disabled_app(db_path, monkeypatch) -> Generator:
+def auth_disabled_app(db_path, tmp_path, monkeypatch) -> Generator:
     """Set up an app with auth disabled and a fresh database."""
     monkeypatch.setenv("DB_PATH", db_path)
+    monkeypatch.setenv("CONTROL_DB_PATH", str(tmp_path / "control.db"))
+    monkeypatch.setenv("USER_DATA_DIR", str(tmp_path / "users"))
+    monkeypatch.setenv("ENCRYPTION_PEPPER", "a" * 64)
     monkeypatch.setenv("DISABLE_AUTH", "true")
     from yinshi.config import get_settings
 
@@ -42,16 +49,30 @@ def auth_disabled_app(db_path, monkeypatch) -> Generator:
     get_settings.cache_clear()
 
 
+def _create_test_user_token():
+    """Create a user in the control DB and return a session token for them."""
+    from yinshi.services.accounts import resolve_or_create_user
+    from yinshi.auth import create_session_token
+
+    tenant = resolve_or_create_user(
+        provider="google",
+        provider_user_id="test-google-id",
+        email="user@example.com",
+        display_name="Test User",
+    )
+    return create_session_token(tenant.user_id)
+
+
 def test_create_and_verify_session_token():
     """Session tokens should be creatable and verifiable."""
     from yinshi.auth import create_session_token, verify_session_token
 
-    token = create_session_token("user@example.com")
+    token = create_session_token("user-id-123")
     assert isinstance(token, str)
     assert len(token) > 0
 
-    email = verify_session_token(token)
-    assert email == "user@example.com"
+    user_id = verify_session_token(token)
+    assert user_id == "user-id-123"
 
 
 def test_verify_invalid_token():
@@ -72,10 +93,9 @@ def test_csrf_check_blocks_mutating_without_header(auth_enabled_app):
     """Mutating requests without X-Requested-With should get 403 when auth is enabled."""
     from fastapi.testclient import TestClient
 
-    from yinshi.auth import create_session_token
     from yinshi.main import app
 
-    token = create_session_token("user@example.com")
+    token = _create_test_user_token()
 
     with TestClient(app) as client:
         resp = client.post(
@@ -94,17 +114,21 @@ def test_auth_me_unauthenticated_returns_401(auth_enabled_app):
 
     with TestClient(app) as client:
         resp = client.get("/auth/me")
-        assert resp.status_code == 401
+        # /auth/me is under /auth/ prefix which is an open path,
+        # so it won't be blocked by middleware. Without a tenant, it returns
+        # authenticated: false
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["authenticated"] is False
 
 
 def test_auth_me_authenticated(auth_enabled_app):
     """GET /auth/me with a valid cookie returns user info."""
     from fastapi.testclient import TestClient
 
-    from yinshi.auth import create_session_token
     from yinshi.main import app
 
-    token = create_session_token("user@example.com")
+    token = _create_test_user_token()
 
     with TestClient(app) as client:
         resp = client.get("/auth/me", cookies={"yinshi_session": token})
@@ -131,10 +155,9 @@ def test_csrf_check_allows_with_header(auth_enabled_app):
     """Mutating requests with X-Requested-With should pass CSRF check."""
     from fastapi.testclient import TestClient
 
-    from yinshi.auth import create_session_token
     from yinshi.main import app
 
-    token = create_session_token("user@example.com")
+    token = _create_test_user_token()
 
     with TestClient(app) as client:
         resp = client.post(

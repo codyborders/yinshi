@@ -171,7 +171,7 @@ export class YinshiSidecar {
     }
   }
 
-  async _createPiSession(sessionId, modelKey, cwd) {
+  async _createPiSession(sessionId, modelKey, cwd, userApiKey = null) {
     const resolved = resolveModel(modelKey);
     if (!resolved) {
       throw new Error(`Unknown model: ${modelKey}`);
@@ -179,8 +179,10 @@ export class YinshiSidecar {
 
     const { model, apiKey } = resolved;
 
-    if (apiKey) {
-      this.authStorage.setRuntimeApiKey(model.provider, apiKey);
+    // BYOK: user-provided API key takes precedence over platform key
+    const effectiveKey = userApiKey || apiKey;
+    if (effectiveKey) {
+      this.authStorage.setRuntimeApiKey(model.provider, effectiveKey);
     }
 
     const settingsManager = SettingsManager.inMemory({
@@ -211,9 +213,10 @@ export class YinshiSidecar {
 
     const modelKey = options.model || "minimax";
     const cwd = options.cwd || process.cwd();
+    const userApiKey = options.apiKey || null;
 
     try {
-      const piSession = await this._createPiSession(sessionId, modelKey, cwd);
+      const piSession = await this._createPiSession(sessionId, modelKey, cwd, userApiKey);
       this.activeSessions.set(sessionId, {
         piSession,
         modelKey,
@@ -230,6 +233,7 @@ export class YinshiSidecar {
   async processQuery(sessionId, socket, prompt, options) {
     const modelKey = options.model || "minimax";
     const cwd = options.cwd || process.cwd();
+    const userApiKey = options.apiKey || null;
 
     try {
       let entry = this.activeSessions.get(sessionId);
@@ -238,7 +242,7 @@ export class YinshiSidecar {
         if (entry) {
           entry.piSession.dispose();
         }
-        const piSession = await this._createPiSession(sessionId, modelKey, cwd);
+        const piSession = await this._createPiSession(sessionId, modelKey, cwd, userApiKey);
         entry = { piSession, modelKey, cwd, unsubscribe: null };
         this.activeSessions.set(sessionId, entry);
       }

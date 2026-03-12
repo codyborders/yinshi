@@ -5,6 +5,7 @@ type AuthStatus = "loading" | "authenticated" | "unauthenticated" | "disabled";
 interface AuthState {
   status: AuthStatus;
   email: string | null;
+  userId: string | null;
   logout: () => Promise<void>;
 }
 
@@ -15,12 +16,14 @@ interface AuthProviderProps {
 const AuthContext = createContext<AuthState>({
   status: "loading",
   email: null,
+  userId: null,
   logout: async () => {},
 });
 
 export function AuthProvider({ children }: AuthProviderProps) {
   const [status, setStatus] = useState<AuthStatus>("loading");
   const [email, setEmail] = useState<string | null>(null);
+  const [userId, setUserId] = useState<string | null>(null);
 
   useEffect(() => {
     async function checkAuth() {
@@ -33,6 +36,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
         const data = await res.json();
         if (data.authenticated) {
           setEmail(data.email);
+          setUserId(data.user_id || null);
           setStatus("authenticated");
         } else {
           setStatus("disabled");
@@ -52,6 +56,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
     }).catch(() => {});
     setStatus("unauthenticated");
     setEmail(null);
+    setUserId(null);
     window.location.href = "/";
   }
 
@@ -64,7 +69,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
   }
 
   return (
-    <AuthContext.Provider value={{ status, email, logout }}>
+    <AuthContext.Provider value={{ status, email, userId, logout }}>
       {children}
     </AuthContext.Provider>
   );

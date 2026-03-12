@@ -142,3 +142,78 @@ def init_db() -> None:
         logger.exception("Failed to initialize database at %s", settings.db_path)
         raise
     logger.info("Database initialized")
+
+
+# --- Control plane database (multi-tenant) ---
+
+CONTROL_SCHEMA_SQL = """
+PRAGMA journal_mode = WAL;
+
+CREATE TABLE IF NOT EXISTS users (
+    id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    email TEXT NOT NULL UNIQUE,
+    display_name TEXT,
+    avatar_url TEXT,
+    status TEXT DEFAULT 'active' NOT NULL,
+    tier TEXT DEFAULT 'free' NOT NULL,
+    disk_quota_mb INTEGER DEFAULT 5000,
+    disk_used_mb INTEGER DEFAULT 0,
+    encrypted_dek BLOB,
+    last_login_at TIMESTAMP,
+    deletion_requested_at TIMESTAMP,
+    deletion_scheduled_for TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS oauth_identities (
+    id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    provider TEXT NOT NULL,
+    provider_user_id TEXT NOT NULL,
+    provider_email TEXT NOT NULL,
+    provider_data TEXT,
+    UNIQUE(provider, provider_user_id)
+);
+
+CREATE TABLE IF NOT EXISTS api_keys (
+    id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    provider TEXT NOT NULL,
+    encrypted_key BLOB NOT NULL,
+    label TEXT DEFAULT '',
+    last_used_at TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+CREATE INDEX IF NOT EXISTS idx_oauth_user ON oauth_identities(user_id);
+CREATE INDEX IF NOT EXISTS idx_api_keys_user ON api_keys(user_id);
+"""
+
+
+@contextmanager
+def get_control_db() -> Iterator[sqlite3.Connection]:
+    """Get a connection to the control plane database."""
+    settings = get_settings()
+    conn = _open_connection(settings.control_db_path)
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
+def init_control_db() -> None:
+    """Initialize the control plane database schema."""
+    settings = get_settings()
+    from pathlib import Path
+    Path(settings.control_db_path).parent.mkdir(parents=True, exist_ok=True)
+    logger.info("Initializing control database at %s", settings.control_db_path)
+    try:
+        with get_control_db() as conn:
+            conn.executescript(CONTROL_SCHEMA_SQL)
+    except sqlite3.Error:
+        logger.exception("Failed to initialize control database")
+        raise
+    logger.info("Control database initialized")

@@ -78,12 +78,21 @@ class SidecarClient:
             return None
         return json.loads(line.decode())
 
-    async def warmup(self, session_id: str, model: str = "minimax", cwd: str = ".") -> None:
+    async def warmup(
+        self,
+        session_id: str,
+        model: str = "minimax",
+        cwd: str = ".",
+        api_key: str | None = None,
+    ) -> None:
         """Pre-create a pi session on the sidecar."""
+        options: dict = {"model": model, "cwd": cwd}
+        if api_key:
+            options["apiKey"] = api_key
         await self._send({
             "type": "warmup",
             "id": session_id,
-            "options": {"model": model, "cwd": cwd},
+            "options": options,
         })
 
     async def query(
@@ -92,13 +101,17 @@ class SidecarClient:
         prompt: str,
         model: str = "minimax",
         cwd: str = ".",
+        api_key: str | None = None,
     ) -> AsyncIterator[dict]:
         """Send a prompt and yield streaming events from the sidecar."""
+        options: dict = {"model": model, "cwd": cwd}
+        if api_key:
+            options["apiKey"] = api_key
         await self._send({
             "type": "query",
             "id": session_id,
             "prompt": prompt,
-            "options": {"model": model, "cwd": cwd},
+            "options": options,
         })
 
         while True:

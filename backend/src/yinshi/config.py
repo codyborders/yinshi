@@ -16,13 +16,25 @@ class Settings(BaseSettings):
     app_name: str = "Yinshi"
     debug: bool = False
 
-    # Database
+    # Database (legacy single-DB mode)
     db_path: str = "yinshi.db"
+
+    # Multi-tenant databases
+    control_db_path: str = "/var/lib/yinshi/control.db"
+    user_data_dir: str = "/var/lib/yinshi/users"
+
+    # Encryption pepper for wrapping per-user DEKs (hex string, 32+ bytes)
+    encryption_pepper: str = ""
 
     # Google OAuth
     google_client_id: str = ""
     google_client_secret: str = ""
-    google_redirect_uri: str = "http://localhost:8000/auth/callback"
+    google_redirect_uri: str = "http://localhost:8000/auth/callback/google"
+
+    # GitHub OAuth
+    github_client_id: str = ""
+    github_client_secret: str = ""
+    github_redirect_uri: str = "http://localhost:8000/auth/callback/github"
 
     # Session secret for cookies -- generated randomly if not set
     secret_key: str = ""
@@ -44,6 +56,13 @@ class Settings(BaseSettings):
     allowed_repo_base: str = ""
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "case_sensitive": False}
+
+    @property
+    def encryption_pepper_bytes(self) -> bytes:
+        """Return the encryption pepper as bytes."""
+        if self.encryption_pepper:
+            return bytes.fromhex(self.encryption_pepper)
+        return b""
 
 
 @lru_cache()

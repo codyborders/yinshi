@@ -16,9 +16,12 @@ def db_path(tmp_path: Path) -> str:
 
 
 @pytest.fixture
-def db(db_path: str, monkeypatch: pytest.MonkeyPatch) -> Iterator[sqlite3.Connection]:
+def db(db_path: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[sqlite3.Connection]:
     """Provide an initialized test database."""
     monkeypatch.setenv("DB_PATH", db_path)
+    monkeypatch.setenv("CONTROL_DB_PATH", str(tmp_path / "control.db"))
+    monkeypatch.setenv("USER_DATA_DIR", str(tmp_path / "users"))
+    monkeypatch.setenv("ENCRYPTION_PEPPER", "a" * 64)
     from yinshi.config import get_settings
 
     get_settings.cache_clear()

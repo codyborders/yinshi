@@ -15,8 +15,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from yinshi.api.deps import check_owner, get_user_email
-from yinshi.db import get_db
+from yinshi.api.deps import check_owner, get_db_for_request, get_tenant, get_user_email
 from yinshi.exceptions import GitError, SidecarError
 from yinshi.services.sidecar import SidecarClient, create_sidecar_connection
 
@@ -82,32 +81,50 @@ def _summarize_prompt(prompt: str, max_words: int = 3) -> str:
     return summary or text[:30].lower()
 
 
+def _check_session_owner(session, request: Request) -> None:
+    """In legacy mode, verify the authenticated user owns the session's repo."""
+    if not get_tenant(request):
+        check_owner(session["owner_email"], get_user_email(request))
+
+
+def _lookup_session(db, session_id: str, request: Request):
+    """Look up a session with workspace info, including owner_email in legacy mode."""
+    tenant = get_tenant(request)
+    if tenant:
+        return db.execute(
+            "SELECT s.*, w.path as workspace_path, w.id as workspace_id, "
+            "w.name as workspace_name, w.branch as workspace_branch "
+            "FROM sessions s "
+            "JOIN workspaces w ON s.workspace_id = w.id "
+            "WHERE s.id = ?",
+            (session_id,),
+        ).fetchone()
+
+    return db.execute(
+        "SELECT s.*, w.path as workspace_path, w.id as workspace_id, "
+        "w.name as workspace_name, w.branch as workspace_branch, "
+        "r.owner_email "
+        "FROM sessions s "
+        "JOIN workspaces w ON s.workspace_id = w.id "
+        "JOIN repos r ON w.repo_id = r.id "
+        "WHERE s.id = ?",
+        (session_id,),
+    ).fetchone()
+
+
 @router.post("/api/sessions/{session_id}/prompt")
 async def prompt_session(
     session_id: str, body: PromptRequest, request: Request
 ) -> StreamingResponse:
     """Send a prompt and stream agent events as SSE."""
-    email = get_user_email(request)
-
-    # Look up session + workspace path + owner (merged query)
-    with get_db() as db:
-        session = db.execute(
-            "SELECT s.*, w.path as workspace_path, w.id as workspace_id, "
-            "w.name as workspace_name, w.branch as workspace_branch, "
-            "r.owner_email "
-            "FROM sessions s "
-            "JOIN workspaces w ON s.workspace_id = w.id "
-            "JOIN repos r ON w.repo_id = r.id "
-            "WHERE s.id = ?",
-            (session_id,),
-        ).fetchone()
+    with get_db_for_request(request) as db:
+        session = _lookup_session(db, session_id, request)
 
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    check_owner(session["owner_email"], email)
+    _check_session_owner(session, request)
 
-    # Concurrency guard: reject if already streaming
     if session["status"] == "running":
         raise HTTPException(status_code=409, detail="Session already has an active stream")
 
@@ -122,7 +139,7 @@ async def prompt_session(
     )
 
     # Save user message + set status to running
-    with get_db() as db:
+    with get_db_for_request(request) as db:
         db.execute(
             "INSERT INTO messages (session_id, role, content, turn_id) VALUES (?, 'user', ?, ?)",
             (session_id, prompt, turn_id),
@@ -180,7 +197,7 @@ async def prompt_session(
 
                         # Batched incremental persistence
                         if accumulated and chunk_count % _PERSIST_BATCH_SIZE == 0:
-                            with get_db() as db:
+                            with get_db_for_request(request) as db:
                                 if assistant_msg_id is None:
                                     assistant_msg_id = uuid.uuid4().hex
                                     db.execute(
@@ -198,7 +215,7 @@ async def prompt_session(
                     # On result, finalize with full_message
                     if data.get("type") == "result":
                         if assistant_msg_id:
-                            with get_db() as db:
+                            with get_db_for_request(request) as db:
                                 db.execute(
                                     "UPDATE messages SET full_message = ? WHERE id = ?",
                                     (json.dumps(event), assistant_msg_id),
@@ -224,7 +241,7 @@ async def prompt_session(
             yield f"data: {json.dumps({'type': 'error', 'error': 'An internal error occurred'})}\n\n"
 
         finally:
-            with get_db() as db:
+            with get_db_for_request(request) as db:
                 # Save any unsaved partial content
                 if accumulated and assistant_msg_id is None:
                     db.execute(
@@ -265,22 +282,13 @@ async def prompt_session(
 @router.post("/api/sessions/{session_id}/cancel")
 async def cancel_session(session_id: str, request: Request) -> dict[str, str]:
     """Cancel the active sidecar operation for a session."""
-    email = get_user_email(request)
-
-    # Verify session exists and check ownership
-    with get_db() as db:
-        session = db.execute(
-            "SELECT s.id, r.owner_email FROM sessions s "
-            "JOIN workspaces w ON s.workspace_id = w.id "
-            "JOIN repos r ON w.repo_id = r.id "
-            "WHERE s.id = ?",
-            (session_id,),
-        ).fetchone()
+    with get_db_for_request(request) as db:
+        session = _lookup_session(db, session_id, request)
 
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    check_owner(session["owner_email"], email)
+    _check_session_owner(session, request)
 
     sidecar = _active_sessions.get(session_id)
     if not sidecar:

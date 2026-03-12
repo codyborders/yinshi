@@ -4,6 +4,7 @@ import RequireAuth from "./components/RequireAuth";
 import EmptyState from "./pages/EmptyState";
 import Landing from "./pages/Landing";
 import Session from "./pages/Session";
+import Settings from "./pages/Settings";
 
 export default function App() {
   return (
@@ -13,6 +14,7 @@ export default function App() {
         <Route element={<Layout />}>
           <Route path="/app" element={<EmptyState />} />
           <Route path="/app/session/:id" element={<Session />} />
+          <Route path="/app/settings" element={<Settings />} />
         </Route>
       </Route>
     </Routes>

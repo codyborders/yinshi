@@ -6,7 +6,15 @@ export interface Repo {
   remote_url: string | null;
   root_path: string;
   custom_prompt: string | null;
-  owner_email?: string | null;
+  owner_email?: string | null; // Legacy field, absent in tenant mode
+}
+
+export interface ApiKey {
+  id: string;
+  created_at: string;
+  provider: string;
+  label: string;
+  last_used_at: string | null;
 }
 
 export interface Workspace {

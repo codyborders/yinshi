@@ -7,10 +7,10 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
-from yinshi.api import auth_routes, repos, sessions, stream, workspaces
+from yinshi.api import auth_routes, repos, sessions, settings, stream, workspaces
 from yinshi.auth import AuthMiddleware, setup_oauth
 from yinshi.config import get_settings
-from yinshi.db import init_db
+from yinshi.db import init_control_db, init_db
 
 logging.basicConfig(
     level=logging.INFO,
@@ -22,34 +22,35 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application startup and shutdown."""
-    settings = get_settings()
-    logger.info("Starting %s", settings.app_name)
+    app_settings = get_settings()
+    logger.info("Starting %s", app_settings.app_name)
     init_db()
+    init_control_db()
     setup_oauth()
     yield
     logger.info("Shutdown complete")
 
 
-settings = get_settings()
+app_settings = get_settings()
 
 app = FastAPI(
     title="Yinshi",
     lifespan=lifespan,
-    docs_url="/docs" if settings.debug else None,
-    openapi_url="/openapi.json" if settings.debug else None,
+    docs_url="/docs" if app_settings.debug else None,
+    openapi_url="/openapi.json" if app_settings.debug else None,
 )
 
 # CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[settings.frontend_url, "http://localhost:5173"],
+    allow_origins=[app_settings.frontend_url, "http://localhost:5173"],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PATCH", "DELETE"],
     allow_headers=["Content-Type"],
 )
 
 # Session (authlib OAuth state storage)
-app.add_middleware(SessionMiddleware, secret_key=settings.secret_key)
+app.add_middleware(SessionMiddleware, secret_key=app_settings.secret_key)
 
 # Auth
 app.add_middleware(AuthMiddleware)
@@ -60,6 +61,7 @@ app.include_router(repos.router)
 app.include_router(workspaces.router)
 app.include_router(sessions.router)
 app.include_router(stream.router)
+app.include_router(settings.router)
 
 
 @app.get("/health")
@@ -71,4 +73,4 @@ async def health() -> dict[str, str]:
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host=settings.host, port=settings.port)
+    uvicorn.run(app, host=app_settings.host, port=app_settings.port)

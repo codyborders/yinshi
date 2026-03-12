@@ -25,19 +25,19 @@ function renderWithRouter(initialEntry: string) {
 
 describe("RequireAuth", () => {
   it("renders children when authenticated", () => {
-    mockUseAuth.mockReturnValue({ status: "authenticated", email: "u@t.com", logout: vi.fn() });
+    mockUseAuth.mockReturnValue({ status: "authenticated", email: "u@t.com", userId: null, logout: vi.fn() });
     renderWithRouter("/app");
     expect(screen.getByTestId("home")).toBeTruthy();
   });
 
   it("renders children when auth is disabled", () => {
-    mockUseAuth.mockReturnValue({ status: "disabled", email: null, logout: vi.fn() });
+    mockUseAuth.mockReturnValue({ status: "disabled", email: null, userId: null, logout: vi.fn() });
     renderWithRouter("/app");
     expect(screen.getByTestId("home")).toBeTruthy();
   });
 
   it("redirects to landing when unauthenticated", () => {
-    mockUseAuth.mockReturnValue({ status: "unauthenticated", email: null, logout: vi.fn() });
+    mockUseAuth.mockReturnValue({ status: "unauthenticated", email: null, userId: null, logout: vi.fn() });
     renderWithRouter("/app");
     expect(screen.getByTestId("landing")).toBeTruthy();
     expect(screen.queryByTestId("home")).toBeNull();

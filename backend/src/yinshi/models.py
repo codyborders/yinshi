@@ -24,7 +24,7 @@ class RepoOut(BaseModel):
     remote_url: str | None = None
     root_path: str
     custom_prompt: str | None = None
-    owner_email: str | None = None
+    owner_email: str | None = None  # Legacy field, absent in tenant mode
 
 
 class RepoUpdate(BaseModel):
@@ -106,3 +106,35 @@ class WSCancel(BaseModel):
     """WebSocket message from client to cancel."""
 
     type: str = "cancel"
+
+
+# --- Multi-tenant models ---
+
+
+class UserOut(BaseModel):
+    """User account response (from control plane)."""
+
+    id: str
+    email: str
+    display_name: str | None = None
+    avatar_url: str | None = None
+    status: str = "active"
+    tier: str = "free"
+
+
+class ApiKeyCreate(BaseModel):
+    """Request to store an API key."""
+
+    provider: str = Field(..., pattern=r"^(anthropic|minimax)$")
+    key: str = Field(..., min_length=1, max_length=500)
+    label: str = Field("", max_length=255)
+
+
+class ApiKeyOut(BaseModel):
+    """API key response (key value is never returned)."""
+
+    id: str
+    created_at: datetime
+    provider: str
+    label: str = ""
+    last_used_at: datetime | None = None
