@@ -11,7 +11,7 @@ from fastapi import HTTPException
 
 from yinshi.config import get_settings
 from yinshi.db import get_control_db
-from yinshi.services.crypto import decrypt_api_key, unwrap_dek
+from yinshi.services.crypto import decrypt_api_key, generate_dek, unwrap_dek, wrap_dek
 
 logger = logging.getLogger(__name__)
 
@@ -35,8 +35,21 @@ def get_user_dek(user_id: str) -> bytes:
         row = db.execute(
             "SELECT encrypted_dek FROM users WHERE id = ?", (user_id,)
         ).fetchone()
-    if not row or not row["encrypted_dek"]:
-        raise HTTPException(status_code=500, detail="User encryption key not found")
+    if not row:
+        raise HTTPException(status_code=500, detail="User not found")
+
+    if not row["encrypted_dek"]:
+        # Lazy-generate DEK for accounts created before encryption was configured
+        dek = generate_dek()
+        encrypted_dek = wrap_dek(dek, user_id, pepper)
+        with get_control_db() as db:
+            db.execute(
+                "UPDATE users SET encrypted_dek = ? WHERE id = ?",
+                (encrypted_dek, user_id),
+            )
+            db.commit()
+        logger.info("Generated DEK for user %s (legacy account)", user_id)
+        return dek
 
     return unwrap_dek(row["encrypted_dek"], user_id, pepper)
 

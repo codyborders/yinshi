@@ -157,6 +157,37 @@ def test_record_usage_byok_no_credit_change(test_user):
     assert get_credit_remaining_cents(test_user.user_id) == 500
 
 
+def test_get_user_dek_lazy_generates_for_null_dek(control_env):
+    """get_user_dek should generate and store a DEK for users with NULL encrypted_dek."""
+    from yinshi.db import get_control_db
+    from yinshi.services.keys import get_user_dek
+
+    # Create a user manually with NULL encrypted_dek (simulates pre-encryption account)
+    user_id = "legacy-user-no-dek"
+    with get_control_db() as db:
+        db.execute(
+            "INSERT INTO users (id, email, encrypted_dek) VALUES (?, ?, NULL)",
+            (user_id, "legacy@example.com"),
+        )
+        db.commit()
+
+    # Should succeed (lazy-generate DEK) instead of raising
+    dek = get_user_dek(user_id)
+    assert isinstance(dek, bytes)
+    assert len(dek) == 32
+
+    # Verify DEK was persisted
+    with get_control_db() as db:
+        row = db.execute(
+            "SELECT encrypted_dek FROM users WHERE id = ?", (user_id,)
+        ).fetchone()
+    assert row["encrypted_dek"] is not None
+
+    # Second call should return the same DEK
+    dek2 = get_user_dek(user_id)
+    assert dek == dek2
+
+
 # --- Unit tests: resolve_api_key_for_prompt ---
 
 
