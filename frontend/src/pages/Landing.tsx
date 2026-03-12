@@ -55,7 +55,7 @@ export default function Landing() {
       <nav className="landing-nav">
         <span className="landing-brand">Yinshi</span>
         <a href="/auth/login" className="landing-nav-link">
-          Sign In
+          Sign In / Sign Up
         </a>
       </nav>
 
@@ -78,7 +78,7 @@ export default function Landing() {
             </ReactMarkdown>
           </div>
           <a href="/auth/login" className="landing-cta">
-            Sign In
+            Get Started
           </a>
         </div>
       </section>
