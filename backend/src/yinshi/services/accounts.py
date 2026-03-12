@@ -4,11 +4,12 @@ import json
 import logging
 import os
 import secrets
+import sqlite3
 
 from yinshi.config import get_settings
 from yinshi.db import get_control_db
 from yinshi.services.crypto import generate_dek, wrap_dek
-from yinshi.tenant import TenantContext, init_user_db, user_data_dir
+from yinshi.tenant import TenantContext, get_user_db, init_user_db, user_data_dir
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,84 @@ def provision_user(user_id: str, email: str) -> TenantContext:
 
     logger.info("Provisioned user %s at %s", user_id, tenant.data_dir)
     return tenant
+
+
+def _migrate_legacy_data(tenant: TenantContext) -> None:
+    """Copy repos/workspaces/sessions/messages from the legacy DB to the user's DB.
+
+    Runs once on first login. Skips silently if no legacy DB exists or if the
+    user has no data in it.
+    """
+    settings = get_settings()
+    legacy_path = settings.db_path
+    if not os.path.exists(legacy_path):
+        return
+
+    try:
+        source = sqlite3.connect(legacy_path)
+        source.row_factory = sqlite3.Row
+    except sqlite3.Error:
+        logger.warning("Could not open legacy DB at %s", legacy_path)
+        return
+
+    try:
+        repos = source.execute(
+            "SELECT * FROM repos WHERE owner_email = ? OR owner_email IS NULL",
+            (tenant.email,),
+        ).fetchall()
+
+        if not repos:
+            return
+
+        with get_user_db(tenant) as dest:
+            for repo in repos:
+                r = dict(repo)
+                dest.execute(
+                    "INSERT OR IGNORE INTO repos (id, created_at, updated_at, name, remote_url, root_path, custom_prompt) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (r["id"], r["created_at"], r["updated_at"], r["name"],
+                     r["remote_url"], r["root_path"], r.get("custom_prompt")),
+                )
+
+                for ws in source.execute(
+                    "SELECT * FROM workspaces WHERE repo_id = ?", (r["id"],)
+                ).fetchall():
+                    w = dict(ws)
+                    dest.execute(
+                        "INSERT OR IGNORE INTO workspaces (id, created_at, updated_at, repo_id, name, branch, path, state) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                        (w["id"], w["created_at"], w["updated_at"], w["repo_id"],
+                         w["name"], w.get("branch", ""), w.get("path", ""), w["state"]),
+                    )
+
+                    for sess in source.execute(
+                        "SELECT * FROM sessions WHERE workspace_id = ?", (w["id"],)
+                    ).fetchall():
+                        s = dict(sess)
+                        dest.execute(
+                            "INSERT OR IGNORE INTO sessions (id, created_at, updated_at, workspace_id, status, model) "
+                            "VALUES (?, ?, ?, ?, ?, ?)",
+                            (s["id"], s["created_at"], s["updated_at"],
+                             s["workspace_id"], s["status"], s.get("model")),
+                        )
+
+                        for msg in source.execute(
+                            "SELECT * FROM messages WHERE session_id = ?", (s["id"],)
+                        ).fetchall():
+                            m = dict(msg)
+                            dest.execute(
+                                "INSERT OR IGNORE INTO messages (id, created_at, session_id, role, content, full_message, turn_id) "
+                                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                                (m["id"], m["created_at"], m["session_id"],
+                                 m["role"], m["content"], m.get("full_message"), m.get("turn_id")),
+                            )
+
+            dest.commit()
+            logger.info("Migrated %d legacy repo(s) for %s", len(repos), tenant.email)
+    except sqlite3.Error:
+        logger.exception("Failed to migrate legacy data for %s", tenant.email)
+    finally:
+        source.close()
 
 
 def _touch_last_login(db, user_id: str) -> None:
@@ -114,4 +193,6 @@ def resolve_or_create_user(
         db.commit()
 
     # Provision outside the control DB transaction
-    return provision_user(user_id, email)
+    tenant = provision_user(user_id, email)
+    _migrate_legacy_data(tenant)
+    return tenant

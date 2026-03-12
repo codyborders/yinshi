@@ -145,3 +145,119 @@ def test_control_db_has_users_table(account_env):
     assert "users" in tables
     assert "oauth_identities" in tables
     assert "api_keys" in tables
+
+
+def test_legacy_data_migrated_on_first_login(account_env):
+    """First login should auto-migrate repos/workspaces/sessions/messages from legacy DB."""
+    from yinshi.config import get_settings
+    from yinshi.db import init_db
+    from yinshi.services.accounts import resolve_or_create_user
+    from yinshi.tenant import get_user_db
+
+    settings = get_settings()
+
+    # Seed the legacy DB with data for this email
+    init_db()
+    legacy = sqlite3.connect(settings.db_path)
+    legacy.execute("PRAGMA foreign_keys = ON")
+    legacy.execute(
+        "INSERT INTO repos (id, name, remote_url, root_path, owner_email) "
+        "VALUES ('repo1', 'my-project', 'https://github.com/x/y', '/tmp/repo', 'alice@example.com')"
+    )
+    legacy.execute(
+        "INSERT INTO workspaces (id, repo_id, name, branch, path, state) "
+        "VALUES ('ws1', 'repo1', 'main-ws', 'main', '/tmp/repo/.worktrees/main', 'ready')"
+    )
+    legacy.execute(
+        "INSERT INTO sessions (id, workspace_id, status) "
+        "VALUES ('sess1', 'ws1', 'idle')"
+    )
+    legacy.execute(
+        "INSERT INTO messages (id, session_id, role, content) "
+        "VALUES ('msg1', 'sess1', 'user', 'hello world')"
+    )
+    legacy.commit()
+    legacy.close()
+
+    # First login creates user and should auto-migrate
+    tenant = resolve_or_create_user(
+        provider="google",
+        provider_user_id="google-alice",
+        email="alice@example.com",
+        display_name="Alice",
+    )
+
+    # Verify data landed in per-user DB
+    with get_user_db(tenant) as db:
+        repos = db.execute("SELECT * FROM repos").fetchall()
+        assert len(repos) == 1
+        assert repos[0]["name"] == "my-project"
+
+        workspaces = db.execute("SELECT * FROM workspaces").fetchall()
+        assert len(workspaces) == 1
+        assert workspaces[0]["name"] == "main-ws"
+
+        sessions = db.execute("SELECT * FROM sessions").fetchall()
+        assert len(sessions) == 1
+
+        messages = db.execute("SELECT * FROM messages").fetchall()
+        assert len(messages) == 1
+        assert messages[0]["content"] == "hello world"
+
+
+def test_legacy_migration_skipped_when_no_legacy_data(account_env):
+    """First login with no legacy DB should not fail."""
+    from yinshi.services.accounts import resolve_or_create_user
+    from yinshi.tenant import get_user_db
+
+    tenant = resolve_or_create_user(
+        provider="google",
+        provider_user_id="google-bob",
+        email="bob@example.com",
+        display_name="Bob",
+    )
+
+    with get_user_db(tenant) as db:
+        repos = db.execute("SELECT * FROM repos").fetchall()
+        assert len(repos) == 0
+
+
+def test_legacy_migration_skipped_on_second_login(account_env):
+    """Second login should not re-migrate or duplicate data."""
+    from yinshi.config import get_settings
+    from yinshi.db import init_db
+    from yinshi.services.accounts import resolve_or_create_user
+    from yinshi.tenant import get_user_db
+
+    settings = get_settings()
+
+    # Seed legacy DB
+    init_db()
+    legacy = sqlite3.connect(settings.db_path)
+    legacy.execute("PRAGMA foreign_keys = ON")
+    legacy.execute(
+        "INSERT INTO repos (id, name, remote_url, root_path, owner_email) "
+        "VALUES ('repo2', 'project2', 'https://github.com/x/z', '/tmp/repo2', 'carol@example.com')"
+    )
+    legacy.commit()
+    legacy.close()
+
+    # First login -- migrates data
+    tenant = resolve_or_create_user(
+        provider="google",
+        provider_user_id="google-carol",
+        email="carol@example.com",
+        display_name="Carol",
+    )
+
+    # Second login -- should not duplicate
+    resolve_or_create_user(
+        provider="google",
+        provider_user_id="google-carol",
+        email="carol@example.com",
+        display_name="Carol",
+    )
+
+    with get_user_db(tenant) as db:
+        repos = db.execute("SELECT * FROM repos").fetchall()
+        assert len(repos) == 1
