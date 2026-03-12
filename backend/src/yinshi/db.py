@@ -3,8 +3,9 @@
 import asyncio
 import logging
 import sqlite3
-from contextlib import asynccontextmanager, contextmanager
 from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager, contextmanager
+from pathlib import Path
 
 from yinshi.config import get_settings
 
@@ -161,6 +162,8 @@ CREATE TABLE IF NOT EXISTS users (
     disk_quota_mb INTEGER DEFAULT 5000,
     disk_used_mb INTEGER DEFAULT 0,
     encrypted_dek BLOB,
+    credit_used_cents INTEGER DEFAULT 0,
+    credit_limit_cents INTEGER DEFAULT 500,
     last_login_at TIMESTAMP,
     deletion_requested_at TIMESTAMP,
     deletion_scheduled_for TIMESTAMP
@@ -187,9 +190,25 @@ CREATE TABLE IF NOT EXISTS api_keys (
     last_used_at TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS usage_log (
+    id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    session_id TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    model TEXT NOT NULL,
+    input_tokens INTEGER DEFAULT 0,
+    output_tokens INTEGER DEFAULT 0,
+    cache_read_tokens INTEGER DEFAULT 0,
+    cache_write_tokens INTEGER DEFAULT 0,
+    cost_cents REAL DEFAULT 0,
+    key_source TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
 CREATE INDEX IF NOT EXISTS idx_oauth_user ON oauth_identities(user_id);
 CREATE INDEX IF NOT EXISTS idx_api_keys_user ON api_keys(user_id);
+CREATE INDEX IF NOT EXISTS idx_usage_user ON usage_log(user_id);
 """
 
 
@@ -204,15 +223,25 @@ def get_control_db() -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
+def _migrate_control(conn: sqlite3.Connection) -> None:
+    """Apply control DB schema migrations for existing databases."""
+    columns = [r[1] for r in conn.execute("PRAGMA table_info(users)").fetchall()]
+    if "credit_used_cents" not in columns:
+        logger.info("Control migration: adding credit tracking columns to users")
+        conn.execute("ALTER TABLE users ADD COLUMN credit_used_cents INTEGER DEFAULT 0")
+        conn.execute("ALTER TABLE users ADD COLUMN credit_limit_cents INTEGER DEFAULT 500")
+        conn.commit()
+
+
 def init_control_db() -> None:
     """Initialize the control plane database schema."""
     settings = get_settings()
-    from pathlib import Path
     Path(settings.control_db_path).parent.mkdir(parents=True, exist_ok=True)
     logger.info("Initializing control database at %s", settings.control_db_path)
     try:
         with get_control_db() as conn:
             conn.executescript(CONTROL_SCHEMA_SQL)
+            _migrate_control(conn)
     except sqlite3.Error:
         logger.exception("Failed to initialize control database")
         raise

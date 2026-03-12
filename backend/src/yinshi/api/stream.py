@@ -16,7 +16,9 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from yinshi.api.deps import check_owner, get_db_for_request, get_tenant, get_user_email
+from yinshi.config import get_settings
 from yinshi.exceptions import GitError, SidecarError
+from yinshi.services.keys import record_usage, resolve_api_key_for_prompt
 from yinshi.services.sidecar import SidecarClient, create_sidecar_connection
 
 logger = logging.getLogger(__name__)
@@ -133,9 +135,31 @@ async def prompt_session(
     prompt = body.prompt
     turn_id = uuid.uuid4().hex
 
+    # Key resolution (only in tenant mode)
+    api_key: str | None = None
+    key_source = "platform"
+    provider: str | None = None
+    tenant = get_tenant(request)
+
+    if tenant:
+        sidecar_tmp = await create_sidecar_connection()
+        try:
+            resolved = await sidecar_tmp.resolve_model(model)
+            provider = resolved["provider"]
+        finally:
+            await sidecar_tmp.disconnect()
+
+        settings = get_settings()
+        platform_key = (
+            settings.platform_minimax_api_key if provider == "minimax" else None
+        )
+        api_key, key_source = resolve_api_key_for_prompt(
+            tenant.user_id, provider, platform_key
+        )
+
     logger.info(
-        "Prompt received: session=%s prompt_len=%d model=%s",
-        session_id, len(prompt), model,
+        "Prompt received: session=%s prompt_len=%d model=%s provider=%s key_source=%s",
+        session_id, len(prompt), model, provider, key_source,
     )
 
     # Save user message + set status to running
@@ -162,17 +186,22 @@ async def prompt_session(
         accumulated = ""
         assistant_msg_id: str | None = None
         chunk_count = 0
+        usage_data: dict = {}
+        result_provider = provider or ""
 
         try:
             sidecar = await create_sidecar_connection()
             async with _active_sessions_lock:
                 _active_sessions[session_id] = sidecar
-            await sidecar.warmup(session_id, model=model, cwd=workspace_path)
+            await sidecar.warmup(
+                session_id, model=model, cwd=workspace_path, api_key=api_key
+            )
 
             logger.info("Streaming started: session=%s turn_id=%s", session_id, turn_id)
 
             async for event in sidecar.query(
-                session_id, prompt, model=model, cwd=workspace_path
+                session_id, prompt, model=model, cwd=workspace_path,
+                api_key=api_key,
             ):
                 event_type = event.get("type")
                 logger.debug(
@@ -212,8 +241,10 @@ async def prompt_session(
                                     )
                                 db.commit()
 
-                    # On result, finalize with full_message
+                    # On result, capture usage and finalize with full_message
                     if data.get("type") == "result":
+                        usage_data = data.get("usage", {})
+                        result_provider = data.get("provider", result_provider)
                         if assistant_msg_id:
                             with get_db_for_request(request) as db:
                                 db.execute(
@@ -261,6 +292,20 @@ async def prompt_session(
                     (session_id,),
                 )
                 db.commit()
+
+            # Record usage if in tenant mode
+            if tenant and usage_data:
+                try:
+                    record_usage(
+                        user_id=tenant.user_id,
+                        session_id=session_id,
+                        provider=result_provider,
+                        model=model,
+                        usage=usage_data,
+                        key_source=key_source,
+                    )
+                except Exception:
+                    logger.exception("Failed to record usage: session=%s", session_id)
 
             async with _active_sessions_lock:
                 _active_sessions.pop(session_id, None)

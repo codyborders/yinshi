@@ -42,6 +42,9 @@ class Settings(BaseSettings):
     # Explicit flag to disable auth (empty google_client_id alone is not enough)
     disable_auth: bool = False
 
+    # Platform-provided MiniMax API key for freemium users
+    platform_minimax_api_key: str = ""
+
     # Sidecar
     sidecar_socket_path: str = "/tmp/yinshi-sidecar.sock"
 

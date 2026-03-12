@@ -134,6 +134,24 @@ class SidecarClient:
                 if data.get("type") == "result":
                     break
 
+    async def resolve_model(self, model_key: str) -> dict:
+        """Ask the sidecar to resolve a model key.
+
+        Returns {'provider': '...', 'model': '...'}.
+        """
+        request_id = f"resolve-{model_key}"
+        await self._send({"type": "resolve", "id": request_id, "model": model_key})
+
+        msg = await self._read_line()
+        if msg is None:
+            raise SidecarError("Sidecar connection lost during model resolve")
+        if msg.get("type") == "error":
+            raise SidecarError(f"Model resolve failed: {msg.get('error', 'unknown')}")
+        if msg.get("type") != "resolved":
+            raise SidecarError(f"Unexpected response type: {msg.get('type')}")
+
+        return {"provider": msg["provider"], "model": msg["model"]}
+
     async def cancel(self, session_id: str) -> None:
         """Cancel an active session."""
         await self._send({"type": "cancel", "id": session_id})

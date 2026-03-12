@@ -22,40 +22,34 @@ function sendToSocket(socket, message) {
   socket.write(JSON.stringify(message) + "\n");
 }
 
-function resolveModel(modelKey) {
-  const ANTHROPIC_MAP = {
-    opus: "claude-opus-4-20250514",
-    sonnet: "claude-sonnet-4-20250514",
-    haiku: "claude-haiku-4-5-20251001",
-  };
+const ANTHROPIC_MODEL_IDS = {
+  opus: "claude-opus-4-20250514",
+  sonnet: "claude-sonnet-4-20250514",
+  haiku: "claude-haiku-4-5-20251001",
+};
 
-  if (ANTHROPIC_MAP[modelKey]) {
-    const model = getModel("anthropic", ANTHROPIC_MAP[modelKey]);
-    return model ? { model, apiKey: null } : null;
+const MINIMAX_FALLBACK_MODEL = {
+  id: "MiniMax-M2.5-highspeed",
+  name: "MiniMax M2.5 Highspeed",
+  api: "openai-completions",
+  provider: "minimax",
+  baseUrl: "https://api.minimaxi.chat/v1",
+  reasoning: false,
+  input: ["text"],
+  contextWindow: 200000,
+  maxTokens: 16384,
+  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+};
+
+function resolveModel(modelKey) {
+  if (ANTHROPIC_MODEL_IDS[modelKey]) {
+    const model = getModel("anthropic", ANTHROPIC_MODEL_IDS[modelKey]);
+    return model ? { model } : null;
   }
 
-  // MiniMax models
   if (modelKey === "minimax" || modelKey === "MiniMax-M2.5-highspeed") {
     const model = getModel("minimax", "MiniMax-M2.5-highspeed");
-    if (model) {
-      return { model, apiKey: process.env.MINIMAX_API_KEY || null };
-    }
-    // Fallback: construct model object manually if not in registry
-    return {
-      model: {
-        id: "MiniMax-M2.5-highspeed",
-        name: "MiniMax M2.5 Highspeed",
-        api: "openai-completions",
-        provider: "minimax",
-        baseUrl: "https://api.minimaxi.chat/v1",
-        reasoning: false,
-        input: ["text"],
-        contextWindow: 200000,
-        maxTokens: 16384,
-        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-      },
-      apiKey: process.env.MINIMAX_API_KEY || null,
-    };
+    return { model: model || MINIMAX_FALLBACK_MODEL };
   }
 
   return null;
@@ -163,6 +157,9 @@ export class YinshiSidecar {
       case "warmup":
         this.warmupSession(id, socket, request.options || {});
         break;
+      case "resolve":
+        this.handleResolve(id, socket, request.model);
+        break;
       case "ping":
         sendToSocket(socket, { type: "pong" });
         break;
@@ -171,18 +168,41 @@ export class YinshiSidecar {
     }
   }
 
+  handleResolve(id, socket, modelKey) {
+    if (!modelKey) {
+      sendToSocket(socket, { id: id || "unknown", type: "error", error: "Model key required" });
+      return;
+    }
+    const resolved = resolveModel(modelKey);
+    if (!resolved) {
+      sendToSocket(socket, { id: id || "unknown", type: "error", error: `Unknown model: ${modelKey}` });
+      return;
+    }
+    sendToSocket(socket, {
+      id,
+      type: "resolved",
+      provider: resolved.model.provider,
+      model: resolved.model.id,
+    });
+  }
+
   async _createPiSession(sessionId, modelKey, cwd, userApiKey = null) {
     const resolved = resolveModel(modelKey);
     if (!resolved) {
       throw new Error(`Unknown model: ${modelKey}`);
     }
 
-    const { model, apiKey } = resolved;
+    const { model } = resolved;
 
-    // BYOK: user-provided API key takes precedence over platform key
-    const effectiveKey = userApiKey || apiKey;
+    // Per-session auth storage to prevent key leakage between concurrent sessions
+    const sessionAuth = AuthStorage.create();
+    const sessionRegistry = new ModelRegistry(sessionAuth);
+
+    // BYOK key from backend > env var fallback (for dev mode)
+    const envKey = `${model.provider.toUpperCase()}_API_KEY`;
+    const effectiveKey = userApiKey || process.env[envKey] || null;
     if (effectiveKey) {
-      this.authStorage.setRuntimeApiKey(model.provider, effectiveKey);
+      sessionAuth.setRuntimeApiKey(model.provider, effectiveKey);
     }
 
     const settingsManager = SettingsManager.inMemory({
@@ -197,12 +217,12 @@ export class YinshiSidecar {
       tools: createCodingTools(cwd),
       sessionManager: SessionManager.inMemory(),
       settingsManager,
-      authStorage: this.authStorage,
-      modelRegistry: this.modelRegistry,
+      authStorage: sessionAuth,
+      modelRegistry: sessionRegistry,
     });
 
     console.log(`[sidecar] Created pi session ${sessionId} with model ${model.name || model.id}`);
-    return session;
+    return { session, model };
   }
 
   async warmupSession(sessionId, socket, options) {
@@ -216,9 +236,10 @@ export class YinshiSidecar {
     const userApiKey = options.apiKey || null;
 
     try {
-      const piSession = await this._createPiSession(sessionId, modelKey, cwd, userApiKey);
+      const { session: piSession, model } = await this._createPiSession(sessionId, modelKey, cwd, userApiKey);
       this.activeSessions.set(sessionId, {
         piSession,
+        model,
         modelKey,
         cwd,
         unsubscribe: null,
@@ -242,12 +263,12 @@ export class YinshiSidecar {
         if (entry) {
           entry.piSession.dispose();
         }
-        const piSession = await this._createPiSession(sessionId, modelKey, cwd, userApiKey);
-        entry = { piSession, modelKey, cwd, unsubscribe: null };
+        const { session: piSession, model } = await this._createPiSession(sessionId, modelKey, cwd, userApiKey);
+        entry = { piSession, model, modelKey, cwd, unsubscribe: null };
         this.activeSessions.set(sessionId, entry);
       }
 
-      const { piSession } = entry;
+      const { piSession, model } = entry;
 
       if (entry.unsubscribe) {
         entry.unsubscribe();
@@ -308,6 +329,7 @@ export class YinshiSidecar {
               data: {
                 type: "result",
                 usage: usage || {},
+                provider: model.provider,
               },
             });
             usage = null;

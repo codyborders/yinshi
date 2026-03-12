@@ -5,30 +5,13 @@ import logging
 from fastapi import APIRouter, HTTPException, Request
 
 from yinshi.api.deps import require_tenant
-from yinshi.config import get_settings
 from yinshi.db import get_control_db
 from yinshi.models import ApiKeyCreate, ApiKeyOut
-from yinshi.services.crypto import decrypt_api_key, encrypt_api_key, generate_dek, unwrap_dek
+from yinshi.services.crypto import encrypt_api_key
+from yinshi.services.keys import get_user_dek
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/settings", tags=["settings"])
-
-
-def _get_user_dek(user_id: str) -> bytes:
-    """Retrieve and unwrap the user's DEK from the control DB."""
-    settings = get_settings()
-    pepper = settings.encryption_pepper_bytes
-    if not pepper:
-        raise HTTPException(status_code=500, detail="Encryption not configured")
-
-    with get_control_db() as db:
-        row = db.execute(
-            "SELECT encrypted_dek FROM users WHERE id = ?", (user_id,)
-        ).fetchone()
-    if not row or not row["encrypted_dek"]:
-        raise HTTPException(status_code=500, detail="User encryption key not found")
-
-    return unwrap_dek(row["encrypted_dek"], user_id, pepper)
 
 
 @router.get("/keys", response_model=list[ApiKeyOut])
@@ -48,7 +31,7 @@ def list_keys(request: Request) -> list[dict]:
 def add_key(body: ApiKeyCreate, request: Request) -> dict:
     """Store an encrypted API key."""
     tenant = require_tenant(request)
-    dek = _get_user_dek(tenant.user_id)
+    dek = get_user_dek(tenant.user_id)
 
     encrypted = encrypt_api_key(body.key, dek)
 
