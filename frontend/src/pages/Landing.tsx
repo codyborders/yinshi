@@ -1,4 +1,5 @@
-import { Link } from "react-router-dom";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 /* ------------------------------------------------------------------ */
 /*  Landing page – "The Hidden Scholar" aesthetic                      */
@@ -71,11 +72,11 @@ export default function Landing() {
         <div className="landing-hero-text">
           <h1 className="landing-title">Yinshi</h1>
           <p className="landing-subtitle">Browser-based coding with AI agents</p>
-          <p className="landing-desc">
-            Point Yinshi at a repo. An AI agent writes code on an isolated
-            branch while you review the diff. No local setup, no risk to
-            main -- just open a browser and go.
-          </p>
+          <div className="landing-desc landing-markdown">
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>
+              {`Point Yinshi at a repo. An AI agent writes code on an isolated branch while you review the diff. No local setup, no risk to main -- just open a browser and go.`}
+            </ReactMarkdown>
+          </div>
           <a href="/auth/login" className="landing-cta">
             Sign In
           </a>
@@ -97,12 +98,10 @@ export default function Landing() {
 
       {/* ---- How it works ---- */}
       <section className="landing-philosophy">
-        <blockquote className="landing-quote">
-          <p>
-            Import a GitHub repo. Yinshi creates a worktree on a throwaway
-            branch, connects an AI agent, and lets you chat with it about
-            your code -- from any device, anywhere.
-          </p>
+        <blockquote className="landing-quote landing-markdown">
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+            {`Import a GitHub repo. Yinshi creates a worktree on a throwaway branch, connects an AI agent, and lets you chat with it about your code -- from any device, anywhere.`}
+          </ReactMarkdown>
         </blockquote>
       </section>
 
@@ -114,7 +113,9 @@ export default function Landing() {
             <div key={cap.title} className="landing-cap-card">
               <div className="landing-cap-icon">{cap.icon}</div>
               <h3 className="landing-cap-title">{cap.title}</h3>
-              <p className="landing-cap-desc">{cap.desc}</p>
+              <div className="landing-cap-desc landing-markdown">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{cap.desc}</ReactMarkdown>
+              </div>
             </div>
           ))}
         </div>
@@ -122,9 +123,11 @@ export default function Landing() {
 
       {/* ---- Final CTA ---- */}
       <section className="landing-final">
-        <p className="landing-final-text">
-          No IDE required. Just a browser and a repo.
-        </p>
+        <div className="landing-final-text landing-markdown">
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+            {`No IDE required. Just a browser and a repo.`}
+          </ReactMarkdown>
+        </div>
         <a href="/auth/login" className="landing-cta">
           Get Started
         </a>
