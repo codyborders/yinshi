@@ -622,3 +622,55 @@ def test_summarize_prompt_short_input() -> None:
 
     assert _summarize_prompt("auth") == "auth"
     assert _summarize_prompt("fix tests") == "fix-tests"
+
+
+# --- Session PATCH and tree endpoint tests ---
+
+
+def test_update_session_model(client: TestClient, test_entities: Entities) -> None:
+    """PATCH /api/sessions/:id should update the model field."""
+    resp = client.patch(
+        f"/api/sessions/{test_entities.session_id}",
+        json={"model": "sonnet"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["model"] == "sonnet"
+
+    # Verify it persisted
+    get_resp = client.get(f"/api/sessions/{test_entities.session_id}")
+    assert get_resp.json()["model"] == "sonnet"
+
+
+def test_update_session_not_found(client: TestClient) -> None:
+    """PATCH /api/sessions/:id with bad ID should 404."""
+    resp = client.patch(
+        "/api/sessions/nonexistent",
+        json={"model": "sonnet"},
+    )
+    assert resp.status_code == 404
+
+
+def test_update_session_no_changes(client: TestClient, test_entities: Entities) -> None:
+    """PATCH /api/sessions/:id with empty body should return session unchanged."""
+    resp = client.patch(
+        f"/api/sessions/{test_entities.session_id}",
+        json={},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["model"] == "minimax"
+
+
+def test_get_session_tree(client: TestClient, test_entities: Entities) -> None:
+    """GET /api/sessions/:id/tree should return workspace file listing."""
+    resp = client.get(f"/api/sessions/{test_entities.session_id}/tree")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "files" in data
+    # The test git repo has a README.md
+    assert "README.md" in data["files"]
+
+
+def test_get_session_tree_not_found(client: TestClient) -> None:
+    """GET /api/sessions/:id/tree with bad ID should 404."""
+    resp = client.get("/api/sessions/nonexistent/tree")
+    assert resp.status_code == 404

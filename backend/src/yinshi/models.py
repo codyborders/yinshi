@@ -59,6 +59,12 @@ class SessionCreate(BaseModel):
     model: str = Field("minimax", max_length=100)
 
 
+class SessionUpdate(BaseModel):
+    """Request to update a session."""
+
+    model: str | None = Field(None, max_length=100)
+
+
 class SessionOut(BaseModel):
     """Session response."""
 

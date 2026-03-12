@@ -1,12 +1,13 @@
 """Endpoints for agent sessions."""
 
 import logging
+import os
 
 from fastapi import APIRouter, HTTPException, Request
 
 from yinshi.api.deps import check_owner, get_user_email
 from yinshi.db import get_db
-from yinshi.models import MessageOut, SessionCreate, SessionOut
+from yinshi.models import MessageOut, SessionCreate, SessionOut, SessionUpdate
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["sessions"])
@@ -76,6 +77,35 @@ def get_session(session_id: str, request: Request) -> dict:
         check_owner(row["owner_email"], email)
         return dict(row)
 
+@router.patch("/api/sessions/{session_id}", response_model=SessionOut)
+def update_session(session_id: str, body: SessionUpdate, request: Request) -> dict:
+    """Update session fields (currently only model)."""
+    email = get_user_email(request)
+    with get_db() as db:
+        row = db.execute(
+            "SELECT s.*, r.owner_email FROM sessions s "
+            "JOIN workspaces w ON s.workspace_id = w.id "
+            "JOIN repos r ON w.repo_id = r.id "
+            "WHERE s.id = ?",
+            (session_id,),
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Session not found")
+        check_owner(row["owner_email"], email)
+
+        updates = body.model_dump(exclude_none=True)
+        if updates:
+            sets = ", ".join(f"{k} = ?" for k in updates)
+            vals = list(updates.values()) + [session_id]
+            db.execute(f"UPDATE sessions SET {sets} WHERE id = ?", vals)  # noqa: S608
+            db.commit()
+
+        updated = db.execute(
+            "SELECT * FROM sessions WHERE id = ?", (session_id,)
+        ).fetchone()
+        return dict(updated)
+
+
 @router.get("/api/sessions/{session_id}/messages", response_model=list[MessageOut])
 def get_messages(session_id: str, request: Request) -> list[dict]:
     """Get all messages for a session."""
@@ -97,3 +127,32 @@ def get_messages(session_id: str, request: Request) -> list[dict]:
             (session_id,),
         ).fetchall()
         return [dict(r) for r in rows]
+
+
+@router.get("/api/sessions/{session_id}/tree")
+def get_session_tree(session_id: str, request: Request) -> dict:
+    """Return the workspace file tree for a session."""
+    email = get_user_email(request)
+    with get_db() as db:
+        row = db.execute(
+            "SELECT s.id, w.path as workspace_path, r.owner_email "
+            "FROM sessions s "
+            "JOIN workspaces w ON s.workspace_id = w.id "
+            "JOIN repos r ON w.repo_id = r.id "
+            "WHERE s.id = ?",
+            (session_id,),
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Session not found")
+        check_owner(row["owner_email"], email)
+
+    workspace_path = row["workspace_path"]
+    files: list[str] = []
+    for dirpath, dirnames, filenames in os.walk(workspace_path):
+        # Skip .git directory
+        dirnames[:] = [d for d in dirnames if d != ".git"]
+        for fname in filenames:
+            rel = os.path.relpath(os.path.join(dirpath, fname), workspace_path)
+            files.append(rel)
+    files.sort()
+    return {"files": files}
