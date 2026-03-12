@@ -1,10 +1,9 @@
 """SQLite database connection and schema management."""
 
-import asyncio
 import logging
 import sqlite3
-from collections.abc import AsyncIterator, Iterator
-from contextlib import asynccontextmanager, contextmanager
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 from yinshi.config import get_settings
@@ -91,24 +90,6 @@ def get_db() -> Iterator[sqlite3.Connection]:
         yield conn
     finally:
         conn.close()
-
-
-@asynccontextmanager
-async def get_db_async() -> AsyncIterator[sqlite3.Connection]:
-    """Async wrapper that opens/closes the connection off the event loop.
-
-    The yielded connection is a standard sqlite3.Connection. Individual
-    execute() calls are fast enough for SQLite with WAL mode and busy_timeout
-    that they won't meaningfully block the event loop.
-    """
-    settings = get_settings()
-    conn = await asyncio.to_thread(
-        _open_connection, settings.db_path, check_same_thread=False
-    )
-    try:
-        yield conn
-    finally:
-        await asyncio.to_thread(conn.close)
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
@@ -209,6 +190,7 @@ CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
 CREATE INDEX IF NOT EXISTS idx_oauth_user ON oauth_identities(user_id);
 CREATE INDEX IF NOT EXISTS idx_api_keys_user ON api_keys(user_id);
 CREATE INDEX IF NOT EXISTS idx_usage_user ON usage_log(user_id);
+CREATE INDEX IF NOT EXISTS idx_usage_session ON usage_log(session_id);
 """
 
 

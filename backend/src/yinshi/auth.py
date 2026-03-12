@@ -9,7 +9,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from yinshi.config import get_settings
 from yinshi.db import get_control_db
-from yinshi.services.accounts import _make_tenant
+from yinshi.services.accounts import make_tenant
 from yinshi.tenant import TenantContext
 
 logger = logging.getLogger(__name__)
@@ -81,7 +81,7 @@ def _resolve_tenant_from_user_id(user_id: str) -> TenantContext | None:
         row = db.execute("SELECT id, email FROM users WHERE id = ?", (user_id,)).fetchone()
     if not row:
         return None
-    return _make_tenant(row["id"], row["email"])
+    return make_tenant(row["id"], row["email"])
 
 
 class AuthMiddleware(BaseHTTPMiddleware):
@@ -98,10 +98,6 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
         # Allow open paths
         if any(path.startswith(p) for p in self.OPEN_PREFIXES):
-            return await call_next(request)
-
-        # Allow WebSocket upgrade (auth checked in WS handler itself)
-        if request.headers.get("upgrade", "").lower() == "websocket":
             return await call_next(request)
 
         # Check session cookie

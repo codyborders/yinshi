@@ -1,8 +1,8 @@
 """Shared API dependency helpers (tenant extraction, DB context, legacy auth)."""
 
 import sqlite3
-from contextlib import contextmanager
 from collections.abc import Iterator
+from contextlib import contextmanager
 
 from fastapi import HTTPException, Request
 
@@ -60,3 +60,31 @@ def check_owner(owner_email: str | None, user_email: str | None) -> None:
     """
     if user_email and owner_email and owner_email != user_email:
         raise HTTPException(status_code=403, detail="Not authorized")
+
+
+def check_workspace_owner(db, workspace_id: str, request: Request) -> None:
+    """In legacy mode, verify the authenticated user owns the workspace's repo."""
+    if get_tenant(request):
+        return
+    ws = db.execute(
+        "SELECT w.id, r.owner_email FROM workspaces w "
+        "JOIN repos r ON w.repo_id = r.id WHERE w.id = ?",
+        (workspace_id,),
+    ).fetchone()
+    if ws:
+        check_owner(ws["owner_email"], get_user_email(request))
+
+
+def check_session_owner(db, session_id: str, request: Request) -> None:
+    """In legacy mode, verify the authenticated user owns the session's repo."""
+    if get_tenant(request):
+        return
+    row = db.execute(
+        "SELECT s.id, r.owner_email FROM sessions s "
+        "JOIN workspaces w ON s.workspace_id = w.id "
+        "JOIN repos r ON w.repo_id = r.id "
+        "WHERE s.id = ?",
+        (session_id,),
+    ).fetchone()
+    if row:
+        check_owner(row["owner_email"], get_user_email(request))

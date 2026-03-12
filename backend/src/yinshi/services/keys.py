@@ -7,10 +7,9 @@ and usage recording for the freemium model.
 import logging
 import uuid
 
-from fastapi import HTTPException
-
 from yinshi.config import get_settings
 from yinshi.db import get_control_db
+from yinshi.exceptions import CreditExhaustedError, EncryptionNotConfiguredError, KeyNotFoundError
 from yinshi.services.crypto import decrypt_api_key, generate_dek, unwrap_dek, wrap_dek
 
 logger = logging.getLogger(__name__)
@@ -29,14 +28,14 @@ def get_user_dek(user_id: str) -> bytes:
     settings = get_settings()
     pepper = settings.encryption_pepper_bytes
     if not pepper:
-        raise HTTPException(status_code=500, detail="Encryption not configured")
+        raise EncryptionNotConfiguredError("Encryption pepper not configured")
 
     with get_control_db() as db:
         row = db.execute(
             "SELECT encrypted_dek FROM users WHERE id = ?", (user_id,)
         ).fetchone()
     if not row:
-        raise HTTPException(status_code=500, detail="User not found")
+        raise KeyNotFoundError(f"User {user_id} not found")
 
     if not row["encrypted_dek"]:
         # Lazy-generate DEK for accounts created before encryption was configured
@@ -103,7 +102,7 @@ def resolve_api_key_for_prompt(
 
     Returns (api_key, key_source) where key_source is 'byok' or 'platform'.
 
-    Raises HTTPException(402) if no key is available.
+    Raises CreditExhaustedError or KeyNotFoundError if no key is available.
     """
     # 1. Check for BYOK key
     byok_key = resolve_user_api_key(user_id, provider)
@@ -116,15 +115,13 @@ def resolve_api_key_for_prompt(
         if remaining > 0:
             return platform_key, "platform"
 
-        raise HTTPException(
-            status_code=402,
-            detail="Free credit exhausted. Add your own MiniMax API key in Settings.",
+        raise CreditExhaustedError(
+            "Free credit exhausted. Add your own MiniMax API key in Settings."
         )
 
     # 3. No key available
-    raise HTTPException(
-        status_code=402,
-        detail=f"No API key found for {provider}. Add one in Settings.",
+    raise KeyNotFoundError(
+        f"No API key found for {provider}. Add one in Settings."
     )
 
 

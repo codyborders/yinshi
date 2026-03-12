@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 
 from yinshi.api.deps import check_owner, get_db_for_request, get_tenant, get_user_email
 from yinshi.config import get_settings
-from yinshi.exceptions import GitError, SidecarError
+from yinshi.exceptions import CreditExhaustedError, GitError, KeyNotFoundError, SidecarError
 from yinshi.services.keys import record_usage, resolve_api_key_for_prompt
 from yinshi.services.sidecar import SidecarClient, create_sidecar_connection
 
@@ -40,8 +40,8 @@ class PromptRequest(BaseModel):
 _FILLER_PREFIXES = [
     "please ", "can you ", "could you ", "would you ",
     "i want you to ", "i need you to ", "help me ",
-    "i\'d like you to ", "i would like you to ",
-    "go ahead and ", "let\'s ", "we need to ", "we should ",
+    "i'd like you to ", "i would like you to ",
+    "go ahead and ", "let's ", "we need to ", "we should ",
 ]
 
 _STOP_WORDS = frozenset({
@@ -83,12 +83,6 @@ def _summarize_prompt(prompt: str, max_words: int = 3) -> str:
     return summary or text[:30].lower()
 
 
-def _check_session_owner(session, request: Request) -> None:
-    """In legacy mode, verify the authenticated user owns the session's repo."""
-    if not get_tenant(request):
-        check_owner(session["owner_email"], get_user_email(request))
-
-
 def _lookup_session(db, session_id: str, request: Request):
     """Look up a session with workspace info, including owner_email in legacy mode."""
     tenant = get_tenant(request)
@@ -125,7 +119,8 @@ async def prompt_session(
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    _check_session_owner(session, request)
+    if not get_tenant(request):
+        check_owner(session["owner_email"], get_user_email(request))
 
     if session["status"] == "running":
         raise HTTPException(status_code=409, detail="Session already has an active stream")
@@ -153,9 +148,12 @@ async def prompt_session(
         platform_key = (
             settings.platform_minimax_api_key if provider == "minimax" else None
         )
-        api_key, key_source = resolve_api_key_for_prompt(
-            tenant.user_id, provider, platform_key
-        )
+        try:
+            api_key, key_source = resolve_api_key_for_prompt(
+                tenant.user_id, provider, platform_key
+            )
+        except (CreditExhaustedError, KeyNotFoundError) as exc:
+            raise HTTPException(status_code=402, detail=str(exc))
 
     logger.info(
         "Prompt received: session=%s prompt_len=%d model=%s provider=%s key_source=%s",
@@ -333,7 +331,8 @@ async def cancel_session(session_id: str, request: Request) -> dict[str, str]:
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    _check_session_owner(session, request)
+    if not get_tenant(request):
+        check_owner(session["owner_email"], get_user_email(request))
 
     sidecar = _active_sessions.get(session_id)
     if not sidecar:

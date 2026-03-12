@@ -41,12 +41,16 @@ app = FastAPI(
 )
 
 # CORS
+_cors_origins = [app_settings.frontend_url]
+if app_settings.debug:
+    _cors_origins.append("http://localhost:5173")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[app_settings.frontend_url, "http://localhost:5173"],
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PATCH", "DELETE"],
-    allow_headers=["Content-Type"],
+    allow_headers=["Content-Type", "X-Requested-With"],
 )
 
 # Session (authlib OAuth state storage)

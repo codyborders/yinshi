@@ -4,7 +4,13 @@ import logging
 
 from fastapi import APIRouter, HTTPException, Request
 
-from yinshi.api.deps import check_owner, get_db_for_request, get_tenant, get_user_email
+from yinshi.api.deps import (
+    check_owner,
+    check_workspace_owner,
+    get_db_for_request,
+    get_tenant,
+    get_user_email,
+)
 from yinshi.exceptions import RepoNotFoundError, WorkspaceNotFoundError
 from yinshi.models import WorkspaceCreate, WorkspaceOut, WorkspaceUpdate
 from yinshi.services.workspace import create_workspace_for_repo, delete_workspace
@@ -26,19 +32,6 @@ def _check_repo_owner(db, repo_id: str, request: Request) -> None:
         check_owner(repo["owner_email"], get_user_email(request))
 
 
-def _check_workspace_owner(db, workspace_id: str, request: Request) -> None:
-    """In legacy mode, verify the authenticated user owns the workspace's repo."""
-    if get_tenant(request):
-        return
-    ws = db.execute(
-        "SELECT w.id, r.owner_email FROM workspaces w "
-        "JOIN repos r ON w.repo_id = r.id WHERE w.id = ?",
-        (workspace_id,),
-    ).fetchone()
-    if ws:
-        check_owner(ws["owner_email"], get_user_email(request))
-
-
 @router.get("/api/repos/{repo_id}/workspaces", response_model=list[WorkspaceOut])
 def list_workspaces(repo_id: str, request: Request) -> list[dict]:
     """List all workspaces for a repo."""
@@ -58,12 +51,8 @@ def list_workspaces(repo_id: str, request: Request) -> list[dict]:
 )
 async def create_workspace(repo_id: str, body: WorkspaceCreate, request: Request) -> dict:
     """Create a new worktree workspace."""
-    tenant = get_tenant(request)
     email = get_user_email(request)
-    if tenant:
-        username = tenant.email.split("@")[0]
-    else:
-        username = email.split("@")[0] if email else None
+    username = email.split("@")[0] if email else None
 
     with get_db_for_request(request) as db:
         _check_repo_owner(db, repo_id, request)
@@ -82,7 +71,7 @@ def update_workspace(workspace_id: str, body: WorkspaceUpdate, request: Request)
         ).fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Workspace not found")
-        _check_workspace_owner(db, workspace_id, request)
+        check_workspace_owner(db, workspace_id, request)
 
         updates = {
             k: v
@@ -104,7 +93,7 @@ def update_workspace(workspace_id: str, body: WorkspaceUpdate, request: Request)
 async def remove_workspace(workspace_id: str, request: Request) -> None:
     """Delete a workspace and its worktree."""
     with get_db_for_request(request) as db:
-        _check_workspace_owner(db, workspace_id, request)
+        check_workspace_owner(db, workspace_id, request)
         try:
             await delete_workspace(db, workspace_id)
         except (WorkspaceNotFoundError, RepoNotFoundError):

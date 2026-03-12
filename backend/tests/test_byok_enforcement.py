@@ -225,10 +225,9 @@ def test_resolve_api_key_for_prompt_platform(test_user):
 
 
 def test_resolve_api_key_for_prompt_402_exhausted(test_user):
-    """402 when minimax credit exhausted and no BYOK."""
-    from fastapi import HTTPException
-
+    """CreditExhaustedError when minimax credit exhausted and no BYOK."""
     from yinshi.db import get_control_db
+    from yinshi.exceptions import CreditExhaustedError
     from yinshi.services.keys import resolve_api_key_for_prompt
 
     with get_control_db() as db:
@@ -238,20 +237,17 @@ def test_resolve_api_key_for_prompt_402_exhausted(test_user):
         )
         db.commit()
 
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(CreditExhaustedError):
         resolve_api_key_for_prompt(test_user.user_id, "minimax", "platform-key")
-    assert exc_info.value.status_code == 402
 
 
 def test_resolve_api_key_for_prompt_402_non_minimax(test_user):
-    """402 for non-minimax provider without BYOK."""
-    from fastapi import HTTPException
-
+    """KeyNotFoundError for non-minimax provider without BYOK."""
+    from yinshi.exceptions import KeyNotFoundError
     from yinshi.services.keys import resolve_api_key_for_prompt
 
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(KeyNotFoundError):
         resolve_api_key_for_prompt(test_user.user_id, "anthropic", None)
-    assert exc_info.value.status_code == 402
 
 
 # --- Integration tests: prompt endpoint with BYOK ---

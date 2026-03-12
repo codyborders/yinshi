@@ -27,3 +27,15 @@ class SidecarError(YinshiError):
 
 class SidecarNotConnectedError(SidecarError):
     """Raised when the sidecar is not connected."""
+
+
+class KeyNotFoundError(YinshiError):
+    """Raised when no API key is available for a provider."""
+
+
+class CreditExhaustedError(YinshiError):
+    """Raised when freemium credit is exhausted."""
+
+
+class EncryptionNotConfiguredError(YinshiError):
+    """Raised when encryption pepper is not configured."""

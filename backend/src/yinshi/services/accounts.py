@@ -14,7 +14,7 @@ from yinshi.tenant import TenantContext, get_user_db, init_user_db, user_data_di
 logger = logging.getLogger(__name__)
 
 
-def _make_tenant(user_id: str, email: str) -> TenantContext:
+def make_tenant(user_id: str, email: str) -> TenantContext:
     """Build a TenantContext from user_id and email."""
     settings = get_settings()
     data_dir = user_data_dir(settings.user_data_dir, user_id)
@@ -28,7 +28,7 @@ def _make_tenant(user_id: str, email: str) -> TenantContext:
 
 def provision_user(user_id: str, email: str) -> TenantContext:
     """Create the data directory and initialize the user's database."""
-    tenant = _make_tenant(user_id, email)
+    tenant = make_tenant(user_id, email)
     repos_dir = os.path.join(tenant.data_dir, "repos")
     os.makedirs(repos_dir, exist_ok=True)
     init_user_db(tenant.db_path)
@@ -151,7 +151,7 @@ def resolve_or_create_user(
         if row:
             _touch_last_login(db, row["user_id"])
             db.commit()
-            return _make_tenant(row["user_id"], row["email"])
+            return make_tenant(row["user_id"], row["email"])
 
         # 2. Check existing user by email
         user_row = db.execute(
@@ -168,7 +168,7 @@ def resolve_or_create_user(
             )
             _touch_last_login(db, user_id)
             db.commit()
-            return _make_tenant(user_id, email)
+            return make_tenant(user_id, email)
 
         # 3. Create new user
         user_id = secrets.token_hex(16)

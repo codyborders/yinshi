@@ -31,6 +31,7 @@ def _set_session_cookie(response: RedirectResponse, user_id: str) -> None:
         secure=not settings.debug,
         max_age=SESSION_MAX_AGE,
         samesite="lax",
+        path="/",
     )
 
 
@@ -139,10 +140,7 @@ async def login_redirect(request: Request):
 @router.get("/callback")
 async def callback_redirect(request: Request):
     """Legacy /auth/callback redirects to Google callback."""
-    return RedirectResponse(
-        url=str(request.url).replace("/auth/callback", "/auth/callback/google"),
-        status_code=307,
-    )
+    return RedirectResponse(url="/auth/callback/google", status_code=307)
 
 
 # --- Common endpoints ---

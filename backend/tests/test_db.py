@@ -170,26 +170,3 @@ def test_repos_table_has_owner_email_column(db):
     assert "owner_email" in columns
 
 
-@pytest.mark.asyncio
-async def test_get_db_async(db_path, monkeypatch):
-    """get_db_async should provide a working async DB connection."""
-    monkeypatch.setenv("DB_PATH", db_path)
-    from yinshi.config import get_settings
-
-    get_settings.cache_clear()
-
-    try:
-        from yinshi.db import init_db, get_db_async
-
-        init_db()
-        async with get_db_async() as conn:
-            tables = conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'"
-            ).fetchall()
-            assert len(tables) > 0
-
-            # Verify busy_timeout is set on async connections too
-            timeout = conn.execute("PRAGMA busy_timeout").fetchone()
-            assert timeout[0] == 5000
-    finally:
-        get_settings.cache_clear()

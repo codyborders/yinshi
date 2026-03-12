@@ -2,8 +2,8 @@
 
 import os
 import sqlite3
-from contextlib import contextmanager
 from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 
 from yinshi.db import _open_connection
@@ -98,10 +98,8 @@ BEGIN UPDATE sessions SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id; END;
 
 def init_user_db(db_path: str) -> None:
     """Initialize a per-user SQLite database with the user schema."""
-    conn = sqlite3.connect(db_path)
+    conn = _open_connection(db_path)
     try:
-        conn.execute("PRAGMA foreign_keys = ON")
-        conn.execute("PRAGMA busy_timeout = 5000")
         conn.executescript(USER_SCHEMA_SQL)
     finally:
         conn.close()
