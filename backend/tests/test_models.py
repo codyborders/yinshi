@@ -67,3 +67,23 @@ def test_ws_cancel():
 
     msg = WSCancel()
     assert msg.type == "cancel"
+
+
+def test_workspace_update_valid_states():
+    """WorkspaceUpdate should accept 'ready' and 'archived'."""
+    from yinshi.models import WorkspaceUpdate
+
+    assert WorkspaceUpdate(state="ready").state == "ready"
+    assert WorkspaceUpdate(state="archived").state == "archived"
+    assert WorkspaceUpdate().state is None
+
+
+def test_workspace_update_invalid_state():
+    """WorkspaceUpdate should reject invalid state values."""
+    import pytest
+    from pydantic import ValidationError
+
+    from yinshi.models import WorkspaceUpdate
+
+    with pytest.raises(ValidationError):
+        WorkspaceUpdate(state="deleted")

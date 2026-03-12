@@ -7,7 +7,7 @@ from fastapi import APIRouter, HTTPException, Request
 from yinshi.api.deps import check_owner, get_user_email
 from yinshi.db import get_db
 from yinshi.exceptions import RepoNotFoundError, WorkspaceNotFoundError
-from yinshi.models import WorkspaceCreate, WorkspaceOut
+from yinshi.models import WorkspaceCreate, WorkspaceOut, WorkspaceUpdate
 from yinshi.services.workspace import create_workspace_for_repo, delete_workspace
 
 logger = logging.getLogger(__name__)
@@ -45,10 +45,43 @@ async def create_workspace(repo_id: str, body: WorkspaceCreate, request: Request
             check_owner(repo["owner_email"], email)
         username = email.split("@")[0] if email else None
         try:
-            workspace = await create_workspace_for_repo(db, repo_id, body.name, username=username)
-            return workspace
+            return await create_workspace_for_repo(db, repo_id, body.name, username=username)
         except RepoNotFoundError:
             raise HTTPException(status_code=404, detail="Repo not found")
+
+_UPDATABLE_COLUMNS = {"state"}
+
+
+@router.patch("/api/workspaces/{workspace_id}", response_model=WorkspaceOut)
+def update_workspace(workspace_id: str, body: WorkspaceUpdate, request: Request) -> dict:
+    """Update workspace fields (currently only state)."""
+    email = get_user_email(request)
+    with get_db() as db:
+        row = db.execute(
+            "SELECT w.*, r.owner_email FROM workspaces w "
+            "JOIN repos r ON w.repo_id = r.id WHERE w.id = ?",
+            (workspace_id,),
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Workspace not found")
+        check_owner(row["owner_email"], email)
+
+        updates = {
+            k: v
+            for k, v in body.model_dump(exclude_unset=True).items()
+            if k in _UPDATABLE_COLUMNS
+        }
+        if updates:
+            sets = ", ".join(f"{k} = ?" for k in updates)
+            vals = list(updates.values()) + [workspace_id]
+            db.execute(f"UPDATE workspaces SET {sets} WHERE id = ?", vals)  # noqa: S608
+            db.commit()
+
+        updated = db.execute(
+            "SELECT * FROM workspaces WHERE id = ?", (workspace_id,)
+        ).fetchone()
+        return dict(updated)
+
 
 @router.delete("/api/workspaces/{workspace_id}", status_code=204)
 async def remove_workspace(workspace_id: str, request: Request) -> None:

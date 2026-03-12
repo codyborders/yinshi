@@ -53,6 +53,12 @@ class WorkspaceOut(BaseModel):
     state: str = "ready"
 
 
+class WorkspaceUpdate(BaseModel):
+    """Request to update a workspace."""
+
+    state: str | None = Field(None, pattern=r"^(ready|archived)$")
+
+
 class SessionCreate(BaseModel):
     """Request to create an agent session."""
 

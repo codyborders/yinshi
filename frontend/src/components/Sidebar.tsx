@@ -34,6 +34,21 @@ const PlusIcon = (
   </svg>
 );
 
+function ThemeIcon({ theme }: { theme: string }) {
+  if (theme === "light") {
+    return (
+      <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+        <path strokeLinecap="round" strokeLinejoin="round" d="M21.752 15.002A9.72 9.72 0 0 1 18 15.75c-5.385 0-9.75-4.365-9.75-9.75 0-1.33.266-2.597.748-3.752A9.753 9.753 0 0 0 3 11.25C3 16.635 7.365 21 12.75 21a9.753 9.753 0 0 0 9.002-5.998Z" />
+      </svg>
+    );
+  }
+  return (
+    <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M12 3v2.25m6.364.386-1.591 1.591M21 12h-2.25m-.386 6.364-1.591-1.591M12 18.75V21m-4.773-4.227-1.591 1.591M5.25 12H3m4.227-4.773L5.636 5.636M15.75 12a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0Z" />
+    </svg>
+  );
+}
+
 export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const { id: activeSessionId } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -116,15 +131,7 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
                 className="shrink-0 text-gray-600 hover:text-gray-400"
                 title={theme === "light" ? "Switch to dark mode" : "Switch to light mode"}
               >
-                {theme === "light" ? (
-                  <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M21.752 15.002A9.72 9.72 0 0 1 18 15.75c-5.385 0-9.75-4.365-9.75-9.75 0-1.33.266-2.597.748-3.752A9.753 9.753 0 0 0 3 11.25C3 16.635 7.365 21 12.75 21a9.753 9.753 0 0 0 9.002-5.998Z" />
-                  </svg>
-                ) : (
-                  <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 3v2.25m6.364.386-1.591 1.591M21 12h-2.25m-.386 6.364-1.591-1.591M12 18.75V21m-4.773-4.227-1.591 1.591M5.25 12H3m4.227-4.773L5.636 5.636M15.75 12a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0Z" />
-                  </svg>
-                )}
+                <ThemeIcon theme={theme} />
               </button>
               <button
                 onClick={logout}
@@ -140,15 +147,7 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
             className="text-gray-600 hover:text-gray-400"
             title={theme === "light" ? "Switch to dark mode" : "Switch to light mode"}
           >
-            {theme === "light" ? (
-              <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M21.752 15.002A9.72 9.72 0 0 1 18 15.75c-5.385 0-9.75-4.365-9.75-9.75 0-1.33.266-2.597.748-3.752A9.753 9.753 0 0 0 3 11.25C3 16.635 7.365 21 12.75 21a9.753 9.753 0 0 0 9.002-5.998Z" />
-              </svg>
-            ) : (
-              <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M12 3v2.25m6.364.386-1.591 1.591M21 12h-2.25m-.386 6.364-1.591-1.591M12 18.75V21m-4.773-4.227-1.591 1.591M5.25 12H3m4.227-4.773L5.636 5.636M15.75 12a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0Z" />
-              </svg>
-            )}
+            <ThemeIcon theme={theme} />
           </button>
         )}
       </div>
@@ -170,6 +169,7 @@ function RepoSection({
   const [expanded, setExpanded] = useState(true);
   const [loaded, setLoaded] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [showArchived, setShowArchived] = useState(false);
 
   useEffect(() => {
     if (expanded && !loaded) {
@@ -207,6 +207,22 @@ function RepoSection({
     }
   }
 
+  async function handleStateChange(workspaceId: string, newState: string) {
+    try {
+      const updated = await api.patch<Workspace>(
+        `/api/workspaces/${workspaceId}`,
+        { state: newState },
+      );
+      setWorkspaces((prev) =>
+        prev.map((ws) => (ws.id === workspaceId ? updated : ws)),
+      );
+    } catch {
+      /* ignore */
+    }
+  }
+
+  const activeWorkspaces = workspaces.filter((ws) => ws.state !== "archived");
+  const archivedWorkspaces = workspaces.filter((ws) => ws.state === "archived");
   const initial = repo.name.charAt(0).toUpperCase();
 
   return (
@@ -241,15 +257,49 @@ function RepoSection({
         </button>
       </div>
 
-      {expanded &&
-        workspaces.map((ws) => (
-          <WorkspaceItem
-            key={ws.id}
-            workspace={ws}
-            activeSessionId={activeSessionId}
-            onNavigate={onNavigate}
-          />
-        ))}
+      {expanded && (
+        <>
+          {activeWorkspaces.map((ws) => (
+            <WorkspaceItem
+              key={ws.id}
+              workspace={ws}
+              activeSessionId={activeSessionId}
+              onNavigate={onNavigate}
+              onArchive={() => handleStateChange(ws.id, "archived")}
+            />
+          ))}
+
+          {archivedWorkspaces.length > 0 && (
+            <>
+              <button
+                onClick={() => setShowArchived(!showArchived)}
+                className="flex w-full items-center gap-1 px-11 py-1 text-xs text-gray-600 hover:text-gray-400"
+              >
+                <svg
+                  className={`h-3 w-3 transition-transform ${showArchived ? "rotate-90" : ""}`}
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  strokeWidth={2}
+                  stroke="currentColor"
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
+                </svg>
+                Archived ({archivedWorkspaces.length})
+              </button>
+              {showArchived &&
+                archivedWorkspaces.map((ws) => (
+                  <WorkspaceItem
+                    key={ws.id}
+                    workspace={ws}
+                    activeSessionId={activeSessionId}
+                    onNavigate={onNavigate}
+                    onRestore={() => handleStateChange(ws.id, "ready")}
+                  />
+                ))}
+            </>
+          )}
+        </>
+      )}
     </div>
   );
 }
@@ -258,10 +308,14 @@ function WorkspaceItem({
   workspace,
   activeSessionId,
   onNavigate,
+  onArchive,
+  onRestore,
 }: {
   workspace: Workspace;
   activeSessionId: string | undefined;
   onNavigate?: () => void;
+  onArchive?: () => void;
+  onRestore?: () => void;
 }) {
   const navigate = useNavigate();
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
@@ -303,21 +357,47 @@ function WorkspaceItem({
   const hasRunning = sessions.some((s) => s.status === "running");
 
   return (
-    <button
-      onClick={openOrCreateSession}
-      className={`flex w-full items-center gap-2 py-1.5 pl-11 pr-4 text-left hover:bg-gray-800/50 ${
+    <div
+      className={`group flex w-full items-center py-1.5 pl-11 pr-4 hover:bg-gray-800/50 ${
         isActive ? "bg-gray-800/70" : ""
       }`}
     >
-      <span
-        className={`h-2 w-2 shrink-0 rounded-full ${statusDotClass(hasRunning, workspace.state)}`}
-      />
-      <div className="flex-1 min-w-0">
-        <div className="truncate text-sm text-gray-300">
-          {workspace.name}
+      <button
+        onClick={openOrCreateSession}
+        className="flex flex-1 items-center gap-2 min-w-0 text-left"
+      >
+        <span
+          className={`h-2 w-2 shrink-0 rounded-full ${statusDotClass(hasRunning, workspace.state)}`}
+        />
+        <div className="flex-1 min-w-0">
+          <div className="truncate text-sm text-gray-300">
+            {workspace.name}
+          </div>
         </div>
-      </div>
-    </button>
+      </button>
+      {onArchive && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onArchive(); }}
+          className="shrink-0 ml-1 text-gray-600 opacity-0 group-hover:opacity-100 hover:text-gray-300 transition-opacity"
+          title="Archive"
+        >
+          <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" d="m20.25 7.5-.625 10.632a2.25 2.25 0 0 1-2.247 2.118H6.622a2.25 2.25 0 0 1-2.247-2.118L3.75 7.5M10 11.25h4M3.375 7.5h17.25c.621 0 1.125-.504 1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125H3.375c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125Z" />
+          </svg>
+        </button>
+      )}
+      {onRestore && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onRestore(); }}
+          className="shrink-0 ml-1 text-gray-600 opacity-0 group-hover:opacity-100 hover:text-gray-300 transition-opacity"
+          title="Restore"
+        >
+          <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M9 15 3 9m0 0 6-6M3 9h12a6 6 0 0 1 0 12h-3" />
+          </svg>
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -342,7 +422,6 @@ function ImportForm({ onDone }: { onDone: (repo: Repo | null) => void }) {
         body.local_path = value;
       } else {
         body.remote_url = `https://github.com/${value}`;
-        body.name = deriveRepoName(value);
       }
       const repo = await api.post<Repo>("/api/repos", body);
       onDone(repo);

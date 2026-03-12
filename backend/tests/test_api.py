@@ -674,3 +674,63 @@ def test_get_session_tree_not_found(client: TestClient) -> None:
     """GET /api/sessions/:id/tree with bad ID should 404."""
     resp = client.get("/api/sessions/nonexistent/tree")
     assert resp.status_code == 404
+
+
+# --- Workspace PATCH endpoint tests ---
+
+
+def test_archive_workspace(client: TestClient, test_entities: Entities) -> None:
+    """PATCH /api/workspaces/:id should archive a workspace."""
+    resp = client.patch(
+        f"/api/workspaces/{test_entities.workspace_id}",
+        json={"state": "archived"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["state"] == "archived"
+
+    # Verify persistence
+    ws_list = client.get(f"/api/repos/{test_entities.repo_id}/workspaces").json()
+    target = [w for w in ws_list if w["id"] == test_entities.workspace_id][0]
+    assert target["state"] == "archived"
+
+
+def test_unarchive_workspace(client: TestClient, test_entities: Entities) -> None:
+    """PATCH /api/workspaces/:id should restore an archived workspace."""
+    client.patch(
+        f"/api/workspaces/{test_entities.workspace_id}",
+        json={"state": "archived"},
+    )
+    resp = client.patch(
+        f"/api/workspaces/{test_entities.workspace_id}",
+        json={"state": "ready"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["state"] == "ready"
+
+
+def test_update_workspace_not_found(client: TestClient) -> None:
+    """PATCH /api/workspaces/:id with bad ID should 404."""
+    resp = client.patch(
+        "/api/workspaces/nonexistent",
+        json={"state": "archived"},
+    )
+    assert resp.status_code == 404
+
+
+def test_update_workspace_no_changes(client: TestClient, test_entities: Entities) -> None:
+    """PATCH /api/workspaces/:id with empty body should return workspace unchanged."""
+    resp = client.patch(
+        f"/api/workspaces/{test_entities.workspace_id}",
+        json={},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["state"] == "ready"
+
+
+def test_update_workspace_invalid_state(client: TestClient, test_entities: Entities) -> None:
+    """PATCH /api/workspaces/:id with invalid state should 422."""
+    resp = client.patch(
+        f"/api/workspaces/{test_entities.workspace_id}",
+        json={"state": "bogus"},
+    )
+    assert resp.status_code == 422
