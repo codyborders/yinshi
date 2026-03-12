@@ -438,6 +438,31 @@
   transform: translateY(-1px);
 }
 
+.landing-cta-group {
+  display: flex;
+  gap: 1rem;
+  align-items: center;
+  margin-top: 2rem;
+}
+
+.landing-cta-group .landing-cta {
+  margin-top: 0;
+}
+
+.landing-cta-secondary {
+  background: transparent;
+  color: var(--lp-ink);
+  border: 1px solid var(--lp-ink-faded);
+  box-shadow: none;
+}
+
+.landing-cta-secondary:hover {
+  background: var(--lp-ink);
+  color: var(--lp-parchment);
+  border-color: var(--lp-ink);
+  box-shadow: 0 2px 12px rgba(26, 20, 16, 0.15);
+}
+
 /* ---- Divider ---- */
 
 .landing-divider {

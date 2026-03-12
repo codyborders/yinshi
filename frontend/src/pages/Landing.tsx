@@ -77,9 +77,14 @@ export default function Landing() {
               {`Point Yinshi at a repo. An AI agent writes code on an isolated branch while you review the diff. No local setup, no risk to main -- just open a browser and go.`}
             </ReactMarkdown>
           </div>
-          <a href="/auth/login" className="landing-cta">
-            Get Started
-          </a>
+          <div className="landing-cta-group">
+            <a href="/auth/login" className="landing-cta">
+              Get Started
+            </a>
+            <a href="/architecture.html" className="landing-cta landing-cta-secondary">
+              Architecture
+            </a>
+          </div>
         </div>
       </section>
 
