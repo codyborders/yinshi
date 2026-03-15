@@ -1,13 +1,41 @@
 """Tests for per-user container isolation."""
 
-import asyncio
 import os
-from datetime import datetime, timedelta
-from unittest.mock import AsyncMock, MagicMock, patch
+from datetime import datetime, timedelta, timezone
+from unittest.mock import MagicMock
 
 import pytest
 
 from yinshi.exceptions import ContainerNotReadyError, ContainerStartError
+
+
+# ---------------------------------------------------------------------------
+# Path utility tests
+# ---------------------------------------------------------------------------
+
+class TestIsPathInside:
+    """Tests for the shared is_path_inside utility."""
+
+    def test_path_inside(self):
+        from yinshi.utils.paths import is_path_inside
+
+        assert is_path_inside("/var/lib/users/abc/repos/r", "/var/lib/users/abc") is True
+
+    def test_path_equal_to_base(self):
+        from yinshi.utils.paths import is_path_inside
+
+        assert is_path_inside("/var/lib/users/abc", "/var/lib/users/abc") is True
+
+    def test_path_outside(self):
+        from yinshi.utils.paths import is_path_inside
+
+        assert is_path_inside("/etc/passwd", "/var/lib/users/abc") is False
+
+    def test_path_prefix_trick(self):
+        from yinshi.utils.paths import is_path_inside
+
+        # "/var/lib/users/abcdef" should NOT be inside "/var/lib/users/abc"
+        assert is_path_inside("/var/lib/users/abcdef", "/var/lib/users/abc") is False
 
 
 # ---------------------------------------------------------------------------
@@ -66,6 +94,7 @@ def _make_settings(**overrides):
         "container_cpu_quota": 50000,
         "container_pids_limit": 256,
         "container_socket_base": "/tmp/test-yinshi-sockets",
+        "container_max_count": 0,
     }
     defaults.update(overrides)
     s = MagicMock()
@@ -83,6 +112,7 @@ def _mock_docker_client():
     container.attrs = {"State": {"Status": "running"}}
     client.containers.run.return_value = container
     client.containers.get.return_value = container
+    client.containers.list.return_value = []
 
     network = MagicMock()
     client.networks.get.return_value = network
@@ -104,7 +134,7 @@ class TestContainerManager:
         mgr = ContainerManager(settings=settings, docker_client=docker_client)
 
         # Simulate socket file appearing after container start
-        user_id = "abcdef1234567890"
+        user_id = "abcdef12345678901234567890abcdef"
         data_dir = str(tmp_path / "data")
         os.makedirs(data_dir, exist_ok=True)
 
@@ -138,7 +168,7 @@ class TestContainerManager:
 
         mgr = ContainerManager(settings=settings, docker_client=docker_client)
 
-        user_id = "abcdef1234567890"
+        user_id = "abcdef12345678901234567890abcdef"
         data_dir = str(tmp_path / "data")
 
         # Pre-populate with existing container
@@ -146,8 +176,8 @@ class TestContainerManager:
             container_id="existing123",
             user_id=user_id,
             socket_path="/tmp/fake.sock",
-            created_at=datetime.utcnow(),
-            last_activity=datetime.utcnow(),
+            created_at=datetime.now(timezone.utc),
+            last_activity=datetime.now(timezone.utc),
         )
         mgr._containers[user_id] = existing
 
@@ -166,7 +196,7 @@ class TestContainerManager:
 
         mgr = ContainerManager(settings=settings, docker_client=docker_client)
 
-        user_id = "abcdef1234567890"
+        user_id = "abcdef12345678901234567890abcdef"
         data_dir = str(tmp_path / "data")
         os.makedirs(data_dir, exist_ok=True)
 
@@ -179,8 +209,8 @@ class TestContainerManager:
             container_id="stopped123",
             user_id=user_id,
             socket_path="/tmp/fake.sock",
-            created_at=datetime.utcnow(),
-            last_activity=datetime.utcnow(),
+            created_at=datetime.now(timezone.utc),
+            last_activity=datetime.now(timezone.utc),
         )
         mgr._containers[user_id] = existing
 
@@ -207,8 +237,8 @@ class TestContainerManager:
         docker_client, _ = _mock_docker_client()
         mgr = ContainerManager(settings=settings, docker_client=docker_client)
 
-        user_id = "abcdef1234567890"
-        old_time = datetime.utcnow() - timedelta(minutes=10)
+        user_id = "abcdef12345678901234567890abcdef"
+        old_time = datetime.now(timezone.utc) - timedelta(minutes=10)
         mgr._containers[user_id] = ContainerInfo(
             container_id="c1",
             user_id=user_id,
@@ -233,27 +263,29 @@ class TestContainerManager:
         mgr = ContainerManager(settings=settings, docker_client=docker_client)
 
         # One idle, one active
-        old_time = datetime.utcnow() - timedelta(minutes=5)
-        mgr._containers["idle-user"] = ContainerInfo(
+        idle_uid = "0" * 32
+        active_uid = "1" * 32
+        old_time = datetime.now(timezone.utc) - timedelta(minutes=5)
+        mgr._containers[idle_uid] = ContainerInfo(
             container_id="idle123",
-            user_id="idle-user",
+            user_id=idle_uid,
             socket_path="/tmp/fake.sock",
             created_at=old_time,
             last_activity=old_time,
         )
-        mgr._containers["active-user"] = ContainerInfo(
+        mgr._containers[active_uid] = ContainerInfo(
             container_id="active123",
-            user_id="active-user",
+            user_id=active_uid,
             socket_path="/tmp/fake2.sock",
-            created_at=datetime.utcnow(),
-            last_activity=datetime.utcnow(),
+            created_at=datetime.now(timezone.utc),
+            last_activity=datetime.now(timezone.utc),
         )
 
         count = await mgr.reap_idle()
 
         assert count == 1
-        assert "idle-user" not in mgr._containers
-        assert "active-user" in mgr._containers
+        assert idle_uid not in mgr._containers
+        assert active_uid in mgr._containers
 
     @pytest.mark.asyncio
     async def test_destroy_all(self, tmp_path):
@@ -263,13 +295,15 @@ class TestContainerManager:
         docker_client, _ = _mock_docker_client()
         mgr = ContainerManager(settings=settings, docker_client=docker_client)
 
-        mgr._containers["u1"] = ContainerInfo(
-            container_id="c1", user_id="u1", socket_path="/tmp/s1",
-            created_at=datetime.utcnow(), last_activity=datetime.utcnow(),
+        mgr._containers["a" * 32] = ContainerInfo(
+            container_id="c1", user_id="a" * 32, socket_path="/tmp/s1",
+            created_at=datetime.now(timezone.utc),
+            last_activity=datetime.now(timezone.utc),
         )
-        mgr._containers["u2"] = ContainerInfo(
-            container_id="c2", user_id="u2", socket_path="/tmp/s2",
-            created_at=datetime.utcnow(), last_activity=datetime.utcnow(),
+        mgr._containers["b" * 32] = ContainerInfo(
+            container_id="c2", user_id="b" * 32, socket_path="/tmp/s2",
+            created_at=datetime.now(timezone.utc),
+            last_activity=datetime.now(timezone.utc),
         )
 
         await mgr.destroy_all()
@@ -289,9 +323,132 @@ class TestContainerManager:
         mgr._socket_poll_timeout_s = 0.3
         mgr._socket_poll_interval_s = 0.1
 
-        user_id = "abcdef1234567890"
+        user_id = "abcdef12345678901234567890abcdef"
         data_dir = str(tmp_path / "data")
         os.makedirs(data_dir, exist_ok=True)
 
         with pytest.raises(ContainerNotReadyError):
             await mgr.ensure_container(user_id, data_dir)
+
+    @pytest.mark.asyncio
+    async def test_invalid_user_id_rejected(self, tmp_path):
+        """S1: user_id must be a 32-char hex string."""
+        from yinshi.services.container import ContainerManager
+
+        settings = _make_settings(container_socket_base=str(tmp_path))
+        docker_client, _ = _mock_docker_client()
+        mgr = ContainerManager(settings=settings, docker_client=docker_client)
+
+        with pytest.raises(ValueError, match="Invalid user_id"):
+            await mgr.ensure_container("../../etc", str(tmp_path))
+
+        with pytest.raises(ValueError, match="Invalid user_id"):
+            await mgr.ensure_container("short", str(tmp_path))
+
+        with pytest.raises(ValueError, match="Invalid user_id"):
+            await mgr.ensure_container("ABCDEF12345678901234567890ABCDEF", str(tmp_path))
+
+    @pytest.mark.asyncio
+    async def test_destroy_container_cleans_up_lock(self, tmp_path):
+        """P3: Locks should be cleaned up when containers are destroyed."""
+        from yinshi.services.container import ContainerInfo, ContainerManager
+
+        settings = _make_settings(container_socket_base=str(tmp_path))
+        docker_client, _ = _mock_docker_client()
+        mgr = ContainerManager(settings=settings, docker_client=docker_client)
+
+        user_id = "abcdef12345678901234567890abcdef"
+        mgr._containers[user_id] = ContainerInfo(
+            container_id="c1", user_id=user_id, socket_path="/tmp/s1",
+            created_at=datetime.now(timezone.utc),
+            last_activity=datetime.now(timezone.utc),
+        )
+        # Simulate that a lock exists for this user
+        import asyncio
+        mgr._locks[user_id] = asyncio.Lock()
+
+        await mgr.destroy_container(user_id)
+
+        assert user_id not in mgr._containers
+        assert user_id not in mgr._locks
+
+    @pytest.mark.asyncio
+    async def test_max_container_count_enforced(self, tmp_path):
+        """P5: Reject new containers when max count is reached."""
+        from yinshi.services.container import ContainerInfo, ContainerManager
+
+        settings = _make_settings(
+            container_socket_base=str(tmp_path),
+            container_max_count=2,
+            container_idle_timeout_s=99999,
+        )
+        docker_client, _ = _mock_docker_client()
+        mgr = ContainerManager(settings=settings, docker_client=docker_client)
+
+        # Fill up to max
+        uid1 = "a" * 32
+        uid2 = "b" * 32
+        uid3 = "c" * 32
+        mgr._containers[uid1] = ContainerInfo(
+            container_id="c1", user_id=uid1, socket_path="/tmp/s1",
+            created_at=datetime.now(timezone.utc),
+            last_activity=datetime.now(timezone.utc),
+        )
+        mgr._containers[uid2] = ContainerInfo(
+            container_id="c2", user_id=uid2, socket_path="/tmp/s2",
+            created_at=datetime.now(timezone.utc),
+            last_activity=datetime.now(timezone.utc),
+        )
+
+        with pytest.raises(ContainerStartError, match="Maximum container limit"):
+            await mgr.ensure_container(uid3, str(tmp_path / "data"))
+
+    @pytest.mark.asyncio
+    async def test_orphaned_containers_cleaned_on_init(self, tmp_path):
+        """S7: Orphaned containers should be removed on initialization."""
+        from yinshi.services.container import ContainerManager
+
+        settings = _make_settings(container_socket_base=str(tmp_path))
+        docker_client, _ = _mock_docker_client()
+
+        orphan = MagicMock()
+        orphan.id = "orphan123"
+        docker_client.containers.list.return_value = [orphan]
+
+        mgr = ContainerManager(settings=settings, docker_client=docker_client)
+        await mgr.initialize()
+
+        orphan.remove.assert_called_once_with(force=True)
+
+    @pytest.mark.asyncio
+    async def test_socket_dir_permissions(self, tmp_path):
+        """S2: Socket directory should be created with 0o700 permissions."""
+        from yinshi.services.container import ContainerManager
+
+        socket_base = str(tmp_path / "sockets")
+        settings = _make_settings(container_socket_base=socket_base)
+        docker_client, container = _mock_docker_client()
+
+        mgr = ContainerManager(settings=settings, docker_client=docker_client)
+        mgr._socket_poll_timeout_s = 0.2
+        mgr._socket_poll_interval_s = 0.05
+
+        user_id = "abcdef12345678901234567890abcdef"
+        data_dir = str(tmp_path / "data")
+        os.makedirs(data_dir, exist_ok=True)
+
+        socket_dir = os.path.join(socket_base, user_id)
+
+        def _create_socket(*args, **kwargs):
+            # Socket dir is created by _create_container before this call
+            with open(os.path.join(socket_dir, "sidecar.sock"), "w") as f:
+                f.write("")
+            return container
+
+        docker_client.containers.run.side_effect = _create_socket
+
+        await mgr.ensure_container(user_id, data_dir)
+
+        # Verify socket dir has restricted permissions
+        stat = os.stat(socket_dir)
+        assert oct(stat.st_mode & 0o777) == oct(0o700)

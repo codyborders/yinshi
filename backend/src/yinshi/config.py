@@ -65,6 +65,7 @@ class Settings(BaseSettings):
     container_memory_limit: str = "512m"
     container_cpu_quota: int = 50000
     container_pids_limit: int = 256
+    container_max_count: int = 0  # 0 = unlimited
     container_socket_base: str = "/var/run/yinshi"
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "case_sensitive": False}

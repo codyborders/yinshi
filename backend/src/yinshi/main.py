@@ -35,6 +35,7 @@ async def lifespan(app: FastAPI):
         from yinshi.services.container import ContainerManager
 
         mgr = ContainerManager(settings=app_settings)
+        await mgr.initialize()
         app.state.container_manager = mgr
         reaper_task = asyncio.create_task(mgr.run_reaper())
         logger.info("Container isolation enabled (image=%s)", app_settings.container_image)
@@ -45,7 +46,11 @@ async def lifespan(app: FastAPI):
 
     if reaper_task:
         reaper_task.cancel()
-    if getattr(app.state, "container_manager", None):
+        try:
+            await reaper_task
+        except asyncio.CancelledError:
+            pass
+    if app.state.container_manager:
         await app.state.container_manager.destroy_all()
     logger.info("Shutdown complete")
 

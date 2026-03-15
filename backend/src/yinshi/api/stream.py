@@ -9,8 +9,10 @@ import asyncio
 import json
 import logging
 import os
+import sqlite3
 import uuid
 from collections.abc import AsyncGenerator
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -28,6 +30,7 @@ from yinshi.exceptions import (
 )
 from yinshi.services.keys import record_usage, resolve_api_key_for_prompt
 from yinshi.services.sidecar import SidecarClient, create_sidecar_connection
+from yinshi.utils.paths import is_path_inside
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -93,24 +96,17 @@ def _summarize_prompt(prompt: str, max_words: int = 3) -> str:
     return summary
 
 
-def _path_inside(path: str, base: str) -> bool:
-    """Check if *path* is inside *base* after resolving symlinks."""
-    resolved = os.path.realpath(path)
-    resolved_base = os.path.realpath(base)
-    return resolved.startswith(resolved_base + os.sep) or resolved == resolved_base
-
-
-def _validate_workspace_path(tenant, workspace_path: str) -> None:
+def _validate_workspace_path(tenant: Any, workspace_path: str) -> None:
     """Reject workspace paths that are outside trusted directories.
 
     Trusted directories are the tenant's own data_dir and, when
     configured, the global ``allowed_repo_base``.
     """
-    if _path_inside(workspace_path, tenant.data_dir):
+    if is_path_inside(workspace_path, tenant.data_dir):
         return
 
     settings = get_settings()
-    if settings.allowed_repo_base and _path_inside(workspace_path, settings.allowed_repo_base):
+    if settings.allowed_repo_base and is_path_inside(workspace_path, settings.allowed_repo_base):
         return
 
     raise HTTPException(
@@ -120,12 +116,12 @@ def _validate_workspace_path(tenant, workspace_path: str) -> None:
 
 
 def _remap_path(
-    host_path: str, data_dir: str, mount: str = "/data"
+    host_path: str, data_dir: str, mount: str = "/data",
 ) -> str:
     """Translate a host workspace path to the container's mount namespace."""
     resolved = os.path.realpath(host_path)
     base = os.path.realpath(data_dir)
-    if not resolved.startswith(base + os.sep) and resolved != base:
+    if not is_path_inside(host_path, data_dir):
         raise ValueError("Path outside user data directory")
     if resolved == base:
         return mount
@@ -133,7 +129,9 @@ def _remap_path(
     return os.path.join(mount, relative)
 
 
-def _lookup_session(db, session_id: str, request: Request):
+def _lookup_session(
+    db: sqlite3.Connection, session_id: str, request: Request,
+) -> sqlite3.Row | None:
     """Look up a session with workspace info, including owner_email in legacy mode."""
     tenant = get_tenant(request)
     if tenant:
@@ -158,9 +156,70 @@ def _lookup_session(db, session_id: str, request: Request):
     ).fetchone()
 
 
+async def _resolve_execution_context(
+    request: Request,
+    tenant: Any,
+    workspace_path: str,
+    model: str,
+) -> tuple[str | None, str, str | None, str, str | None]:
+    """Resolve container socket, effective cwd, API key, key source, and provider.
+
+    Returns (sidecar_socket, effective_cwd, api_key, key_source, provider).
+    Only performs container/key resolution in tenant mode; returns defaults
+    for legacy (non-tenant) mode.
+    """
+    if not tenant:
+        return None, workspace_path, None, "platform", None
+
+    _validate_workspace_path(tenant, workspace_path)
+
+    container_mgr = getattr(request.app.state, "container_manager", None)
+    sidecar_socket: str | None = None
+    effective_cwd = workspace_path
+
+    if container_mgr and is_path_inside(workspace_path, tenant.data_dir):
+        try:
+            container_info = await container_mgr.ensure_container(
+                tenant.user_id, tenant.data_dir,
+            )
+            sidecar_socket = container_info.socket_path
+            effective_cwd = _remap_path(workspace_path, tenant.data_dir)
+        except (ContainerStartError, ContainerNotReadyError):
+            logger.exception("Container start failed for user %s", tenant.user_id[:8])
+            raise HTTPException(
+                status_code=503,
+                detail="Agent environment temporarily unavailable",
+            )
+    elif container_mgr:
+        logger.warning(
+            "Container isolation bypassed: workspace %s is outside data_dir",
+            workspace_path,
+        )
+
+    sidecar_tmp = await create_sidecar_connection(sidecar_socket)
+    try:
+        resolved = await sidecar_tmp.resolve_model(model)
+        provider: str | None = resolved["provider"]
+    finally:
+        await sidecar_tmp.disconnect()
+
+    settings = get_settings()
+    platform_key = (
+        settings.platform_minimax_api_key if provider == "minimax" else None
+    )
+    try:
+        api_key, key_source = resolve_api_key_for_prompt(
+            tenant.user_id, provider, platform_key,
+        )
+    except (CreditExhaustedError, KeyNotFoundError) as exc:
+        raise HTTPException(status_code=402, detail=str(exc)) from exc
+
+    return sidecar_socket, effective_cwd, api_key, key_source, provider
+
+
 @router.post("/api/sessions/{session_id}/prompt")
 async def prompt_session(
-    session_id: str, body: PromptRequest, request: Request
+    session_id: str, body: PromptRequest, request: Request,
 ) -> StreamingResponse:
     """Send a prompt and stream agent events as SSE."""
     with get_db_for_request(request) as db:
@@ -169,7 +228,8 @@ async def prompt_session(
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    if not get_tenant(request):
+    tenant = get_tenant(request)
+    if not tenant:
         check_owner(session["owner_email"], get_user_email(request))
 
     if session["status"] == "running":
@@ -180,49 +240,11 @@ async def prompt_session(
     prompt = body.prompt
     turn_id = uuid.uuid4().hex
 
-    # Key resolution (only in tenant mode)
-    api_key: str | None = None
-    key_source = "platform"
-    provider: str | None = None
-    tenant = get_tenant(request)
+    sidecar_socket, effective_cwd, api_key, key_source, provider = (
+        await _resolve_execution_context(request, tenant, workspace_path, model)
+    )
 
-    # Container isolation: resolve per-user socket path and remap cwd
     container_mgr = getattr(request.app.state, "container_manager", None)
-    sidecar_socket: str | None = None
-    effective_cwd = workspace_path
-
-    if tenant:
-        # P1 fix: validate workspace path is within tenant data_dir or
-        # the allowed_repo_base (for local repo imports).
-        _validate_workspace_path(tenant, workspace_path)
-
-        if container_mgr and _path_inside(workspace_path, tenant.data_dir):
-            try:
-                container_info = await container_mgr.ensure_container(
-                    tenant.user_id, tenant.data_dir
-                )
-                sidecar_socket = container_info.socket_path
-                effective_cwd = _remap_path(workspace_path, tenant.data_dir)
-            except (ContainerStartError, ContainerNotReadyError) as exc:
-                raise HTTPException(status_code=503, detail=str(exc))
-
-        sidecar_tmp = await create_sidecar_connection(sidecar_socket)
-        try:
-            resolved = await sidecar_tmp.resolve_model(model)
-            provider = resolved["provider"]
-        finally:
-            await sidecar_tmp.disconnect()
-
-        settings = get_settings()
-        platform_key = (
-            settings.platform_minimax_api_key if provider == "minimax" else None
-        )
-        try:
-            api_key, key_source = resolve_api_key_for_prompt(
-                tenant.user_id, provider, platform_key
-            )
-        except (CreditExhaustedError, KeyNotFoundError) as exc:
-            raise HTTPException(status_code=402, detail=str(exc))
 
     logger.info(
         "Prompt received: session=%s prompt_len=%d model=%s provider=%s key_source=%s",
@@ -253,7 +275,7 @@ async def prompt_session(
         accumulated = ""
         assistant_msg_id: str | None = None
         chunk_count = 0
-        usage_data: dict = {}
+        usage_data: dict[str, Any] = {}
         result_provider = provider or ""
 
         try:
@@ -261,7 +283,7 @@ async def prompt_session(
             async with _active_sessions_lock:
                 _active_sessions[session_id] = sidecar
             await sidecar.warmup(
-                session_id, model=model, cwd=effective_cwd, api_key=api_key
+                session_id, model=model, cwd=effective_cwd, api_key=api_key,
             )
 
             logger.info("Streaming started: session=%s turn_id=%s", session_id, turn_id)

@@ -1,6 +1,7 @@
 """CRUD endpoints for repositories."""
 
 import logging
+import sqlite3
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
@@ -11,6 +12,7 @@ from yinshi.exceptions import GitError
 from yinshi.models import RepoCreate, RepoOut, RepoUpdate
 from yinshi.services.git import clone_repo, validate_local_repo
 from yinshi.services.workspace import delete_workspace
+from yinshi.utils.paths import is_path_inside
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/repos", tags=["repos"])
@@ -32,13 +34,12 @@ def _validate_local_path(path_str: str) -> str:
             detail="Local repo imports are disabled (allowed_repo_base not set)",
         )
     resolved = str(Path(path_str).resolve())
-    allowed = str(Path(settings.allowed_repo_base).resolve())
-    if not resolved.startswith(allowed + "/") and resolved != allowed:
+    if not is_path_inside(resolved, settings.allowed_repo_base):
         raise HTTPException(status_code=400, detail="Path not in allowed directory")
     return resolved
 
 
-def _check_repo_owner(row, request: Request) -> None:
+def _check_repo_owner(row: sqlite3.Row, request: Request) -> None:
     """In legacy mode, verify the authenticated user owns the repo."""
     tenant = get_tenant(request)
     if not tenant:

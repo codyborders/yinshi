@@ -3,7 +3,8 @@
 import asyncio
 import json
 import logging
-from typing import AsyncIterator
+from collections.abc import AsyncGenerator
+from typing import Any
 
 from yinshi.config import get_settings
 from yinshi.exceptions import SidecarError, SidecarNotConnectedError
@@ -16,6 +17,11 @@ class SidecarClient:
 
     Each instance owns one socket connection. Use one per active session
     to avoid message interleaving between concurrent sessions.
+
+    Supports ``async with`` for automatic disconnect::
+
+        async with await create_sidecar_connection() as sidecar:
+            await sidecar.warmup(...)
     """
 
     def __init__(self) -> None:
@@ -26,6 +32,12 @@ class SidecarClient:
     @property
     def connected(self) -> bool:
         return self._connected
+
+    async def __aenter__(self) -> "SidecarClient":
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        await self.disconnect()
 
     async def connect(self, socket_path: str | None = None) -> None:
         """Connect to a sidecar Unix socket.
@@ -62,13 +74,13 @@ class SidecarClient:
             self._writer.close()
             try:
                 await self._writer.wait_closed()
-            except Exception:
+            except OSError:
                 pass
         self._connected = False
         self._reader = None
         self._writer = None
 
-    async def _send(self, message: dict) -> None:
+    async def _send(self, message: dict[str, Any]) -> None:
         """Send a JSON message to the sidecar."""
         if not self._connected or not self._writer:
             raise SidecarNotConnectedError("Not connected to sidecar")
@@ -76,7 +88,7 @@ class SidecarClient:
         self._writer.write(data.encode())
         await self._writer.drain()
 
-    async def _read_line(self) -> dict | None:
+    async def _read_line(self) -> dict[str, Any] | None:
         """Read a single JSON line from the sidecar."""
         if not self._reader:
             return None
@@ -87,10 +99,10 @@ class SidecarClient:
 
     @staticmethod
     def _build_options(
-        model: str, cwd: str, api_key: str | None = None
-    ) -> dict:
+        model: str, cwd: str, api_key: str | None = None,
+    ) -> dict[str, str]:
         """Build the options dict sent with warmup/query messages."""
-        options: dict = {"model": model, "cwd": cwd}
+        options: dict[str, str] = {"model": model, "cwd": cwd}
         if api_key:
             options["apiKey"] = api_key
         return options
@@ -116,7 +128,7 @@ class SidecarClient:
         model: str = "minimax",
         cwd: str = ".",
         api_key: str | None = None,
-    ) -> AsyncIterator[dict]:
+    ) -> AsyncGenerator[dict[str, Any], None]:
         """Send a prompt and yield streaming events from the sidecar."""
         await self._send({
             "type": "query",
@@ -145,7 +157,7 @@ class SidecarClient:
                 if data.get("type") == "result":
                     break
 
-    async def resolve_model(self, model_key: str) -> dict:
+    async def resolve_model(self, model_key: str) -> dict[str, str]:
         """Ask the sidecar to resolve a model key.
 
         Returns {'provider': '...', 'model': '...'}.
