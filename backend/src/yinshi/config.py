@@ -55,8 +55,17 @@ class Settings(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 8000
 
-    # Allowed base directory for local repo imports (empty = no restriction)
+    # Allowed base directory for local repo imports (empty = reject all local imports)
     allowed_repo_base: str = ""
+
+    # Per-user container isolation
+    container_enabled: bool = False
+    container_image: str = "yinshi-sidecar:latest"
+    container_idle_timeout_s: int = 900
+    container_memory_limit: str = "512m"
+    container_cpu_quota: int = 50000
+    container_pids_limit: int = 256
+    container_socket_base: str = "/var/run/yinshi"
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "case_sensitive": False}
 

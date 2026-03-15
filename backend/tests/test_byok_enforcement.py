@@ -410,6 +410,7 @@ def test_prompt_dev_mode_no_enforcement(
     monkeypatch.setenv("ENCRYPTION_PEPPER", "a" * 64)
     monkeypatch.setenv("GOOGLE_CLIENT_ID", "")
     monkeypatch.setenv("DISABLE_AUTH", "true")
+    monkeypatch.setenv("ALLOWED_REPO_BASE", str(tmp_path))
 
     from yinshi.config import get_settings
 

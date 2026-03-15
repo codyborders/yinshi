@@ -20,13 +20,21 @@ _UPDATABLE_COLUMNS = {"name", "custom_prompt"}
 
 
 def _validate_local_path(path_str: str) -> str:
-    """Validate and resolve a local path, checking against allowed base."""
-    resolved = str(Path(path_str).resolve())
+    """Validate and resolve a local path, checking against allowed base.
+
+    Fail-closed: if ``allowed_repo_base`` is not configured, all local
+    imports are rejected.
+    """
     settings = get_settings()
-    if settings.allowed_repo_base:
-        allowed = str(Path(settings.allowed_repo_base).resolve())
-        if not resolved.startswith(allowed + "/") and resolved != allowed:
-            raise HTTPException(status_code=400, detail="Path not in allowed directory")
+    if not settings.allowed_repo_base:
+        raise HTTPException(
+            status_code=400,
+            detail="Local repo imports are disabled (allowed_repo_base not set)",
+        )
+    resolved = str(Path(path_str).resolve())
+    allowed = str(Path(settings.allowed_repo_base).resolve())
+    if not resolved.startswith(allowed + "/") and resolved != allowed:
+        raise HTTPException(status_code=400, detail="Path not in allowed directory")
     return resolved
 
 
@@ -41,23 +49,19 @@ def _check_repo_owner(row, request: Request) -> None:
 def list_repos(request: Request) -> list[dict]:
     """List all imported repositories."""
     tenant = get_tenant(request)
+    email = None if tenant else get_user_email(request)
+
     with get_db_for_request(request) as db:
-        if tenant:
+        if email:
+            rows = db.execute(
+                "SELECT * FROM repos WHERE owner_email = ? OR owner_email IS NULL "
+                "ORDER BY created_at DESC",
+                (email,),
+            ).fetchall()
+        else:
             rows = db.execute(
                 "SELECT * FROM repos ORDER BY created_at DESC"
             ).fetchall()
-        else:
-            email = get_user_email(request)
-            if email:
-                rows = db.execute(
-                    "SELECT * FROM repos WHERE owner_email = ? OR owner_email IS NULL "
-                    "ORDER BY created_at DESC",
-                    (email,),
-                ).fetchall()
-            else:
-                rows = db.execute(
-                    "SELECT * FROM repos ORDER BY created_at DESC"
-                ).fetchall()
         return [dict(r) for r in rows]
 
 

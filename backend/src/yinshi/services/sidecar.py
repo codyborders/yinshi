@@ -27,10 +27,17 @@ class SidecarClient:
     def connected(self) -> bool:
         return self._connected
 
-    async def connect(self) -> None:
-        """Connect to the sidecar Unix socket."""
-        settings = get_settings()
-        socket_path = settings.sidecar_socket_path
+    async def connect(self, socket_path: str | None = None) -> None:
+        """Connect to a sidecar Unix socket.
+
+        Args:
+            socket_path: Explicit path to the Unix socket.  When *None*,
+                falls back to the global ``sidecar_socket_path`` setting
+                (backward-compatible for non-container mode).
+        """
+        if socket_path is None:
+            settings = get_settings()
+            socket_path = settings.sidecar_socket_path
         try:
             self._reader, self._writer = await asyncio.open_unix_connection(socket_path)
             self._connected = True
@@ -78,6 +85,16 @@ class SidecarClient:
             return None
         return json.loads(line.decode())
 
+    @staticmethod
+    def _build_options(
+        model: str, cwd: str, api_key: str | None = None
+    ) -> dict:
+        """Build the options dict sent with warmup/query messages."""
+        options: dict = {"model": model, "cwd": cwd}
+        if api_key:
+            options["apiKey"] = api_key
+        return options
+
     async def warmup(
         self,
         session_id: str,
@@ -86,13 +103,10 @@ class SidecarClient:
         api_key: str | None = None,
     ) -> None:
         """Pre-create a pi session on the sidecar."""
-        options: dict = {"model": model, "cwd": cwd}
-        if api_key:
-            options["apiKey"] = api_key
         await self._send({
             "type": "warmup",
             "id": session_id,
-            "options": options,
+            "options": self._build_options(model, cwd, api_key),
         })
 
     async def query(
@@ -104,14 +118,11 @@ class SidecarClient:
         api_key: str | None = None,
     ) -> AsyncIterator[dict]:
         """Send a prompt and yield streaming events from the sidecar."""
-        options: dict = {"model": model, "cwd": cwd}
-        if api_key:
-            options["apiKey"] = api_key
         await self._send({
             "type": "query",
             "id": session_id,
             "prompt": prompt,
-            "options": options,
+            "options": self._build_options(model, cwd, api_key),
         })
 
         while True:
@@ -166,8 +177,15 @@ class SidecarClient:
             return False
 
 
-async def create_sidecar_connection() -> SidecarClient:
-    """Create a new sidecar connection. Each caller gets its own socket."""
+async def create_sidecar_connection(
+    socket_path: str | None = None,
+) -> SidecarClient:
+    """Create a new sidecar connection.
+
+    Args:
+        socket_path: Explicit Unix socket path.  *None* uses the global
+            setting (non-container mode).
+    """
     client = SidecarClient()
-    await client.connect()
+    await client.connect(socket_path)
     return client

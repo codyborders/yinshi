@@ -8,6 +8,7 @@ Tests: test_prompt_session_not_found, test_prompt_streams_sidecar_events,
 import asyncio
 import json
 import logging
+import os
 import uuid
 from collections.abc import AsyncGenerator
 
@@ -17,7 +18,14 @@ from pydantic import BaseModel, Field
 
 from yinshi.api.deps import check_owner, get_db_for_request, get_tenant, get_user_email
 from yinshi.config import get_settings
-from yinshi.exceptions import CreditExhaustedError, GitError, KeyNotFoundError, SidecarError
+from yinshi.exceptions import (
+    ContainerNotReadyError,
+    ContainerStartError,
+    CreditExhaustedError,
+    GitError,
+    KeyNotFoundError,
+    SidecarError,
+)
 from yinshi.services.keys import record_usage, resolve_api_key_for_prompt
 from yinshi.services.sidecar import SidecarClient, create_sidecar_connection
 
@@ -80,8 +88,49 @@ def _summarize_prompt(prompt: str, max_words: int = 3) -> str:
 
     if len(summary) > 50:
         summary = summary[:50].rsplit("-", 1)[0]
-    fallback = "-".join(text.lower().split())[:30]
-    return summary or fallback
+    if not summary:
+        summary = "-".join(text.lower().split())[:30]
+    return summary
+
+
+def _path_inside(path: str, base: str) -> bool:
+    """Check if *path* is inside *base* after resolving symlinks."""
+    resolved = os.path.realpath(path)
+    resolved_base = os.path.realpath(base)
+    return resolved.startswith(resolved_base + os.sep) or resolved == resolved_base
+
+
+def _validate_workspace_path(tenant, workspace_path: str) -> None:
+    """Reject workspace paths that are outside trusted directories.
+
+    Trusted directories are the tenant's own data_dir and, when
+    configured, the global ``allowed_repo_base``.
+    """
+    if _path_inside(workspace_path, tenant.data_dir):
+        return
+
+    settings = get_settings()
+    if settings.allowed_repo_base and _path_inside(workspace_path, settings.allowed_repo_base):
+        return
+
+    raise HTTPException(
+        status_code=403,
+        detail="Workspace path outside allowed directories",
+    )
+
+
+def _remap_path(
+    host_path: str, data_dir: str, mount: str = "/data"
+) -> str:
+    """Translate a host workspace path to the container's mount namespace."""
+    resolved = os.path.realpath(host_path)
+    base = os.path.realpath(data_dir)
+    if not resolved.startswith(base + os.sep) and resolved != base:
+        raise ValueError("Path outside user data directory")
+    if resolved == base:
+        return mount
+    relative = os.path.relpath(resolved, base)
+    return os.path.join(mount, relative)
 
 
 def _lookup_session(db, session_id: str, request: Request):
@@ -137,8 +186,27 @@ async def prompt_session(
     provider: str | None = None
     tenant = get_tenant(request)
 
+    # Container isolation: resolve per-user socket path and remap cwd
+    container_mgr = getattr(request.app.state, "container_manager", None)
+    sidecar_socket: str | None = None
+    effective_cwd = workspace_path
+
     if tenant:
-        sidecar_tmp = await create_sidecar_connection()
+        # P1 fix: validate workspace path is within tenant data_dir or
+        # the allowed_repo_base (for local repo imports).
+        _validate_workspace_path(tenant, workspace_path)
+
+        if container_mgr and _path_inside(workspace_path, tenant.data_dir):
+            try:
+                container_info = await container_mgr.ensure_container(
+                    tenant.user_id, tenant.data_dir
+                )
+                sidecar_socket = container_info.socket_path
+                effective_cwd = _remap_path(workspace_path, tenant.data_dir)
+            except (ContainerStartError, ContainerNotReadyError) as exc:
+                raise HTTPException(status_code=503, detail=str(exc))
+
+        sidecar_tmp = await create_sidecar_connection(sidecar_socket)
         try:
             resolved = await sidecar_tmp.resolve_model(model)
             provider = resolved["provider"]
@@ -189,17 +257,17 @@ async def prompt_session(
         result_provider = provider or ""
 
         try:
-            sidecar = await create_sidecar_connection()
+            sidecar = await create_sidecar_connection(sidecar_socket)
             async with _active_sessions_lock:
                 _active_sessions[session_id] = sidecar
             await sidecar.warmup(
-                session_id, model=model, cwd=workspace_path, api_key=api_key
+                session_id, model=model, cwd=effective_cwd, api_key=api_key
             )
 
             logger.info("Streaming started: session=%s turn_id=%s", session_id, turn_id)
 
             async for event in sidecar.query(
-                session_id, prompt, model=model, cwd=workspace_path,
+                session_id, prompt, model=model, cwd=effective_cwd,
                 api_key=api_key,
             ):
                 event_type = event.get("type")
@@ -305,6 +373,10 @@ async def prompt_session(
                     )
                 except Exception:
                     logger.exception("Failed to record usage: session=%s", session_id)
+
+            # Keep container alive after activity
+            if container_mgr and tenant:
+                container_mgr.touch(tenant.user_id)
 
             async with _active_sessions_lock:
                 _active_sessions.pop(session_id, None)

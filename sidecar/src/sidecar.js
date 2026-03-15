@@ -69,7 +69,11 @@ export class YinshiSidecar {
   }
 
   initialize() {
-    this._loadDotEnv();
+    // API keys come per-session from the backend via the socket protocol.
+    // In containerized mode there is no .env file in the image.
+    if (process.env.SIDECAR_LOAD_DOTENV === "1") {
+      this._loadDotEnv();
+    }
     this.authStorage = AuthStorage.create();
     this.modelRegistry = new ModelRegistry(this.authStorage);
     console.log(`[sidecar] Initialized with pi SDK`);
