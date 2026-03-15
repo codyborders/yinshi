@@ -39,3 +39,11 @@ class CreditExhaustedError(YinshiError):
 
 class EncryptionNotConfiguredError(YinshiError):
     """Raised when encryption pepper is not configured."""
+
+
+class ContainerStartError(YinshiError):
+    """Raised when a per-user sidecar container fails to start."""
+
+
+class ContainerNotReadyError(YinshiError):
+    """Raised when a container's sidecar socket is not ready in time."""

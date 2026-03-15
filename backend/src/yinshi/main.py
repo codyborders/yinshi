@@ -1,5 +1,6 @@
 """FastAPI application entry point."""
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -27,7 +28,30 @@ async def lifespan(app: FastAPI):
     init_db()
     init_control_db()
     setup_oauth()
+
+    # Per-user container isolation
+    reaper_task = None
+    if app_settings.container_enabled:
+        from yinshi.services.container import ContainerManager
+
+        mgr = ContainerManager(settings=app_settings)
+        await mgr.initialize()
+        app.state.container_manager = mgr
+        reaper_task = asyncio.create_task(mgr.run_reaper())
+        logger.info("Container isolation enabled (image=%s)", app_settings.container_image)
+    else:
+        app.state.container_manager = None
+
     yield
+
+    if reaper_task:
+        reaper_task.cancel()
+        try:
+            await reaper_task
+        except asyncio.CancelledError:
+            pass
+    if app.state.container_manager:
+        await app.state.container_manager.destroy_all()
     logger.info("Shutdown complete")
 
 
@@ -42,7 +66,7 @@ app = FastAPI(
 
 # CORS
 _cors_origins = [app_settings.frontend_url]
-if app_settings.debug:
+if app_settings.debug and "http://localhost:5173" not in _cors_origins:
     _cors_origins.append("http://localhost:5173")
 
 app.add_middleware(

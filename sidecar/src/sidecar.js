@@ -61,19 +61,18 @@ export class YinshiSidecar {
     this.socketPath = process.env.SIDECAR_SOCKET_PATH || "/tmp/yinshi-sidecar.sock";
     this.server = net.createServer((socket) => this.handleConnection(socket));
     this.healthCheckInterval = null;
-    this.authStorage = null;
-    this.modelRegistry = null;
 
     process.on("SIGINT", () => this.cleanup());
     process.on("SIGTERM", () => this.cleanup());
   }
 
   initialize() {
-    this._loadDotEnv();
-    this.authStorage = AuthStorage.create();
-    this.modelRegistry = new ModelRegistry(this.authStorage);
+    // API keys come per-session from the backend via the socket protocol.
+    // In containerized mode there is no .env file in the image.
+    if (process.env.SIDECAR_LOAD_DOTENV === "1") {
+      this._loadDotEnv();
+    }
     console.log(`[sidecar] Initialized with pi SDK`);
-    return { success: true };
   }
 
   _loadDotEnv() {
@@ -261,6 +260,7 @@ export class YinshiSidecar {
 
       if (!entry || entry.modelKey !== modelKey) {
         if (entry) {
+          if (entry.unsubscribe) entry.unsubscribe();
           entry.piSession.dispose();
         }
         const { session: piSession, model } = await this._createPiSession(sessionId, modelKey, cwd, userApiKey);

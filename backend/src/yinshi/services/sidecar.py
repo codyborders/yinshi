@@ -3,7 +3,8 @@
 import asyncio
 import json
 import logging
-from typing import AsyncIterator
+from collections.abc import AsyncGenerator
+from typing import Any
 
 from yinshi.config import get_settings
 from yinshi.exceptions import SidecarError, SidecarNotConnectedError
@@ -16,6 +17,11 @@ class SidecarClient:
 
     Each instance owns one socket connection. Use one per active session
     to avoid message interleaving between concurrent sessions.
+
+    Supports ``async with`` for automatic disconnect::
+
+        async with await create_sidecar_connection() as sidecar:
+            await sidecar.warmup(...)
     """
 
     def __init__(self) -> None:
@@ -27,10 +33,23 @@ class SidecarClient:
     def connected(self) -> bool:
         return self._connected
 
-    async def connect(self) -> None:
-        """Connect to the sidecar Unix socket."""
-        settings = get_settings()
-        socket_path = settings.sidecar_socket_path
+    async def __aenter__(self) -> "SidecarClient":
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        await self.disconnect()
+
+    async def connect(self, socket_path: str | None = None) -> None:
+        """Connect to a sidecar Unix socket.
+
+        Args:
+            socket_path: Explicit path to the Unix socket.  When *None*,
+                falls back to the global ``sidecar_socket_path`` setting
+                (backward-compatible for non-container mode).
+        """
+        if socket_path is None:
+            settings = get_settings()
+            socket_path = settings.sidecar_socket_path
         try:
             self._reader, self._writer = await asyncio.open_unix_connection(socket_path)
             self._connected = True
@@ -55,13 +74,13 @@ class SidecarClient:
             self._writer.close()
             try:
                 await self._writer.wait_closed()
-            except Exception:
+            except OSError:
                 pass
         self._connected = False
         self._reader = None
         self._writer = None
 
-    async def _send(self, message: dict) -> None:
+    async def _send(self, message: dict[str, Any]) -> None:
         """Send a JSON message to the sidecar."""
         if not self._connected or not self._writer:
             raise SidecarNotConnectedError("Not connected to sidecar")
@@ -69,7 +88,7 @@ class SidecarClient:
         self._writer.write(data.encode())
         await self._writer.drain()
 
-    async def _read_line(self) -> dict | None:
+    async def _read_line(self) -> dict[str, Any] | None:
         """Read a single JSON line from the sidecar."""
         if not self._reader:
             return None
@@ -77,6 +96,16 @@ class SidecarClient:
         if not line:
             return None
         return json.loads(line.decode())
+
+    @staticmethod
+    def _build_options(
+        model: str, cwd: str, api_key: str | None = None,
+    ) -> dict[str, str]:
+        """Build the options dict sent with warmup/query messages."""
+        options: dict[str, str] = {"model": model, "cwd": cwd}
+        if api_key:
+            options["apiKey"] = api_key
+        return options
 
     async def warmup(
         self,
@@ -86,13 +115,10 @@ class SidecarClient:
         api_key: str | None = None,
     ) -> None:
         """Pre-create a pi session on the sidecar."""
-        options: dict = {"model": model, "cwd": cwd}
-        if api_key:
-            options["apiKey"] = api_key
         await self._send({
             "type": "warmup",
             "id": session_id,
-            "options": options,
+            "options": self._build_options(model, cwd, api_key),
         })
 
     async def query(
@@ -102,16 +128,13 @@ class SidecarClient:
         model: str = "minimax",
         cwd: str = ".",
         api_key: str | None = None,
-    ) -> AsyncIterator[dict]:
+    ) -> AsyncGenerator[dict[str, Any], None]:
         """Send a prompt and yield streaming events from the sidecar."""
-        options: dict = {"model": model, "cwd": cwd}
-        if api_key:
-            options["apiKey"] = api_key
         await self._send({
             "type": "query",
             "id": session_id,
             "prompt": prompt,
-            "options": options,
+            "options": self._build_options(model, cwd, api_key),
         })
 
         while True:
@@ -134,7 +157,7 @@ class SidecarClient:
                 if data.get("type") == "result":
                     break
 
-    async def resolve_model(self, model_key: str) -> dict:
+    async def resolve_model(self, model_key: str) -> dict[str, str]:
         """Ask the sidecar to resolve a model key.
 
         Returns {'provider': '...', 'model': '...'}.
@@ -166,8 +189,15 @@ class SidecarClient:
             return False
 
 
-async def create_sidecar_connection() -> SidecarClient:
-    """Create a new sidecar connection. Each caller gets its own socket."""
+async def create_sidecar_connection(
+    socket_path: str | None = None,
+) -> SidecarClient:
+    """Create a new sidecar connection.
+
+    Args:
+        socket_path: Explicit Unix socket path.  *None* uses the global
+            setting (non-container mode).
+    """
     client = SidecarClient()
-    await client.connect()
+    await client.connect(socket_path)
     return client
