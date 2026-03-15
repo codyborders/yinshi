@@ -80,7 +80,8 @@ def _summarize_prompt(prompt: str, max_words: int = 3) -> str:
 
     if len(summary) > 50:
         summary = summary[:50].rsplit("-", 1)[0]
-    return summary or text[:30].lower()
+    fallback = "-".join(text.lower().split())[:30]
+    return summary or fallback
 
 
 def _lookup_session(db, session_id: str, request: Request):

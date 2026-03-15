@@ -39,6 +39,9 @@ coverage/
 htmlcov/
 .pytest_cache/
 .nyc_output/
+backend/.hypothesis/
+frontend/e2e/.tmp/
+frontend/test-results/
 
 # Claude Code
 .claude/

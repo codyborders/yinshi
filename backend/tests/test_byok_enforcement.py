@@ -1,10 +1,11 @@
 """Tests for BYOK key enforcement and freemium usage tracking."""
 
-import json
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
+
+from tests.factories import create_full_stack, parse_sse_events
 
 
 # --- Fixtures ---
@@ -274,78 +275,19 @@ def _make_byok_mock_sidecar(
     return mock
 
 
-def _parse_sse(response_text: str) -> list[dict]:
-    events = []
-    for line in response_text.strip().split("\n"):
-        line = line.strip()
-        if line.startswith("data: "):
-            events.append(json.loads(line[6:]))
-    return events
-
-
 @pytest.fixture
-def tenant_prompt_env(tmp_path, monkeypatch, git_repo):
+def tenant_prompt_env(
+    auth_client: TestClient,
+    git_repo: str,
+) -> dict[str, object]:
     """Full tenant-mode environment for prompt BYOK tests."""
-    monkeypatch.setenv("DB_PATH", str(tmp_path / "legacy.db"))
-    monkeypatch.setenv("CONTROL_DB_PATH", str(tmp_path / "control.db"))
-    monkeypatch.setenv("USER_DATA_DIR", str(tmp_path / "users"))
-    monkeypatch.setenv("ENCRYPTION_PEPPER", "a" * 64)
-    monkeypatch.setenv("GOOGLE_CLIENT_ID", "fake-client-id")
-    monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "fake-secret")
-    monkeypatch.setenv("DISABLE_AUTH", "false")
-    monkeypatch.setenv("PLATFORM_MINIMAX_API_KEY", "platform-minimax-key")
-
-    from yinshi.config import get_settings
-
-    get_settings.cache_clear()
-
-    from yinshi.db import init_control_db, init_db
-
-    init_db()
-    init_control_db()
-
-    from yinshi.services.accounts import resolve_or_create_user
-
-    tenant = resolve_or_create_user(
-        provider="google",
-        provider_user_id="test-google-id",
-        email="test@example.com",
-        display_name="Test User",
-    )
-
-    from yinshi.auth import create_session_token
-    from yinshi.main import app
-
-    token = create_session_token(tenant.user_id)
-    headers = {"X-Requested-With": "XMLHttpRequest"}
-
-    with TestClient(app) as client:
-        client.cookies.set("yinshi_session", token)
-
-        repo = client.post(
-            "/api/repos",
-            json={"name": "test", "local_path": git_repo},
-            headers=headers,
-        ).json()
-        ws = client.post(
-            f"/api/repos/{repo['id']}/workspaces",
-            json={},
-            headers=headers,
-        ).json()
-        sess = client.post(
-            f"/api/workspaces/{ws['id']}/sessions",
-            json={},
-            headers=headers,
-        ).json()
-
-        yield {
-            "client": client,
-            "session_id": sess["id"],
-            "user_id": tenant.user_id,
-            "headers": headers,
-        }
-
-    get_settings.cache_clear()
+    stack = create_full_stack(auth_client, git_repo, name="test")
+    tenant = getattr(auth_client, "yinshi_tenant")
+    return {
+        "client": auth_client,
+        "session_id": stack["session"]["id"],
+        "user_id": tenant.user_id,
+    }
 
 
 def test_prompt_uses_platform_key_with_credit(tenant_prompt_env):
@@ -367,11 +309,10 @@ def test_prompt_uses_platform_key_with_credit(tenant_prompt_env):
         resp = env["client"].post(
             f"/api/sessions/{env['session_id']}/prompt",
             json={"prompt": "hello"},
-            headers=env["headers"],
         )
 
     assert resp.status_code == 200
-    events = _parse_sse(resp.text)
+    events = parse_sse_events(resp.text)
     assert any(e.get("type") == "result" for e in events)
 
     # Verify warmup received the platform key
@@ -412,7 +353,6 @@ def test_prompt_uses_byok_key_when_stored(tenant_prompt_env):
         resp = env["client"].post(
             f"/api/sessions/{env['session_id']}/prompt",
             json={"prompt": "hello"},
-            headers=env["headers"],
         )
 
     assert resp.status_code == 200
@@ -439,7 +379,6 @@ def test_prompt_402_when_credit_exhausted(tenant_prompt_env):
         resp = env["client"].post(
             f"/api/sessions/{env['session_id']}/prompt",
             json={"prompt": "hello"},
-            headers=env["headers"],
         )
 
     assert resp.status_code == 402
@@ -456,7 +395,6 @@ def test_prompt_402_for_non_minimax_without_byok(tenant_prompt_env):
         resp = env["client"].post(
             f"/api/sessions/{env['session_id']}/prompt",
             json={"prompt": "hello", "model": "sonnet"},
-            headers=env["headers"],
         )
 
     assert resp.status_code == 402

@@ -10,6 +10,7 @@ from yinshi.config import get_settings
 from yinshi.exceptions import GitError
 from yinshi.models import RepoCreate, RepoOut, RepoUpdate
 from yinshi.services.git import clone_repo, validate_local_repo
+from yinshi.services.workspace import delete_workspace
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/repos", tags=["repos"])
@@ -143,12 +144,18 @@ def update_repo(repo_id: str, body: RepoUpdate, request: Request) -> dict:
 
 
 @router.delete("/{repo_id}", status_code=204)
-def delete_repo(repo_id: str, request: Request) -> None:
+async def delete_repo(repo_id: str, request: Request) -> None:
     """Delete a repository and all its workspaces."""
     with get_db_for_request(request) as db:
         row = db.execute("SELECT * FROM repos WHERE id = ?", (repo_id,)).fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Repo not found")
         _check_repo_owner(row, request)
+        workspace_rows = db.execute(
+            "SELECT id FROM workspaces WHERE repo_id = ?",
+            (repo_id,),
+        ).fetchall()
+        for workspace in workspace_rows:
+            await delete_workspace(db, workspace["id"])
         db.execute("DELETE FROM repos WHERE id = ?", (repo_id,))
         db.commit()

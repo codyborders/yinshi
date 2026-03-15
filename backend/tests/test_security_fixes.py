@@ -1,63 +1,6 @@
 """Tests for security fixes identified in code review."""
 
-import json
-from collections.abc import Iterator
-from unittest.mock import AsyncMock, patch
-
-import pytest
 from fastapi.testclient import TestClient
-
-
-# --- Fixtures ---
-
-
-@pytest.fixture
-def auth_client(tmp_path, monkeypatch, git_repo) -> Iterator[dict]:
-    """Client with auth enabled, providing session token + CSRF header."""
-    monkeypatch.setenv("DB_PATH", str(tmp_path / "legacy.db"))
-    monkeypatch.setenv("CONTROL_DB_PATH", str(tmp_path / "control.db"))
-    monkeypatch.setenv("USER_DATA_DIR", str(tmp_path / "users"))
-    monkeypatch.setenv("ENCRYPTION_PEPPER", "a" * 64)
-    monkeypatch.setenv("GOOGLE_CLIENT_ID", "fake-client-id")
-    monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "fake-secret")
-    monkeypatch.setenv("DISABLE_AUTH", "false")
-    monkeypatch.setenv("PLATFORM_MINIMAX_API_KEY", "platform-minimax-key")
-
-    from yinshi.config import get_settings
-
-    get_settings.cache_clear()
-
-    from yinshi.db import init_control_db, init_db
-
-    init_db()
-    init_control_db()
-
-    from yinshi.services.accounts import resolve_or_create_user
-
-    tenant = resolve_or_create_user(
-        provider="google",
-        provider_user_id="test-google-id",
-        email="test@example.com",
-        display_name="Test User",
-    )
-
-    from yinshi.auth import create_session_token
-    from yinshi.main import app
-
-    token = create_session_token(tenant.user_id)
-    headers = {"X-Requested-With": "XMLHttpRequest"}
-
-    with TestClient(app) as client:
-        client.cookies.set("yinshi_session", token)
-        yield {
-            "client": client,
-            "headers": headers,
-            "tenant": tenant,
-            "git_repo": git_repo,
-        }
-
-    get_settings.cache_clear()
-
 
 # --- SEC-C1: WebSocket auth bypass removal ---
 
@@ -97,39 +40,37 @@ def test_websocket_header_does_not_bypass_auth(tmp_path, monkeypatch):
 # --- SEC-H3: Sessions PATCH must use _UPDATABLE_COLUMNS guard ---
 
 
-def test_session_patch_filters_updatable_columns(auth_client):
+def test_session_patch_filters_updatable_columns(
+    auth_client: TestClient,
+    git_repo: str,
+) -> None:
     """PATCH /api/sessions/:id should only allow model field updates."""
-    env = auth_client
-    client = env["client"]
-    headers = env["headers"]
-
-    repo = client.post(
+    repo = auth_client.post(
         "/api/repos",
-        json={"name": "test", "local_path": env["git_repo"]},
-        headers=headers,
+        json={"name": "test", "local_path": git_repo},
     ).json()
-    ws = client.post(
-        f"/api/repos/{repo['id']}/workspaces", json={}, headers=headers
+    ws = auth_client.post(
+        f"/api/repos/{repo['id']}/workspaces",
+        json={},
     ).json()
-    sess = client.post(
-        f"/api/workspaces/{ws['id']}/sessions", json={}, headers=headers
+    sess = auth_client.post(
+        f"/api/workspaces/{ws['id']}/sessions",
+        json={},
     ).json()
 
     # Attempt to update model (allowed)
-    resp = client.patch(
+    resp = auth_client.patch(
         f"/api/sessions/{sess['id']}",
         json={"model": "sonnet"},
-        headers=headers,
     )
     assert resp.status_code == 200
     assert resp.json()["model"] == "sonnet"
 
     # status should NOT be directly updatable via PATCH
     # (even if the field is sent, it should be filtered out)
-    resp = client.patch(
+    resp = auth_client.patch(
         f"/api/sessions/{sess['id']}",
         json={"model": "opus"},
-        headers=headers,
     )
     assert resp.status_code == 200
     assert resp.json()["model"] == "opus"
@@ -140,36 +81,33 @@ def test_session_patch_filters_updatable_columns(auth_client):
 # --- CQ5/BUG: exclude_unset vs exclude_none ---
 
 
-def test_session_patch_exclude_unset(auth_client):
+def test_session_patch_exclude_unset(
+    auth_client: TestClient,
+    git_repo: str,
+) -> None:
     """PATCH /api/sessions/:id with empty body should not clear optional fields.
 
     Uses exclude_unset=True so that fields not sent in the request
     are NOT included in the update.
     """
-    env = auth_client
-    client = env["client"]
-    headers = env["headers"]
-
-    repo = client.post(
+    repo = auth_client.post(
         "/api/repos",
-        json={"name": "test", "local_path": env["git_repo"]},
-        headers=headers,
+        json={"name": "test", "local_path": git_repo},
     ).json()
-    ws = client.post(
-        f"/api/repos/{repo['id']}/workspaces", json={}, headers=headers
+    ws = auth_client.post(
+        f"/api/repos/{repo['id']}/workspaces",
+        json={},
     ).json()
-    sess = client.post(
+    sess = auth_client.post(
         f"/api/workspaces/{ws['id']}/sessions",
         json={"model": "sonnet"},
-        headers=headers,
     ).json()
     assert sess["model"] == "sonnet"
 
     # PATCH with empty body -- model should NOT be reset
-    resp = client.patch(
+    resp = auth_client.patch(
         f"/api/sessions/{sess['id']}",
         json={},
-        headers=headers,
     )
     assert resp.status_code == 200
     assert resp.json()["model"] == "sonnet"
@@ -317,28 +255,27 @@ def test_usage_log_session_id_index(tmp_path, monkeypatch):
 # --- SEC-C2: Session tree path validation ---
 
 
-def test_session_tree_validates_path(auth_client):
+def test_session_tree_validates_path(
+    auth_client: TestClient,
+    git_repo: str,
+) -> None:
     """GET /api/sessions/:id/tree should not traverse outside workspace path."""
-    env = auth_client
-    client = env["client"]
-    headers = env["headers"]
-
-    repo = client.post(
+    repo = auth_client.post(
         "/api/repos",
-        json={"name": "test", "local_path": env["git_repo"]},
-        headers=headers,
+        json={"name": "test", "local_path": git_repo},
     ).json()
-    ws = client.post(
-        f"/api/repos/{repo['id']}/workspaces", json={}, headers=headers
+    ws = auth_client.post(
+        f"/api/repos/{repo['id']}/workspaces",
+        json={},
     ).json()
-    sess = client.post(
-        f"/api/workspaces/{ws['id']}/sessions", json={}, headers=headers
+    sess = auth_client.post(
+        f"/api/workspaces/{ws['id']}/sessions",
+        json={},
     ).json()
 
     # Normal tree request should succeed
-    resp = client.get(
+    resp = auth_client.get(
         f"/api/sessions/{sess['id']}/tree",
-        headers=headers,
     )
     assert resp.status_code == 200
     assert "files" in resp.json()

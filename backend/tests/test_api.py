@@ -1,51 +1,25 @@
 """Tests for REST API endpoints including SSE streaming."""
 
-import json
 from collections import namedtuple
-from collections.abc import Iterator
-from typing import Any, Callable
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
+
+from tests.factories import create_full_stack, make_mock_sidecar, parse_sse_events
 
 Entities = namedtuple("Entities", ["repo_id", "workspace_id", "session_id"])
 
 
 @pytest.fixture
-def client(db_path: str, tmp_path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
-    """Create a test client with initialized DB."""
-    monkeypatch.setenv("DB_PATH", db_path)
-    monkeypatch.setenv("CONTROL_DB_PATH", str(tmp_path / "control.db"))
-    monkeypatch.setenv("USER_DATA_DIR", str(tmp_path / "users"))
-    monkeypatch.setenv("ENCRYPTION_PEPPER", "a" * 64)
-    monkeypatch.setenv("GOOGLE_CLIENT_ID", "")
-    monkeypatch.setenv("DISABLE_AUTH", "true")
-    from yinshi.config import get_settings
-
-    get_settings.cache_clear()
-
-    from yinshi.db import init_db
-
-    init_db()
-
-    from yinshi.main import app
-
-    with TestClient(app) as c:
-        yield c
-
-    get_settings.cache_clear()
-
-
-@pytest.fixture
 def test_entities(client: TestClient, git_repo: str) -> Entities:
     """Create a repo -> workspace -> session and return all IDs."""
-    repo = client.post(
-        "/api/repos", json={"name": "test-repo", "local_path": git_repo}
-    ).json()
-    ws = client.post(f"/api/repos/{repo['id']}/workspaces", json={}).json()
-    sess = client.post(f"/api/workspaces/{ws['id']}/sessions", json={}).json()
-    return Entities(repo["id"], ws["id"], sess["id"])
+    stack = create_full_stack(client, git_repo, name="test-repo")
+    return Entities(
+        stack["repo"]["id"],
+        stack["workspace"]["id"],
+        stack["session"]["id"],
+    )
 
 
 @pytest.fixture
@@ -326,19 +300,6 @@ def test_get_session_messages(client: TestClient, git_repo: str) -> None:
     assert resp.json() == []
 
 
-# --- SSE prompt endpoint tests ---
-
-
-def _parse_sse_events(response_text: str) -> list[dict[str, Any]]:
-    """Parse SSE text/event-stream body into list of JSON objects."""
-    events = []
-    for line in response_text.strip().split("\n"):
-        line = line.strip()
-        if line.startswith("data: "):
-            events.append(json.loads(line[6:]))
-    return events
-
-
 def test_prompt_session_not_found(client: TestClient) -> None:
     """POST /api/sessions/:id/prompt with bad session should 404."""
     resp = client.post(
@@ -346,15 +307,6 @@ def test_prompt_session_not_found(client: TestClient) -> None:
         json={"prompt": "hello"},
     )
     assert resp.status_code == 404
-
-
-def _make_mock_sidecar(query_fn: Callable[..., Any]) -> AsyncMock:
-    """Build a mock SidecarClient with the given query async generator."""
-    mock = AsyncMock()
-    mock.query = query_fn
-    mock.warmup = AsyncMock()
-    mock.disconnect = AsyncMock()
-    return mock
 
 
 def test_prompt_streams_sidecar_events(client: TestClient, session_id: str) -> None:
@@ -375,7 +327,7 @@ def test_prompt_streams_sidecar_events(client: TestClient, session_id: str) -> N
 
     with patch(
         "yinshi.api.stream.create_sidecar_connection",
-        return_value=_make_mock_sidecar(fake_query),
+        return_value=make_mock_sidecar(fake_query),
     ):
         resp = client.post(
             f"/api/sessions/{session_id}/prompt",
@@ -385,7 +337,7 @@ def test_prompt_streams_sidecar_events(client: TestClient, session_id: str) -> N
     assert resp.status_code == 200
     assert resp.headers["content-type"].startswith("text/event-stream")
 
-    events = _parse_sse_events(resp.text)
+    events = parse_sse_events(resp.text)
     types = [e.get("type") for e in events]
     assert "assistant" in types
     assert "result" in types
@@ -412,7 +364,7 @@ def test_prompt_saves_partial_on_sidecar_error(client: TestClient, session_id: s
 
     with patch(
         "yinshi.api.stream.create_sidecar_connection",
-        return_value=_make_mock_sidecar(failing_query),
+        return_value=make_mock_sidecar(failing_query),
     ):
         resp = client.post(
             f"/api/sessions/{session_id}/prompt",
@@ -420,7 +372,7 @@ def test_prompt_saves_partial_on_sidecar_error(client: TestClient, session_id: s
         )
 
     assert resp.status_code == 200
-    events = _parse_sse_events(resp.text)
+    events = parse_sse_events(resp.text)
     # Should have an error event
     assert any(e.get("type") == "error" for e in events)
 
@@ -462,7 +414,7 @@ def test_first_prompt_updates_workspace_name(client: TestClient, git_repo: str) 
 
     with patch(
         "yinshi.api.stream.create_sidecar_connection",
-        return_value=_make_mock_sidecar(fake_query),
+        return_value=make_mock_sidecar(fake_query),
     ):
         client.post(
             f"/api/sessions/{sess['id']}/prompt",
@@ -490,7 +442,7 @@ def test_second_prompt_does_not_update_workspace_name(client: TestClient, git_re
             "data": {"type": "result", "usage": {}},
         }
 
-    mock_sidecar = _make_mock_sidecar(fake_query)
+    mock_sidecar = make_mock_sidecar(fake_query)
 
     # First prompt
     with patch(
@@ -509,7 +461,7 @@ def test_second_prompt_does_not_update_workspace_name(client: TestClient, git_re
     # Second prompt -- name should NOT change
     with patch(
         "yinshi.api.stream.create_sidecar_connection",
-        return_value=_make_mock_sidecar(fake_query),
+        return_value=make_mock_sidecar(fake_query),
     ):
         client.post(
             f"/api/sessions/{sess['id']}/prompt",
