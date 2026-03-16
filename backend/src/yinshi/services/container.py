@@ -1,15 +1,13 @@
-"""Per-user Docker container management for sidecar isolation."""
+"""Per-user Podman container management for sidecar isolation."""
 
 import asyncio
+import json
 import logging
 import os
 import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-
-import docker
-import docker.errors
 
 from yinshi.exceptions import ContainerNotReadyError, ContainerStartError
 
@@ -31,7 +29,7 @@ class ContainerInfo:
 
 
 class ContainerManager:
-    """Manages per-user Docker containers for sidecar isolation.
+    """Manages per-user Podman containers for sidecar isolation.
 
     Each user gets a dedicated container with only their data directory
     mounted. Containers are reaped after an idle timeout.
@@ -40,10 +38,10 @@ class ContainerManager:
     def __init__(
         self,
         settings: "Settings",  # noqa: F821 -- forward ref avoids circular import
-        docker_client: "docker.DockerClient | None" = None,
+        podman_binary: str = "podman",
     ) -> None:
         self._settings = settings
-        self._docker = docker_client or docker.from_env()
+        self._podman_bin = podman_binary
         self._containers: dict[str, ContainerInfo] = {}
         self._locks: dict[str, asyncio.Lock] = {}
         self._global_lock = asyncio.Lock()
@@ -51,45 +49,96 @@ class ContainerManager:
         self._socket_poll_interval_s: float = 0.1
         self._initialized = False
 
+    # -- Podman subprocess helper -------------------------------------------
+
+    async def _run_podman(
+        self,
+        *args: str,
+        check: bool = True,
+        timeout: float = 30.0,
+    ) -> tuple[int, str, str]:
+        """Execute a podman command and return (returncode, stdout, stderr).
+
+        Raises ``ContainerStartError`` when *check* is True and the
+        command exits non-zero, or when the binary is missing / times out.
+        """
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                self._podman_bin, *args,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            raw_out, raw_err = await asyncio.wait_for(
+                proc.communicate(), timeout=timeout,
+            )
+        except FileNotFoundError:
+            raise ContainerStartError("podman binary not found") from None
+        except asyncio.TimeoutError:
+            proc.kill()  # type: ignore[union-attr]
+            raise ContainerStartError(
+                f"Podman command timed out: podman {' '.join(args)}"
+            ) from None
+
+        stdout = raw_out.decode().strip()
+        stderr = raw_err.decode().strip()
+
+        if check and proc.returncode != 0:
+            raise ContainerStartError(
+                f"podman {args[0]} failed: {stderr}"
+            )
+
+        return proc.returncode, stdout, stderr
+
+    # -- Initialization -----------------------------------------------------
+
     async def initialize(self) -> None:
-        """Create the Docker network and clean up orphaned containers.
+        """Create the Podman network and clean up orphaned containers.
 
         Idempotent -- safe to call more than once.  Called automatically
         on the first ``ensure_container`` invocation.
         """
         if self._initialized:
             return
-        await asyncio.to_thread(self._ensure_network)
-        await asyncio.to_thread(self._cleanup_orphaned_containers)
+        await self._ensure_network()
+        await self._cleanup_orphaned_containers()
         self._initialized = True
 
-    # -- Docker network --------------------------------------------------
+    # -- Podman network -----------------------------------------------------
 
-    def _ensure_network(self) -> None:
-        """Create the restricted Docker network if it doesn't exist."""
-        try:
-            self._docker.networks.get(_SIDECAR_NET)
-        except docker.errors.NotFound:
-            self._docker.networks.create(
-                _SIDECAR_NET, driver="bridge", internal=True,
+    async def _ensure_network(self) -> None:
+        """Create the restricted Podman network if it doesn't exist."""
+        rc, _, _ = await self._run_podman(
+            "network", "exists", _SIDECAR_NET, check=False,
+        )
+        if rc != 0:
+            await self._run_podman(
+                "network", "create", "--internal", _SIDECAR_NET,
             )
-            logger.info("Created Docker network %s", _SIDECAR_NET)
+            logger.info("Created Podman network %s", _SIDECAR_NET)
 
-    # -- Orphan cleanup ---------------------------------------------------
+    # -- Orphan cleanup -----------------------------------------------------
 
-    def _cleanup_orphaned_containers(self) -> None:
+    async def _cleanup_orphaned_containers(self) -> None:
         """Remove containers left over from a previous process crash."""
         try:
-            stale = self._docker.containers.list(
-                filters={"label": "yinshi.user_id"}, all=True,
+            rc, stdout, _ = await self._run_podman(
+                "ps", "-a",
+                "--filter", "label=yinshi.user_id",
+                "--format", "json",
+                check=False,
             )
-            for c in stale:
-                c.remove(force=True)
-                logger.info("Removed orphaned container %s", c.id[:12])
-        except docker.errors.APIError:
+            if rc != 0 or not stdout:
+                return
+            containers = json.loads(stdout)
+            for c in containers:
+                cid = c.get("Id", c.get("id", ""))
+                if cid:
+                    await self._run_podman("rm", "-f", cid, check=False)
+                    logger.info("Removed orphaned container %s", cid[:12])
+        except (json.JSONDecodeError, ContainerStartError):
             logger.warning("Failed to clean up orphaned containers", exc_info=True)
 
-    # -- Per-user locks ---------------------------------------------------
+    # -- Per-user locks -----------------------------------------------------
 
     async def _get_lock(self, user_id: str) -> asyncio.Lock:
         """Get or create a per-user lock."""
@@ -98,7 +147,7 @@ class ContainerManager:
                 self._locks[user_id] = asyncio.Lock()
             return self._locks[user_id]
 
-    # -- Public API -------------------------------------------------------
+    # -- Public API ---------------------------------------------------------
 
     async def ensure_container(
         self, user_id: str, data_dir: str,
@@ -179,28 +228,23 @@ class ContainerManager:
             await self.destroy_container(uid)
         logger.info("All sidecar containers destroyed")
 
-    # -- Internal helpers -------------------------------------------------
+    # -- Internal helpers ---------------------------------------------------
 
     async def _is_running(self, container_id: str) -> bool:
         """Check if a container is still running."""
-        try:
-            c = await asyncio.to_thread(
-                self._docker.containers.get, container_id,
-            )
-            return c.status == "running"
-        except docker.errors.NotFound:
-            return False
+        rc, stdout, _ = await self._run_podman(
+            "inspect", "--format", "{{.State.Status}}", container_id,
+            check=False,
+        )
+        return rc == 0 and stdout == "running"
 
     async def _remove_container(self, container_id: str) -> None:
         """Force-remove a container."""
-        try:
-            c = await asyncio.to_thread(
-                self._docker.containers.get, container_id,
-            )
-            await asyncio.to_thread(c.remove, force=True)
+        rc, _, _ = await self._run_podman(
+            "rm", "-f", container_id, check=False,
+        )
+        if rc == 0:
             logger.info("Removed container %s", container_id[:12])
-        except docker.errors.NotFound:
-            pass
 
     async def _create_container(
         self, user_id: str, data_dir: str,
@@ -211,48 +255,37 @@ class ContainerManager:
         os.makedirs(socket_dir, mode=0o700, exist_ok=True)
         socket_path = os.path.join(socket_dir, "sidecar.sock")
 
-        try:
-            container = await asyncio.to_thread(
-                self._docker.containers.run,
-                image=s.container_image,
-                name=f"yinshi-sidecar-{user_id}",
-                detach=True,
-                environment={
-                    "SIDECAR_SOCKET_PATH": "/run/sidecar/sidecar.sock",
-                },
-                volumes={
-                    socket_dir: {"bind": "/run/sidecar", "mode": "rw"},
-                    os.path.realpath(data_dir): {
-                        "bind": "/data",
-                        "mode": "rw",
-                    },
-                },
-                network=_SIDECAR_NET,
-                mem_limit=s.container_memory_limit,
-                memswap_limit=s.container_memory_limit,
-                cpu_period=100000,
-                cpu_quota=s.container_cpu_quota,
-                pids_limit=s.container_pids_limit,
-                security_opt=["no-new-privileges"],
-                cap_drop=["ALL"],
-                labels={"yinshi.user_id": user_id},
-            )
-        except docker.errors.APIError as exc:
-            raise ContainerStartError(
-                f"Failed to start container for user {user_id[:8]}"
-            ) from exc
+        real_data_dir = os.path.realpath(data_dir)
+        cpus = str(s.container_cpu_quota / 100000)
+
+        _, container_id, _ = await self._run_podman(
+            "run", "-d",
+            "--name", f"yinshi-sidecar-{user_id}",
+            "--env", "SIDECAR_SOCKET_PATH=/run/sidecar/sidecar.sock",
+            "-v", f"{socket_dir}:/run/sidecar:rw",
+            "-v", f"{real_data_dir}:/data:rw",
+            "--network", _SIDECAR_NET,
+            "--memory", s.container_memory_limit,
+            "--memory-swap", s.container_memory_limit,
+            "--cpus", cpus,
+            "--pids-limit", str(s.container_pids_limit),
+            "--security-opt", "no-new-privileges",
+            "--cap-drop", "ALL",
+            "--label", f"yinshi.user_id={user_id}",
+            s.container_image,
+        )
 
         await self._wait_for_socket(socket_path)
 
         info = ContainerInfo(
-            container_id=container.id,
+            container_id=container_id,
             user_id=user_id,
             socket_path=socket_path,
         )
         self._containers[user_id] = info
         logger.info(
             "Started container %s for user %s",
-            container.id[:12],
+            container_id[:12],
             user_id[:8],
         )
         return info
