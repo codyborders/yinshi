@@ -61,11 +61,11 @@ class Settings(BaseSettings):
     # Per-user container isolation
     container_enabled: bool = False
     container_image: str = "yinshi-sidecar:latest"
-    container_idle_timeout_s: int = 900
-    container_memory_limit: str = "512m"
+    container_idle_timeout_s: int = 300
+    container_memory_limit: str = "256m"
     container_cpu_quota: int = 50000
     container_pids_limit: int = 256
-    container_max_count: int = 0  # 0 = unlimited
+    container_max_count: int = 10
     container_socket_base: str = "/var/run/yinshi"
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "case_sensitive": False}
