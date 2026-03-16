@@ -1,28 +1,29 @@
 """Tests for authentication module.
 
-Covers session tokens, CSRF, and /auth/me endpoint behavior.
+Covers session tokens, CSRF, /auth/me endpoint behavior, and OAuth
+callback error handling. The callback tests verify that OAuth errors,
+network failures, and provisioning errors redirect to /login with an
+error code instead of returning a bare 500 Internal Server Error.
 """
 
+import sqlite3
 from collections.abc import Generator
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
+from authlib.integrations.starlette_client import OAuthError
+
+from tests.conftest import _configure_test_env
 
 
 @pytest.fixture()
-def auth_enabled_app(db_path, tmp_path, monkeypatch) -> Generator:
+def auth_enabled_app(tmp_path, monkeypatch) -> Generator:
     """Set up an app with auth enabled and a fresh database."""
-    monkeypatch.setenv("DB_PATH", db_path)
-    monkeypatch.setenv("CONTROL_DB_PATH", str(tmp_path / "control.db"))
-    monkeypatch.setenv("USER_DATA_DIR", str(tmp_path / "users"))
-    monkeypatch.setenv("ENCRYPTION_PEPPER", "a" * 64)
-    monkeypatch.setenv("GOOGLE_CLIENT_ID", "fake-client-id")
-    monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "fake-secret")
-    monkeypatch.setenv("DISABLE_AUTH", "false")
+    _configure_test_env(monkeypatch, tmp_path, auth_enabled=True)
+
     from yinshi.config import get_settings
-
-    get_settings.cache_clear()
-
-    from yinshi.db import init_db, init_control_db
+    from yinshi.db import init_control_db, init_db
 
     init_db()
     init_control_db()
@@ -31,17 +32,11 @@ def auth_enabled_app(db_path, tmp_path, monkeypatch) -> Generator:
 
 
 @pytest.fixture()
-def auth_disabled_app(db_path, tmp_path, monkeypatch) -> Generator:
+def auth_disabled_app(tmp_path, monkeypatch) -> Generator:
     """Set up an app with auth disabled and a fresh database."""
-    monkeypatch.setenv("DB_PATH", db_path)
-    monkeypatch.setenv("CONTROL_DB_PATH", str(tmp_path / "control.db"))
-    monkeypatch.setenv("USER_DATA_DIR", str(tmp_path / "users"))
-    monkeypatch.setenv("ENCRYPTION_PEPPER", "a" * 64)
-    monkeypatch.setenv("DISABLE_AUTH", "true")
+    _configure_test_env(monkeypatch, tmp_path, auth_enabled=False)
+
     from yinshi.config import get_settings
-
-    get_settings.cache_clear()
-
     from yinshi.db import init_db
 
     init_db()
@@ -194,3 +189,176 @@ def test_session_middleware_before_auth():
     session_idx = middleware_types.index(SessionMiddleware)
     auth_idx = middleware_types.index(AuthMiddleware)
     assert session_idx > auth_idx
+
+
+# --- OAuth callback error handling ---
+
+
+def _assert_error_redirect(response, expected_error: str) -> None:
+    """Assert that a response is a redirect to /login with the given error code."""
+    assert response.status_code == 307, f"Expected 307, got {response.status_code}"
+    location = response.headers["location"]
+    assert "/login" in location
+    assert f"error={expected_error}" in location
+
+
+def test_callback_google_oauth_error_redirects(auth_enabled_app):
+    """Google OAuth error (user denied consent, expired code) redirects to /login, not 500."""
+    from fastapi.testclient import TestClient
+
+    from yinshi.main import app
+
+    mock_token_exchange = AsyncMock(
+        side_effect=OAuthError(error="access_denied", description="User denied"),
+    )
+
+    with (
+        TestClient(app) as client,
+        patch(
+            "yinshi.api.auth_routes.oauth.google.authorize_access_token",
+            new=mock_token_exchange,
+        ),
+    ):
+        resp = client.get("/auth/callback/google", follow_redirects=False)
+        _assert_error_redirect(resp, "oauth_error")
+
+
+def test_callback_google_network_error_redirects(auth_enabled_app):
+    """Network error during Google token exchange redirects to /login, not 500."""
+    from fastapi.testclient import TestClient
+
+    from yinshi.main import app
+
+    mock_token_exchange = AsyncMock(
+        side_effect=ConnectionError("Network unreachable"),
+    )
+
+    with (
+        TestClient(app) as client,
+        patch(
+            "yinshi.api.auth_routes.oauth.google.authorize_access_token",
+            new=mock_token_exchange,
+        ),
+    ):
+        resp = client.get("/auth/callback/google", follow_redirects=False)
+        _assert_error_redirect(resp, "oauth_error")
+
+
+def test_callback_google_provisioning_error_redirects(auth_enabled_app):
+    """Database error during user provisioning redirects to /login, not 500."""
+    from fastapi.testclient import TestClient
+
+    from yinshi.main import app
+
+    mock_token = {
+        "userinfo": {
+            "sub": "google-123",
+            "email": "newuser@example.com",
+            "name": "New User",
+            "picture": "https://example.com/photo.jpg",
+        }
+    }
+
+    with (
+        TestClient(app) as client,
+        patch(
+            "yinshi.api.auth_routes.oauth.google.authorize_access_token",
+            new=AsyncMock(return_value=mock_token),
+        ),
+        patch(
+            "yinshi.api.auth_routes.resolve_or_create_user",
+            side_effect=sqlite3.OperationalError("database is locked"),
+        ),
+    ):
+        resp = client.get("/auth/callback/google", follow_redirects=False)
+        _assert_error_redirect(resp, "account_error")
+
+
+def test_callback_github_oauth_error_redirects(auth_enabled_app):
+    """GitHub OAuth error redirects to /login, not 500."""
+    from fastapi.testclient import TestClient
+
+    from yinshi.main import app
+
+    mock_github = MagicMock()
+    mock_github.authorize_access_token = AsyncMock(
+        side_effect=OAuthError(error="access_denied", description="User denied")
+    )
+
+    with (
+        TestClient(app) as client,
+        patch("yinshi.api.auth_routes.oauth.github", mock_github, create=True),
+    ):
+        resp = client.get("/auth/callback/github", follow_redirects=False)
+        _assert_error_redirect(resp, "oauth_error")
+
+
+def test_callback_github_api_error_redirects(auth_enabled_app):
+    """GitHub API failure (network error fetching user info) redirects to /login, not 500."""
+    from fastapi.testclient import TestClient
+
+    from yinshi.main import app
+
+    mock_github = MagicMock()
+    mock_github.authorize_access_token = AsyncMock(
+        return_value={"access_token": "fake-token"}
+    )
+
+    mock_http_client = AsyncMock()
+    mock_http_client.get = AsyncMock(
+        side_effect=httpx.ConnectError("Connection refused")
+    )
+    mock_http_client.__aenter__.return_value = mock_http_client
+
+    with (
+        TestClient(app) as client,
+        patch("yinshi.api.auth_routes.oauth.github", mock_github, create=True),
+        patch.object(httpx, "AsyncClient", return_value=mock_http_client),
+    ):
+        resp = client.get("/auth/callback/github", follow_redirects=False)
+        _assert_error_redirect(resp, "github_api_error")
+
+
+def test_callback_github_provisioning_error_redirects(auth_enabled_app):
+    """Filesystem error during GitHub user provisioning redirects to /login, not 500."""
+    from fastapi.testclient import TestClient
+
+    from yinshi.main import app
+
+    mock_github = MagicMock()
+    mock_github.authorize_access_token = AsyncMock(
+        return_value={"access_token": "fake-token"}
+    )
+
+    mock_user_response = MagicMock()
+    mock_user_response.json.return_value = {
+        "id": 12345,
+        "login": "testuser",
+        "name": "Test User",
+        "avatar_url": "https://example.com/avatar.jpg",
+    }
+    mock_user_response.raise_for_status = MagicMock()
+
+    mock_emails_response = MagicMock()
+    mock_emails_response.json.return_value = [
+        {"email": "test@example.com", "primary": True, "verified": True}
+    ]
+    mock_emails_response.raise_for_status = MagicMock()
+
+    mock_http_client = AsyncMock()
+    mock_http_client.get = AsyncMock(
+        side_effect=[mock_user_response, mock_emails_response]
+    )
+    mock_http_client.__aenter__.return_value = mock_http_client
+
+    with (
+        TestClient(app) as client,
+        patch("yinshi.api.auth_routes.oauth.github", mock_github, create=True),
+        patch.object(httpx, "AsyncClient", return_value=mock_http_client),
+        patch(
+            "yinshi.api.auth_routes.resolve_or_create_user",
+            side_effect=OSError("Permission denied: /var/lib/yinshi/users"),
+        ),
+    ):
+        resp = client.get("/auth/callback/github", follow_redirects=False)
+        _assert_error_redirect(resp, "account_error")

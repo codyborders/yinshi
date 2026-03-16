@@ -1,8 +1,10 @@
 """OAuth login/callback endpoints for Google and GitHub."""
 
 import logging
+import sqlite3
 
 import httpx
+from authlib.integrations.starlette_client import OAuthError
 from fastapi import APIRouter, Request
 from fastapi.responses import RedirectResponse
 
@@ -50,20 +52,43 @@ async def login_google(request: Request):
 @router.get("/callback/google")
 async def callback_google(request: Request):
     """Handle Google OAuth callback."""
-    token = await oauth.google.authorize_access_token(request)
+    try:
+        token = await oauth.google.authorize_access_token(request)
+    except OAuthError as exc:
+        logger.warning(
+            "Google OAuth rejected: error=%s description=%s",
+            exc.error,
+            exc.description,
+        )
+        return RedirectResponse(url="/login?error=oauth_error")
+    except Exception as exc:
+        # Catches state mismatch, missing session, and other authlib internals.
+        logger.error("Google token exchange failed: %s", exc, exc_info=True)
+        return RedirectResponse(url="/login?error=oauth_error")
+
     user_info = token.get("userinfo")
     if not user_info:
         return RedirectResponse(url="/login?error=no_user_info")
 
     email = user_info["email"]
-    tenant = resolve_or_create_user(
-        provider="google",
-        provider_user_id=user_info["sub"],
-        email=email,
-        display_name=user_info.get("name"),
-        avatar_url=user_info.get("picture"),
-        provider_data=dict(user_info),
-    )
+
+    try:
+        tenant = resolve_or_create_user(
+            provider="google",
+            provider_user_id=user_info["sub"],
+            email=email,
+            display_name=user_info.get("name"),
+            avatar_url=user_info.get("picture"),
+            provider_data=dict(user_info),
+        )
+    except (sqlite3.Error, OSError) as exc:
+        logger.error(
+            "Account provisioning failed for email=%s: %s",
+            email,
+            exc,
+            exc_info=True,
+        )
+        return RedirectResponse(url="/login?error=account_error")
 
     response = RedirectResponse(url="/app")
     _set_session_cookie(response, tenant.user_id)
@@ -86,41 +111,68 @@ async def login_github(request: Request):
 @router.get("/callback/github")
 async def callback_github(request: Request):
     """Handle GitHub OAuth callback."""
-    token = await oauth.github.authorize_access_token(request)
-
-    # GitHub doesn't include user info in the token; call the API
-    async with httpx.AsyncClient() as client:
-        headers = {"Authorization": f"Bearer {token['access_token']}"}
-        user_resp = await client.get("https://api.github.com/user", headers=headers)
-        user_data = user_resp.json()
-
-        # Get verified email
-        emails_resp = await client.get(
-            "https://api.github.com/user/emails", headers=headers
+    try:
+        token = await oauth.github.authorize_access_token(request)
+    except OAuthError as exc:
+        logger.warning(
+            "GitHub OAuth rejected: error=%s description=%s",
+            exc.error,
+            exc.description,
         )
-        emails = emails_resp.json()
+        return RedirectResponse(url="/login?error=oauth_error")
+    except Exception as exc:
+        logger.error("GitHub token exchange failed: %s", exc, exc_info=True)
+        return RedirectResponse(url="/login?error=oauth_error")
 
-    # Find the primary verified email, falling back to any verified email
-    email = next(
+    # GitHub doesn't include user info in the token; call the API.
+    try:
+        async with httpx.AsyncClient() as client:
+            headers = {"Authorization": f"Bearer {token['access_token']}"}
+            user_resp = await client.get(
+                "https://api.github.com/user", headers=headers
+            )
+            user_resp.raise_for_status()
+            user_data = user_resp.json()
+
+            emails_resp = await client.get(
+                "https://api.github.com/user/emails", headers=headers
+            )
+            emails_resp.raise_for_status()
+            emails = emails_resp.json()
+    except (httpx.HTTPError, KeyError) as exc:
+        logger.error("GitHub API call failed: %s", exc, exc_info=True)
+        return RedirectResponse(url="/login?error=github_api_error")
+
+    # Find the primary verified email, falling back to any verified email.
+    primary_email = next(
         (e["email"] for e in emails if e.get("primary") and e.get("verified")),
         None,
     )
-    if not email:
-        email = next(
-            (e["email"] for e in emails if e.get("verified")),
-            None,
-        )
+    verified_email = next(
+        (e["email"] for e in emails if e.get("verified")),
+        None,
+    )
+    email = primary_email or verified_email
     if not email:
         return RedirectResponse(url="/login?error=no_verified_email")
 
-    tenant = resolve_or_create_user(
-        provider="github",
-        provider_user_id=str(user_data["id"]),
-        email=email,
-        display_name=user_data.get("name") or user_data.get("login"),
-        avatar_url=user_data.get("avatar_url"),
-        provider_data=user_data,
-    )
+    try:
+        tenant = resolve_or_create_user(
+            provider="github",
+            provider_user_id=str(user_data["id"]),
+            email=email,
+            display_name=user_data.get("name") or user_data.get("login"),
+            avatar_url=user_data.get("avatar_url"),
+            provider_data=user_data,
+        )
+    except (sqlite3.Error, OSError) as exc:
+        logger.error(
+            "Account provisioning failed for email=%s: %s",
+            email,
+            exc,
+            exc_info=True,
+        )
+        return RedirectResponse(url="/login?error=account_error")
 
     response = RedirectResponse(url="/app")
     _set_session_cookie(response, tenant.user_id)

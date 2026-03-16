@@ -1,8 +1,21 @@
-import { Navigate } from "react-router-dom";
+import { Navigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
+
+const ERROR_MESSAGES: Record<string, string> = {
+  oauth_error: "Sign-in was cancelled or failed. Please try again.",
+  github_api_error: "Could not retrieve your GitHub account details. Please try again.",
+  account_error: "Account setup failed. Please try again or contact support.",
+  no_user_info: "Could not retrieve your profile information. Please try again.",
+  no_verified_email: "No verified email found on your GitHub account.",
+};
 
 export default function Login() {
   const { status } = useAuth();
+  const [searchParams] = useSearchParams();
+  const errorCode = searchParams.get("error");
+  const errorMessage = errorCode
+    ? ERROR_MESSAGES[errorCode] ?? "Something went wrong. Please try again."
+    : null;
 
   if (status === "authenticated" || status === "disabled") {
     return <Navigate to="/" replace />;
@@ -17,6 +30,12 @@ export default function Login() {
             Code with AI agents, anywhere.
           </p>
         </div>
+
+        {errorMessage && (
+          <div className="rounded-md bg-red-900/50 px-4 py-3 text-sm text-red-200">
+            {errorMessage}
+          </div>
+        )}
 
         <div className="space-y-3">
           <button
