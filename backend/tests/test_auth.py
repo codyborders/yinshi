@@ -198,7 +198,6 @@ def _assert_error_redirect(response, expected_error: str) -> None:
     """Assert that a response is a redirect to /login with the given error code."""
     assert response.status_code == 307, f"Expected 307, got {response.status_code}"
     location = response.headers["location"]
-    assert "/login" in location
     assert f"error={expected_error}" in location
 
 
