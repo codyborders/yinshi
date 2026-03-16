@@ -1,6 +1,7 @@
 """API key management endpoints (BYOK -- Bring Your Own Key)."""
 
 import logging
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 
@@ -15,7 +16,7 @@ router = APIRouter(prefix="/api/settings", tags=["settings"])
 
 
 @router.get("/keys", response_model=list[ApiKeyOut])
-def list_keys(request: Request) -> list[dict]:
+def list_keys(request: Request) -> list[dict[str, Any]]:
     """List API keys (provider + label only, never the key value)."""
     tenant = require_tenant(request)
     with get_control_db() as db:
@@ -28,7 +29,7 @@ def list_keys(request: Request) -> list[dict]:
 
 
 @router.post("/keys", response_model=ApiKeyOut, status_code=201)
-def add_key(body: ApiKeyCreate, request: Request) -> dict:
+def add_key(body: ApiKeyCreate, request: Request) -> dict[str, Any]:
     """Store an encrypted API key."""
     tenant = require_tenant(request)
     dek = get_user_dek(tenant.user_id)

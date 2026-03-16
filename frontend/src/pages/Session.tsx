@@ -14,6 +14,7 @@ export default function Session() {
   const { messages, sendPrompt, cancel, streaming, setMessages } =
     useAgentStream(id);
   const [loadingHistory, setLoadingHistory] = useState(true);
+  const [historyError, setHistoryError] = useState<string | null>(null);
 
   // Load existing message history
   useEffect(() => {
@@ -34,8 +35,12 @@ export default function Session() {
           timestamp: new Date(m.created_at).getTime(),
         }));
         setMessages(mapped);
-      } catch {
-        /* ignore */
+        setHistoryError(null);
+      } catch (error) {
+        console.error(`Failed to load session history for ${id}`, error);
+        if (!cancelled) {
+          setHistoryError("Failed to load session history.");
+        }
       } finally {
         if (!cancelled) setLoadingHistory(false);
       }
@@ -170,13 +175,22 @@ export default function Session() {
             <div className="h-6 w-6 animate-spin rounded-full border-2 border-blue-500 border-t-transparent" />
           </div>
         ) : (
-          <ChatView
-            messages={messages}
-            streaming={streaming}
-            onSend={sendPrompt}
-            onCancel={cancel}
-            onCommand={handleCommand}
-          />
+          <div className="flex h-full flex-col">
+            {historyError && (
+              <div className="mx-4 mt-4 rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-300">
+                {historyError}
+              </div>
+            )}
+            <div className="flex-1 overflow-hidden">
+              <ChatView
+                messages={messages}
+                streaming={streaming}
+                onSend={sendPrompt}
+                onCancel={cancel}
+                onCommand={handleCommand}
+              />
+            </div>
+          </div>
         )}
       </div>
     </>

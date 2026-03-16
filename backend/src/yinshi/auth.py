@@ -5,7 +5,7 @@ import logging
 from authlib.integrations.starlette_client import OAuth
 from fastapi import Request, Response
 from itsdangerous import URLSafeTimedSerializer
-from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 
 from yinshi.config import get_settings
 from yinshi.db import get_control_db
@@ -62,9 +62,12 @@ def verify_session_token(token: str) -> str | None:
     settings = get_settings()
     serializer = URLSafeTimedSerializer(settings.secret_key)
     try:
-        return serializer.loads(token, salt="yinshi-session", max_age=SESSION_MAX_AGE)
+        user_id = serializer.loads(token, salt="yinshi-session", max_age=SESSION_MAX_AGE)
     except Exception:
         return None
+    if isinstance(user_id, str):
+        return user_id
+    return None
 
 
 def _auth_disabled() -> bool:
@@ -89,7 +92,11 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
     OPEN_PREFIXES = ("/auth/", "/health", "/static/")
 
-    async def dispatch(self, request: Request, call_next):  # type: ignore[override]
+    async def dispatch(
+        self,
+        request: Request,
+        call_next: RequestResponseEndpoint,
+    ) -> Response:
         path = request.url.path
 
         # Skip auth if explicitly disabled

@@ -3,7 +3,7 @@
 import json
 
 import pytest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 
 @pytest.mark.asyncio
@@ -13,7 +13,7 @@ async def test_sidecar_client_send():
 
     client = SidecarClient()
     client._connected = True
-    client._writer = AsyncMock()
+    client._writer = MagicMock()
     client._writer.drain = AsyncMock()
 
     await client._send({"type": "ping"})
@@ -29,7 +29,7 @@ async def test_sidecar_client_warmup():
 
     client = SidecarClient()
     client._connected = True
-    client._writer = AsyncMock()
+    client._writer = MagicMock()
     client._writer.drain = AsyncMock()
 
     await client.warmup("sess-1", model="opus", cwd="/tmp/repo")
@@ -49,7 +49,7 @@ async def test_sidecar_client_cancel():
 
     client = SidecarClient()
     client._connected = True
-    client._writer = AsyncMock()
+    client._writer = MagicMock()
     client._writer.drain = AsyncMock()
 
     await client.cancel("sess-1")

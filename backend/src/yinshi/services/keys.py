@@ -16,10 +16,10 @@ logger = logging.getLogger(__name__)
 
 # MiniMax M2.5 Highspeed pricing (per 1M tokens, in cents)
 _MINIMAX_COSTS = {
-    "input": 30,         # $0.30/M
-    "output": 120,       # $1.20/M
-    "cache_read": 3,     # $0.03/M
-    "cache_write": 3.75, # $0.0375/M
+    "input": 30,  # $0.30/M
+    "output": 120,  # $1.20/M
+    "cache_read": 3,  # $0.03/M
+    "cache_write": 3.75,  # $0.0375/M
 }
 
 
@@ -92,7 +92,9 @@ def get_credit_remaining_cents(user_id: str) -> int:
     if not row:
         return 0
 
-    return max(0, row["credit_limit_cents"] - row["credit_used_cents"])
+    credit_limit_cents = int(row["credit_limit_cents"])
+    credit_used_cents = int(row["credit_used_cents"])
+    return max(0, credit_limit_cents - credit_used_cents)
 
 
 def resolve_api_key_for_prompt(
@@ -125,7 +127,7 @@ def resolve_api_key_for_prompt(
     )
 
 
-def estimate_cost_cents(provider: str, usage: dict) -> float:
+def estimate_cost_cents(provider: str, usage: dict[str, int]) -> float:
     """Estimate cost from token counts. Returns cents.
 
     Only MiniMax costs are tracked (platform credit). Other providers
@@ -154,7 +156,7 @@ def record_usage(
     session_id: str,
     provider: str,
     model: str,
-    usage: dict,
+    usage: dict[str, int],
     key_source: str,
 ) -> None:
     """Insert a usage_log row. If key_source='platform', increment credit_used_cents."""
