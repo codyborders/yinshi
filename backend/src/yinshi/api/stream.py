@@ -12,7 +12,7 @@ import os
 import sqlite3
 import uuid
 from collections.abc import AsyncGenerator
-from typing import Any
+from typing import Any, cast
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -135,7 +135,7 @@ def _lookup_session(
     """Look up a session with workspace info, including owner_email in legacy mode."""
     tenant = get_tenant(request)
     if tenant:
-        return db.execute(
+        row = db.execute(
             "SELECT s.*, w.path as workspace_path, w.id as workspace_id, "
             "w.name as workspace_name, w.branch as workspace_branch "
             "FROM sessions s "
@@ -143,8 +143,9 @@ def _lookup_session(
             "WHERE s.id = ?",
             (session_id,),
         ).fetchone()
+        return cast(sqlite3.Row | None, row)
 
-    return db.execute(
+    row = db.execute(
         "SELECT s.*, w.path as workspace_path, w.id as workspace_id, "
         "w.name as workspace_name, w.branch as workspace_branch, "
         "r.owner_email "
@@ -154,6 +155,7 @@ def _lookup_session(
         "WHERE s.id = ?",
         (session_id,),
     ).fetchone()
+    return cast(sqlite3.Row | None, row)
 
 
 async def _resolve_execution_context(
@@ -202,6 +204,12 @@ async def _resolve_execution_context(
         provider: str | None = resolved["provider"]
     finally:
         await sidecar_tmp.disconnect()
+
+    if not provider:
+        raise HTTPException(
+            status_code=400,
+            detail="Could not determine provider for model",
+        )
 
     settings = get_settings()
     platform_key = (
@@ -319,8 +327,11 @@ async def prompt_session(
                                 if assistant_msg_id is None:
                                     assistant_msg_id = uuid.uuid4().hex
                                     db.execute(
-                                        "INSERT INTO messages (id, session_id, role, content, turn_id) "
-                                        "VALUES (?, ?, 'assistant', ?, ?)",
+                                        (
+                                            "INSERT INTO messages "
+                                            "(id, session_id, role, content, turn_id) "
+                                            "VALUES (?, ?, 'assistant', ?, ?)"
+                                        ),
                                         (assistant_msg_id, session_id, accumulated, turn_id),
                                     )
                                 else:
@@ -358,7 +369,11 @@ async def prompt_session(
                 "Sidecar error: session=%s turn_id=%s error=%s",
                 session_id, turn_id, e, exc_info=True,
             )
-            yield f"data: {json.dumps({'type': 'error', 'error': 'An internal error occurred'})}\n\n"
+            error_event = {
+                "type": "error",
+                "error": "An internal error occurred",
+            }
+            yield f"data: {json.dumps(error_event)}\n\n"
 
         finally:
             with get_db_for_request(request) as db:

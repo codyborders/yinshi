@@ -8,6 +8,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 
 from yinshi.exceptions import ContainerNotReadyError, ContainerStartError
 
@@ -15,6 +16,9 @@ logger = logging.getLogger(__name__)
 
 _SIDECAR_NET = "yinshi-sidecar-net"
 _USER_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+
+if TYPE_CHECKING:
+    from yinshi.config import Settings
 
 
 @dataclass
@@ -62,6 +66,7 @@ class ContainerManager:
         Raises ``ContainerStartError`` when *check* is True and the
         command exits non-zero, or when the binary is missing / times out.
         """
+        proc: asyncio.subprocess.Process | None = None
         try:
             proc = await asyncio.create_subprocess_exec(
                 self._podman_bin, *args,
@@ -74,20 +79,24 @@ class ContainerManager:
         except FileNotFoundError:
             raise ContainerStartError("podman binary not found") from None
         except asyncio.TimeoutError:
-            proc.kill()  # type: ignore[union-attr]
+            if proc is not None:
+                proc.kill()
             raise ContainerStartError(
                 f"Podman command timed out: podman {' '.join(args)}"
             ) from None
 
         stdout = raw_out.decode().strip()
         stderr = raw_err.decode().strip()
+        returncode = proc.returncode
+        if returncode is None:
+            raise ContainerStartError("Podman process exited without a return code")
 
-        if check and proc.returncode != 0:
+        if check and returncode != 0:
             raise ContainerStartError(
                 f"podman {args[0]} failed: {stderr}"
             )
 
-        return proc.returncode, stdout, stderr
+        return returncode, stdout, stderr
 
     # -- Initialization -----------------------------------------------------
 

@@ -2,11 +2,12 @@
 
 import logging
 import sqlite3
+from typing import Any, cast
 
 import httpx
 from authlib.integrations.starlette_client import OAuthError
 from fastapi import APIRouter, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse, Response
 
 from yinshi.auth import (
     SESSION_MAX_AGE,
@@ -41,16 +42,20 @@ def _set_session_cookie(response: RedirectResponse, user_id: str) -> None:
 
 
 @router.get("/login/google")
-async def login_google(request: Request):
+async def login_google(request: Request) -> Response:
     """Redirect to Google OAuth."""
     settings = get_settings()
     if not settings.google_client_id:
-        return {"error": "Google OAuth not configured"}
-    return await oauth.google.authorize_redirect(request, settings.google_redirect_uri)
+        return JSONResponse({"error": "Google OAuth not configured"})
+    response = await oauth.google.authorize_redirect(
+        request,
+        settings.google_redirect_uri,
+    )
+    return cast(Response, response)
 
 
 @router.get("/callback/google")
-async def callback_google(request: Request):
+async def callback_google(request: Request) -> RedirectResponse:
     """Handle Google OAuth callback."""
     try:
         token = await oauth.google.authorize_access_token(request)
@@ -100,16 +105,20 @@ async def callback_google(request: Request):
 
 
 @router.get("/login/github")
-async def login_github(request: Request):
+async def login_github(request: Request) -> Response:
     """Redirect to GitHub OAuth."""
     settings = get_settings()
     if not settings.github_client_id:
-        return {"error": "GitHub OAuth not configured"}
-    return await oauth.github.authorize_redirect(request, settings.github_redirect_uri)
+        return JSONResponse({"error": "GitHub OAuth not configured"})
+    response = await oauth.github.authorize_redirect(
+        request,
+        settings.github_redirect_uri,
+    )
+    return cast(Response, response)
 
 
 @router.get("/callback/github")
-async def callback_github(request: Request):
+async def callback_github(request: Request) -> RedirectResponse:
     """Handle GitHub OAuth callback."""
     try:
         token = await oauth.github.authorize_access_token(request)
@@ -184,13 +193,13 @@ async def callback_github(request: Request):
 
 
 @router.get("/login")
-async def login_redirect(request: Request):
+async def login_redirect(request: Request) -> RedirectResponse:
     """Legacy /auth/login redirects to Google OAuth."""
     return RedirectResponse(url="/auth/login/google", status_code=307)
 
 
 @router.get("/callback")
-async def callback_redirect(request: Request):
+async def callback_redirect(request: Request) -> RedirectResponse:
     """Legacy /auth/callback redirects to Google callback.
 
     Preserves query parameters (state, code, scope) from the OAuth
@@ -207,7 +216,7 @@ async def callback_redirect(request: Request):
 
 
 @router.get("/me")
-async def me(request: Request):
+async def me(request: Request) -> dict[str, Any]:
     """Return current user info.
 
     This endpoint is under /auth/ (an open path), so the middleware
@@ -233,7 +242,7 @@ async def me(request: Request):
 
 
 @router.post("/logout")
-async def logout():
+async def logout() -> RedirectResponse:
     """Clear session cookie."""
     response = RedirectResponse(url="/")
     response.delete_cookie("yinshi_session")

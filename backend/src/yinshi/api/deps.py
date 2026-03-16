@@ -62,7 +62,11 @@ def check_owner(owner_email: str | None, user_email: str | None) -> None:
         raise HTTPException(status_code=403, detail="Not authorized")
 
 
-def check_workspace_owner(db, workspace_id: str, request: Request) -> None:
+def check_workspace_owner(
+    db: sqlite3.Connection,
+    workspace_id: str,
+    request: Request,
+) -> None:
     """In legacy mode, verify the authenticated user owns the workspace's repo."""
     if get_tenant(request):
         return
@@ -73,9 +77,15 @@ def check_workspace_owner(db, workspace_id: str, request: Request) -> None:
     ).fetchone()
     if ws:
         check_owner(ws["owner_email"], get_user_email(request))
+    else:
+        raise HTTPException(status_code=404, detail="Workspace not found")
 
 
-def check_session_owner(db, session_id: str, request: Request) -> None:
+def check_session_owner(
+    db: sqlite3.Connection,
+    session_id: str,
+    request: Request,
+) -> None:
     """In legacy mode, verify the authenticated user owns the session's repo."""
     if get_tenant(request):
         return
@@ -88,3 +98,5 @@ def check_session_owner(db, session_id: str, request: Request) -> None:
     ).fetchone()
     if row:
         check_owner(row["owner_email"], get_user_email(request))
+    else:
+        raise HTTPException(status_code=404, detail="Session not found")

@@ -93,10 +93,10 @@ def test_csrf_check_blocks_mutating_without_header(auth_enabled_app):
     token = _create_test_user_token()
 
     with TestClient(app) as client:
+        client.cookies.set("yinshi_session", token)
         resp = client.post(
             "/api/repos",
             json={"name": "test", "local_path": "/tmp"},
-            cookies={"yinshi_session": token},
         )
         assert resp.status_code == 403
 
@@ -126,7 +126,8 @@ def test_auth_me_authenticated(auth_enabled_app):
     token = _create_test_user_token()
 
     with TestClient(app) as client:
-        resp = client.get("/auth/me", cookies={"yinshi_session": token})
+        client.cookies.set("yinshi_session", token)
+        resp = client.get("/auth/me")
         assert resp.status_code == 200
         data = resp.json()
         assert data["authenticated"] is True
@@ -155,10 +156,10 @@ def test_csrf_check_allows_with_header(auth_enabled_app):
     token = _create_test_user_token()
 
     with TestClient(app) as client:
+        client.cookies.set("yinshi_session", token)
         resp = client.post(
             "/api/repos",
             json={"name": "test", "local_path": "/tmp"},
-            cookies={"yinshi_session": token},
             headers={"X-Requested-With": "XMLHttpRequest"},
         )
         assert resp.status_code != 403

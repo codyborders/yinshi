@@ -95,7 +95,10 @@ class SidecarClient:
         line = await self._reader.readline()
         if not line:
             return None
-        return json.loads(line.decode())
+        message = json.loads(line.decode())
+        if not isinstance(message, dict):
+            raise SidecarError("Sidecar returned a non-object response")
+        return message
 
     @staticmethod
     def _build_options(
@@ -157,7 +160,7 @@ class SidecarClient:
                 if data.get("type") == "result":
                     break
 
-    async def resolve_model(self, model_key: str) -> dict[str, str]:
+    async def resolve_model(self, model_key: str) -> dict[str, str | None]:
         """Ask the sidecar to resolve a model key.
 
         Returns {'provider': '...', 'model': '...'}.
@@ -173,7 +176,14 @@ class SidecarClient:
         if msg.get("type") != "resolved":
             raise SidecarError(f"Unexpected response type: {msg.get('type')}")
 
-        return {"provider": msg["provider"], "model": msg["model"]}
+        provider = msg.get("provider")
+        if provider is not None and not isinstance(provider, str):
+            raise SidecarError("Resolved provider must be a string or null")
+        model = msg.get("model")
+        if not isinstance(model, str) or not model:
+            raise SidecarError("Resolved model must be a non-empty string")
+
+        return {"provider": provider, "model": model}
 
     async def cancel(self, session_id: str) -> None:
         """Cancel an active session."""

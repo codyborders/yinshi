@@ -1,6 +1,7 @@
 """Tests for REST API endpoints including SSE streaming."""
 
 from collections import namedtuple
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -55,6 +56,22 @@ def test_import_local_repo(client: TestClient, git_repo: str) -> None:
     assert data["id"]
 
 
+def test_repo_response_excludes_owner_email(client: TestClient, git_repo: str) -> None:
+    """Repo API responses should not leak owner_email."""
+    resp = client.post(
+        "/api/repos",
+        json={"name": "test-repo", "local_path": git_repo},
+    )
+    assert resp.status_code == 201
+    data = resp.json()
+    assert "owner_email" not in data
+
+    repo_id = data["id"]
+    get_resp = client.get(f"/api/repos/{repo_id}")
+    assert get_resp.status_code == 200
+    assert "owner_email" not in get_resp.json()
+
+
 def test_list_repos_includes_null_owner(db_path: str, git_repo: str, tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Repos with NULL owner_email should still appear when user is authenticated."""
     monkeypatch.setenv("DB_PATH", db_path)
@@ -97,10 +114,8 @@ def test_list_repos_includes_null_owner(db_path: str, git_repo: str, tmp_path, m
     token = create_session_token(tenant.user_id)
 
     with TestClient(app) as client:
-        resp = client.get(
-            "/api/repos",
-            cookies={"yinshi_session": token},
-        )
+        client.cookies.set("yinshi_session", token)
+        resp = client.get("/api/repos")
         assert resp.status_code == 200
         # In tenant mode, user gets their own empty DB -- repos are in user DB
         # Legacy repos in main DB are not visible in tenant mode
@@ -212,6 +227,43 @@ def test_delete_repo(client: TestClient, git_repo: str) -> None:
     assert resp.status_code == 404
 
 
+def test_delete_repo_continues_on_workspace_failure(
+    client: TestClient,
+    git_repo: str,
+) -> None:
+    """Repo deletion should continue even if one workspace cleanup fails."""
+    repo = client.post(
+        "/api/repos",
+        json={"name": "test-repo", "local_path": git_repo},
+    ).json()
+    workspaces = [
+        client.post(f"/api/repos/{repo['id']}/workspaces", json={}).json()
+        for _ in range(3)
+    ]
+    attempted_workspace_ids: list[str] = []
+    failure_workspace_id = workspaces[1]["id"]
+
+    from yinshi.api import repos as repos_api
+
+    original_delete_workspace = repos_api.delete_workspace
+
+    async def flaky_delete_workspace(db, workspace_id: str) -> None:
+        attempted_workspace_ids.append(workspace_id)
+        if workspace_id == failure_workspace_id:
+            raise RuntimeError("delete failed")
+        await original_delete_workspace(db, workspace_id)
+
+    with patch(
+        "yinshi.api.repos.delete_workspace",
+        side_effect=flaky_delete_workspace,
+    ):
+        resp = client.delete(f"/api/repos/{repo['id']}")
+
+    assert resp.status_code == 204
+    assert set(attempted_workspace_ids) == {ws["id"] for ws in workspaces}
+    assert client.get(f"/api/repos/{repo['id']}").status_code == 404
+
+
 def test_create_workspace(client: TestClient, git_repo: str) -> None:
     """POST /api/repos/:id/workspaces should create a worktree."""
     create_resp = client.post(
@@ -242,6 +294,13 @@ def test_list_workspaces(client: TestClient, git_repo: str) -> None:
     resp = client.get(f"/api/repos/{repo_id}/workspaces")
     assert resp.status_code == 200
     assert len(resp.json()) == 2
+
+
+def test_list_workspaces_nonexistent_repo_returns_404(client: TestClient) -> None:
+    """GET /api/repos/:id/workspaces should 404 when the repo is missing."""
+    resp = client.get("/api/repos/nonexistent/workspaces")
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "Repo not found"
 
 
 def test_create_session(client: TestClient, git_repo: str) -> None:
@@ -307,6 +366,35 @@ def test_prompt_session_not_found(client: TestClient) -> None:
         json={"prompt": "hello"},
     )
     assert resp.status_code == 404
+
+
+def test_prompt_rejects_none_provider(
+    auth_client: TestClient,
+    git_repo: str,
+) -> None:
+    """Prompt requests should fail fast when model resolution returns no provider."""
+    stack = create_full_stack(auth_client, git_repo, name="test-repo")
+
+    async def unexpected_query(*args, **kwargs):
+        if False:
+            yield {}
+        raise AssertionError("query should not be called")
+
+    mock_sidecar = make_mock_sidecar(unexpected_query)
+    mock_sidecar.resolve_model.return_value = {"provider": None, "model": "minimax"}
+
+    with patch(
+        "yinshi.api.stream.create_sidecar_connection",
+        return_value=mock_sidecar,
+    ):
+        resp = auth_client.post(
+            f"/api/sessions/{stack['session']['id']}/prompt",
+            json={"prompt": "say hello"},
+        )
+
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "Could not determine provider for model"
+    mock_sidecar.disconnect.assert_awaited_once()
 
 
 def test_prompt_streams_sidecar_events(client: TestClient, session_id: str) -> None:
@@ -639,6 +727,68 @@ def test_get_session_tree(client: TestClient, test_entities: Entities) -> None:
     assert "files" in data
     # The test git repo has a README.md
     assert "README.md" in data["files"]
+
+
+def test_session_tree_excludes_common_dirs(
+    client: TestClient,
+    test_entities: Entities,
+) -> None:
+    """GET /api/sessions/:id/tree should skip bulky generated directories."""
+    from yinshi.db import get_db
+
+    with get_db() as db:
+        row = db.execute(
+            "SELECT path FROM workspaces WHERE id = ?",
+            (test_entities.workspace_id,),
+        ).fetchone()
+
+    assert row is not None
+    workspace_path = Path(row["path"])
+    included_file = workspace_path / "src" / "main.py"
+    included_file.parent.mkdir(parents=True, exist_ok=True)
+    included_file.write_text("print('ok')\n", encoding="utf-8")
+
+    for excluded_dir in ("node_modules", ".venv", "__pycache__", "dist", "build"):
+        excluded_file = workspace_path / excluded_dir / "ignored.txt"
+        excluded_file.parent.mkdir(parents=True, exist_ok=True)
+        excluded_file.write_text("ignore me\n", encoding="utf-8")
+
+    resp = client.get(f"/api/sessions/{test_entities.session_id}/tree")
+    assert resp.status_code == 200
+    files = resp.json()["files"]
+    assert "src/main.py" in files
+    assert "node_modules/ignored.txt" not in files
+    assert ".venv/ignored.txt" not in files
+    assert "__pycache__/ignored.txt" not in files
+    assert "dist/ignored.txt" not in files
+    assert "build/ignored.txt" not in files
+
+
+def test_session_tree_limits_file_count(
+    client: TestClient,
+    test_entities: Entities,
+) -> None:
+    """GET /api/sessions/:id/tree should cap the file list at 5000 entries."""
+    from yinshi.db import get_db
+
+    with get_db() as db:
+        row = db.execute(
+            "SELECT path FROM workspaces WHERE id = ?",
+            (test_entities.workspace_id,),
+        ).fetchone()
+
+    assert row is not None
+    workspace_path = Path(row["path"])
+    for index in range(5005):
+        file_path = workspace_path / f"{index:04}.txt"
+        file_path.write_text("x\n", encoding="utf-8")
+
+    resp = client.get(f"/api/sessions/{test_entities.session_id}/tree")
+    assert resp.status_code == 200
+    files = resp.json()["files"]
+    assert len(files) == 5000
+    assert "0000.txt" in files
+    assert "5004.txt" not in files
 
 
 def test_get_session_tree_not_found(client: TestClient) -> None:

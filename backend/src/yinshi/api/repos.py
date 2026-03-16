@@ -3,6 +3,7 @@
 import logging
 import sqlite3
 from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 
@@ -47,7 +48,7 @@ def _check_repo_owner(row: sqlite3.Row, request: Request) -> None:
 
 
 @router.get("", response_model=list[RepoOut])
-def list_repos(request: Request) -> list[dict]:
+def list_repos(request: Request) -> list[dict[str, Any]]:
     """List all imported repositories."""
     tenant = get_tenant(request)
     email = None if tenant else get_user_email(request)
@@ -67,7 +68,7 @@ def list_repos(request: Request) -> list[dict]:
 
 
 @router.post("", response_model=RepoOut, status_code=201)
-async def import_repo(body: RepoCreate, request: Request) -> dict:
+async def import_repo(body: RepoCreate, request: Request) -> dict[str, Any]:
     """Import a repository (clone from URL or register local path)."""
     tenant = get_tenant(request)
 
@@ -115,7 +116,7 @@ async def import_repo(body: RepoCreate, request: Request) -> dict:
 
 
 @router.get("/{repo_id}", response_model=RepoOut)
-def get_repo(repo_id: str, request: Request) -> dict:
+def get_repo(repo_id: str, request: Request) -> dict[str, Any]:
     """Get a single repository by ID."""
     with get_db_for_request(request) as db:
         row = db.execute("SELECT * FROM repos WHERE id = ?", (repo_id,)).fetchone()
@@ -126,7 +127,11 @@ def get_repo(repo_id: str, request: Request) -> dict:
 
 
 @router.patch("/{repo_id}", response_model=RepoOut)
-def update_repo(repo_id: str, body: RepoUpdate, request: Request) -> dict:
+def update_repo(
+    repo_id: str,
+    body: RepoUpdate,
+    request: Request,
+) -> dict[str, Any]:
     """Update a repository."""
     with get_db_for_request(request) as db:
         row = db.execute("SELECT * FROM repos WHERE id = ?", (repo_id,)).fetchone()
@@ -161,6 +166,14 @@ async def delete_repo(repo_id: str, request: Request) -> None:
             (repo_id,),
         ).fetchall()
         for workspace in workspace_rows:
-            await delete_workspace(db, workspace["id"])
+            try:
+                await delete_workspace(db, workspace["id"])
+            except Exception:
+                logger.warning(
+                    "Failed to delete workspace %s while deleting repo %s",
+                    workspace["id"],
+                    repo_id,
+                    exc_info=True,
+                )
         db.execute("DELETE FROM repos WHERE id = ?", (repo_id,))
         db.commit()

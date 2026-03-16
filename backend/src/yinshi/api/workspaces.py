@@ -1,6 +1,8 @@
 """Endpoints for workspace (worktree) management."""
 
 import logging
+import sqlite3
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 
@@ -21,7 +23,11 @@ router = APIRouter(tags=["workspaces"])
 _UPDATABLE_COLUMNS = {"state"}
 
 
-def _check_repo_owner(db, repo_id: str, request: Request) -> None:
+def _check_repo_owner(
+    db: sqlite3.Connection,
+    repo_id: str,
+    request: Request,
+) -> None:
     """In legacy mode, verify the authenticated user owns the repo."""
     if get_tenant(request):
         return
@@ -30,10 +36,12 @@ def _check_repo_owner(db, repo_id: str, request: Request) -> None:
     ).fetchone()
     if repo:
         check_owner(repo["owner_email"], get_user_email(request))
+    else:
+        raise HTTPException(status_code=404, detail="Repo not found")
 
 
 @router.get("/api/repos/{repo_id}/workspaces", response_model=list[WorkspaceOut])
-def list_workspaces(repo_id: str, request: Request) -> list[dict]:
+def list_workspaces(repo_id: str, request: Request) -> list[dict[str, Any]]:
     """List all workspaces for a repo."""
     with get_db_for_request(request) as db:
         _check_repo_owner(db, repo_id, request)
@@ -49,7 +57,11 @@ def list_workspaces(repo_id: str, request: Request) -> list[dict]:
     response_model=WorkspaceOut,
     status_code=201,
 )
-async def create_workspace(repo_id: str, body: WorkspaceCreate, request: Request) -> dict:
+async def create_workspace(
+    repo_id: str,
+    body: WorkspaceCreate,
+    request: Request,
+) -> dict[str, Any]:
     """Create a new worktree workspace."""
     email = get_user_email(request)
     username = email.split("@")[0] if email else None
@@ -63,7 +75,11 @@ async def create_workspace(repo_id: str, body: WorkspaceCreate, request: Request
 
 
 @router.patch("/api/workspaces/{workspace_id}", response_model=WorkspaceOut)
-def update_workspace(workspace_id: str, body: WorkspaceUpdate, request: Request) -> dict:
+def update_workspace(
+    workspace_id: str,
+    body: WorkspaceUpdate,
+    request: Request,
+) -> dict[str, Any]:
     """Update workspace fields (currently only state)."""
     with get_db_for_request(request) as db:
         row = db.execute(

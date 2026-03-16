@@ -3,7 +3,12 @@ import { useNavigate, useParams } from "react-router-dom";
 import { api, type Repo, type SessionInfo, type Workspace } from "../api/client";
 import { useAuth } from "../hooks/useAuth";
 import { useTheme } from "../hooks/useTheme";
-import { deriveRepoName, isGitUrl, isLocalPath } from "../utils/repo";
+import {
+  deriveRepoName,
+  isGithubShorthand,
+  isGitUrl,
+  isLocalPath,
+} from "../utils/repo";
 
 const COLORS = [
   "bg-[#c23b22]",
@@ -56,18 +61,32 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const { theme, toggle: toggleTheme } = useTheme();
   const [repos, setRepos] = useState<Repo[]>([]);
   const [loading, setLoading] = useState(true);
+  const [repoLoadError, setRepoLoadError] = useState<string | null>(null);
   const [showImport, setShowImport] = useState(false);
 
+  async function loadRepos() {
+    setLoading(true);
+    setRepoLoadError(null);
+    try {
+      const data = await api.get<Repo[]>("/api/repos");
+      setRepos(data);
+    } catch (error) {
+      console.error("Failed to load repositories", error);
+      setRepoLoadError("Failed to load repositories.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
   useEffect(() => {
-    api
-      .get<Repo[]>("/api/repos")
-      .then(setRepos)
-      .catch(() => {})
-      .finally(() => setLoading(false));
+    void loadRepos();
   }, []);
 
   function handleImported(repo: Repo | null) {
-    if (repo) setRepos((prev) => [repo, ...prev]);
+    if (repo) {
+      setRepos((prev) => [repo, ...prev]);
+      setRepoLoadError(null);
+    }
     setShowImport(false);
   }
 
@@ -95,7 +114,20 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
           </div>
         )}
 
-        {!loading && repos.length === 0 && !showImport && (
+        {!loading && repoLoadError && (
+          <div className="mx-4 mt-4 rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-300">
+            <div>{repoLoadError}</div>
+            <button
+              onClick={() => void loadRepos()}
+              className="mt-2 text-red-200 underline underline-offset-2 hover:text-red-100"
+              type="button"
+            >
+              Retry
+            </button>
+          </div>
+        )}
+
+        {!loading && !repoLoadError && repos.length === 0 && !showImport && (
           <div className="px-4 py-8 text-center text-sm text-gray-600">
             No repositories yet.
           </div>
@@ -180,6 +212,7 @@ function RepoSection({
   const [loaded, setLoaded] = useState(false);
   const [creating, setCreating] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
+  const [workspaceError, setWorkspaceError] = useState<string | null>(null);
 
   useEffect(() => {
     if (expanded && !loaded) {
@@ -187,15 +220,20 @@ function RepoSection({
         .get<Workspace[]>(`/api/repos/${repo.id}/workspaces`)
         .then((data) => {
           setWorkspaces(data);
+          setWorkspaceError(null);
           setLoaded(true);
         })
-        .catch(() => {});
+        .catch((error) => {
+          console.error(`Failed to load workspaces for repo ${repo.id}`, error);
+          setWorkspaceError("Failed to load workspaces.");
+        });
     }
   }, [expanded, loaded, repo.id]);
 
   async function createBranch(e: React.MouseEvent) {
     e.stopPropagation();
     setCreating(true);
+    setWorkspaceError(null);
     try {
       const ws = await api.post<Workspace>(
         `/api/repos/${repo.id}/workspaces`,
@@ -210,8 +248,9 @@ function RepoSection({
       );
       navigate(`/app/session/${session.id}`);
       onNavigate?.();
-    } catch {
-      /* ignore */
+    } catch (error) {
+      console.error(`Failed to create workspace for repo ${repo.id}`, error);
+      setWorkspaceError("Failed to create workspace.");
     } finally {
       setCreating(false);
     }
@@ -226,8 +265,11 @@ function RepoSection({
       setWorkspaces((prev) =>
         prev.map((ws) => (ws.id === workspaceId ? updated : ws)),
       );
-    } catch {
-      /* ignore */
+    } catch (error) {
+      console.error(
+        `Failed to update workspace ${workspaceId} to ${newState}`,
+        error,
+      );
     }
   }
 
@@ -269,6 +311,11 @@ function RepoSection({
 
       {expanded && (
         <>
+          {workspaceError && (
+            <div className="px-11 py-2 text-xs text-red-400">
+              {workspaceError}
+            </div>
+          )}
           {activeWorkspaces.map((ws) => (
             <WorkspaceItem
               key={ws.id}
@@ -339,7 +386,12 @@ function WorkspaceItem({
           setSessions(data);
           setLoadedSessions(true);
         })
-        .catch(() => {});
+        .catch((error) => {
+          console.error(
+            `Failed to load sessions for workspace ${workspace.id}`,
+            error,
+          );
+        });
     }
   }, [workspace.id, loadedSessions]);
 
@@ -358,8 +410,11 @@ function WorkspaceItem({
       setSessions([session]);
       navigate(`/app/session/${session.id}`);
       onNavigate?.();
-    } catch {
-      /* ignore */
+    } catch (error) {
+      console.error(
+        `Failed to open or create a session for workspace ${workspace.id}`,
+        error,
+      );
     }
   }
 
@@ -430,8 +485,11 @@ function ImportForm({ onDone }: { onDone: (repo: Repo | null) => void }) {
         body.remote_url = value;
       } else if (isLocalPath(value)) {
         body.local_path = value;
-      } else {
+      } else if (isGithubShorthand(value)) {
         body.remote_url = `https://github.com/${value}`;
+      } else {
+        setError("Enter a GitHub URL, owner/repo, or local path.");
+        return;
       }
       const repo = await api.post<Repo>("/api/repos", body);
       onDone(repo);

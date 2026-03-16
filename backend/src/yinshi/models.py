@@ -24,7 +24,6 @@ class RepoOut(BaseModel):
     remote_url: str | None = None
     root_path: str
     custom_prompt: str | None = None
-    owner_email: str | None = None  # Legacy field, absent in tenant mode
 
 
 class RepoUpdate(BaseModel):

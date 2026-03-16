@@ -3,6 +3,7 @@
 import asyncio
 import logging
 from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -21,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Application startup and shutdown."""
     app_settings = get_settings()
     logger.info("Starting %s", app_settings.app_name)
@@ -30,7 +31,7 @@ async def lifespan(app: FastAPI):
     setup_oauth()
 
     # Per-user container isolation
-    reaper_task = None
+    reaper_task: asyncio.Task[None] | None = None
     if app_settings.container_enabled:
         from yinshi.services.container import ContainerManager
 

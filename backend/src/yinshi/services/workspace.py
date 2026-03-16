@@ -3,6 +3,7 @@
 import logging
 import os
 import sqlite3
+from typing import Any
 
 from yinshi.exceptions import RepoNotFoundError, WorkspaceNotFoundError
 from yinshi.services.git import create_worktree, delete_worktree, generate_branch_name
@@ -15,7 +16,7 @@ async def create_workspace_for_repo(
     repo_id: str,
     name: str | None = None,
     username: str | None = None,
-) -> dict:
+) -> dict[str, Any]:
     """Create a new worktree workspace for a repo."""
     repo = db.execute("SELECT * FROM repos WHERE id = ?", (repo_id,)).fetchone()
     if not repo:

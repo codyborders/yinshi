@@ -2,6 +2,7 @@
 
 import logging
 import os
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 
@@ -16,10 +17,52 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["sessions"])
 
 _UPDATABLE_COLUMNS = {"model"}
+_EXCLUDED_DIRS = frozenset(
+    {
+        ".git",
+        "node_modules",
+        ".venv",
+        "venv",
+        "__pycache__",
+        ".tox",
+        ".mypy_cache",
+        "vendor",
+        ".next",
+        "dist",
+        "build",
+    }
+)
+_TREE_FILE_LIMIT = 5000
+
+
+def _list_workspace_files(workspace_path: str) -> list[str]:
+    """List workspace files while excluding bulky build directories."""
+    if not os.path.isdir(workspace_path):
+        return []
+
+    files: list[str] = []
+    for dirpath, dirnames, filenames in os.walk(workspace_path):
+        dirnames[:] = sorted(
+            dirname
+            for dirname in dirnames
+            if dirname not in _EXCLUDED_DIRS
+        )
+        for filename in sorted(filenames):
+            relative_path = os.path.relpath(
+                os.path.join(dirpath, filename),
+                workspace_path,
+            )
+            files.append(relative_path)
+            if len(files) >= _TREE_FILE_LIMIT:
+                files.sort()
+                return files
+
+    files.sort()
+    return files
 
 
 @router.get("/api/workspaces/{workspace_id}/sessions", response_model=list[SessionOut])
-def list_sessions(workspace_id: str, request: Request) -> list[dict]:
+def list_sessions(workspace_id: str, request: Request) -> list[dict[str, Any]]:
     """List all sessions for a workspace."""
     with get_db_for_request(request) as db:
         check_workspace_owner(db, workspace_id, request)
@@ -35,7 +78,11 @@ def list_sessions(workspace_id: str, request: Request) -> list[dict]:
     response_model=SessionOut,
     status_code=201,
 )
-def create_session(workspace_id: str, body: SessionCreate, request: Request) -> dict:
+def create_session(
+    workspace_id: str,
+    body: SessionCreate,
+    request: Request,
+) -> dict[str, Any]:
     """Create a new agent session for a workspace."""
     with get_db_for_request(request) as db:
         ws = db.execute(
@@ -58,7 +105,7 @@ def create_session(workspace_id: str, body: SessionCreate, request: Request) -> 
 
 
 @router.get("/api/sessions/{session_id}", response_model=SessionOut)
-def get_session(session_id: str, request: Request) -> dict:
+def get_session(session_id: str, request: Request) -> dict[str, Any]:
     """Get a session by ID."""
     with get_db_for_request(request) as db:
         row = db.execute(
@@ -71,7 +118,11 @@ def get_session(session_id: str, request: Request) -> dict:
 
 
 @router.patch("/api/sessions/{session_id}", response_model=SessionOut)
-def update_session(session_id: str, body: SessionUpdate, request: Request) -> dict:
+def update_session(
+    session_id: str,
+    body: SessionUpdate,
+    request: Request,
+) -> dict[str, Any]:
     """Update session fields (currently only model)."""
     with get_db_for_request(request) as db:
         row = db.execute(
@@ -98,7 +149,7 @@ def update_session(session_id: str, body: SessionUpdate, request: Request) -> di
 
 
 @router.get("/api/sessions/{session_id}/messages", response_model=list[MessageOut])
-def get_messages(session_id: str, request: Request) -> list[dict]:
+def get_messages(session_id: str, request: Request) -> list[dict[str, Any]]:
     """Get all messages for a session."""
     with get_db_for_request(request) as db:
         sess = db.execute(
@@ -116,7 +167,7 @@ def get_messages(session_id: str, request: Request) -> list[dict]:
 
 
 @router.get("/api/sessions/{session_id}/tree")
-def get_session_tree(session_id: str, request: Request) -> dict:
+def get_session_tree(session_id: str, request: Request) -> dict[str, list[str]]:
     """Return the workspace file tree for a session."""
     with get_db_for_request(request) as db:
         row = db.execute(
@@ -131,11 +182,5 @@ def get_session_tree(session_id: str, request: Request) -> dict:
         check_session_owner(db, session_id, request)
 
     workspace_path = row["workspace_path"]
-    files: list[str] = []
-    for dirpath, dirnames, filenames in os.walk(workspace_path):
-        dirnames[:] = [d for d in dirnames if d != ".git"]
-        for fname in filenames:
-            rel = os.path.relpath(os.path.join(dirpath, fname), workspace_path)
-            files.append(rel)
-    files.sort()
-    return {"files": files}
+    assert isinstance(workspace_path, str)
+    return {"files": _list_workspace_files(workspace_path)}
