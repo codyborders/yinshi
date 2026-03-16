@@ -1,5 +1,14 @@
+import { useSearchParams } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+
+const ERROR_MESSAGES: Record<string, string> = {
+  oauth_error: "Sign-in was cancelled or failed. Please try again.",
+  github_api_error: "Could not retrieve your GitHub account details. Please try again.",
+  account_error: "Account setup failed. Please try again or contact support.",
+  no_user_info: "Could not retrieve your profile information. Please try again.",
+  no_verified_email: "No verified email found on your GitHub account.",
+};
 
 /* ------------------------------------------------------------------ */
 /*  Landing page – "The Hidden Scholar" aesthetic                      */
@@ -46,6 +55,12 @@ const CAPABILITIES = [
 ];
 
 export default function Landing() {
+  const [searchParams] = useSearchParams();
+  const errorCode = searchParams.get("error");
+  const errorMessage = errorCode
+    ? ERROR_MESSAGES[errorCode] ?? "Something went wrong. Please try again."
+    : null;
+
   return (
     <div className="landing-page">
       {/* ---- Parchment texture overlay ---- */}
@@ -58,6 +73,22 @@ export default function Landing() {
           Sign In / Sign Up
         </a>
       </nav>
+
+      {errorMessage && (
+        <div style={{
+          maxWidth: "32rem",
+          margin: "1rem auto",
+          padding: "0.75rem 1rem",
+          borderRadius: "0.5rem",
+          backgroundColor: "rgba(194, 59, 34, 0.12)",
+          border: "1px solid rgba(194, 59, 34, 0.3)",
+          color: "var(--lp-ink)",
+          fontSize: "0.875rem",
+          textAlign: "center",
+        }}>
+          {errorMessage}
+        </div>
+      )}
 
       {/* ---- Hero ---- */}
       <section className="landing-hero">

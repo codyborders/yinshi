@@ -60,15 +60,15 @@ async def callback_google(request: Request):
             exc.error,
             exc.description,
         )
-        return RedirectResponse(url="/login?error=oauth_error")
+        return RedirectResponse(url="/?error=oauth_error")
     except Exception as exc:
         # Catches state mismatch, missing session, and other authlib internals.
         logger.error("Google token exchange failed: %s", exc, exc_info=True)
-        return RedirectResponse(url="/login?error=oauth_error")
+        return RedirectResponse(url="/?error=oauth_error")
 
     user_info = token.get("userinfo")
     if not user_info:
-        return RedirectResponse(url="/login?error=no_user_info")
+        return RedirectResponse(url="/?error=no_user_info")
 
     email = user_info["email"]
 
@@ -88,7 +88,7 @@ async def callback_google(request: Request):
             exc,
             exc_info=True,
         )
-        return RedirectResponse(url="/login?error=account_error")
+        return RedirectResponse(url="/?error=account_error")
 
     response = RedirectResponse(url="/app")
     _set_session_cookie(response, tenant.user_id)
@@ -119,10 +119,10 @@ async def callback_github(request: Request):
             exc.error,
             exc.description,
         )
-        return RedirectResponse(url="/login?error=oauth_error")
+        return RedirectResponse(url="/?error=oauth_error")
     except Exception as exc:
         logger.error("GitHub token exchange failed: %s", exc, exc_info=True)
-        return RedirectResponse(url="/login?error=oauth_error")
+        return RedirectResponse(url="/?error=oauth_error")
 
     # GitHub doesn't include user info in the token; call the API.
     try:
@@ -141,7 +141,7 @@ async def callback_github(request: Request):
             emails = emails_resp.json()
     except (httpx.HTTPError, KeyError) as exc:
         logger.error("GitHub API call failed: %s", exc, exc_info=True)
-        return RedirectResponse(url="/login?error=github_api_error")
+        return RedirectResponse(url="/?error=github_api_error")
 
     # Find the primary verified email, falling back to any verified email.
     primary_email = next(
@@ -154,7 +154,7 @@ async def callback_github(request: Request):
     )
     email = primary_email or verified_email
     if not email:
-        return RedirectResponse(url="/login?error=no_verified_email")
+        return RedirectResponse(url="/?error=no_verified_email")
 
     try:
         tenant = resolve_or_create_user(
@@ -172,7 +172,7 @@ async def callback_github(request: Request):
             exc,
             exc_info=True,
         )
-        return RedirectResponse(url="/login?error=account_error")
+        return RedirectResponse(url="/?error=account_error")
 
     response = RedirectResponse(url="/app")
     _set_session_cookie(response, tenant.user_id)
@@ -191,8 +191,16 @@ async def login_redirect(request: Request):
 
 @router.get("/callback")
 async def callback_redirect(request: Request):
-    """Legacy /auth/callback redirects to Google callback."""
-    return RedirectResponse(url="/auth/callback/google", status_code=307)
+    """Legacy /auth/callback redirects to Google callback.
+
+    Preserves query parameters (state, code, scope) from the OAuth
+    provider -- dropping them causes a state mismatch error.
+    """
+    target = "/auth/callback/google"
+    query_string = request.url.query
+    if query_string:
+        target = f"{target}?{query_string}"
+    return RedirectResponse(url=target, status_code=307)
 
 
 # --- Common endpoints ---
