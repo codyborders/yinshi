@@ -26,10 +26,13 @@ from yinshi.exceptions import (
     CreditExhaustedError,
     GitError,
     KeyNotFoundError,
+    RepoNotFoundError,
     SidecarError,
+    WorkspaceNotFoundError,
 )
 from yinshi.services.keys import record_usage, resolve_api_key_for_prompt
 from yinshi.services.sidecar import SidecarClient, create_sidecar_connection
+from yinshi.services.workspace import ensure_workspace_checkout_for_tenant
 from yinshi.utils.paths import is_path_inside
 
 logger = logging.getLogger(__name__)
@@ -96,17 +99,23 @@ def _summarize_prompt(prompt: str, max_words: int = 3) -> str:
     return summary
 
 
-def _validate_workspace_path(tenant: Any, workspace_path: str) -> None:
-    """Reject workspace paths that are outside trusted directories.
+def _workspace_path_is_trusted(tenant: Any, workspace_path: str) -> bool:
+    """Return whether a workspace path is inside the trusted execution roots."""
+    assert workspace_path, "workspace_path must not be empty"
 
-    Trusted directories are the tenant's own data_dir and, when
-    configured, the global ``allowed_repo_base``.
-    """
     if is_path_inside(workspace_path, tenant.data_dir):
-        return
+        return True
 
     settings = get_settings()
     if settings.allowed_repo_base and is_path_inside(workspace_path, settings.allowed_repo_base):
+        return True
+
+    return False
+
+
+def _validate_workspace_path(tenant: Any, workspace_path: str) -> None:
+    """Reject workspace paths that are outside trusted directories."""
+    if _workspace_path_is_trusted(tenant, workspace_path):
         return
 
     raise HTTPException(
@@ -230,13 +239,23 @@ async def prompt_session(
     session_id: str, body: PromptRequest, request: Request,
 ) -> StreamingResponse:
     """Send a prompt and stream agent events as SSE."""
+    tenant = get_tenant(request)
     with get_db_for_request(request) as db:
         session = _lookup_session(db, session_id, request)
+        if session and tenant and not _workspace_path_is_trusted(tenant, session["workspace_path"]):
+            try:
+                await ensure_workspace_checkout_for_tenant(
+                    db,
+                    tenant,
+                    session["workspace_id"],
+                )
+            except (GitError, RepoNotFoundError, WorkspaceNotFoundError) as exc:
+                raise HTTPException(status_code=409, detail=str(exc))
+            session = _lookup_session(db, session_id, request)
 
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    tenant = get_tenant(request)
     if not tenant:
         check_owner(session["owner_email"], get_user_email(request))
 
