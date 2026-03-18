@@ -1,5 +1,7 @@
 """Tests for REST API endpoints including SSE streaming."""
 
+import sqlite3
+import subprocess
 from collections import namedtuple
 from pathlib import Path
 from unittest.mock import patch
@@ -10,6 +12,51 @@ from fastapi.testclient import TestClient
 from tests.factories import create_full_stack, make_mock_sidecar, parse_sse_events
 
 Entities = namedtuple("Entities", ["repo_id", "workspace_id", "session_id"])
+
+
+def _seed_legacy_repo(
+    legacy_db_path: str,
+    *,
+    email: str,
+    repo_id: str,
+    repo_name: str,
+    repo_path: str,
+) -> None:
+    """Insert a legacy repo row that will be migrated on first tenant login."""
+    legacy = sqlite3.connect(legacy_db_path)
+    legacy.execute("PRAGMA foreign_keys = ON")
+    legacy.execute(
+        "INSERT INTO repos (id, name, remote_url, root_path, owner_email) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (repo_id, repo_name, "https://github.com/example/project", repo_path, email),
+    )
+    legacy.commit()
+    legacy.close()
+
+
+def _seed_legacy_workspace_stack(
+    legacy_db_path: str,
+    *,
+    repo_id: str,
+    workspace_id: str,
+    session_id: str,
+    branch: str,
+    workspace_path: str,
+) -> None:
+    """Insert a legacy workspace and session for prompt repair tests."""
+    legacy = sqlite3.connect(legacy_db_path)
+    legacy.execute("PRAGMA foreign_keys = ON")
+    legacy.execute(
+        "INSERT INTO workspaces (id, repo_id, name, branch, path, state) "
+        "VALUES (?, ?, ?, ?, ?, 'ready')",
+        (workspace_id, repo_id, branch, branch, workspace_path),
+    )
+    legacy.execute(
+        "INSERT INTO sessions (id, workspace_id, status, model) VALUES (?, ?, 'idle', 'minimax')",
+        (session_id, workspace_id),
+    )
+    legacy.commit()
+    legacy.close()
 
 
 @pytest.fixture
@@ -72,7 +119,12 @@ def test_repo_response_excludes_owner_email(client: TestClient, git_repo: str) -
     assert "owner_email" not in get_resp.json()
 
 
-def test_list_repos_includes_null_owner(db_path: str, git_repo: str, tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_list_repos_includes_null_owner(
+    db_path: str,
+    git_repo: str,
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Repos with NULL owner_email should still appear when user is authenticated."""
     monkeypatch.setenv("DB_PATH", db_path)
     monkeypatch.setenv("CONTROL_DB_PATH", str(tmp_path / "control.db"))
@@ -280,6 +332,45 @@ def test_create_workspace(client: TestClient, git_repo: str) -> None:
     assert data["state"] == "ready"
 
 
+def test_create_workspace_repairs_migrated_repo_paths(
+    auth_client_factory,
+    git_repo: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Tenant workspace creation should repair migrated legacy repo paths first."""
+    from yinshi.config import get_settings
+
+    repo_id = "repo-repair-1"
+    email = "repair@example.com"
+    monkeypatch.setenv("ALLOWED_REPO_BASE", "")
+    get_settings.cache_clear()
+    settings = get_settings()
+    _seed_legacy_repo(
+        settings.db_path,
+        email=email,
+        repo_id=repo_id,
+        repo_name="legacy-repo",
+        repo_path=git_repo,
+    )
+
+    auth_client = auth_client_factory(email=email, provider_user_id="repair-google")
+    tenant = getattr(auth_client, "yinshi_tenant")
+
+    resp = auth_client.post(f"/api/repos/{repo_id}/workspaces", json={})
+    assert resp.status_code == 201
+    workspace = resp.json()
+    repaired_repo_path = str(Path(tenant.data_dir) / "repos" / repo_id)
+    assert workspace["path"].startswith(repaired_repo_path)
+    assert Path(workspace["path"]).is_dir()
+
+    with sqlite3.connect(tenant.db_path) as user_db:
+        row = user_db.execute(
+            "SELECT root_path FROM repos WHERE id = ?",
+            (repo_id,),
+        ).fetchone()
+    assert row == (repaired_repo_path,)
+
+
 def test_list_workspaces(client: TestClient, git_repo: str) -> None:
     """GET /api/repos/:id/workspaces should list workspaces."""
     create_resp = client.post(
@@ -395,6 +486,85 @@ def test_prompt_rejects_none_provider(
     assert resp.status_code == 400
     assert resp.json()["detail"] == "Could not determine provider for model"
     mock_sidecar.disconnect.assert_awaited_once()
+
+
+def test_prompt_repairs_migrated_workspace_paths(
+    auth_client_factory,
+    git_repo: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Prompting a migrated legacy session should repair repo and worktree paths."""
+    from yinshi.config import get_settings
+
+    repo_id = "repo-repair-2"
+    workspace_id = "ws-repair-1"
+    session_id = "sess-repair-1"
+    branch = "legacy-feature"
+    legacy_worktree_path = Path(git_repo) / ".worktrees" / branch
+    subprocess.run(
+        ["git", "worktree", "add", "-b", branch, str(legacy_worktree_path)],
+        cwd=git_repo,
+        check=True,
+        capture_output=True,
+    )
+
+    email = "prompt-repair@example.com"
+    monkeypatch.setenv("ALLOWED_REPO_BASE", "")
+    get_settings.cache_clear()
+    settings = get_settings()
+    _seed_legacy_repo(
+        settings.db_path,
+        email=email,
+        repo_id=repo_id,
+        repo_name="legacy-repo",
+        repo_path=git_repo,
+    )
+    _seed_legacy_workspace_stack(
+        settings.db_path,
+        repo_id=repo_id,
+        workspace_id=workspace_id,
+        session_id=session_id,
+        branch=branch,
+        workspace_path=str(legacy_worktree_path),
+    )
+
+    auth_client = auth_client_factory(email=email, provider_user_id="prompt-repair-google")
+    tenant = getattr(auth_client, "yinshi_tenant")
+
+    async def fake_query(sid, prompt, model=None, cwd=None, api_key=None):
+        yield {
+            "type": "message",
+            "data": {"type": "result", "usage": {}},
+        }
+
+    mock_sidecar = make_mock_sidecar(fake_query)
+    with patch(
+        "yinshi.api.stream.create_sidecar_connection",
+        return_value=mock_sidecar,
+    ):
+        resp = auth_client.post(
+            f"/api/sessions/{session_id}/prompt",
+            json={"prompt": "repair the migrated workspace"},
+        )
+
+    assert resp.status_code == 200
+    repaired_repo_path = str(Path(tenant.data_dir) / "repos" / repo_id)
+    repaired_workspace_path = str(Path(repaired_repo_path) / ".worktrees" / branch)
+    assert mock_sidecar.warmup.call_args.kwargs["cwd"] == repaired_workspace_path
+    assert Path(repaired_workspace_path).is_dir()
+
+    with sqlite3.connect(tenant.db_path) as user_db:
+        repo_row = user_db.execute(
+            "SELECT root_path FROM repos WHERE id = ?",
+            (repo_id,),
+        ).fetchone()
+        workspace_row = user_db.execute(
+            "SELECT path FROM workspaces WHERE id = ?",
+            (workspace_id,),
+        ).fetchone()
+
+    assert repo_row == (repaired_repo_path,)
+    assert workspace_row == (repaired_workspace_path,)
 
 
 def test_prompt_streams_sidecar_events(client: TestClient, session_id: str) -> None:
@@ -513,7 +683,11 @@ def test_first_prompt_updates_workspace_name(client: TestClient, git_repo: str) 
     updated_ws = client.get(f"/api/repos/{repo['id']}/workspaces").json()
     target = [w for w in updated_ws if w["id"] == ws["id"]][0]
     assert target["name"] != target["branch"]
-    assert "login" in target["name"].lower() or "auth" in target["name"].lower() or "fix" in target["name"].lower()
+    assert (
+        "login" in target["name"].lower()
+        or "auth" in target["name"].lower()
+        or "fix" in target["name"].lower()
+    )
 
 
 def test_second_prompt_does_not_update_workspace_name(client: TestClient, git_repo: str) -> None:

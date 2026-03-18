@@ -86,11 +86,61 @@ async def clone_repo(url: str, dest: str) -> str:
     return dest
 
 
+async def clone_local_repo(
+    source: str,
+    dest: str,
+    remote_url: str | None = None,
+) -> str:
+    """Clone a local git repository for tenant path repairs.
+
+    Using the existing checkout as the clone source preserves local branches
+    that may not have been pushed to the remote yet.
+    """
+    if not await validate_local_repo(source):
+        raise GitError("Source repository is not a valid git repository")
+
+    dest_path = Path(dest)
+    if dest_path.exists():
+        if not await validate_local_repo(dest):
+            raise GitError("Destination already exists but is not a git repository")
+    else:
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        await _run_git(["clone", "--no-hardlinks", source, dest])
+
+    if remote_url:
+        await _run_git(["remote", "set-url", "origin", remote_url], cwd=dest)
+
+    logger.info("Cloned local repo %s to %s", source, dest)
+    return dest
+
+
 async def create_worktree(repo_path: str, worktree_path: str, branch: str) -> str:
     """Create a git worktree with a new branch. Returns the worktree path."""
     Path(worktree_path).parent.mkdir(parents=True, exist_ok=True)
     await _run_git(["worktree", "add", "-b", branch, worktree_path], cwd=repo_path)
     logger.info("Created worktree %s (branch: %s)", worktree_path, branch)
+    return worktree_path
+
+
+async def restore_worktree(repo_path: str, worktree_path: str, branch: str) -> str:
+    """Restore a worktree for an existing branch, creating the branch if needed."""
+    assert repo_path, "repo_path must not be empty"
+    assert worktree_path, "worktree_path must not be empty"
+    assert branch, "branch must not be empty"
+
+    worktree_dir = Path(worktree_path)
+    if worktree_dir.exists():
+        if await validate_local_repo(worktree_path):
+            return worktree_path
+        raise GitError("Worktree path already exists but is not a git repository")
+
+    worktree_dir.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        await _run_git(["worktree", "add", worktree_path, branch], cwd=repo_path)
+    except GitError:
+        await _run_git(["worktree", "add", "-b", branch, worktree_path], cwd=repo_path)
+
+    logger.info("Restored worktree %s (branch: %s)", worktree_path, branch)
     return worktree_path
 
 
@@ -117,6 +167,8 @@ async def delete_worktree(repo_path: str, worktree_path: str) -> None:
 
 async def validate_local_repo(path: str) -> bool:
     """Check if a path is a valid git repository."""
+    if not Path(path).exists():
+        return False
     try:
         await _run_git(["rev-parse", "--git-dir"], cwd=path)
         return True

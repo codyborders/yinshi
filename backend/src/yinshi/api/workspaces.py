@@ -13,7 +13,7 @@ from yinshi.api.deps import (
     get_tenant,
     get_user_email,
 )
-from yinshi.exceptions import RepoNotFoundError, WorkspaceNotFoundError
+from yinshi.exceptions import GitError, RepoNotFoundError, WorkspaceNotFoundError
 from yinshi.models import WorkspaceCreate, WorkspaceOut, WorkspaceUpdate
 from yinshi.services.workspace import create_workspace_for_repo, delete_workspace
 
@@ -65,13 +65,22 @@ async def create_workspace(
     """Create a new worktree workspace."""
     email = get_user_email(request)
     username = email.split("@")[0] if email else None
+    tenant = get_tenant(request)
 
     with get_db_for_request(request) as db:
         _check_repo_owner(db, repo_id, request)
         try:
-            return await create_workspace_for_repo(db, repo_id, body.name, username=username)
+            return await create_workspace_for_repo(
+                db,
+                repo_id,
+                body.name,
+                username=username,
+                tenant=tenant,
+            )
         except RepoNotFoundError:
             raise HTTPException(status_code=404, detail="Repo not found")
+        except GitError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
 
 
 @router.patch("/api/workspaces/{workspace_id}", response_model=WorkspaceOut)
