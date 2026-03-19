@@ -24,6 +24,12 @@ export interface SeededStack {
   session: { id: string; model: string };
 }
 
+export interface StoredApiKey {
+  id: string;
+  provider: string;
+  label: string;
+}
+
 function cookieHeader(session: AuthSession): string {
   return `yinshi_session=${session.token}`;
 }
@@ -147,4 +153,17 @@ export async function seedFullStack(
     workspace,
     session: seedSession,
   };
+}
+
+export async function storeApiKey(
+  session: AuthSession,
+  provider: "anthropic" | "minimax",
+  key: string,
+  label = "",
+): Promise<StoredApiKey> {
+  return backendRequest<StoredApiKey>(session, "/api/settings/keys", "POST", {
+    provider,
+    key,
+    label,
+  });
 }

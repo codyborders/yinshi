@@ -57,7 +57,8 @@ export default function Settings() {
       <section>
         <h2 className="mb-4 text-lg font-semibold text-gray-200">API Keys</h2>
         <p className="mb-4 text-sm text-gray-400">
-          Provide your own API keys. Keys are encrypted at rest and never
+          Yinshi does not provide shared model credits. Add your own API keys
+          here before starting sessions. Keys are encrypted at rest and never
           visible after saving.
         </p>
 
@@ -99,7 +100,9 @@ export default function Settings() {
         </form>
 
         {keys.length === 0 ? (
-          <p className="text-sm text-gray-500">No API keys configured.</p>
+          <p className="text-sm text-gray-500">
+            No API keys configured yet. Add one before starting a session.
+          </p>
         ) : (
           <ul className="space-y-2">
             {keys.map((k) => (

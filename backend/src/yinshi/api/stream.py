@@ -23,7 +23,6 @@ from yinshi.config import get_settings
 from yinshi.exceptions import (
     ContainerNotReadyError,
     ContainerStartError,
-    CreditExhaustedError,
     GitError,
     KeyNotFoundError,
     RepoNotFoundError,
@@ -220,15 +219,11 @@ async def _resolve_execution_context(
             detail="Could not determine provider for model",
         )
 
-    settings = get_settings()
-    platform_key = (
-        settings.platform_minimax_api_key if provider == "minimax" else None
-    )
     try:
         api_key, key_source = resolve_api_key_for_prompt(
-            tenant.user_id, provider, platform_key,
+            tenant.user_id, provider,
         )
-    except (CreditExhaustedError, KeyNotFoundError) as exc:
+    except KeyNotFoundError as exc:
         raise HTTPException(status_code=402, detail=str(exc)) from exc
 
     return sidecar_socket, effective_cwd, api_key, key_source, provider

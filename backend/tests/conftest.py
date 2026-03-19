@@ -14,7 +14,6 @@ from fastapi.testclient import TestClient
 DEFAULT_TEST_HEADERS = {"X-Requested-With": "XMLHttpRequest"}
 DEFAULT_TEST_SECRET = "test-secret-key"
 DEFAULT_TEST_PEPPER = "a" * 64
-DEFAULT_PLATFORM_MINIMAX_API_KEY = "platform-minimax-key"
 
 
 def _configure_test_env(
@@ -22,7 +21,6 @@ def _configure_test_env(
     tmp_path: Path,
     *,
     auth_enabled: bool,
-    platform_minimax_api_key: str = DEFAULT_PLATFORM_MINIMAX_API_KEY,
 ) -> None:
     """Configure a fully isolated test environment for a single test."""
     monkeypatch.setenv("DB_PATH", str(tmp_path / "legacy.db"))
@@ -31,7 +29,6 @@ def _configure_test_env(
     monkeypatch.setenv("ENCRYPTION_PEPPER", DEFAULT_TEST_PEPPER)
     monkeypatch.setenv("SECRET_KEY", DEFAULT_TEST_SECRET)
     monkeypatch.setenv("ALLOWED_REPO_BASE", str(tmp_path))
-    monkeypatch.setenv("PLATFORM_MINIMAX_API_KEY", platform_minimax_api_key)
     if auth_enabled:
         monkeypatch.setenv("GOOGLE_CLIENT_ID", "fake-client-id")
         monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "fake-secret")

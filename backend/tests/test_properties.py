@@ -241,7 +241,7 @@ def test_estimate_cost_cents_non_minimax_zero_property(
     input_tokens: int,
     output_tokens: int,
 ) -> None:
-    """Non-MiniMax providers should not consume tracked platform credit."""
+    """Non-MiniMax providers should continue to estimate as zero."""
     from yinshi.services.keys import estimate_cost_cents
 
     cost = estimate_cost_cents(

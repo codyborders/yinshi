@@ -6,6 +6,7 @@ import {
   authenticateContext,
   createLocalRepo,
   seedFullStack,
+  storeApiKey,
   uniqueEmail,
 } from "./helpers/testApp";
 
@@ -16,7 +17,13 @@ test("golden path onboarding imports a repo and persists chat history", async ({
   const prompt = "Fix login form validation";
   const assistantReply = `Mock reply for: ${prompt}`;
 
-  await authenticateContext(page.context(), email);
+  const authSession = await authenticateContext(page.context(), email);
+  await storeApiKey(
+    authSession,
+    "minimax",
+    "sk-minimax-playwright-onboarding",
+    "Playwright MiniMax",
+  );
   await page.goto("/app");
 
   await expect(page.getByText("No repositories yet.")).toBeVisible();
@@ -48,6 +55,12 @@ test("golden path onboarding imports a repo and persists chat history", async ({
 test("seeded chat sessions stream responses and survive reloads", async ({ page }) => {
   const email = uniqueEmail("session");
   const authSession = await authenticateContext(page.context(), email);
+  await storeApiKey(
+    authSession,
+    "minimax",
+    "sk-minimax-playwright-session",
+    "Playwright MiniMax",
+  );
   const repoPath = createLocalRepo("seeded");
   const seeded = await seedFullStack(authSession, repoPath);
   const prompt = "Summarize the repository";

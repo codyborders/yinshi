@@ -1,15 +1,11 @@
-"""BYOK key resolution and freemium usage tracking.
-
-Handles API key lookup, platform credit enforcement, cost estimation,
-and usage recording for the freemium model.
-"""
+"""BYOK key resolution and usage logging."""
 
 import logging
 import uuid
 
 from yinshi.config import get_settings
 from yinshi.db import get_control_db
-from yinshi.exceptions import CreditExhaustedError, EncryptionNotConfiguredError, KeyNotFoundError
+from yinshi.exceptions import EncryptionNotConfiguredError, KeyNotFoundError
 from yinshi.services.crypto import decrypt_api_key, generate_dek, unwrap_dek, wrap_dek
 
 logger = logging.getLogger(__name__)
@@ -81,57 +77,24 @@ def resolve_user_api_key(user_id: str, provider: str) -> str | None:
     return key
 
 
-def get_credit_remaining_cents(user_id: str) -> int:
-    """Return remaining freemium credit in cents."""
-    with get_control_db() as db:
-        row = db.execute(
-            "SELECT credit_limit_cents, credit_used_cents FROM users WHERE id = ?",
-            (user_id,),
-        ).fetchone()
-
-    if not row:
-        return 0
-
-    credit_limit_cents = int(row["credit_limit_cents"])
-    credit_used_cents = int(row["credit_used_cents"])
-    return max(0, credit_limit_cents - credit_used_cents)
-
-
-def resolve_api_key_for_prompt(
-    user_id: str, provider: str, platform_key: str | None
-) -> tuple[str, str]:
+def resolve_api_key_for_prompt(user_id: str, provider: str) -> tuple[str, str]:
     """Resolve which API key to use for a prompt.
 
-    Returns (api_key, key_source) where key_source is 'byok' or 'platform'.
-
-    Raises CreditExhaustedError or KeyNotFoundError if no key is available.
+    Returns (api_key, key_source). Authenticated users must provide BYOK keys.
     """
-    # 1. Check for BYOK key
     byok_key = resolve_user_api_key(user_id, provider)
     if byok_key:
         return byok_key, "byok"
 
-    # 2. Platform key for minimax with remaining credit
-    if provider == "minimax" and platform_key:
-        remaining = get_credit_remaining_cents(user_id)
-        if remaining > 0:
-            return platform_key, "platform"
-
-        raise CreditExhaustedError(
-            "Free credit exhausted. Add your own MiniMax API key in Settings."
-        )
-
-    # 3. No key available
     raise KeyNotFoundError(
-        f"No API key found for {provider}. Add one in Settings."
+        f"No API key found for {provider}. Add your own key in Settings."
     )
 
 
 def estimate_cost_cents(provider: str, usage: dict[str, int]) -> float:
     """Estimate cost from token counts. Returns cents.
 
-    Only MiniMax costs are tracked (platform credit). Other providers
-    return 0 since the user pays directly via BYOK.
+    MiniMax usage is estimated for reporting. Other providers return 0.
     """
     if provider != "minimax":
         return 0.0
@@ -159,7 +122,7 @@ def record_usage(
     usage: dict[str, int],
     key_source: str,
 ) -> None:
-    """Insert a usage_log row. If key_source='platform', increment credit_used_cents."""
+    """Insert a usage_log row for the completed prompt."""
     cost = estimate_cost_cents(provider, usage)
     row_id = uuid.uuid4().hex
 
@@ -184,13 +147,6 @@ def record_usage(
                 key_source,
             ),
         )
-
-        if key_source == "platform" and cost > 0:
-            db.execute(
-                "UPDATE users SET credit_used_cents = credit_used_cents + ? WHERE id = ?",
-                (int(round(cost)), user_id),
-            )
-
         db.commit()
 
     logger.info(

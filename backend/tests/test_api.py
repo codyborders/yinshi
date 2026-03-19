@@ -574,6 +574,18 @@ def test_prompt_repairs_migrated_workspace_paths(
 
     auth_client = auth_client_factory(email=email, provider_user_id="prompt-repair-google")
     tenant = getattr(auth_client, "yinshi_tenant")
+    from yinshi.db import get_control_db
+    from yinshi.services.crypto import encrypt_api_key
+    from yinshi.services.keys import get_user_dek
+
+    dek = get_user_dek(tenant.user_id)
+    encrypted_key = encrypt_api_key("sk-prompt-repair-minimax", dek)
+    with get_control_db() as db:
+        db.execute(
+            "INSERT INTO api_keys (user_id, provider, encrypted_key) VALUES (?, ?, ?)",
+            (tenant.user_id, "minimax", encrypted_key),
+        )
+        db.commit()
 
     async def fake_query(sid, prompt, model=None, cwd=None, api_key=None):
         yield {

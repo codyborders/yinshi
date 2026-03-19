@@ -180,35 +180,30 @@ def test_multi_tenant_isolation_journey(
     assert alice.get(f"/api/repos/{bob_stack['repo']['id']}").status_code == 404
 
 
-def test_authenticated_byok_fallback_journey(
+def test_authenticated_byok_required_journey(
     auth_client: TestClient,
     git_repo: str,
 ) -> None:
-    """Prompt auth flow should switch between platform and BYOK keys correctly."""
+    """Authenticated prompts should fail without BYOK, work with it, then fail again after deletion."""
     stack = create_full_stack(auth_client, git_repo, name="test-repo")
     session_id = stack["session"]["id"]
 
-    first_stream = _make_streaming_sidecar("Using platform credit")
     second_stream = _make_streaming_sidecar("Using BYOK")
-    third_stream = _make_streaming_sidecar("Back on platform credit")
 
     with patch(
         "yinshi.api.stream.create_sidecar_connection",
         side_effect=[
             _make_model_resolver(),
-            first_stream,
             _make_model_resolver(),
             second_stream,
             _make_model_resolver(),
-            third_stream,
         ],
     ):
         first = auth_client.post(
             f"/api/sessions/{session_id}/prompt",
-            json={"prompt": "Use the default platform key"},
+            json={"prompt": "Fail before I add a key"},
         )
-        assert first.status_code == 200
-        assert [event["type"] for event in parse_sse_events(first.text)] == ["assistant", "result"]
+        assert first.status_code == 402
 
         create_key = auth_client.post(
             "/api/settings/keys",
@@ -238,82 +233,11 @@ def test_authenticated_byok_fallback_journey(
 
         third = auth_client.post(
             f"/api/sessions/{session_id}/prompt",
-            json={"prompt": "Fall back to the platform key"},
+            json={"prompt": "Fail after I remove the key"},
         )
-        assert third.status_code == 200
-        assert [event["type"] for event in parse_sse_events(third.text)] == ["assistant", "result"]
+        assert third.status_code == 402
 
-    assert first_stream.warmup.call_args.kwargs["api_key"] == "platform-minimax-key"
     assert second_stream.warmup.call_args.kwargs["api_key"] == "sk-user-minimax-key"
-    assert third_stream.warmup.call_args.kwargs["api_key"] == "platform-minimax-key"
-
-
-def test_credit_exhaustion_journey(
-    auth_client: TestClient,
-    git_repo: str,
-) -> None:
-    """Credit exhaustion should block platform prompts until a BYOK key is added."""
-    stack = create_full_stack(auth_client, git_repo, name="test-repo")
-    session_id = stack["session"]["id"]
-    tenant = getattr(auth_client, "yinshi_tenant")
-
-    from yinshi.db import get_control_db
-    from yinshi.services.keys import get_credit_remaining_cents
-
-    with get_control_db() as db:
-        db.execute(
-            "UPDATE users SET credit_limit_cents = 1, credit_used_cents = 0 WHERE id = ?",
-            (tenant.user_id,),
-        )
-        db.commit()
-
-    first_stream = _make_streaming_sidecar(
-        "Spent the last free credit",
-        usage={"input_tokens": 1_000_000, "output_tokens": 0},
-    )
-    third_stream = _make_streaming_sidecar("BYOK still works")
-
-    with patch(
-        "yinshi.api.stream.create_sidecar_connection",
-        side_effect=[
-            _make_model_resolver(),
-            first_stream,
-            _make_model_resolver(),
-            _make_model_resolver(),
-            third_stream,
-        ],
-    ):
-        first = auth_client.post(
-            f"/api/sessions/{session_id}/prompt",
-            json={"prompt": "Spend the remaining credit"},
-        )
-        assert first.status_code == 200
-        assert get_credit_remaining_cents(tenant.user_id) == 0
-
-        exhausted = auth_client.post(
-            f"/api/sessions/{session_id}/prompt",
-            json={"prompt": "This should fail without BYOK"},
-        )
-        assert exhausted.status_code == 402
-
-        add_key = auth_client.post(
-            "/api/settings/keys",
-            json={
-                "provider": "minimax",
-                "key": "sk-credit-recovery-key",
-                "label": "Recovery key",
-            },
-        )
-        assert add_key.status_code == 201
-
-        recovered = auth_client.post(
-            f"/api/sessions/{session_id}/prompt",
-            json={"prompt": "This should work with BYOK"},
-        )
-        assert recovered.status_code == 200
-        assert [event["type"] for event in parse_sse_events(recovered.text)] == ["assistant", "result"]
-
-    assert third_stream.warmup.call_args.kwargs["api_key"] == "sk-credit-recovery-key"
 
 
 def test_workspace_lifecycle_journey(

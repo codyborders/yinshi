@@ -21,5 +21,7 @@ test("settings can add and remove a BYOK key without exposing the raw secret", a
   await expect(page.locator("body")).not.toContainText(rawKey);
 
   await page.getByRole("button", { name: "Remove" }).click();
-  await expect(page.getByText("No API keys configured.")).toBeVisible();
+  await expect(
+    page.getByText("No API keys configured yet. Add one before starting a session."),
+  ).toBeVisible();
 });

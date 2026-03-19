@@ -96,7 +96,7 @@ class KeyNotFoundError(YinshiError):
 
 
 class CreditExhaustedError(YinshiError):
-    """Raised when freemium credit is exhausted."""
+    """Raised when a legacy platform-credit path runs out of allowance."""
 
 
 class EncryptionNotConfiguredError(YinshiError):

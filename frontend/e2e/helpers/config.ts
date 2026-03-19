@@ -26,7 +26,6 @@ export const backendEnv = {
   GOOGLE_CLIENT_ID: "fake-client-id",
   GOOGLE_CLIENT_SECRET: "fake-secret",
   DISABLE_AUTH: "false",
-  PLATFORM_MINIMAX_API_KEY: "platform-minimax-key",
   ALLOWED_REPO_BASE: repoBaseDir,
   SIDECAR_SOCKET_PATH: socketPath,
   FRONTEND_URL: frontendBaseUrl,

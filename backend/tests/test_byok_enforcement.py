@@ -1,4 +1,4 @@
-"""Tests for BYOK key enforcement and freemium usage tracking."""
+"""Tests for BYOK key enforcement and usage logging."""
 
 from unittest.mock import AsyncMock, patch
 
@@ -13,12 +13,11 @@ from tests.factories import create_full_stack, parse_sse_events
 
 @pytest.fixture
 def control_env(tmp_path, monkeypatch):
-    """Set up env for control DB access with credit tracking."""
+    """Set up env for isolated control DB access."""
     monkeypatch.setenv("DB_PATH", str(tmp_path / "legacy.db"))
     monkeypatch.setenv("CONTROL_DB_PATH", str(tmp_path / "control.db"))
     monkeypatch.setenv("USER_DATA_DIR", str(tmp_path / "users"))
     monkeypatch.setenv("ENCRYPTION_PEPPER", "a" * 64)
-    monkeypatch.setenv("PLATFORM_MINIMAX_API_KEY", "platform-minimax-key")
     monkeypatch.setenv("GOOGLE_CLIENT_ID", "")
     monkeypatch.setenv("DISABLE_AUTH", "true")
 
@@ -82,7 +81,7 @@ def test_estimate_cost_minimax_with_cache():
 
 
 def test_estimate_cost_non_minimax():
-    """Non-minimax providers return 0 (not tracked for platform credit)."""
+    """Non-minimax providers return 0 because only MiniMax usage is estimated."""
     from yinshi.services.keys import estimate_cost_cents
 
     usage = {"input_tokens": 1_000_000, "output_tokens": 1_000_000}
@@ -114,21 +113,14 @@ def test_resolve_user_api_key_round_trip(test_user):
     assert resolve_user_api_key(user_id, "minimax") is None
 
 
-def test_get_credit_remaining_cents(test_user):
-    """New user should have $5.00 (500 cents) credit."""
-    from yinshi.services.keys import get_credit_remaining_cents
+def test_record_usage_writes_usage_log_without_mutating_credit(test_user):
+    """Usage logging should not consume shared credit for authenticated prompts."""
+    from yinshi.db import get_control_db
+    from yinshi.services.keys import record_usage
 
-    assert get_credit_remaining_cents(test_user.user_id) == 500
-
-
-def test_record_usage_increments_credit(test_user):
-    """Platform key usage should decrement remaining credit."""
-    from yinshi.services.keys import get_credit_remaining_cents, record_usage
-
-    user_id = test_user.user_id
     record_usage(
-        user_id=user_id,
-        session_id="test-session",
+        user_id=test_user.user_id,
+        session_id="test-session-1",
         provider="minimax",
         model="MiniMax-M2.7",
         usage={
@@ -137,25 +129,23 @@ def test_record_usage_increments_credit(test_user):
             "cache_read_tokens": 0,
             "cache_write_tokens": 0,
         },
-        key_source="platform",
-    )
-    # 1M input tokens at $0.30/M = 30 cents; 500 - 30 = 470
-    assert get_credit_remaining_cents(user_id) == 470
-
-
-def test_record_usage_byok_no_credit_change(test_user):
-    """BYOK usage should not decrement credit."""
-    from yinshi.services.keys import get_credit_remaining_cents, record_usage
-
-    record_usage(
-        user_id=test_user.user_id,
-        session_id="test-session",
-        provider="anthropic",
-        model="claude-sonnet-4-20250514",
-        usage={"input_tokens": 1_000_000, "output_tokens": 0},
         key_source="byok",
     )
-    assert get_credit_remaining_cents(test_user.user_id) == 500
+    with get_control_db() as db:
+        usage_row = db.execute(
+            "SELECT provider, model, key_source, cost_cents FROM usage_log WHERE session_id = ?",
+            ("test-session-1",),
+        ).fetchone()
+        user_row = db.execute(
+            "SELECT credit_used_cents FROM users WHERE id = ?",
+            (test_user.user_id,),
+        ).fetchone()
+
+    assert usage_row["provider"] == "minimax"
+    assert usage_row["model"] == "MiniMax-M2.7"
+    assert usage_row["key_source"] == "byok"
+    assert usage_row["cost_cents"] == pytest.approx(30.0)
+    assert user_row["credit_used_cents"] == 0
 
 
 def test_get_user_dek_lazy_generates_for_null_dek(control_env):
@@ -209,46 +199,27 @@ def test_resolve_api_key_for_prompt_byok(test_user):
         )
         db.commit()
 
-    api_key, key_source = resolve_api_key_for_prompt(user_id, "anthropic", None)
+    api_key, key_source = resolve_api_key_for_prompt(user_id, "anthropic")
     assert api_key == "sk-byok-key"
     assert key_source == "byok"
 
 
-def test_resolve_api_key_for_prompt_platform(test_user):
-    """Platform key should be used for minimax when credit remains."""
-    from yinshi.services.keys import resolve_api_key_for_prompt
-
-    api_key, key_source = resolve_api_key_for_prompt(
-        test_user.user_id, "minimax", "platform-key"
-    )
-    assert api_key == "platform-key"
-    assert key_source == "platform"
-
-
-def test_resolve_api_key_for_prompt_402_exhausted(test_user):
-    """CreditExhaustedError when minimax credit exhausted and no BYOK."""
-    from yinshi.db import get_control_db
-    from yinshi.exceptions import CreditExhaustedError
-    from yinshi.services.keys import resolve_api_key_for_prompt
-
-    with get_control_db() as db:
-        db.execute(
-            "UPDATE users SET credit_used_cents = credit_limit_cents WHERE id = ?",
-            (test_user.user_id,),
-        )
-        db.commit()
-
-    with pytest.raises(CreditExhaustedError):
-        resolve_api_key_for_prompt(test_user.user_id, "minimax", "platform-key")
-
-
-def test_resolve_api_key_for_prompt_402_non_minimax(test_user):
-    """KeyNotFoundError for non-minimax provider without BYOK."""
+def test_resolve_api_key_for_prompt_requires_minimax_key(test_user):
+    """MiniMax prompts should fail without a saved BYOK key."""
     from yinshi.exceptions import KeyNotFoundError
     from yinshi.services.keys import resolve_api_key_for_prompt
 
-    with pytest.raises(KeyNotFoundError):
-        resolve_api_key_for_prompt(test_user.user_id, "anthropic", None)
+    with pytest.raises(KeyNotFoundError, match="No API key found for minimax"):
+        resolve_api_key_for_prompt(test_user.user_id, "minimax")
+
+
+def test_resolve_api_key_for_prompt_requires_non_minimax_key(test_user):
+    """Anthropic prompts should fail without a saved BYOK key."""
+    from yinshi.exceptions import KeyNotFoundError
+    from yinshi.services.keys import resolve_api_key_for_prompt
+
+    with pytest.raises(KeyNotFoundError, match="No API key found for anthropic"):
+        resolve_api_key_for_prompt(test_user.user_id, "anthropic")
 
 
 # --- Integration tests: prompt endpoint with BYOK ---
@@ -290,20 +261,10 @@ def tenant_prompt_env(
     }
 
 
-def test_prompt_uses_platform_key_with_credit(tenant_prompt_env):
-    """MiniMax prompt with credit should use platform key."""
+def test_prompt_requires_saved_minimax_key(tenant_prompt_env):
+    """MiniMax prompts should fail before a BYOK key is stored."""
     env = tenant_prompt_env
-    result_events = [
-        {
-            "type": "message",
-            "data": {
-                "type": "result",
-                "usage": {"input_tokens": 100, "output_tokens": 50},
-                "provider": "minimax",
-            },
-        },
-    ]
-    mock = _make_byok_mock_sidecar(result_events, resolve_provider="minimax")
+    mock = _make_byok_mock_sidecar([], resolve_provider="minimax")
 
     with patch("yinshi.api.stream.create_sidecar_connection", return_value=mock):
         resp = env["client"].post(
@@ -311,13 +272,8 @@ def test_prompt_uses_platform_key_with_credit(tenant_prompt_env):
             json={"prompt": "hello"},
         )
 
-    assert resp.status_code == 200
-    events = parse_sse_events(resp.text)
-    assert any(e.get("type") == "result" for e in events)
-
-    # Verify warmup received the platform key
-    mock.warmup.assert_called_once()
-    assert mock.warmup.call_args.kwargs["api_key"] == "platform-minimax-key"
+    assert resp.status_code == 402
+    mock.warmup.assert_not_called()
 
 
 def test_prompt_uses_byok_key_when_stored(tenant_prompt_env):
@@ -358,30 +314,6 @@ def test_prompt_uses_byok_key_when_stored(tenant_prompt_env):
     assert resp.status_code == 200
     mock.warmup.assert_called_once()
     assert mock.warmup.call_args.kwargs["api_key"] == "sk-user-minimax-key"
-
-
-def test_prompt_402_when_credit_exhausted(tenant_prompt_env):
-    """402 when minimax credit exhausted and no BYOK key."""
-    env = tenant_prompt_env
-
-    from yinshi.db import get_control_db
-
-    with get_control_db() as db:
-        db.execute(
-            "UPDATE users SET credit_used_cents = credit_limit_cents WHERE id = ?",
-            (env["user_id"],),
-        )
-        db.commit()
-
-    mock = _make_byok_mock_sidecar([], resolve_provider="minimax")
-
-    with patch("yinshi.api.stream.create_sidecar_connection", return_value=mock):
-        resp = env["client"].post(
-            f"/api/sessions/{env['session_id']}/prompt",
-            json={"prompt": "hello"},
-        )
-
-    assert resp.status_code == 402
 
 
 def test_prompt_402_for_non_minimax_without_byok(tenant_prompt_env):
