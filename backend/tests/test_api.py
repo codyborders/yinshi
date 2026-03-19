@@ -513,7 +513,10 @@ def test_prompt_rejects_none_provider(
         raise AssertionError("query should not be called")
 
     mock_sidecar = make_mock_sidecar(unexpected_query)
-    mock_sidecar.resolve_model.return_value = {"provider": None, "model": "minimax"}
+    mock_sidecar.resolve_model.return_value = {
+        "provider": None,
+        "model": "MiniMax-M2.7",
+    }
 
     with patch(
         "yinshi.api.stream.create_sidecar_connection",
@@ -1058,7 +1061,7 @@ def test_update_session_no_changes(client: TestClient, test_entities: Entities) 
         json={},
     )
     assert resp.status_code == 200
-    assert resp.json()["model"] == "minimax"
+    assert resp.json()["model"] == "minimax-m2.7"
 
 
 def test_get_session_tree(client: TestClient, test_entities: Entities) -> None:

@@ -49,7 +49,7 @@ def _make_streaming_sidecar(
 def _make_model_resolver(
     *,
     provider: str = "minimax",
-    model: str = "MiniMax-M2.5-highspeed",
+    model: str = "MiniMax-M2.7",
 ) -> AsyncMock:
     """Create a sidecar mock used only for model resolution."""
     mock = AsyncMock()

@@ -3,6 +3,7 @@ import { defineConfig } from "@playwright/test";
 import {
   backendBaseUrl,
   backendEnv,
+  backendPython,
   backendRoot,
   backendTmpDir,
   e2eTmpDir,
@@ -35,7 +36,7 @@ export default defineConfig({
     },
     {
       command:
-        `bash -lc 'mkdir -p "${backendTmpDir}" "$USER_DATA_DIR" && source venv/bin/activate && uvicorn yinshi.main:app --host 127.0.0.1 --port 8000'`,
+        `bash -lc 'mkdir -p "${backendTmpDir}" "$USER_DATA_DIR" && "${backendPython}" -m uvicorn yinshi.main:app --host 127.0.0.1 --port 8000'`,
       cwd: backendRoot,
       url: `${backendBaseUrl}/health`,
       reuseExistingServer: false,

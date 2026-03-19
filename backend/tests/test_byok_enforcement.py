@@ -130,7 +130,7 @@ def test_record_usage_increments_credit(test_user):
         user_id=user_id,
         session_id="test-session",
         provider="minimax",
-        model="MiniMax-M2.5-highspeed",
+        model="MiniMax-M2.7",
         usage={
             "input_tokens": 1_000_000,
             "output_tokens": 0,
@@ -257,7 +257,7 @@ def test_resolve_api_key_for_prompt_402_non_minimax(test_user):
 def _make_byok_mock_sidecar(
     query_events,
     resolve_provider="minimax",
-    resolve_model_id="MiniMax-M2.5-highspeed",
+    resolve_model_id="MiniMax-M2.7",
 ):
     """Build a mock SidecarClient for BYOK prompt tests."""
     mock = AsyncMock()

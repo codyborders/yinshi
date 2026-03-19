@@ -12,7 +12,7 @@ export const repoBaseDir = path.join(e2eTmpDir, "repos");
 export const socketPath = path.join(e2eTmpDir, "mock-sidecar.sock");
 export const backendBaseUrl = "http://127.0.0.1:8000";
 export const frontendBaseUrl = "http://127.0.0.1:5173";
-export const backendPython = path.join(backendRoot, "venv", "bin", "python");
+export const backendPython = path.join(workspaceRoot, ".venv", "bin", "python");
 export const authCookieScript = path.join(frontendRoot, "e2e", "helpers", "auth_cookie.py");
 
 export const backendEnv = {

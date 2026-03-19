@@ -8,6 +8,7 @@ from typing import Any
 
 from yinshi.config import get_settings
 from yinshi.exceptions import SidecarError, SidecarNotConnectedError
+from yinshi.model_catalog import DEFAULT_SESSION_MODEL
 
 logger = logging.getLogger(__name__)
 
@@ -113,7 +114,7 @@ class SidecarClient:
     async def warmup(
         self,
         session_id: str,
-        model: str = "minimax",
+        model: str = DEFAULT_SESSION_MODEL,
         cwd: str = ".",
         api_key: str | None = None,
     ) -> None:
@@ -128,7 +129,7 @@ class SidecarClient:
         self,
         session_id: str,
         prompt: str,
-        model: str = "minimax",
+        model: str = DEFAULT_SESSION_MODEL,
         cwd: str = ".",
         api_key: str | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:

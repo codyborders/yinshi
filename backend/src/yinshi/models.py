@@ -4,6 +4,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
+from yinshi.model_catalog import DEFAULT_SESSION_MODEL
+
 
 class RepoCreate(BaseModel):
     """Request to import a repository."""
@@ -61,7 +63,7 @@ class WorkspaceUpdate(BaseModel):
 class SessionCreate(BaseModel):
     """Request to create an agent session."""
 
-    model: str = Field("minimax", max_length=100)
+    model: str = Field(DEFAULT_SESSION_MODEL, max_length=100)
 
 
 class SessionUpdate(BaseModel):
@@ -78,7 +80,7 @@ class SessionOut(BaseModel):
     updated_at: datetime
     workspace_id: str
     status: str = "idle"
-    model: str = "minimax"
+    model: str = DEFAULT_SESSION_MODEL
 
 
 class MessageOut(BaseModel):

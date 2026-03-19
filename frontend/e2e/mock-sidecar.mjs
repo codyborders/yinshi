@@ -14,7 +14,7 @@ if (!socketPath) {
 fs.mkdirSync(path.dirname(socketPath), { recursive: true });
 fs.rmSync(socketPath, { force: true });
 
-function resolveModel(modelKey = "minimax") {
+function resolveModel(modelKey = "minimax-m2.7") {
   const key = String(modelKey).toLowerCase();
   if (key.includes("sonnet") || key.includes("claude")) {
     return {
@@ -23,9 +23,16 @@ function resolveModel(modelKey = "minimax") {
     };
   }
 
+  if (key.includes("highspeed")) {
+    return {
+      provider: "minimax",
+      model: "MiniMax-M2.7-highspeed",
+    };
+  }
+
   return {
     provider: "minimax",
-    model: "MiniMax-M2.5-highspeed",
+    model: "MiniMax-M2.7",
   };
 }
 
@@ -68,7 +75,7 @@ const server = net.createServer((socket) => {
 
     if (message.type === "query") {
       const options = sessionOptions.get(message.id) ?? message.options ?? {};
-      const provider = resolveModel(options.model ?? "minimax").provider;
+      const provider = resolveModel(options.model ?? "minimax-m2.7").provider;
       const prompt = String(message.prompt ?? "");
       const assistantEvent = {
         type: "message",

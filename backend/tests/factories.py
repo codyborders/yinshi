@@ -86,7 +86,9 @@ def make_mock_sidecar(query_fn: Callable[..., Any], **overrides: Any) -> AsyncMo
     """Build a mock sidecar client for prompt-stream tests."""
     mock = AsyncMock()
     mock.query = query_fn
-    mock.resolve_model = AsyncMock(return_value={"provider": "minimax", "model": "minimax"})
+    mock.resolve_model = AsyncMock(
+        return_value={"provider": "minimax", "model": "MiniMax-M2.7"},
+    )
     mock.warmup = AsyncMock()
     mock.disconnect = AsyncMock()
     for key, value in overrides.items():

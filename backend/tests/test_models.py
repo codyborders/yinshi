@@ -45,11 +45,11 @@ def test_workspace_create_defaults():
 
 
 def test_session_create_defaults():
-    """SessionCreate should default to minimax model."""
+    """SessionCreate should default to the current MiniMax model key."""
     from yinshi.models import SessionCreate
 
     s = SessionCreate()
-    assert s.model == "minimax"
+    assert s.model == "minimax-m2.7"
 
 
 def test_ws_prompt():

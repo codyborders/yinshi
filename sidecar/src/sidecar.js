@@ -28,18 +28,63 @@ const ANTHROPIC_MODEL_IDS = {
   haiku: "claude-haiku-4-5-20251001",
 };
 
-const MINIMAX_FALLBACK_MODEL = {
-  id: "MiniMax-M2.5-highspeed",
-  name: "MiniMax M2.5 Highspeed",
-  api: "openai-completions",
-  provider: "minimax",
-  baseUrl: "https://api.minimaxi.chat/v1",
-  reasoning: false,
-  input: ["text"],
-  contextWindow: 200000,
-  maxTokens: 16384,
-  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+const DEFAULT_MODEL_KEY = "minimax-m2.7";
+
+function createMinimaxFallbackModel(id, name) {
+  return {
+    id,
+    name,
+    api: "openai-completions",
+    provider: "minimax",
+    baseUrl: "https://api.minimaxi.chat/v1",
+    reasoning: false,
+    input: ["text"],
+    contextWindow: 200000,
+    maxTokens: 16384,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+  };
+}
+
+const MINIMAX_FALLBACK_MODELS = {
+  "MiniMax-M2.5-highspeed": createMinimaxFallbackModel(
+    "MiniMax-M2.5-highspeed",
+    "MiniMax M2.5 Highspeed",
+  ),
+  "MiniMax-M2.7": createMinimaxFallbackModel(
+    "MiniMax-M2.7",
+    "MiniMax M2.7",
+  ),
+  "MiniMax-M2.7-highspeed": createMinimaxFallbackModel(
+    "MiniMax-M2.7-highspeed",
+    "MiniMax M2.7 Highspeed",
+  ),
 };
+
+const MINIMAX_MODEL_IDS_BY_KEY = {
+  minimax: "MiniMax-M2.7",
+  "minimax-m2.7": "MiniMax-M2.7",
+  "minimax-m2.7-highspeed": "MiniMax-M2.7-highspeed",
+  "minimax-m2.5-highspeed": "MiniMax-M2.5-highspeed",
+};
+
+function resolveMinimaxModel(modelKey) {
+  if (typeof modelKey !== "string") {
+    return null;
+  }
+
+  const normalizedKey = modelKey.trim().toLowerCase();
+  if (!normalizedKey) {
+    return null;
+  }
+
+  const modelId = MINIMAX_MODEL_IDS_BY_KEY[normalizedKey];
+  if (!modelId) {
+    return null;
+  }
+
+  const model = getModel("minimax", modelId);
+  return { model: model || MINIMAX_FALLBACK_MODELS[modelId] };
+}
 
 function resolveModel(modelKey) {
   if (ANTHROPIC_MODEL_IDS[modelKey]) {
@@ -47,9 +92,9 @@ function resolveModel(modelKey) {
     return model ? { model } : null;
   }
 
-  if (modelKey === "minimax" || modelKey === "MiniMax-M2.5-highspeed") {
-    const model = getModel("minimax", "MiniMax-M2.5-highspeed");
-    return { model: model || MINIMAX_FALLBACK_MODEL };
+  const minimaxModel = resolveMinimaxModel(modelKey);
+  if (minimaxModel) {
+    return minimaxModel;
   }
 
   return null;
@@ -230,7 +275,7 @@ export class YinshiSidecar {
       return;
     }
 
-    const modelKey = options.model || "minimax";
+    const modelKey = options.model || DEFAULT_MODEL_KEY;
     const cwd = options.cwd || process.cwd();
     const userApiKey = options.apiKey || null;
 
@@ -251,7 +296,7 @@ export class YinshiSidecar {
   }
 
   async processQuery(sessionId, socket, prompt, options) {
-    const modelKey = options.model || "minimax";
+    const modelKey = options.model || DEFAULT_MODEL_KEY;
     const cwd = options.cwd || process.cwd();
     const userApiKey = options.apiKey || null;
 

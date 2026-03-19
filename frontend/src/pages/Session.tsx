@@ -3,18 +3,32 @@ import { useParams } from "react-router-dom";
 import { api, type Message } from "../api/client";
 import ChatView from "../components/ChatView";
 import { useAgentStream, type ChatMessage } from "../hooks/useAgentStream";
+import {
+  DEFAULT_SESSION_MODEL,
+  SESSION_MODEL_OPTIONS,
+  availableSessionModelsMarkdown,
+  describeSessionModel,
+  getSessionModelOption,
+  resolveSessionModelKey,
+} from "../models/sessionModels";
 
 let cmdIdCounter = 0;
 function nextCmdId(): string {
   return `cmd-${Date.now()}-${++cmdIdCounter}`;
 }
 
+const AVAILABLE_MODEL_KEYS = SESSION_MODEL_OPTIONS.map(
+  (option) => `\`${option.value}\``,
+).join(", ");
+
 export default function Session() {
   const { id } = useParams<{ id: string }>();
   const { messages, sendPrompt, cancel, streaming, setMessages } =
     useAgentStream(id);
+  const [sessionModel, setSessionModel] = useState(DEFAULT_SESSION_MODEL);
   const [loadingHistory, setLoadingHistory] = useState(true);
   const [historyError, setHistoryError] = useState<string | null>(null);
+  const [updatingModel, setUpdatingModel] = useState(false);
 
   // Load existing message history
   useEffect(() => {
@@ -52,6 +66,26 @@ export default function Session() {
     };
   }, [id, setMessages]);
 
+  useEffect(() => {
+    if (!id) return;
+    let cancelled = false;
+
+    async function loadSession() {
+      try {
+        const session = await api.get<{ model: string }>(`/api/sessions/${id}`);
+        if (cancelled) return;
+        setSessionModel(session.model);
+      } catch (error) {
+        console.error(`Failed to load session metadata for ${id}`, error);
+      }
+    }
+
+    loadSession();
+    return () => {
+      cancelled = true;
+    };
+  }, [id]);
+
   const addSystemMessage = useCallback(
     (content: string) => {
       setMessages((prev) => [
@@ -68,6 +102,46 @@ export default function Session() {
     [setMessages],
   );
 
+  const updateSessionModel = useCallback(
+    async (requestedModel: string, announce: boolean) => {
+      if (!id) return false;
+
+      const resolvedModel = resolveSessionModelKey(requestedModel);
+      if (!resolvedModel) {
+        if (announce) {
+          addSystemMessage(
+            "Unknown model. Available models:\n\n" +
+              availableSessionModelsMarkdown(),
+          );
+        }
+        return false;
+      }
+
+      setUpdatingModel(true);
+      try {
+        const updated = await api.patch<{ model: string }>(
+          `/api/sessions/${id}`,
+          { model: resolvedModel },
+        );
+        setSessionModel(updated.model);
+        if (announce) {
+          addSystemMessage(
+            `Model changed to ${describeSessionModel(updated.model)}`,
+          );
+        }
+        return true;
+      } catch {
+        if (announce) {
+          addSystemMessage("Failed to update model.");
+        }
+        return false;
+      } finally {
+        setUpdatingModel(false);
+      }
+    },
+    [addSystemMessage, id],
+  );
+
   const handleCommand = useCallback(
     async (name: string, args: string) => {
       if (!id) return;
@@ -80,30 +154,20 @@ export default function Session() {
               "- `/model [name]` -- Show or change the AI model\n" +
               "- `/tree` -- Show workspace file tree\n" +
               "- `/export` -- Download chat as markdown\n" +
-              "- `/clear` -- Clear chat display",
+              "- `/clear` -- Clear chat display\n\n" +
+              `Available model keys: ${AVAILABLE_MODEL_KEYS}`,
           );
           break;
 
         case "model":
           if (args.trim()) {
-            try {
-              const updated = await api.patch<{ model: string }>(
-                `/api/sessions/${id}`,
-                { model: args.trim() },
-              );
-              addSystemMessage(`Model changed to **${updated.model}**`);
-            } catch {
-              addSystemMessage("Failed to update model.");
-            }
+            await updateSessionModel(args, true);
           } else {
-            try {
-              const session = await api.get<{ model: string }>(
-                `/api/sessions/${id}`,
-              );
-              addSystemMessage(`Current model: **${session.model}**`);
-            } catch {
-              addSystemMessage("Failed to fetch session info.");
-            }
+            addSystemMessage(
+              `Current model: ${describeSessionModel(sessionModel)}\n\n` +
+                "Available models:\n\n" +
+                availableSessionModelsMarkdown(),
+            );
           }
           break;
 
@@ -148,8 +212,18 @@ export default function Session() {
           break;
       }
     },
-    [id, messages, setMessages, addSystemMessage],
+    [
+      addSystemMessage,
+      id,
+      messages,
+      sessionModel,
+      setMessages,
+      updateSessionModel,
+    ],
   );
+
+  const selectedModelOption = getSessionModelOption(sessionModel);
+  const selectedModelValue = selectedModelOption?.value || sessionModel;
 
   return (
     <>
@@ -159,6 +233,32 @@ export default function Session() {
           <div className="text-sm font-medium text-gray-100 truncate">
             Session {id?.slice(0, 8)}
           </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <label
+            htmlFor="session-model"
+            className="hidden text-xs text-gray-500 sm:block"
+          >
+            Model
+          </label>
+          <select
+            id="session-model"
+            value={selectedModelValue}
+            disabled={streaming || updatingModel}
+            onChange={(event) => {
+              void updateSessionModel(event.target.value, false);
+            }}
+            className="rounded-lg border border-gray-800 bg-gray-900 px-2 py-1 text-xs text-gray-300 outline-none focus:border-blue-500 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {!selectedModelOption && (
+              <option value={sessionModel}>{sessionModel}</option>
+            )}
+            {SESSION_MODEL_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
         </div>
         {streaming && (
           <div className="flex items-center gap-2">

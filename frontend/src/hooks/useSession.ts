@@ -1,5 +1,6 @@
 import { useCallback, useState } from "react";
 import { api, type SessionInfo } from "../api/client";
+import { DEFAULT_SESSION_MODEL } from "../models/sessionModels";
 
 export function useSession() {
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
@@ -25,7 +26,7 @@ export function useSession() {
   }, []);
 
   const createSession = useCallback(
-    async (workspaceId: string, model = "minimax") => {
+    async (workspaceId: string, model = DEFAULT_SESSION_MODEL) => {
       setLoading(true);
       setError(null);
       try {

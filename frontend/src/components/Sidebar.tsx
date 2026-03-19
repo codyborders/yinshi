@@ -10,6 +10,7 @@ import {
 } from "../api/client";
 import { useAuth } from "../hooks/useAuth";
 import { useTheme } from "../hooks/useTheme";
+import { DEFAULT_SESSION_MODEL } from "../models/sessionModels";
 import {
   deriveRepoName,
   isGithubShorthand,
@@ -359,7 +360,7 @@ function RepoSection({
       // Auto-create a session and navigate to it
       const session = await api.post<SessionInfo>(
         `/api/workspaces/${ws.id}/sessions`,
-        { model: "minimax" },
+        { model: DEFAULT_SESSION_MODEL },
       );
       navigate(`/app/session/${session.id}`);
       onNavigate?.();
@@ -520,7 +521,7 @@ function WorkspaceItem({
     try {
       const session = await api.post<SessionInfo>(
         `/api/workspaces/${workspace.id}/sessions`,
-        { model: "minimax" },
+        { model: DEFAULT_SESSION_MODEL },
       );
       setSessions([session]);
       navigate(`/app/session/${session.id}`);

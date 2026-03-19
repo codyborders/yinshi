@@ -7,12 +7,13 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from yinshi.config import get_settings
+from yinshi.model_catalog import DEFAULT_SESSION_MODEL
 
 logger = logging.getLogger(__name__)
 
 _SCHEMA_VERSION = 2
 
-SCHEMA_SQL = """
+SCHEMA_SQL = f"""
 PRAGMA journal_mode = WAL;
 
 CREATE TABLE IF NOT EXISTS repos (
@@ -44,7 +45,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
     workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
     status TEXT DEFAULT 'idle' NOT NULL,
-    model TEXT DEFAULT 'minimax'
+    model TEXT DEFAULT '{DEFAULT_SESSION_MODEL}'
 );
 
 CREATE TABLE IF NOT EXISTS messages (

@@ -7,6 +7,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 
 from yinshi.db import _open_connection
+from yinshi.model_catalog import DEFAULT_SESSION_MODEL
 
 
 @dataclass
@@ -37,7 +38,7 @@ def validate_user_path(tenant: TenantContext, path: str) -> None:
 
 
 # User DB schema -- identical to main schema but WITHOUT owner_email
-USER_SCHEMA_SQL = """
+USER_SCHEMA_SQL = f"""
 PRAGMA journal_mode = WAL;
 
 CREATE TABLE IF NOT EXISTS repos (
@@ -68,7 +69,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
     workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
     status TEXT DEFAULT 'idle' NOT NULL,
-    model TEXT DEFAULT 'minimax'
+    model TEXT DEFAULT '{DEFAULT_SESSION_MODEL}'
 );
 
 CREATE TABLE IF NOT EXISTS messages (
