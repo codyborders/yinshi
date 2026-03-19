@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     github_client_id: str = ""
     github_client_secret: str = ""
     github_redirect_uri: str = "http://localhost:8000/auth/callback/github"
+    github_app_id: str = ""
+    github_app_private_key_path: str = ""
+    github_app_slug: str = ""
 
     # Session secret for cookies -- generated randomly if not set
     secret_key: str = ""

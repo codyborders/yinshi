@@ -8,6 +8,13 @@ export interface Repo {
   custom_prompt: string | null;
 }
 
+export interface GitHubInstallation {
+  installation_id: number;
+  account_login: string;
+  account_type: string;
+  html_url: string;
+}
+
 export interface ApiKey {
   id: string;
   created_at: string;
@@ -46,14 +53,79 @@ export interface Message {
   turn_id: string | null;
 }
 
-class ApiError extends Error {
+interface StructuredApiErrorPayload {
+  code?: string;
+  message?: string;
+  connect_url?: string | null;
+  manage_url?: string | null;
+}
+
+export class ApiError extends Error {
+  public code?: string;
+  public connectUrl?: string | null;
+  public manageUrl?: string | null;
+
   constructor(
     public status: number,
     message: string,
+    payload?: StructuredApiErrorPayload,
   ) {
     super(message);
     this.name = "ApiError";
+    this.code = payload?.code;
+    this.connectUrl = payload?.connect_url;
+    this.manageUrl = payload?.manage_url;
   }
+}
+
+function _normalizeErrorPayload(payload: unknown): StructuredApiErrorPayload | null {
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+
+  const detail = "detail" in payload ? payload.detail : payload;
+  if (!detail || typeof detail !== "object") {
+    return null;
+  }
+
+  const candidate = detail as Record<string, unknown>;
+  const normalized: StructuredApiErrorPayload = {};
+  if (typeof candidate.code === "string") {
+    normalized.code = candidate.code;
+  }
+  if (typeof candidate.message === "string") {
+    normalized.message = candidate.message;
+  }
+  if (typeof candidate.connect_url === "string") {
+    normalized.connect_url = candidate.connect_url;
+  }
+  if (candidate.connect_url === null) {
+    normalized.connect_url = null;
+  }
+  if (typeof candidate.manage_url === "string") {
+    normalized.manage_url = candidate.manage_url;
+  }
+  if (candidate.manage_url === null) {
+    normalized.manage_url = null;
+  }
+  return normalized;
+}
+
+async function _readApiError(response: Response): Promise<ApiError> {
+  const contentType = response.headers.get("content-type") || "";
+  if (contentType.includes("application/json")) {
+    const payload = await response.json().catch(() => null);
+    const normalized = _normalizeErrorPayload(payload);
+    if (normalized?.message) {
+      return new ApiError(response.status, normalized.message, normalized);
+    }
+    if (payload && typeof payload === "object" && "detail" in payload && typeof payload.detail === "string") {
+      return new ApiError(response.status, payload.detail);
+    }
+  }
+
+  const text = await response.text().catch(() => "");
+  return new ApiError(response.status, text || response.statusText);
 }
 
 async function request<T>(
@@ -74,8 +146,7 @@ async function request<T>(
     if (res.status === 401 && window.location.pathname.startsWith("/app")) {
       window.location.href = "/";
     }
-    const text = await res.text().catch(() => "");
-    throw new ApiError(res.status, text || res.statusText);
+    throw await _readApiError(res);
   }
   if (res.status === 204) return undefined as T;
   return res.json();
@@ -140,8 +211,7 @@ export async function* streamPrompt(
     if (res.status === 401 && window.location.pathname.startsWith("/app")) {
       window.location.href = "/";
     }
-    const text = await res.text().catch(() => "");
-    throw new ApiError(res.status, text || res.statusText);
+    throw await _readApiError(res);
   }
 
   if (!res.body) {

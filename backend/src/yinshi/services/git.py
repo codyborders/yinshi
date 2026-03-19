@@ -2,8 +2,12 @@
 
 import asyncio
 import logging
+import os
 import random
 import string
+import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 from yinshi.exceptions import GitError
@@ -45,13 +49,49 @@ def _validate_clone_url(url: str) -> None:
         raise GitError("URL must start with https://, ssh://, or git@")
 
 
-async def _run_git(args: list[str], cwd: str | None = None) -> str:
+@contextmanager
+def _git_askpass_env(access_token: str | None) -> Iterator[dict[str, str] | None]:
+    """Provide temporary environment variables for HTTPS token auth."""
+    if access_token is None:
+        yield None
+        return
+
+    if not access_token:
+        raise GitError("Git access token must not be empty")
+
+    with tempfile.TemporaryDirectory(prefix="yinshi-git-askpass-") as temp_dir:
+        askpass_path = Path(temp_dir) / "askpass.sh"
+        askpass_path.write_text(
+            "#!/bin/sh\n"
+            "case \"$1\" in\n"
+            "  *Username*) printf '%s\\n' 'x-access-token' ;;\n"
+            "  *) printf '%s\\n' \"$YINSHI_GIT_TOKEN\" ;;\n"
+            "esac\n",
+            encoding="utf-8",
+        )
+        askpass_path.chmod(0o700)
+        yield {
+            "GIT_ASKPASS": str(askpass_path),
+            "GIT_TERMINAL_PROMPT": "0",
+            "YINSHI_GIT_TOKEN": access_token,
+        }
+
+
+async def _run_git(
+    args: list[str],
+    cwd: str | None = None,
+    env: dict[str, str] | None = None,
+) -> str:
     """Run a git command asynchronously and return stdout."""
     cmd = ["git"] + args
     logger.debug("Running: %s (cwd=%s)", " ".join(cmd), cwd)
+    child_env = os.environ.copy()
+    if env is not None:
+        child_env.update(env)
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         cwd=cwd,
+        env=child_env,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
@@ -62,7 +102,11 @@ async def _run_git(args: list[str], cwd: str | None = None) -> str:
     return stdout.decode().strip()
 
 
-async def clone_repo(url: str, dest: str) -> str:
+async def clone_repo(
+    url: str,
+    dest: str,
+    access_token: str | None = None,
+) -> str:
     """Clone a git repository. Returns the clone path.
 
     If dest already exists and is a valid git repo with matching remote, reuse it.
@@ -75,13 +119,15 @@ async def clone_repo(url: str, dest: str) -> str:
             # Already cloned -- pull latest instead
             logger.info("Reusing existing clone at %s", dest)
             try:
-                await _run_git(["fetch", "--all"], cwd=dest)
+                with _git_askpass_env(access_token) as env:
+                    await _run_git(["fetch", "--all"], cwd=dest, env=env)
             except GitError:
                 pass
             return dest
         raise GitError("Destination already exists but is not a git repository")
     dest_path.parent.mkdir(parents=True, exist_ok=True)
-    await _run_git(["clone", url, dest])
+    with _git_askpass_env(access_token) as env:
+        await _run_git(["clone", url, dest], env=env)
     logger.info("Cloned %s to %s", url, dest)
     return dest
 

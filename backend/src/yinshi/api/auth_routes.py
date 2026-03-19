@@ -3,11 +3,13 @@
 import logging
 import sqlite3
 from typing import Any, cast
+from urllib.parse import urlencode
 
 import httpx
 from authlib.integrations.starlette_client import OAuthError
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
+from itsdangerous import BadSignature, BadTimeSignature, URLSafeTimedSerializer
 
 from yinshi.auth import (
     SESSION_MAX_AGE,
@@ -17,10 +19,14 @@ from yinshi.auth import (
     verify_session_token,
 )
 from yinshi.config import get_settings
+from yinshi.db import get_control_db
+from yinshi.exceptions import GitHubAppError, GitHubInstallationUnusableError
 from yinshi.services.accounts import resolve_or_create_user
+from yinshi.services.github_app import get_installation_details
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth", tags=["auth"])
+_GITHUB_INSTALL_STATE_MAX_AGE_S = 600
 
 
 def _set_session_cookie(response: RedirectResponse, user_id: str) -> None:
@@ -36,6 +42,44 @@ def _set_session_cookie(response: RedirectResponse, user_id: str) -> None:
         samesite="lax",
         path="/",
     )
+
+
+def _github_install_state_serializer() -> URLSafeTimedSerializer:
+    """Build a serializer dedicated to GitHub install state tokens."""
+    settings = get_settings()
+    return URLSafeTimedSerializer(settings.secret_key)
+
+
+def _create_github_install_state(user_id: str) -> str:
+    """Sign a user id into a GitHub install state token."""
+    assert user_id, "user_id must not be empty"
+    serializer = _github_install_state_serializer()
+    return serializer.dumps(user_id, salt="github-install-state")
+
+
+def _verify_github_install_state(state: str) -> str | None:
+    """Verify a GitHub install state token and return the user id."""
+    assert state, "state must not be empty"
+    serializer = _github_install_state_serializer()
+    try:
+        user_id = serializer.loads(
+            state,
+            salt="github-install-state",
+            max_age=_GITHUB_INSTALL_STATE_MAX_AGE_S,
+        )
+    except (BadSignature, BadTimeSignature):
+        return None
+    if isinstance(user_id, str):
+        return user_id
+    return None
+
+
+def _current_user_id(request: Request) -> str | None:
+    """Return the authenticated user id from the session cookie."""
+    token = request.cookies.get("yinshi_session")
+    if not token:
+        return None
+    return verify_session_token(token)
 
 
 # --- Google OAuth ---
@@ -187,6 +231,92 @@ async def callback_github(request: Request) -> RedirectResponse:
     _set_session_cookie(response, tenant.user_id)
     logger.info("GitHub login: user=%s email=%s", tenant.user_id, email)
     return response
+
+
+@router.get("/github/install", response_model=None)
+async def github_install(request: Request) -> Response:
+    """Redirect an authenticated user to the GitHub App install flow."""
+    settings = get_settings()
+    if not settings.github_app_slug:
+        return JSONResponse({"error": "GitHub App not configured"}, status_code=503)
+
+    user_id = _current_user_id(request)
+    if not user_id:
+        return RedirectResponse(url="/?error=not_authenticated")
+
+    state = _create_github_install_state(user_id)
+    query = urlencode({"state": state})
+    install_url = f"https://github.com/apps/{settings.github_app_slug}/installations/new?{query}"
+    return RedirectResponse(url=install_url)
+
+
+@router.get("/github/install/callback")
+async def github_install_callback(request: Request) -> RedirectResponse:
+    """Persist a GitHub installation after the GitHub App flow returns."""
+    state = request.query_params.get("state")
+    if not state:
+        return RedirectResponse(url="/app?github_connect_error=invalid_state")
+
+    user_id = _verify_github_install_state(state)
+    if not user_id:
+        return RedirectResponse(url="/app?github_connect_error=invalid_state")
+
+    installation_id_text = request.query_params.get("installation_id")
+    if not installation_id_text:
+        return RedirectResponse(url="/app?github_connect_error=missing_installation")
+
+    try:
+        installation_id = int(installation_id_text)
+    except ValueError:
+        return RedirectResponse(url="/app?github_connect_error=missing_installation")
+
+    if installation_id <= 0:
+        return RedirectResponse(url="/app?github_connect_error=missing_installation")
+
+    setup_action = request.query_params.get("setup_action")
+    if setup_action == "request":
+        return RedirectResponse(url="/app?github_connect_error=not_granted")
+
+    try:
+        installation = await get_installation_details(installation_id)
+    except GitHubInstallationUnusableError:
+        return RedirectResponse(url="/app?github_connect_error=not_granted")
+    except GitHubAppError:
+        logger.exception("GitHub App callback failed for installation=%s", installation_id)
+        return RedirectResponse(url="/app?github_connect_error=install_failed")
+
+    account = installation.get("account")
+    if not isinstance(account, dict):
+        return RedirectResponse(url="/app?github_connect_error=install_failed")
+
+    account_login = account.get("login")
+    account_type = account.get("type")
+    html_url = installation.get("html_url")
+    if installation.get("suspended_at"):
+        return RedirectResponse(url="/app?github_connect_error=not_granted")
+    if not isinstance(account_login, str):
+        return RedirectResponse(url="/app?github_connect_error=install_failed")
+    if not isinstance(account_type, str):
+        return RedirectResponse(url="/app?github_connect_error=install_failed")
+    if not isinstance(html_url, str):
+        return RedirectResponse(url="/app?github_connect_error=install_failed")
+
+    with get_control_db() as db:
+        db.execute(
+            """
+            INSERT INTO github_installations (
+                user_id, installation_id, account_login, account_type, html_url
+            ) VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(user_id, installation_id) DO UPDATE SET
+                account_login = excluded.account_login,
+                account_type = excluded.account_type,
+                html_url = excluded.html_url
+            """,
+            (user_id, installation_id, account_login, account_type, html_url),
+        )
+        db.commit()
+
+    return RedirectResponse(url="/app?github_connected=1")
 
 
 # --- Backward compatibility: /auth/login redirects to /auth/login/google ---

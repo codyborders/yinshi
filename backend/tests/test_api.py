@@ -4,7 +4,7 @@ import sqlite3
 import subprocess
 from collections import namedtuple
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -369,6 +369,47 @@ def test_create_workspace_repairs_migrated_repo_paths(
             (repo_id,),
         ).fetchone()
     assert row == (repaired_repo_path,)
+
+
+def test_create_workspace_repairs_from_local_checkout_when_github_auth_fails(
+    auth_client_factory,
+    git_repo: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Tenant repair should preserve local work even if GitHub auth is broken."""
+    from yinshi.config import get_settings
+    from yinshi.exceptions import GitHubInstallationUnusableError
+
+    repo_id = "repo-repair-local-fallback"
+    email = "repair-local@example.com"
+    monkeypatch.setenv("ALLOWED_REPO_BASE", "")
+    get_settings.cache_clear()
+    settings = get_settings()
+    _seed_legacy_repo(
+        settings.db_path,
+        email=email,
+        repo_id=repo_id,
+        repo_name="legacy-repo",
+        repo_path=git_repo,
+    )
+
+    auth_client = auth_client_factory(email=email, provider_user_id="repair-local-google")
+    tenant = getattr(auth_client, "yinshi_tenant")
+
+    with patch(
+        "yinshi.services.workspace.resolve_github_clone_access",
+        new=AsyncMock(
+            side_effect=GitHubInstallationUnusableError(
+                "The connected GitHub installation is no longer usable."
+            )
+        ),
+    ):
+        resp = auth_client.post(f"/api/repos/{repo_id}/workspaces", json={})
+
+    assert resp.status_code == 201
+    repaired_repo_path = str(Path(tenant.data_dir) / "repos" / repo_id)
+    assert resp.json()["path"].startswith(repaired_repo_path)
+    assert Path(repaired_repo_path).is_dir()
 
 
 def test_list_workspaces(client: TestClient, git_repo: str) -> None:
@@ -805,6 +846,133 @@ def test_git_url_validation(client: TestClient) -> None:
         json={"name": "evil-repo", "remote_url": "--upload-pack=evil"},
     )
     assert resp.status_code == 400
+
+
+def test_import_github_repo_stores_installation_id(auth_client: TestClient) -> None:
+    """GitHub imports should save the canonical URL and installation id."""
+    from yinshi.services.github_app import GitHubCloneAccess
+    from yinshi.tenant import get_user_db
+
+    tenant = getattr(auth_client, "yinshi_tenant")
+    with (
+        patch(
+            "yinshi.api.repos._resolve_clone_access",
+            new=AsyncMock(
+                return_value=GitHubCloneAccess(
+                    clone_url="https://github.com/acme/private-repo.git",
+                    repository_installation_id=12,
+                    installation_id=12,
+                    access_token="token-123",
+                    manage_url="https://github.com/organizations/acme/settings/installations/12",
+                )
+            ),
+        ),
+        patch(
+            "yinshi.api.repos.clone_repo",
+            new=AsyncMock(return_value=str(Path(tenant.data_dir) / "repos" / "private-repo")),
+        ),
+    ):
+        resp = auth_client.post(
+            "/api/repos",
+            json={
+                "name": "private-repo",
+                "remote_url": "git@github.com:acme/private-repo.git",
+            },
+        )
+
+    assert resp.status_code == 201
+    assert resp.json()["remote_url"] == "https://github.com/acme/private-repo.git"
+    with get_user_db(tenant) as db:
+        row = db.execute(
+            "SELECT remote_url, installation_id FROM repos WHERE name = ?",
+            ("private-repo",),
+        ).fetchone()
+    assert row is not None
+    assert row["remote_url"] == "https://github.com/acme/private-repo.git"
+    assert row["installation_id"] == 12
+
+
+def test_import_public_github_repo_keeps_installation_id_null(auth_client: TestClient) -> None:
+    """Public GitHub imports should stay anonymous even when the app is installed."""
+    from yinshi.services.github_app import GitHubCloneAccess
+    from yinshi.tenant import get_user_db
+
+    tenant = getattr(auth_client, "yinshi_tenant")
+    with (
+        patch(
+            "yinshi.api.repos._resolve_clone_access",
+            new=AsyncMock(
+                return_value=GitHubCloneAccess(
+                    clone_url="https://github.com/acme/public-repo.git",
+                    repository_installation_id=12,
+                    installation_id=None,
+                    access_token=None,
+                    manage_url=None,
+                )
+            ),
+        ),
+        patch(
+            "yinshi.api.repos.clone_repo",
+            new=AsyncMock(return_value=str(Path(tenant.data_dir) / "repos" / "public-repo")),
+        ),
+    ):
+        resp = auth_client.post(
+            "/api/repos",
+            json={
+                "name": "public-repo",
+                "remote_url": "https://github.com/acme/public-repo",
+            },
+        )
+
+    assert resp.status_code == 201
+    with get_user_db(tenant) as db:
+        row = db.execute(
+            "SELECT remote_url, installation_id FROM repos WHERE name = ?",
+            ("public-repo",),
+        ).fetchone()
+    assert row is not None
+    assert row["remote_url"] == "https://github.com/acme/public-repo.git"
+    assert row["installation_id"] is None
+
+
+def test_import_private_github_repo_returns_manage_error(auth_client: TestClient) -> None:
+    """Private GitHub import failures should return structured manage guidance."""
+    from yinshi.exceptions import GitError
+    from yinshi.services.github_app import GitHubCloneAccess
+
+    with (
+        patch(
+            "yinshi.api.repos._resolve_clone_access",
+            new=AsyncMock(
+                return_value=GitHubCloneAccess(
+                    clone_url="https://github.com/acme/private-repo.git",
+                    repository_installation_id=None,
+                    installation_id=None,
+                    access_token=None,
+                    manage_url="https://github.com/organizations/acme/settings/installations/12",
+                )
+            ),
+        ),
+        patch(
+            "yinshi.api.repos.clone_repo",
+            new=AsyncMock(side_effect=GitError("git clone failed")),
+        ),
+    ):
+        resp = auth_client.post(
+            "/api/repos",
+            json={
+                "name": "private-repo",
+                "remote_url": "https://github.com/acme/private-repo",
+            },
+        )
+
+    assert resp.status_code == 400
+    detail = resp.json()["detail"]
+    assert detail["code"] == "github_access_not_granted"
+    assert detail["manage_url"] == (
+        "https://github.com/organizations/acme/settings/installations/12"
+    )
+    assert detail["connect_url"] is None
 
 
 # --- _summarize_prompt unit tests ---

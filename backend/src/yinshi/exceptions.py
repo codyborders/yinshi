@@ -21,6 +21,68 @@ class GitError(YinshiError):
     """Raised when a git operation fails."""
 
 
+class GitHubAppError(YinshiError):
+    """Raised when the GitHub App integration cannot complete."""
+
+
+class GitHubAccessError(GitHubAppError):
+    """Raised when GitHub access cannot be granted for a repository."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str,
+        connect_url: str | None = None,
+        manage_url: str | None = None,
+    ) -> None:
+        assert code, "code must not be empty"
+        super().__init__(message)
+        self.code = code
+        self.connect_url = connect_url
+        self.manage_url = manage_url
+
+
+class GitHubConnectRequiredError(GitHubAccessError):
+    """Raised when a user must connect GitHub before importing a repo."""
+
+    def __init__(self, message: str, *, connect_url: str | None = None) -> None:
+        super().__init__(
+            message,
+            code="github_connect_required",
+            connect_url=connect_url,
+        )
+
+
+class GitHubAccessNotGrantedError(GitHubAccessError):
+    """Raised when an installation exists but cannot access the repo."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        connect_url: str | None = None,
+        manage_url: str | None = None,
+    ) -> None:
+        super().__init__(
+            message,
+            code="github_access_not_granted",
+            connect_url=connect_url,
+            manage_url=manage_url,
+        )
+
+
+class GitHubInstallationUnusableError(GitHubAccessError):
+    """Raised when a connected installation is no longer usable."""
+
+    def __init__(self, message: str, *, manage_url: str | None = None) -> None:
+        super().__init__(
+            message,
+            code="github_installation_unusable",
+            manage_url=manage_url,
+        )
+
+
 class SidecarError(YinshiError):
     """Raised when sidecar communication fails."""
 

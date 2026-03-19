@@ -1,6 +1,13 @@
 import { useEffect, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
-import { api, type Repo, type SessionInfo, type Workspace } from "../api/client";
+import { useLocation, useNavigate, useParams } from "react-router-dom";
+import {
+  ApiError,
+  api,
+  type GitHubInstallation,
+  type Repo,
+  type SessionInfo,
+  type Workspace,
+} from "../api/client";
 import { useAuth } from "../hooks/useAuth";
 import { useTheme } from "../hooks/useTheme";
 import {
@@ -39,6 +46,51 @@ const PlusIcon = (
   </svg>
 );
 
+type SidebarNotice = {
+  message: string;
+  tone: "error" | "success";
+};
+
+type ImportAction = {
+  label: string;
+  href: string;
+  external: boolean;
+};
+
+function githubNoticeFromSearch(search: string): SidebarNotice | null {
+  const params = new URLSearchParams(search);
+  if (params.get("github_connected") === "1") {
+    return { message: "GitHub connected.", tone: "success" };
+  }
+
+  const errorCode = params.get("github_connect_error");
+  if (errorCode === "not_granted") {
+    return {
+      message: "GitHub access was not granted for that installation.",
+      tone: "error",
+    };
+  }
+  if (errorCode === "invalid_state") {
+    return {
+      message: "GitHub connect session expired. Try again.",
+      tone: "error",
+    };
+  }
+  if (errorCode === "missing_installation") {
+    return {
+      message: "GitHub did not return an installation for this request.",
+      tone: "error",
+    };
+  }
+  if (errorCode === "install_failed") {
+    return {
+      message: "GitHub installation could not be completed.",
+      tone: "error",
+    };
+  }
+  return null;
+}
+
 function ThemeIcon({ theme }: { theme: string }) {
   if (theme === "light") {
     return (
@@ -56,10 +108,13 @@ function ThemeIcon({ theme }: { theme: string }) {
 
 export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const { id: activeSessionId } = useParams<{ id: string }>();
+  const location = useLocation();
   const navigate = useNavigate();
   const { status, email, logout } = useAuth();
   const { theme, toggle: toggleTheme } = useTheme();
   const [repos, setRepos] = useState<Repo[]>([]);
+  const [githubInstallations, setGithubInstallations] = useState<GitHubInstallation[]>([]);
+  const [githubNotice, setGithubNotice] = useState<SidebarNotice | null>(null);
   const [loading, setLoading] = useState(true);
   const [repoLoadError, setRepoLoadError] = useState<string | null>(null);
   const [showImport, setShowImport] = useState(false);
@@ -81,6 +136,48 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   useEffect(() => {
     void loadRepos();
   }, []);
+
+  async function loadGitHubInstallations() {
+    if (status !== "authenticated") {
+      setGithubInstallations([]);
+      return;
+    }
+
+    try {
+      const data = await api.get<GitHubInstallation[]>("/api/github/installations");
+      setGithubInstallations(data);
+    } catch (error) {
+      console.error("Failed to load GitHub installations", error);
+    }
+  }
+
+  useEffect(() => {
+    void loadGitHubInstallations();
+  }, [status]);
+
+  useEffect(() => {
+    const notice = githubNoticeFromSearch(location.search);
+    if (!notice) {
+      return;
+    }
+
+    setGithubNotice(notice);
+    if (status === "authenticated") {
+      void loadGitHubInstallations();
+    }
+
+    const params = new URLSearchParams(location.search);
+    params.delete("github_connected");
+    params.delete("github_connect_error");
+    const nextSearch = params.toString();
+    navigate(
+      {
+        pathname: location.pathname,
+        search: nextSearch ? `?${nextSearch}` : "",
+      },
+      { replace: true },
+    );
+  }, [location.pathname, location.search, navigate, status]);
 
   function handleImported(repo: Repo | null) {
     if (repo) {
@@ -105,9 +202,27 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
         </button>
       </div>
 
-      {showImport && <ImportForm onDone={handleImported} />}
+      {showImport && (
+        <ImportForm
+          onDone={handleImported}
+          canConnectGitHub={status === "authenticated"}
+          githubInstallations={githubInstallations}
+        />
+      )}
 
       <div className="flex-1 overflow-y-auto scrollbar-hide py-1">
+        {githubNotice && (
+          <div
+            className={`mx-4 mt-4 rounded-md border px-3 py-2 text-xs ${
+              githubNotice.tone === "success"
+                ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-200"
+                : "border-red-500/40 bg-red-500/10 text-red-300"
+            }`}
+          >
+            {githubNotice.message}
+          </div>
+        )}
+
         {loading && (
           <div className="flex justify-center py-8">
             <div className="h-5 w-5 animate-spin rounded-full border-2 border-blue-500 border-t-transparent" />
@@ -466,10 +581,19 @@ function WorkspaceItem({
   );
 }
 
-function ImportForm({ onDone }: { onDone: (repo: Repo | null) => void }) {
+function ImportForm({
+  onDone,
+  canConnectGitHub,
+  githubInstallations,
+}: {
+  onDone: (repo: Repo | null) => void;
+  canConnectGitHub: boolean;
+  githubInstallations: GitHubInstallation[];
+}) {
   const [input, setInput] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [errorAction, setErrorAction] = useState<ImportAction | null>(null);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -477,6 +601,7 @@ function ImportForm({ onDone }: { onDone: (repo: Repo | null) => void }) {
     if (!value) return;
     setSubmitting(true);
     setError(null);
+    setErrorAction(null);
     try {
       const body: { name: string; remote_url?: string; local_path?: string } = {
         name: deriveRepoName(value),
@@ -494,7 +619,24 @@ function ImportForm({ onDone }: { onDone: (repo: Repo | null) => void }) {
       const repo = await api.post<Repo>("/api/repos", body);
       onDone(repo);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Import failed");
+      if (err instanceof ApiError) {
+        setError(err.message);
+        if (err.manageUrl) {
+          setErrorAction({
+            label: "Manage GitHub",
+            href: err.manageUrl,
+            external: true,
+          });
+        } else if (err.connectUrl) {
+          setErrorAction({
+            label: "Connect GitHub",
+            href: err.connectUrl,
+            external: false,
+          });
+        }
+      } else {
+        setError(err instanceof Error ? err.message : "Import failed");
+      }
     } finally {
       setSubmitting(false);
     }
@@ -502,6 +644,42 @@ function ImportForm({ onDone }: { onDone: (repo: Repo | null) => void }) {
 
   return (
     <form onSubmit={handleSubmit} className="border-b border-gray-800 px-4 py-3 space-y-2">
+      {canConnectGitHub && (
+        <div className="rounded-md border border-gray-800 bg-gray-950/60 px-3 py-2">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">
+                Private GitHub repos
+              </p>
+              <p className="mt-1 text-xs text-gray-400">
+                Connect GitHub once, then import private repos by URL.
+              </p>
+            </div>
+            <a
+              href="/auth/github/install"
+              className="shrink-0 rounded-md border border-gray-700 px-2 py-1 text-[11px] text-gray-300 hover:border-gray-500 hover:text-gray-100"
+            >
+              Connect GitHub
+            </a>
+          </div>
+          {githubInstallations.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {githubInstallations.map((installation) => (
+                <a
+                  key={installation.installation_id}
+                  href={installation.html_url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="rounded-full border border-gray-700 px-2 py-0.5 text-[11px] text-gray-300 hover:border-gray-500 hover:text-gray-100"
+                  title={`${installation.account_login} (${installation.account_type})`}
+                >
+                  {installation.account_login}
+                </a>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
       <input
         type="text"
         placeholder="GitHub URL, user/repo, or local path"
@@ -510,7 +688,21 @@ function ImportForm({ onDone }: { onDone: (repo: Repo | null) => void }) {
         className="w-full rounded-md bg-gray-800 px-3 py-2 text-sm text-gray-100 placeholder-gray-500 outline-none focus:ring-1 focus:ring-blue-500"
         autoFocus
       />
-      {error && <p className="text-xs text-red-400">{error}</p>}
+      {error && (
+        <div className="rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-300">
+          <p>{error}</p>
+          {errorAction && (
+            <a
+              href={errorAction.href}
+              target={errorAction.external ? "_blank" : undefined}
+              rel={errorAction.external ? "noreferrer" : undefined}
+              className="mt-2 inline-flex text-red-100 underline underline-offset-2 hover:text-white"
+            >
+              {errorAction.label}
+            </a>
+          )}
+        </div>
+      )}
       <div className="flex gap-2">
         <button
           type="submit"

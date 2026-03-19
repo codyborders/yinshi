@@ -10,7 +10,7 @@ from yinshi.config import get_settings
 
 logger = logging.getLogger(__name__)
 
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 
 SCHEMA_SQL = """
 PRAGMA journal_mode = WAL;
@@ -23,7 +23,8 @@ CREATE TABLE IF NOT EXISTS repos (
     remote_url TEXT,
     root_path TEXT NOT NULL,
     custom_prompt TEXT,
-    owner_email TEXT
+    owner_email TEXT,
+    installation_id INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS workspaces (
@@ -103,6 +104,12 @@ def _migrate(conn: sqlite3.Connection) -> None:
         if "owner_email" not in columns:
             logger.info("Migration v1: adding owner_email column to repos")
             conn.execute("ALTER TABLE repos ADD COLUMN owner_email TEXT")
+
+    if current < 2:
+        columns = [r[1] for r in conn.execute("PRAGMA table_info(repos)").fetchall()]
+        if "installation_id" not in columns:
+            logger.info("Migration v2: adding installation_id column to repos")
+            conn.execute("ALTER TABLE repos ADD COLUMN installation_id INTEGER")
 
     if current != _SCHEMA_VERSION:
         conn.execute("DELETE FROM schema_version")
@@ -191,6 +198,19 @@ CREATE INDEX IF NOT EXISTS idx_oauth_user ON oauth_identities(user_id);
 CREATE INDEX IF NOT EXISTS idx_api_keys_user ON api_keys(user_id);
 CREATE INDEX IF NOT EXISTS idx_usage_user ON usage_log(user_id);
 CREATE INDEX IF NOT EXISTS idx_usage_session ON usage_log(session_id);
+
+CREATE TABLE IF NOT EXISTS github_installations (
+    id INTEGER PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    installation_id INTEGER NOT NULL,
+    account_login TEXT NOT NULL,
+    account_type TEXT NOT NULL,
+    html_url TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(user_id, installation_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_github_installations_user ON github_installations(user_id);
 """
 
 

@@ -6,7 +6,14 @@ import sqlite3
 from typing import Any, cast
 
 from yinshi.config import get_settings
-from yinshi.exceptions import RepoNotFoundError, WorkspaceNotFoundError
+from yinshi.exceptions import (
+    GitError,
+    GitHubAccessError,
+    GitHubAppError,
+    RepoNotFoundError,
+    WorkspaceNotFoundError,
+)
+from yinshi.services.github_app import resolve_github_clone_access
 from yinshi.services.git import (
     clone_local_repo,
     clone_repo,
@@ -76,6 +83,7 @@ async def _materialize_repo_checkout(
     source_path: str,
     target_path: str,
     remote_url: str | None,
+    access_token: str | None = None,
 ) -> None:
     """Create or reuse a repaired repo checkout inside tenant storage."""
     assert target_path, "target_path must not be empty"
@@ -88,10 +96,35 @@ async def _materialize_repo_checkout(
         return
 
     if remote_url:
-        await clone_repo(remote_url, target_path)
+        await clone_repo(remote_url, target_path, access_token=access_token)
         return
 
     raise RepoNotFoundError("Repo checkout is missing and cannot be repaired")
+
+
+async def _resolve_remote_checkout(
+    tenant: TenantContext,
+    remote_url: str | None,
+) -> tuple[str | None, str | None, int | None]:
+    """Resolve a canonical remote URL plus any GitHub token for repairs."""
+    if remote_url is None:
+        return None, None, None
+
+    try:
+        clone_access = await resolve_github_clone_access(tenant.user_id, remote_url)
+    except GitHubAccessError as exc:
+        raise GitError(str(exc)) from exc
+    except GitHubAppError as exc:
+        raise GitError(str(exc)) from exc
+
+    if clone_access is None:
+        return remote_url, None, None
+
+    return (
+        clone_access.clone_url,
+        clone_access.access_token,
+        clone_access.installation_id,
+    )
 
 
 async def ensure_repo_checkout_for_tenant(
@@ -113,7 +146,50 @@ async def ensure_repo_checkout_for_tenant(
         return dict(repo)
 
     target_repo_path = _tenant_repo_path(tenant, repo_id)
-    await _materialize_repo_checkout(repo_path, target_repo_path, repo["remote_url"])
+    remote_url = repo["remote_url"]
+    access_token = None
+    installation_id = repo["installation_id"] if "installation_id" in repo.keys() else None
+    source_repo_is_available = await validate_local_repo(repo_path)
+    if remote_url:
+        if source_repo_is_available:
+            # Preserve existing local work even if the remote can no longer be
+            # reached or re-authenticated.
+            try:
+                (
+                    remote_url,
+                    access_token,
+                    resolved_installation_id,
+                ) = await _resolve_remote_checkout(
+                    tenant,
+                    remote_url,
+                )
+            except GitError as exc:
+                logger.warning(
+                    "Repairing repo %s from local checkout because remote auth failed: %s",
+                    repo_id,
+                    exc,
+                )
+                access_token = None
+            else:
+                if resolved_installation_id is not None:
+                    installation_id = resolved_installation_id
+        else:
+            (
+                remote_url,
+                access_token,
+                resolved_installation_id,
+            ) = await _resolve_remote_checkout(
+                tenant,
+                remote_url,
+            )
+            if resolved_installation_id is not None:
+                installation_id = resolved_installation_id
+    await _materialize_repo_checkout(
+        repo_path,
+        target_repo_path,
+        remote_url,
+        access_token=access_token,
+    )
 
     workspaces = db.execute(
         "SELECT * FROM workspaces WHERE repo_id = ? ORDER BY created_at ASC",
@@ -133,8 +209,8 @@ async def ensure_repo_checkout_for_tenant(
         )
 
     db.execute(
-        "UPDATE repos SET root_path = ? WHERE id = ?",
-        (target_repo_path, repo_id),
+        "UPDATE repos SET root_path = ?, remote_url = ?, installation_id = ? WHERE id = ?",
+        (target_repo_path, remote_url, installation_id, repo_id),
     )
     db.commit()
     logger.info("Repaired repo %s into tenant storage at %s", repo_id, target_repo_path)

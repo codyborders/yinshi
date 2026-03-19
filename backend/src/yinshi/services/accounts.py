@@ -71,8 +71,8 @@ def _migrate_legacy_data(tenant: TenantContext) -> None:
                 dest.execute(
                     (
                         "INSERT OR IGNORE INTO repos "
-                        "(id, created_at, updated_at, name, remote_url, root_path, custom_prompt) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?)"
+                        "(id, created_at, updated_at, name, remote_url, root_path, custom_prompt, installation_id) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
                     ),
                     (
                         r["id"],
@@ -82,6 +82,7 @@ def _migrate_legacy_data(tenant: TenantContext) -> None:
                         r["remote_url"],
                         r["root_path"],
                         r.get("custom_prompt"),
+                        r.get("installation_id"),
                     ),
                 )
 

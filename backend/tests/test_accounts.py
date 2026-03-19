@@ -134,7 +134,7 @@ def test_resolve_links_new_provider_same_email(account_env):
 
 
 def test_control_db_has_users_table(account_env):
-    """Control DB should have users and oauth_identities tables."""
+    """Control DB should have users, OAuth identities, keys, and GitHub installs."""
     from yinshi.db import get_control_db
 
     with get_control_db() as db:
@@ -145,6 +145,7 @@ def test_control_db_has_users_table(account_env):
     assert "users" in tables
     assert "oauth_identities" in tables
     assert "api_keys" in tables
+    assert "github_installations" in tables
 
 
 def test_legacy_data_migrated_on_first_login(account_env):

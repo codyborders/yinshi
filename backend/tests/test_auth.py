@@ -58,6 +58,19 @@ def _create_test_user_token():
     return create_session_token(tenant.user_id)
 
 
+def _configure_github_app_settings(tmp_path, monkeypatch) -> None:
+    """Configure minimal GitHub App settings for route tests."""
+    private_key_path = tmp_path / "github-app.pem"
+    private_key_path.write_text("test-private-key", encoding="utf-8")
+    monkeypatch.setenv("GITHUB_APP_ID", "12345")
+    monkeypatch.setenv("GITHUB_APP_PRIVATE_KEY_PATH", str(private_key_path))
+    monkeypatch.setenv("GITHUB_APP_SLUG", "yinshi-dev")
+
+    from yinshi.config import get_settings
+
+    get_settings.cache_clear()
+
+
 def test_create_and_verify_session_token():
     """Session tokens should be creatable and verifiable."""
     from yinshi.auth import create_session_token, verify_session_token
@@ -362,3 +375,119 @@ def test_callback_github_provisioning_error_redirects(auth_enabled_app):
     ):
         resp = client.get("/auth/callback/github", follow_redirects=False)
         _assert_error_redirect(resp, "account_error")
+
+
+def test_github_install_redirects_authenticated_user(
+    auth_enabled_app,
+    tmp_path,
+    monkeypatch,
+):
+    """GET /auth/github/install should redirect authenticated users to GitHub."""
+    from fastapi.testclient import TestClient
+
+    _configure_github_app_settings(tmp_path, monkeypatch)
+
+    from yinshi.main import app
+
+    token = _create_test_user_token()
+
+    with TestClient(app) as client:
+        client.cookies.set("yinshi_session", token)
+        resp = client.get("/auth/github/install", follow_redirects=False)
+
+    assert resp.status_code == 307
+    location = resp.headers["location"]
+    assert location.startswith(
+        "https://github.com/apps/yinshi-dev/installations/new?state="
+    )
+
+
+def test_github_install_callback_stores_installation(
+    auth_enabled_app,
+    tmp_path,
+    monkeypatch,
+):
+    """GitHub install callback should upsert the installation into the control DB."""
+    from fastapi.testclient import TestClient
+
+    _configure_github_app_settings(tmp_path, monkeypatch)
+
+    from yinshi.api.auth_routes import _create_github_install_state
+    from yinshi.db import get_control_db
+    from yinshi.main import app
+    from yinshi.services.accounts import resolve_or_create_user
+
+    tenant = resolve_or_create_user(
+        provider="google",
+        provider_user_id="github-install-user",
+        email="install@example.com",
+        display_name="Install User",
+    )
+    state = _create_github_install_state(tenant.user_id)
+
+    with (
+        TestClient(app) as client,
+        patch(
+            "yinshi.api.auth_routes.get_installation_details",
+            new=AsyncMock(
+                return_value={
+                    "account": {"login": "acme", "type": "Organization"},
+                    "html_url": "https://github.com/organizations/acme/settings/installations/42",
+                    "suspended_at": None,
+                }
+            ),
+        ),
+    ):
+        resp = client.get(
+            f"/auth/github/install/callback?state={state}&installation_id=42&setup_action=install",
+            follow_redirects=False,
+        )
+
+    assert resp.status_code == 307
+    assert resp.headers["location"] == "/app?github_connected=1"
+    with get_control_db() as db:
+        row = db.execute(
+            "SELECT installation_id, account_login, account_type, html_url "
+            "FROM github_installations WHERE user_id = ?",
+            (tenant.user_id,),
+        ).fetchone()
+    assert row is not None
+    assert row["installation_id"] == 42
+    assert row["account_login"] == "acme"
+    assert row["account_type"] == "Organization"
+
+
+def test_list_github_installations_returns_current_user_rows(
+    auth_client,
+) -> None:
+    """GET /api/github/installations should return only the current user's rows."""
+    from yinshi.db import get_control_db
+
+    tenant = getattr(auth_client, "yinshi_tenant")
+    with get_control_db() as db:
+        db.execute(
+            """
+            INSERT INTO github_installations (
+                user_id, installation_id, account_login, account_type, html_url
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                tenant.user_id,
+                9,
+                "octo-org",
+                "Organization",
+                "https://github.com/organizations/octo-org/settings/installations/9",
+            ),
+        )
+        db.commit()
+
+    resp = auth_client.get("/api/github/installations")
+    assert resp.status_code == 200
+    assert resp.json() == [
+        {
+            "installation_id": 9,
+            "account_login": "octo-org",
+            "account_type": "Organization",
+            "html_url": "https://github.com/organizations/octo-org/settings/installations/9",
+        }
+    ]

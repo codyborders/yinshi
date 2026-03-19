@@ -164,9 +164,9 @@ def test_migrate_updates_existing_version(db_path, monkeypatch):
 
 
 def test_repos_table_has_owner_email_column(db):
-    """Repos table should have owner_email column."""
+    """Repos table should have owner_email and installation_id columns."""
     cursor = db.execute("PRAGMA table_info(repos)")
     columns = [row[1] for row in cursor.fetchall()]
     assert "owner_email" in columns
-
+    assert "installation_id" in columns
 

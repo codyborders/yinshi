@@ -47,7 +47,8 @@ CREATE TABLE IF NOT EXISTS repos (
     name TEXT NOT NULL,
     remote_url TEXT,
     root_path TEXT NOT NULL,
-    custom_prompt TEXT
+    custom_prompt TEXT,
+    installation_id INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS workspaces (
@@ -96,11 +97,20 @@ BEGIN UPDATE sessions SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id; END;
 """
 
 
+def _migrate_user_db(conn: sqlite3.Connection) -> None:
+    """Apply forward-only schema fixes for existing per-user databases."""
+    columns = [row[1] for row in conn.execute("PRAGMA table_info(repos)").fetchall()]
+    if "installation_id" not in columns:
+        conn.execute("ALTER TABLE repos ADD COLUMN installation_id INTEGER")
+        conn.commit()
+
+
 def init_user_db(db_path: str) -> None:
     """Initialize a per-user SQLite database with the user schema."""
     conn = _open_connection(db_path)
     try:
         conn.executescript(USER_SCHEMA_SQL)
+        _migrate_user_db(conn)
     finally:
         conn.close()
 
