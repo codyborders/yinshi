@@ -143,3 +143,39 @@ def test_init_user_db_schema_no_owner_email(tenant_env):
     columns = [r[1] for r in conn.execute("PRAGMA table_info(repos)").fetchall()]
     conn.close()
     assert "owner_email" not in columns
+
+
+def test_get_user_db_migrates_existing_user_db(tenant_env):
+    """Opening an existing user DB should apply forward migrations."""
+    from yinshi.tenant import TenantContext, get_user_db
+
+    data_dir = os.path.join(tenant_env["user_data_dir"], "ab", "legacy123")
+    db_path = os.path.join(data_dir, "yinshi.db")
+    os.makedirs(data_dir, exist_ok=True)
+
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """CREATE TABLE repos (
+            id TEXT PRIMARY KEY,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+            name TEXT NOT NULL,
+            remote_url TEXT,
+            root_path TEXT NOT NULL,
+            custom_prompt TEXT
+        )"""
+    )
+    conn.commit()
+    conn.close()
+
+    ctx = TenantContext(
+        user_id="legacy123",
+        email="legacy@example.com",
+        data_dir=data_dir,
+        db_path=db_path,
+    )
+
+    with get_user_db(ctx) as user_db:
+        columns = [row[1] for row in user_db.execute("PRAGMA table_info(repos)").fetchall()]
+
+    assert "installation_id" in columns

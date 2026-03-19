@@ -105,12 +105,17 @@ def _migrate_user_db(conn: sqlite3.Connection) -> None:
         conn.commit()
 
 
+def _ensure_user_db_schema(conn: sqlite3.Connection) -> None:
+    """Create missing tables and apply migrations for a per-user database."""
+    conn.executescript(USER_SCHEMA_SQL)
+    _migrate_user_db(conn)
+
+
 def init_user_db(db_path: str) -> None:
     """Initialize a per-user SQLite database with the user schema."""
     conn = _open_connection(db_path)
     try:
-        conn.executescript(USER_SCHEMA_SQL)
-        _migrate_user_db(conn)
+        _ensure_user_db_schema(conn)
     finally:
         conn.close()
 
@@ -120,6 +125,7 @@ def get_user_db(tenant: TenantContext) -> Iterator[sqlite3.Connection]:
     """Get a SQLite connection to a user's database."""
     conn = _open_connection(tenant.db_path)
     try:
+        _ensure_user_db_schema(conn)
         yield conn
     finally:
         conn.close()
