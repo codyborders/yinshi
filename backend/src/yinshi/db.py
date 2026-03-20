@@ -212,6 +212,40 @@ CREATE TABLE IF NOT EXISTS github_installations (
 );
 
 CREATE INDEX IF NOT EXISTS idx_github_installations_user ON github_installations(user_id);
+
+CREATE TABLE IF NOT EXISTS pi_configs (
+    id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    user_id TEXT NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+    source_type TEXT NOT NULL,
+    source_label TEXT NOT NULL,
+    repo_url TEXT,
+    available_categories TEXT DEFAULT '[]' NOT NULL,
+    enabled_categories TEXT DEFAULT '[]' NOT NULL,
+    last_synced_at TIMESTAMP,
+    status TEXT DEFAULT 'ready' NOT NULL,
+    error_message TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_pi_configs_user ON pi_configs(user_id);
+
+CREATE TABLE IF NOT EXISTS user_settings (
+    user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    pi_settings_json TEXT DEFAULT '{}' NOT NULL,
+    pi_settings_enabled INTEGER DEFAULT 0 NOT NULL
+);
+
+CREATE TRIGGER IF NOT EXISTS update_users_updated_at AFTER UPDATE ON users
+BEGIN UPDATE users SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id; END;
+
+CREATE TRIGGER IF NOT EXISTS update_pi_configs_updated_at AFTER UPDATE ON pi_configs
+BEGIN UPDATE pi_configs SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id; END;
+
+CREATE TRIGGER IF NOT EXISTS update_user_settings_updated_at AFTER UPDATE ON user_settings
+BEGIN UPDATE user_settings SET updated_at = CURRENT_TIMESTAMP WHERE user_id = NEW.user_id; END;
 """
 
 
@@ -233,6 +267,17 @@ def _migrate_control(conn: sqlite3.Connection) -> None:
         logger.info("Control migration: adding credit tracking columns to users")
         conn.execute("ALTER TABLE users ADD COLUMN credit_used_cents INTEGER DEFAULT 0")
         conn.execute("ALTER TABLE users ADD COLUMN credit_limit_cents INTEGER DEFAULT 500")
+        conn.commit()
+
+    pi_config_columns = [
+        row[1]
+        for row in conn.execute("PRAGMA table_info(pi_configs)").fetchall()
+    ]
+    if pi_config_columns and "available_categories" not in pi_config_columns:
+        logger.info("Control migration: adding available_categories column to pi_configs")
+        conn.execute(
+            "ALTER TABLE pi_configs ADD COLUMN available_categories TEXT DEFAULT '[]' NOT NULL"
+        )
         conn.commit()
 
 

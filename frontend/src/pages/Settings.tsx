@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, type ApiKey } from "../api/client";
+import PiConfigSection from "../components/PiConfigSection";
 import { useAuth } from "../hooks/useAuth";
 
 export default function Settings() {
@@ -134,6 +135,8 @@ export default function Settings() {
           </ul>
         )}
       </section>
+
+      <PiConfigSection />
     </div>
   );
 }

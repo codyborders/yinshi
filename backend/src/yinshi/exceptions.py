@@ -21,6 +21,14 @@ class GitError(YinshiError):
     """Raised when a git operation fails."""
 
 
+class PiConfigError(YinshiError):
+    """Raised when Pi config management cannot complete."""
+
+
+class PiConfigNotFoundError(PiConfigError):
+    """Raised when a Pi config record or directory is not available."""
+
+
 class GitHubAppError(YinshiError):
     """Raised when the GitHub App integration cannot complete."""
 

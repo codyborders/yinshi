@@ -238,7 +238,15 @@ def _make_byok_mock_sidecar(
     mock.warmup = AsyncMock()
     mock.disconnect = AsyncMock()
 
-    async def fake_query(sid, prompt, model=None, cwd=None, api_key=None):
+    async def fake_query(
+        sid,
+        prompt,
+        model=None,
+        cwd=None,
+        api_key=None,
+        agent_dir=None,
+        settings_payload=None,
+    ):
         for event in query_events:
             yield event
 
@@ -363,7 +371,15 @@ def test_prompt_dev_mode_no_enforcement(
             f"/api/workspaces/{ws['id']}/sessions", json={}
         ).json()
 
-        async def fake_query(sid, prompt, model=None, cwd=None, api_key=None):
+        async def fake_query(
+            sid,
+            prompt,
+            model=None,
+            cwd=None,
+            api_key=None,
+            agent_dir=None,
+            settings_payload=None,
+        ):
             yield {"type": "message", "data": {"type": "result", "usage": {}}}
 
         mock = AsyncMock()

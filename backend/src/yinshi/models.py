@@ -2,9 +2,22 @@
 
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from yinshi.model_catalog import DEFAULT_SESSION_MODEL
+
+PI_CONFIG_CATEGORY_ORDER = (
+    "skills",
+    "extensions",
+    "prompts",
+    "agents",
+    "themes",
+    "settings",
+    "models",
+    "sessions",
+    "instructions",
+)
+PI_CONFIG_CATEGORIES = frozenset(PI_CONFIG_CATEGORY_ORDER)
 
 
 class RepoCreate(BaseModel):
@@ -139,3 +152,55 @@ class ApiKeyOut(BaseModel):
     provider: str
     label: str = ""
     last_used_at: datetime | None = None
+
+
+class PiConfigImport(BaseModel):
+    """Import a Pi config from a GitHub repository."""
+
+    repo_url: str = Field(..., max_length=2048)
+
+    @field_validator("repo_url")
+    @classmethod
+    def validate_repo_url(cls, value: str) -> str:
+        """Reject blank repository URLs."""
+        normalized_value = value.strip()
+        if not normalized_value:
+            raise ValueError("Repository URL must not be empty")
+        return normalized_value
+
+
+class PiConfigCategoryUpdate(BaseModel):
+    """Toggle the enabled Pi resource categories."""
+
+    enabled_categories: list[str]
+
+    @field_validator("enabled_categories")
+    @classmethod
+    def validate_enabled_categories(cls, value: list[str]) -> list[str]:
+        """Require unique, known category names."""
+        seen_categories: set[str] = set()
+        normalized_categories: list[str] = []
+        for category in value:
+            normalized_category = category.strip()
+            if normalized_category not in PI_CONFIG_CATEGORIES:
+                raise ValueError(f"Unsupported category: {category}")
+            if normalized_category in seen_categories:
+                raise ValueError(f"Duplicate category: {category}")
+            seen_categories.add(normalized_category)
+            normalized_categories.append(normalized_category)
+        return normalized_categories
+
+
+class PiConfigOut(BaseModel):
+    """Pi config status response."""
+
+    id: str
+    created_at: datetime
+    updated_at: datetime
+    source_type: str
+    source_label: str
+    last_synced_at: datetime | None = None
+    status: str
+    error_message: str | None = None
+    available_categories: list[str]
+    enabled_categories: list[str]

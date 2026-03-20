@@ -230,7 +230,24 @@ export class YinshiSidecar {
     });
   }
 
-  async _createPiSession(sessionId, modelKey, cwd, userApiKey = null) {
+  _normalizeImportedSettings(importedSettings) {
+    if (importedSettings === null || importedSettings === undefined) {
+      return null;
+    }
+    if (typeof importedSettings !== "object" || Array.isArray(importedSettings)) {
+      throw new Error("Imported settings must be an object");
+    }
+    return importedSettings;
+  }
+
+  async _createPiSession(
+    sessionId,
+    modelKey,
+    cwd,
+    userApiKey = null,
+    agentDir = null,
+    importedSettings = null,
+  ) {
     const resolved = resolveModel(modelKey);
     if (!resolved) {
       throw new Error(`Unknown model: ${modelKey}`);
@@ -253,8 +270,12 @@ export class YinshiSidecar {
       compaction: { enabled: true },
       retry: { enabled: true, maxRetries: 3 },
     });
+    const normalizedImportedSettings = this._normalizeImportedSettings(importedSettings);
+    if (normalizedImportedSettings) {
+      settingsManager.applyOverrides(normalizedImportedSettings);
+    }
 
-    const { session } = await createAgentSession({
+    const sessionOptions = {
       cwd,
       model,
       thinkingLevel: "off",
@@ -263,9 +284,17 @@ export class YinshiSidecar {
       settingsManager,
       authStorage: sessionAuth,
       modelRegistry: sessionRegistry,
-    });
+    };
+    if (agentDir) {
+      sessionOptions.agentDir = agentDir;
+    }
 
-    console.log(`[sidecar] Created pi session ${sessionId} with model ${model.name || model.id}`);
+    const { session } = await createAgentSession(sessionOptions);
+
+    console.log(
+      `[sidecar] Created pi session ${sessionId} with model ${model.name || model.id}`
+      + (agentDir ? ` and agentDir ${agentDir}` : ""),
+    );
     return { session, model };
   }
 
@@ -278,9 +307,18 @@ export class YinshiSidecar {
     const modelKey = options.model || DEFAULT_MODEL_KEY;
     const cwd = options.cwd || process.cwd();
     const userApiKey = options.apiKey || null;
+    const agentDir = options.agentDir || null;
+    const importedSettings = options.settings || null;
 
     try {
-      const { session: piSession, model } = await this._createPiSession(sessionId, modelKey, cwd, userApiKey);
+      const { session: piSession, model } = await this._createPiSession(
+        sessionId,
+        modelKey,
+        cwd,
+        userApiKey,
+        agentDir,
+        importedSettings,
+      );
       this.activeSessions.set(sessionId, {
         piSession,
         model,
@@ -299,6 +337,8 @@ export class YinshiSidecar {
     const modelKey = options.model || DEFAULT_MODEL_KEY;
     const cwd = options.cwd || process.cwd();
     const userApiKey = options.apiKey || null;
+    const agentDir = options.agentDir || null;
+    const importedSettings = options.settings || null;
 
     try {
       let entry = this.activeSessions.get(sessionId);
@@ -308,7 +348,14 @@ export class YinshiSidecar {
           if (entry.unsubscribe) entry.unsubscribe();
           entry.piSession.dispose();
         }
-        const { session: piSession, model } = await this._createPiSession(sessionId, modelKey, cwd, userApiKey);
+        const { session: piSession, model } = await this._createPiSession(
+          sessionId,
+          modelKey,
+          cwd,
+          userApiKey,
+          agentDir,
+          importedSettings,
+        );
         entry = { piSession, model, modelKey, cwd, unsubscribe: null };
         this.activeSessions.set(sessionId, entry);
       }

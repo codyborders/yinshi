@@ -12,6 +12,7 @@ import os
 import sqlite3
 import uuid
 from collections.abc import AsyncGenerator
+from dataclasses import dataclass
 from typing import Any, cast
 
 from fastapi import APIRouter, HTTPException, Request
@@ -43,6 +44,19 @@ _active_sessions_lock = asyncio.Lock()
 
 # Batch DB writes every N chunks to reduce I/O
 _PERSIST_BATCH_SIZE = 10
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionContext:
+    """Resolved sidecar execution inputs for a single prompt request."""
+
+    sidecar_socket: str | None
+    effective_cwd: str
+    api_key: str | None
+    key_source: str
+    provider: str
+    agent_dir: str | None = None
+    settings_payload: dict[str, object] | None = None
 
 
 class PromptRequest(BaseModel):
@@ -171,21 +185,26 @@ async def _resolve_execution_context(
     tenant: Any,
     workspace_path: str,
     model: str,
-) -> tuple[str | None, str, str | None, str, str | None]:
-    """Resolve container socket, effective cwd, API key, key source, and provider.
-
-    Returns (sidecar_socket, effective_cwd, api_key, key_source, provider).
-    Only performs container/key resolution in tenant mode; returns defaults
-    for legacy (non-tenant) mode.
-    """
+) -> ExecutionContext:
+    """Resolve all sidecar execution inputs for the current request."""
     if not tenant:
-        return None, workspace_path, None, "platform", None
+        return ExecutionContext(
+            sidecar_socket=None,
+            effective_cwd=workspace_path,
+            api_key=None,
+            key_source="platform",
+            provider="",
+        )
 
     _validate_workspace_path(tenant, workspace_path)
+
+    from yinshi.services.pi_config import resolve_agent_dir
+    from yinshi.services.user_settings import get_sidecar_settings_payload
 
     container_mgr = getattr(request.app.state, "container_manager", None)
     sidecar_socket: str | None = None
     effective_cwd = workspace_path
+    agent_dir: str | None = None
 
     if container_mgr and is_path_inside(workspace_path, tenant.data_dir):
         try:
@@ -205,6 +224,13 @@ async def _resolve_execution_context(
             "Container isolation bypassed: workspace %s is outside data_dir",
             workspace_path,
         )
+
+    host_agent_dir = resolve_agent_dir(tenant.user_id, tenant.data_dir)
+    if host_agent_dir:
+        if container_mgr and is_path_inside(host_agent_dir, tenant.data_dir):
+            agent_dir = _remap_path(host_agent_dir, tenant.data_dir)
+        else:
+            agent_dir = host_agent_dir
 
     sidecar_tmp = await create_sidecar_connection(sidecar_socket)
     try:
@@ -226,7 +252,16 @@ async def _resolve_execution_context(
     except KeyNotFoundError as exc:
         raise HTTPException(status_code=402, detail=str(exc)) from exc
 
-    return sidecar_socket, effective_cwd, api_key, key_source, provider
+    settings_payload = get_sidecar_settings_payload(tenant.user_id)
+    return ExecutionContext(
+        sidecar_socket=sidecar_socket,
+        effective_cwd=effective_cwd,
+        api_key=api_key,
+        key_source=key_source,
+        provider=provider,
+        agent_dir=agent_dir,
+        settings_payload=settings_payload,
+    )
 
 
 @router.post("/api/sessions/{session_id}/prompt")
@@ -262,15 +297,13 @@ async def prompt_session(
     prompt = body.prompt
     turn_id = uuid.uuid4().hex
 
-    sidecar_socket, effective_cwd, api_key, key_source, provider = (
-        await _resolve_execution_context(request, tenant, workspace_path, model)
-    )
+    context = await _resolve_execution_context(request, tenant, workspace_path, model)
 
     container_mgr = getattr(request.app.state, "container_manager", None)
 
     logger.info(
         "Prompt received: session=%s prompt_len=%d model=%s provider=%s key_source=%s",
-        session_id, len(prompt), model, provider, key_source,
+        session_id, len(prompt), model, context.provider, context.key_source,
     )
 
     # Save user message + set status to running
@@ -298,21 +331,31 @@ async def prompt_session(
         assistant_msg_id: str | None = None
         chunk_count = 0
         usage_data: dict[str, Any] = {}
-        result_provider = provider or ""
+        result_provider = context.provider or ""
 
         try:
-            sidecar = await create_sidecar_connection(sidecar_socket)
+            sidecar = await create_sidecar_connection(context.sidecar_socket)
             async with _active_sessions_lock:
                 _active_sessions[session_id] = sidecar
             await sidecar.warmup(
-                session_id, model=model, cwd=effective_cwd, api_key=api_key,
+                session_id,
+                model=model,
+                cwd=context.effective_cwd,
+                api_key=context.api_key,
+                agent_dir=context.agent_dir,
+                settings_payload=context.settings_payload,
             )
 
             logger.info("Streaming started: session=%s turn_id=%s", session_id, turn_id)
 
             async for event in sidecar.query(
-                session_id, prompt, model=model, cwd=effective_cwd,
-                api_key=api_key,
+                session_id,
+                prompt,
+                model=model,
+                cwd=context.effective_cwd,
+                api_key=context.api_key,
+                agent_dir=context.agent_dir,
+                settings_payload=context.settings_payload,
             ):
                 event_type = event.get("type")
                 logger.debug(
@@ -420,7 +463,7 @@ async def prompt_session(
                         provider=result_provider,
                         model=model,
                         usage=usage_data,
-                        key_source=key_source,
+                        key_source=context.key_source,
                     )
                 except Exception:
                     logger.exception("Failed to record usage: session=%s", session_id)

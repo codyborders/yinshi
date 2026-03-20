@@ -170,3 +170,26 @@ def test_repos_table_has_owner_email_column(db):
     assert "owner_email" in columns
     assert "installation_id" in columns
 
+
+def test_init_control_db_creates_pi_config_tables(tmp_path, monkeypatch):
+    """init_control_db should create pi_configs and user_settings tables."""
+    monkeypatch.setenv("CONTROL_DB_PATH", str(tmp_path / "control.db"))
+    monkeypatch.setenv("SECRET_KEY", "test-secret")
+    monkeypatch.setenv("ENCRYPTION_PEPPER", "a" * 64)
+
+    from yinshi.config import get_settings
+
+    get_settings.cache_clear()
+    try:
+        from yinshi.db import get_control_db, init_control_db
+
+        init_control_db()
+        with get_control_db() as db:
+            tables = db.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+            ).fetchall()
+            table_names = [row["name"] for row in tables]
+            assert "pi_configs" in table_names
+            assert "user_settings" in table_names
+    finally:
+        get_settings.cache_clear()

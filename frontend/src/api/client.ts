@@ -23,6 +23,19 @@ export interface ApiKey {
   last_used_at: string | null;
 }
 
+export interface PiConfig {
+  id: string;
+  created_at: string;
+  updated_at: string;
+  source_type: "upload" | "github";
+  source_label: string;
+  last_synced_at: string | null;
+  status: "ready" | "cloning" | "syncing" | "error";
+  error_message: string | null;
+  available_categories: string[];
+  enabled_categories: string[];
+}
+
 export interface Workspace {
   id: string;
   created_at: string;
@@ -157,6 +170,23 @@ export const api = {
   post: <T>(path: string, body?: unknown) => request<T>("POST", path, body),
   patch: <T>(path: string, body?: unknown) => request<T>("PATCH", path, body),
   delete: (path: string) => request<void>("DELETE", path),
+  upload: async <T>(path: string, file: File): Promise<T> => {
+    const form = new FormData();
+    form.append("file", file);
+    const response = await fetch(path, {
+      method: "POST",
+      credentials: "include",
+      headers: { "X-Requested-With": "XMLHttpRequest" },
+      body: form,
+    });
+    if (!response.ok) {
+      if (response.status === 401 && window.location.pathname.startsWith("/app")) {
+        window.location.href = "/";
+      }
+      throw await _readApiError(response);
+    }
+    return response.json();
+  },
 };
 
 export type SSEEvent =

@@ -103,12 +103,20 @@ class SidecarClient:
 
     @staticmethod
     def _build_options(
-        model: str, cwd: str, api_key: str | None = None,
-    ) -> dict[str, str]:
+        model: str,
+        cwd: str,
+        api_key: str | None = None,
+        agent_dir: str | None = None,
+        settings_payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Build the options dict sent with warmup/query messages."""
-        options: dict[str, str] = {"model": model, "cwd": cwd}
+        options: dict[str, Any] = {"model": model, "cwd": cwd}
         if api_key:
             options["apiKey"] = api_key
+        if agent_dir:
+            options["agentDir"] = agent_dir
+        if settings_payload:
+            options["settings"] = settings_payload
         return options
 
     async def warmup(
@@ -117,12 +125,20 @@ class SidecarClient:
         model: str = DEFAULT_SESSION_MODEL,
         cwd: str = ".",
         api_key: str | None = None,
+        agent_dir: str | None = None,
+        settings_payload: dict[str, Any] | None = None,
     ) -> None:
         """Pre-create a pi session on the sidecar."""
         await self._send({
             "type": "warmup",
             "id": session_id,
-            "options": self._build_options(model, cwd, api_key),
+            "options": self._build_options(
+                model,
+                cwd,
+                api_key,
+                agent_dir=agent_dir,
+                settings_payload=settings_payload,
+            ),
         })
 
     async def query(
@@ -132,13 +148,21 @@ class SidecarClient:
         model: str = DEFAULT_SESSION_MODEL,
         cwd: str = ".",
         api_key: str | None = None,
+        agent_dir: str | None = None,
+        settings_payload: dict[str, Any] | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Send a prompt and yield streaming events from the sidecar."""
         await self._send({
             "type": "query",
             "id": session_id,
             "prompt": prompt,
-            "options": self._build_options(model, cwd, api_key),
+            "options": self._build_options(
+                model,
+                cwd,
+                api_key,
+                agent_dir=agent_dir,
+                settings_payload=settings_payload,
+            ),
         })
 
         while True:

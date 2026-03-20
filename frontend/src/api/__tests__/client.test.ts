@@ -43,4 +43,34 @@ describe("api client", () => {
       status: 400,
     });
   });
+
+  it("uploads multipart form data for Pi config archives", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({ id: "cfg-1", status: "ready" }),
+        {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const file = new File(["zip-bytes"], "pi-config.zip", {
+      type: "application/zip",
+    });
+    const result = await api.upload<{ id: string; status: string }>(
+      "/api/settings/pi-config/upload",
+      file,
+    );
+
+    expect(result).toEqual({ id: "cfg-1", status: "ready" });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/settings/pi-config/upload",
+      expect.objectContaining({
+        method: "POST",
+        credentials: "include",
+      }),
+    );
+  });
 });

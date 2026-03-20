@@ -24,6 +24,8 @@ def _make_streaming_sidecar(
         model: str | None = None,
         cwd: str | None = None,
         api_key: str | None = None,
+        agent_dir: str | None = None,
+        settings_payload: dict[str, object] | None = None,
     ):
         yield {
             "type": "message",
@@ -110,6 +112,8 @@ def test_error_resilience_journey(
         model: str | None = None,
         cwd: str | None = None,
         api_key: str | None = None,
+        agent_dir: str | None = None,
+        settings_payload: dict[str, object] | None = None,
     ):
         yield {
             "type": "message",

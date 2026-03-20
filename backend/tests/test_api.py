@@ -587,7 +587,15 @@ def test_prompt_repairs_migrated_workspace_paths(
         )
         db.commit()
 
-    async def fake_query(sid, prompt, model=None, cwd=None, api_key=None):
+    async def fake_query(
+        sid,
+        prompt,
+        model=None,
+        cwd=None,
+        api_key=None,
+        agent_dir=None,
+        settings_payload=None,
+    ):
         yield {
             "type": "message",
             "data": {"type": "result", "usage": {}},
@@ -626,7 +634,15 @@ def test_prompt_repairs_migrated_workspace_paths(
 def test_prompt_streams_sidecar_events(client: TestClient, session_id: str) -> None:
     """POST /api/sessions/:id/prompt should stream SSE events and persist messages."""
 
-    async def fake_query(sid, prompt, model=None, cwd=None, api_key=None):
+    async def fake_query(
+        sid,
+        prompt,
+        model=None,
+        cwd=None,
+        api_key=None,
+        agent_dir=None,
+        settings_payload=None,
+    ):
         yield {
             "type": "message",
             "data": {
@@ -666,7 +682,15 @@ def test_prompt_streams_sidecar_events(client: TestClient, session_id: str) -> N
 def test_prompt_saves_partial_on_sidecar_error(client: TestClient, session_id: str) -> None:
     """If the sidecar errors mid-stream, partial content is still saved."""
 
-    async def failing_query(sid, prompt, model=None, cwd=None, api_key=None):
+    async def failing_query(
+        sid,
+        prompt,
+        model=None,
+        cwd=None,
+        api_key=None,
+        agent_dir=None,
+        settings_payload=None,
+    ):
         yield {
             "type": "message",
             "data": {
@@ -720,7 +744,15 @@ def test_first_prompt_updates_workspace_name(client: TestClient, git_repo: str) 
     # Workspace name should equal branch initially
     assert ws["name"] == ws["branch"]
 
-    async def fake_query(sid, prompt, model=None, cwd=None, api_key=None):
+    async def fake_query(
+        sid,
+        prompt,
+        model=None,
+        cwd=None,
+        api_key=None,
+        agent_dir=None,
+        settings_payload=None,
+    ):
         yield {
             "type": "message",
             "data": {"type": "result", "usage": {}},
@@ -754,7 +786,15 @@ def test_second_prompt_does_not_update_workspace_name(client: TestClient, git_re
     ws = client.post(f"/api/repos/{repo['id']}/workspaces", json={}).json()
     sess = client.post(f"/api/workspaces/{ws['id']}/sessions", json={}).json()
 
-    async def fake_query(sid, prompt, model=None, cwd=None, api_key=None):
+    async def fake_query(
+        sid,
+        prompt,
+        model=None,
+        cwd=None,
+        api_key=None,
+        agent_dir=None,
+        settings_payload=None,
+    ):
         yield {
             "type": "message",
             "data": {"type": "result", "usage": {}},

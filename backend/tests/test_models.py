@@ -87,3 +87,22 @@ def test_workspace_update_invalid_state():
 
     with pytest.raises(ValidationError):
         WorkspaceUpdate(state="deleted")
+
+
+def test_pi_config_import_strips_whitespace():
+    """PiConfigImport should strip surrounding whitespace from the repo URL."""
+    from yinshi.models import PiConfigImport
+
+    body = PiConfigImport(repo_url="  owner/repo  ")
+    assert body.repo_url == "owner/repo"
+
+
+def test_pi_config_category_update_rejects_duplicates():
+    """PiConfigCategoryUpdate should reject duplicate category names."""
+    import pytest
+    from pydantic import ValidationError
+
+    from yinshi.models import PiConfigCategoryUpdate
+
+    with pytest.raises(ValidationError):
+        PiConfigCategoryUpdate(enabled_categories=["skills", "skills"])
