@@ -7,7 +7,12 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, UploadFi
 
 from yinshi.api.deps import require_tenant
 from yinshi.db import get_control_db
-from yinshi.exceptions import GitHubAccessError, GitHubAppError, PiConfigError, PiConfigNotFoundError
+from yinshi.exceptions import (
+    GitHubAccessError,
+    GitHubAppError,
+    PiConfigError,
+    PiConfigNotFoundError,
+)
 from yinshi.models import (
     ApiKeyCreate,
     ApiKeyOut,
@@ -15,6 +20,7 @@ from yinshi.models import (
     PiConfigImport,
     PiConfigOut,
 )
+from yinshi.rate_limit import limiter
 from yinshi.services.crypto import encrypt_api_key
 from yinshi.services.keys import get_user_dek
 from yinshi.services.pi_config import (
@@ -28,6 +34,7 @@ from yinshi.services.pi_config import (
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/settings", tags=["settings"])
+
 
 def _github_http_exception(error: GitHubAccessError) -> HTTPException:
     """Convert a GitHub access error into a structured HTTP response."""
@@ -78,14 +85,12 @@ def add_key(body: ApiKeyCreate, request: Request) -> dict[str, Any]:
 
     with get_control_db() as db:
         cursor = db.execute(
-            "INSERT INTO api_keys (user_id, provider, encrypted_key, label) "
-            "VALUES (?, ?, ?, ?)",
+            "INSERT INTO api_keys (user_id, provider, encrypted_key, label) " "VALUES (?, ?, ?, ?)",
             (tenant.user_id, body.provider, encrypted, body.label),
         )
         db.commit()
         row = db.execute(
-            "SELECT id, created_at, provider, label, last_used_at "
-            "FROM api_keys WHERE rowid = ?",
+            "SELECT id, created_at, provider, label, last_used_at " "FROM api_keys WHERE rowid = ?",
             (cursor.lastrowid,),
         ).fetchone()
         return dict(row)
@@ -141,6 +146,7 @@ async def import_github_pi_config(
 
 
 @router.post("/pi-config/upload", response_model=PiConfigOut, status_code=201)
+@limiter.limit("10/hour")
 async def upload_pi_config(file: UploadFile, request: Request) -> dict[str, Any]:
     """Import a Pi config from an uploaded zip archive."""
     tenant = require_tenant(request)

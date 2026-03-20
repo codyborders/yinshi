@@ -69,6 +69,16 @@ def _make_auth_client(
     return client
 
 
+def reset_rate_limiter() -> None:
+    """Clear in-memory rate-limit state between targeted tests."""
+    from yinshi.main import app
+
+    limiter = getattr(app.state, "limiter", None)
+    if limiter is None:
+        return
+    limiter.reset()
+
+
 @pytest.fixture
 def db_path(tmp_path: Path) -> str:
     """Provide a temporary database path."""
@@ -107,9 +117,11 @@ def noauth_client(
     from yinshi.main import app
 
     init_db()
+    reset_rate_limiter()
     with TestClient(app) as client:
         yield client
 
+    reset_rate_limiter()
     get_settings.cache_clear()
 
 
@@ -133,6 +145,7 @@ def auth_client_factory(
 
     init_db()
     init_control_db()
+    reset_rate_limiter()
 
     stack = ExitStack()
     counter = 0
@@ -155,6 +168,7 @@ def auth_client_factory(
     yield build_client
 
     stack.close()
+    reset_rate_limiter()
     get_settings.cache_clear()
 
 

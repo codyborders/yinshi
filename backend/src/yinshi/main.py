@@ -2,17 +2,20 @@
 
 import asyncio
 import logging
-from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
 from starlette.middleware.sessions import SessionMiddleware
 
 from yinshi.api import auth_routes, github, repos, sessions, settings, stream, workspaces
 from yinshi.auth import AuthMiddleware, setup_oauth
 from yinshi.config import get_settings
 from yinshi.db import init_control_db, init_db
+from yinshi.rate_limit import limiter
 
 logging.basicConfig(
     level=logging.INFO,
@@ -64,6 +67,8 @@ app = FastAPI(
     docs_url="/docs" if app_settings.debug else None,
     openapi_url="/openapi.json" if app_settings.debug else None,
 )
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # CORS
 _cors_origins = [app_settings.frontend_url]

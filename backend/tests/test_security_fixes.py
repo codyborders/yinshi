@@ -14,6 +14,7 @@ def test_websocket_header_does_not_bypass_auth(tmp_path, monkeypatch):
     monkeypatch.setenv("GOOGLE_CLIENT_ID", "fake-client-id")
     monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "fake-secret")
     monkeypatch.setenv("DISABLE_AUTH", "false")
+    monkeypatch.setenv("SECRET_KEY", "test-secret-key")
 
     from yinshi.config import get_settings
 
@@ -172,12 +173,20 @@ def test_session_cookie_has_path(tmp_path, monkeypatch):
     init_db()
     init_control_db()
 
-    from yinshi.auth import create_session_token
-    from yinshi.api.auth_routes import _set_session_cookie
     from fastapi.responses import RedirectResponse
 
+    from yinshi.api.auth_routes import _set_session_cookie
+    from yinshi.services.accounts import resolve_or_create_user
+
+    tenant = resolve_or_create_user(
+        provider="google",
+        provider_user_id="cookie-user",
+        email="cookie@example.com",
+        display_name="Cookie User",
+    )
+
     response = RedirectResponse(url="/app")
-    _set_session_cookie(response, "test-user-id")
+    _set_session_cookie(response, tenant.user_id)
 
     # Check that path=/ is in the set-cookie header
     set_cookie = response.headers.get("set-cookie", "")
@@ -286,14 +295,13 @@ def test_session_tree_validates_path(
 
 def test_keys_raises_domain_exceptions():
     """keys.py should raise domain exceptions, not HTTPException."""
+    # Just verify the exception classes exist and are YinshiError subclasses
     from yinshi.exceptions import (
         CreditExhaustedError,
         EncryptionNotConfiguredError,
         KeyNotFoundError,
+        YinshiError,
     )
-
-    # Just verify the exception classes exist and are YinshiError subclasses
-    from yinshi.exceptions import YinshiError
 
     assert issubclass(CreditExhaustedError, YinshiError)
     assert issubclass(EncryptionNotConfiguredError, YinshiError)

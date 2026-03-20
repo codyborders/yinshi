@@ -17,8 +17,9 @@ from yinshi.exceptions import (
     GitHubConnectRequiredError,
 )
 from yinshi.models import RepoCreate, RepoOut, RepoUpdate
-from yinshi.services.github_app import GitHubCloneAccess, resolve_github_clone_access
+from yinshi.rate_limit import limiter
 from yinshi.services.git import clone_repo, validate_local_repo
+from yinshi.services.github_app import GitHubCloneAccess, resolve_github_clone_access
 from yinshi.services.workspace import delete_workspace
 from yinshi.utils.paths import is_path_inside
 
@@ -126,13 +127,12 @@ def list_repos(request: Request) -> list[dict[str, Any]]:
                 (email,),
             ).fetchall()
         else:
-            rows = db.execute(
-                "SELECT * FROM repos ORDER BY created_at DESC"
-            ).fetchall()
+            rows = db.execute("SELECT * FROM repos ORDER BY created_at DESC").fetchall()
         return [dict(r) for r in rows]
 
 
 @router.post("", response_model=RepoOut, status_code=201)
+@limiter.limit("10/hour")
 async def import_repo(body: RepoCreate, request: Request) -> dict[str, Any]:
     """Import a repository (clone from URL or register local path)."""
     tenant = get_tenant(request)
@@ -174,9 +174,7 @@ async def import_repo(body: RepoCreate, request: Request) -> dict[str, Any]:
                 assert clone_access is None or clone_access.access_token is not None
             raise HTTPException(status_code=400, detail=str(e))
     else:
-        raise HTTPException(
-            status_code=400, detail="Either remote_url or local_path is required"
-        )
+        raise HTTPException(status_code=400, detail="Either remote_url or local_path is required")
 
     installation_id = None
     if clone_access is not None and clone_access.access_token is not None:
@@ -209,9 +207,7 @@ async def import_repo(body: RepoCreate, request: Request) -> dict[str, Any]:
                 ),
             )
         db.commit()
-        row = db.execute(
-            "SELECT * FROM repos WHERE rowid = ?", (cursor.lastrowid,)
-        ).fetchone()
+        row = db.execute("SELECT * FROM repos WHERE rowid = ?", (cursor.lastrowid,)).fetchone()
         return dict(row)
 
 
@@ -240,9 +236,7 @@ def update_repo(
         _check_repo_owner(row, request)
 
         updates = {
-            k: v
-            for k, v in body.model_dump(exclude_unset=True).items()
-            if k in _UPDATABLE_COLUMNS
+            k: v for k, v in body.model_dump(exclude_unset=True).items() if k in _UPDATABLE_COLUMNS
         }
         if updates:
             set_clause = ", ".join(f"{k} = ?" for k in updates)

@@ -7,7 +7,7 @@ from urllib.parse import urlencode
 
 import httpx
 from authlib.integrations.starlette_client import OAuthError
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 from itsdangerous import BadSignature, BadTimeSignature, URLSafeTimedSerializer
 
@@ -16,11 +16,13 @@ from yinshi.auth import (
     _resolve_tenant_from_user_id,
     create_session_token,
     oauth,
+    revoke_auth_sessions,
     verify_session_token,
 )
 from yinshi.config import get_settings
 from yinshi.db import get_control_db
 from yinshi.exceptions import GitHubAppError, GitHubInstallationUnusableError
+from yinshi.rate_limit import limiter
 from yinshi.services.accounts import resolve_or_create_user
 from yinshi.services.github_app import get_installation_details
 
@@ -42,6 +44,11 @@ def _set_session_cookie(response: RedirectResponse, user_id: str) -> None:
         samesite="lax",
         path="/",
     )
+
+
+def _clear_session_cookie(response: Response) -> None:
+    """Remove the current session cookie from a response."""
+    response.delete_cookie("yinshi_session", path="/")
 
 
 def _github_install_state_serializer() -> URLSafeTimedSerializer:
@@ -99,6 +106,7 @@ async def login_google(request: Request) -> Response:
 
 
 @router.get("/callback/google")
+@limiter.limit("10/minute")
 async def callback_google(request: Request) -> RedirectResponse:
     """Handle Google OAuth callback."""
     try:
@@ -162,6 +170,7 @@ async def login_github(request: Request) -> Response:
 
 
 @router.get("/callback/github")
+@limiter.limit("10/minute")
 async def callback_github(request: Request) -> RedirectResponse:
     """Handle GitHub OAuth callback."""
     try:
@@ -181,15 +190,11 @@ async def callback_github(request: Request) -> RedirectResponse:
     try:
         async with httpx.AsyncClient() as client:
             headers = {"Authorization": f"Bearer {token['access_token']}"}
-            user_resp = await client.get(
-                "https://api.github.com/user", headers=headers
-            )
+            user_resp = await client.get("https://api.github.com/user", headers=headers)
             user_resp.raise_for_status()
             user_data = user_resp.json()
 
-            emails_resp = await client.get(
-                "https://api.github.com/user/emails", headers=headers
-            )
+            emails_resp = await client.get("https://api.github.com/user/emails", headers=headers)
             emails_resp.raise_for_status()
             emails = emails_resp.json()
     except (httpx.HTTPError, KeyError) as exc:
@@ -375,5 +380,18 @@ async def me(request: Request) -> dict[str, Any]:
 async def logout() -> RedirectResponse:
     """Clear session cookie."""
     response = RedirectResponse(url="/")
-    response.delete_cookie("yinshi_session")
+    _clear_session_cookie(response)
+    return response
+
+
+@router.post("/logout-all")
+async def logout_all(request: Request) -> JSONResponse:
+    """Revoke all auth sessions for the current user and clear the cookie."""
+    user_id = _current_user_id(request)
+    if user_id is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    revoke_auth_sessions(user_id)
+    response = JSONResponse({"status": "ok"})
+    _clear_session_cookie(response)
     return response

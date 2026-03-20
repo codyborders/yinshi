@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
+from tests.conftest import reset_rate_limiter
 from tests.factories import create_full_stack, make_mock_sidecar, parse_sse_events
 
 Entities = namedtuple("Entities", ["repo_id", "workspace_id", "session_id"])
@@ -133,11 +134,12 @@ def test_list_repos_includes_null_owner(
     monkeypatch.setenv("GOOGLE_CLIENT_ID", "fake-client-id")
     monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "fake-secret")
     monkeypatch.setenv("DISABLE_AUTH", "false")
+    monkeypatch.setenv("SECRET_KEY", "test-secret-key")
     from yinshi.config import get_settings
 
     get_settings.cache_clear()
 
-    from yinshi.db import init_db, init_control_db, get_db
+    from yinshi.db import get_db, init_control_db, init_db
 
     init_db()
     init_control_db()
@@ -152,6 +154,7 @@ def test_list_repos_includes_null_owner(
 
     # Create a user in the control DB so the session token resolves
     from yinshi.services.accounts import resolve_or_create_user
+
     tenant = resolve_or_create_user(
         provider="google",
         provider_user_id="google-test",
@@ -159,9 +162,10 @@ def test_list_repos_includes_null_owner(
         display_name="Test",
     )
 
+    from fastapi.testclient import TestClient
+
     from yinshi.auth import create_session_token
     from yinshi.main import app
-    from fastapi.testclient import TestClient
 
     token = create_session_token(tenant.user_id)
 
@@ -289,8 +293,7 @@ def test_delete_repo_continues_on_workspace_failure(
         json={"name": "test-repo", "local_path": git_repo},
     ).json()
     workspaces = [
-        client.post(f"/api/repos/{repo['id']}/workspaces", json={}).json()
-        for _ in range(3)
+        client.post(f"/api/repos/{repo['id']}/workspaces", json={}).json() for _ in range(3)
     ]
     attempted_workspace_ids: list[str] = []
     failure_workspace_id = workspaces[1]["id"]
@@ -314,6 +317,28 @@ def test_delete_repo_continues_on_workspace_failure(
     assert resp.status_code == 204
     assert set(attempted_workspace_ids) == {ws["id"] for ws in workspaces}
     assert client.get(f"/api/repos/{repo['id']}").status_code == 404
+
+
+def test_import_repo_rate_limit_returns_429(
+    auth_client: TestClient,
+    git_repo: str,
+) -> None:
+    """Repo imports should be limited per authenticated user."""
+    reset_rate_limiter()
+    for index in range(10):
+        response = auth_client.post(
+            "/api/repos",
+            json={"name": f"test-repo-{index}", "local_path": git_repo},
+        )
+        assert response.status_code == 201
+
+    limited_response = auth_client.post(
+        "/api/repos",
+        json={"name": "test-repo-10", "local_path": git_repo},
+    )
+
+    assert limited_response.status_code == 429
+    reset_rate_limiter()
 
 
 def test_create_workspace(client: TestClient, git_repo: str) -> None:
@@ -498,6 +523,63 @@ def test_prompt_session_not_found(client: TestClient) -> None:
         json={"prompt": "hello"},
     )
     assert resp.status_code == 404
+
+
+def test_prompt_rate_limit_returns_429(
+    auth_client: TestClient,
+    git_repo: str,
+) -> None:
+    """Prompt submission should be limited per authenticated user."""
+    from yinshi.api.stream import ExecutionContext
+
+    stack = create_full_stack(auth_client, git_repo, name="prompt-rate-limit")
+    session_id = stack["session"]["id"]
+
+    async def fake_query(
+        sid: str,
+        prompt: str,
+        model: str | None = None,
+        cwd: str | None = None,
+        api_key: str | None = None,
+        agent_dir: str | None = None,
+        settings_payload: dict[str, object] | None = None,
+    ):
+        yield {"type": "message", "data": {"type": "result", "usage": {}}}
+
+    mock_sidecar = make_mock_sidecar(fake_query)
+
+    reset_rate_limiter()
+    with (
+        patch(
+            "yinshi.api.stream.create_sidecar_connection",
+            return_value=mock_sidecar,
+        ),
+        patch(
+            "yinshi.api.stream._resolve_execution_context",
+            new=AsyncMock(
+                return_value=ExecutionContext(
+                    sidecar_socket=None,
+                    effective_cwd="/tmp",
+                    api_key=None,
+                    key_source="platform",
+                    provider="test-provider",
+                )
+            ),
+        ),
+    ):
+        for _ in range(120):
+            response = auth_client.post(
+                f"/api/sessions/{session_id}/prompt",
+                json={"prompt": "rate limit test"},
+            )
+            assert response.status_code == 200
+        limited_response = auth_client.post(
+            f"/api/sessions/{session_id}/prompt",
+            json={"prompt": "rate limit test"},
+        )
+
+    assert limited_response.status_code == 429
+    reset_rate_limiter()
 
 
 def test_prompt_rejects_none_provider(
@@ -735,9 +817,7 @@ def test_cancel_no_active_stream(client: TestClient, session_id: str) -> None:
 
 def test_first_prompt_updates_workspace_name(client: TestClient, git_repo: str) -> None:
     """The first prompt should update the workspace name to a summary of the prompt."""
-    repo = client.post(
-        "/api/repos", json={"name": "test-repo", "local_path": git_repo}
-    ).json()
+    repo = client.post("/api/repos", json={"name": "test-repo", "local_path": git_repo}).json()
     ws = client.post(f"/api/repos/{repo['id']}/workspaces", json={}).json()
     sess = client.post(f"/api/workspaces/{ws['id']}/sessions", json={}).json()
 
@@ -780,9 +860,7 @@ def test_first_prompt_updates_workspace_name(client: TestClient, git_repo: str) 
 
 def test_second_prompt_does_not_update_workspace_name(client: TestClient, git_repo: str) -> None:
     """Only the first prompt should update the workspace name."""
-    repo = client.post(
-        "/api/repos", json={"name": "test-repo", "local_path": git_repo}
-    ).json()
+    repo = client.post("/api/repos", json={"name": "test-repo", "local_path": git_repo}).json()
     ws = client.post(f"/api/repos/{repo['id']}/workspaces", json={}).json()
     sess = client.post(f"/api/workspaces/{ws['id']}/sessions", json={}).json()
 

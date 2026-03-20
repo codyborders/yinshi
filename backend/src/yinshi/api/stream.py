@@ -30,6 +30,7 @@ from yinshi.exceptions import (
     SidecarError,
     WorkspaceNotFoundError,
 )
+from yinshi.rate_limit import limiter
 from yinshi.services.keys import record_usage, resolve_api_key_for_prompt
 from yinshi.services.sidecar import SidecarClient, create_sidecar_connection
 from yinshi.services.workspace import ensure_workspace_checkout_for_tenant
@@ -65,22 +66,101 @@ class PromptRequest(BaseModel):
 
 
 _FILLER_PREFIXES = [
-    "please ", "can you ", "could you ", "would you ",
-    "i want you to ", "i need you to ", "help me ",
-    "i'd like you to ", "i would like you to ",
-    "go ahead and ", "let's ", "we need to ", "we should ",
+    "please ",
+    "can you ",
+    "could you ",
+    "would you ",
+    "i want you to ",
+    "i need you to ",
+    "help me ",
+    "i'd like you to ",
+    "i would like you to ",
+    "go ahead and ",
+    "let's ",
+    "we need to ",
+    "we should ",
 ]
 
-_STOP_WORDS = frozenset({
-    "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for",
-    "of", "with", "by", "from", "is", "are", "was", "were", "be", "been",
-    "have", "has", "had", "do", "does", "did", "this", "that", "it", "its",
-    "my", "your", "our", "their", "some", "all", "any", "so", "up", "out",
-    "about", "into", "me", "him", "her", "us", "them", "i", "you", "he",
-    "she", "we", "they", "just", "also", "very", "really", "actually",
-    "basically", "need", "needs", "want", "make", "sure", "there", "using",
-    "how", "what", "when", "where", "which", "who", "why", "new", "now",
-})
+_STOP_WORDS = frozenset(
+    {
+        "the",
+        "a",
+        "an",
+        "and",
+        "or",
+        "but",
+        "in",
+        "on",
+        "at",
+        "to",
+        "for",
+        "of",
+        "with",
+        "by",
+        "from",
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "been",
+        "have",
+        "has",
+        "had",
+        "do",
+        "does",
+        "did",
+        "this",
+        "that",
+        "it",
+        "its",
+        "my",
+        "your",
+        "our",
+        "their",
+        "some",
+        "all",
+        "any",
+        "so",
+        "up",
+        "out",
+        "about",
+        "into",
+        "me",
+        "him",
+        "her",
+        "us",
+        "them",
+        "i",
+        "you",
+        "he",
+        "she",
+        "we",
+        "they",
+        "just",
+        "also",
+        "very",
+        "really",
+        "actually",
+        "basically",
+        "need",
+        "needs",
+        "want",
+        "make",
+        "sure",
+        "there",
+        "using",
+        "how",
+        "what",
+        "when",
+        "where",
+        "which",
+        "who",
+        "why",
+        "new",
+        "now",
+    }
+)
 
 
 def _summarize_prompt(prompt: str, max_words: int = 3) -> str:
@@ -92,10 +172,10 @@ def _summarize_prompt(prompt: str, max_words: int = 3) -> str:
     lower = text.lower()
     for prefix in _FILLER_PREFIXES:
         if lower.startswith(prefix):
-            text = text[len(prefix):]
+            text = text[len(prefix) :]
             break
 
-    words = [w.strip(".,;:!?-\"\'()[]{}") for w in text.split()]
+    words = [w.strip(".,;:!?-\"'()[]{}") for w in text.split()]
     words = [w for w in words if w]
     significant = [w for w in words if w.lower() not in _STOP_WORDS]
 
@@ -138,7 +218,9 @@ def _validate_workspace_path(tenant: Any, workspace_path: str) -> None:
 
 
 def _remap_path(
-    host_path: str, data_dir: str, mount: str = "/data",
+    host_path: str,
+    data_dir: str,
+    mount: str = "/data",
 ) -> str:
     """Translate a host workspace path to the container's mount namespace."""
     resolved = os.path.realpath(host_path)
@@ -152,7 +234,9 @@ def _remap_path(
 
 
 def _lookup_session(
-    db: sqlite3.Connection, session_id: str, request: Request,
+    db: sqlite3.Connection,
+    session_id: str,
+    request: Request,
 ) -> sqlite3.Row | None:
     """Look up a session with workspace info, including owner_email in legacy mode."""
     tenant = get_tenant(request)
@@ -208,7 +292,8 @@ async def _resolve_execution_context(
     if container_mgr and is_path_inside(workspace_path, tenant.data_dir):
         try:
             container_info = await container_mgr.ensure_container(
-                tenant.user_id, tenant.data_dir,
+                tenant.user_id,
+                tenant.data_dir,
             )
             sidecar_socket = container_info.socket_path
             effective_cwd = _remap_path(workspace_path, tenant.data_dir)
@@ -246,7 +331,8 @@ async def _resolve_execution_context(
 
     try:
         api_key, key_source = resolve_api_key_for_prompt(
-            tenant.user_id, provider,
+            tenant.user_id,
+            provider,
         )
     except KeyNotFoundError as exc:
         raise HTTPException(status_code=402, detail=str(exc)) from exc
@@ -263,8 +349,11 @@ async def _resolve_execution_context(
 
 
 @router.post("/api/sessions/{session_id}/prompt")
+@limiter.limit("120/hour")
 async def prompt_session(
-    session_id: str, body: PromptRequest, request: Request,
+    session_id: str,
+    body: PromptRequest,
+    request: Request,
 ) -> StreamingResponse:
     """Send a prompt and stream agent events as SSE."""
     tenant = get_tenant(request)
@@ -301,7 +390,11 @@ async def prompt_session(
 
     logger.info(
         "Prompt received: session=%s prompt_len=%d model=%s provider=%s key_source=%s",
-        session_id, len(prompt), model, context.provider, context.key_source,
+        session_id,
+        len(prompt),
+        model,
+        context.provider,
+        context.key_source,
     )
 
     # Save user message + set status to running
@@ -422,7 +515,10 @@ async def prompt_session(
         except (ConnectionError, OSError, GitError, SidecarError) as e:
             logger.error(
                 "Sidecar error: session=%s turn_id=%s error=%s",
-                session_id, turn_id, e, exc_info=True,
+                session_id,
+                turn_id,
+                e,
+                exc_info=True,
             )
             error_event = {
                 "type": "error",
@@ -477,7 +573,10 @@ async def prompt_session(
 
             logger.info(
                 "Turn complete: session=%s turn_id=%s chunks=%d content_len=%d",
-                session_id, turn_id, chunk_count, len(accumulated),
+                session_id,
+                turn_id,
+                chunk_count,
+                len(accumulated),
             )
 
     return StreamingResponse(

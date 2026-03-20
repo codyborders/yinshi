@@ -114,9 +114,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
 
     if current != _SCHEMA_VERSION:
         conn.execute("DELETE FROM schema_version")
-        conn.execute(
-            "INSERT INTO schema_version (version) VALUES (?)", (_SCHEMA_VERSION,)
-        )
+        conn.execute("INSERT INTO schema_version (version) VALUES (?)", (_SCHEMA_VERSION,))
         conn.commit()
 
 
@@ -179,6 +177,13 @@ CREATE TABLE IF NOT EXISTS api_keys (
     last_used_at TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS auth_sessions (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    revoked_at TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS usage_log (
     id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
@@ -197,6 +202,7 @@ CREATE TABLE IF NOT EXISTS usage_log (
 CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
 CREATE INDEX IF NOT EXISTS idx_oauth_user ON oauth_identities(user_id);
 CREATE INDEX IF NOT EXISTS idx_api_keys_user ON api_keys(user_id);
+CREATE INDEX IF NOT EXISTS idx_auth_sessions_user ON auth_sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_usage_user ON usage_log(user_id);
 CREATE INDEX IF NOT EXISTS idx_usage_session ON usage_log(session_id);
 
@@ -269,10 +275,7 @@ def _migrate_control(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE users ADD COLUMN credit_limit_cents INTEGER DEFAULT 500")
         conn.commit()
 
-    pi_config_columns = [
-        row[1]
-        for row in conn.execute("PRAGMA table_info(pi_configs)").fetchall()
-    ]
+    pi_config_columns = [row[1] for row in conn.execute("PRAGMA table_info(pi_configs)").fetchall()]
     if pi_config_columns and "available_categories" not in pi_config_columns:
         logger.info("Control migration: adding available_categories column to pi_configs")
         conn.execute(

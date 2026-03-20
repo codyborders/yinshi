@@ -14,7 +14,7 @@ import httpx
 import pytest
 from authlib.integrations.starlette_client import OAuthError
 
-from tests.conftest import _configure_test_env
+from tests.conftest import _configure_test_env, reset_rate_limiter
 
 
 @pytest.fixture()
@@ -46,8 +46,8 @@ def auth_disabled_app(tmp_path, monkeypatch) -> Generator:
 
 def _create_test_user_token():
     """Create a user in the control DB and return a session token for them."""
-    from yinshi.services.accounts import resolve_or_create_user
     from yinshi.auth import create_session_token
+    from yinshi.services.accounts import resolve_or_create_user
 
     tenant = resolve_or_create_user(
         provider="google",
@@ -56,6 +56,18 @@ def _create_test_user_token():
         display_name="Test User",
     )
     return create_session_token(tenant.user_id)
+
+
+def _create_test_user():
+    """Create and return a tenant user in the control DB."""
+    from yinshi.services.accounts import resolve_or_create_user
+
+    return resolve_or_create_user(
+        provider="google",
+        provider_user_id="test-google-id",
+        email="user@example.com",
+        display_name="Test User",
+    )
 
 
 def _configure_github_app_settings(tmp_path, monkeypatch) -> None:
@@ -71,30 +83,59 @@ def _configure_github_app_settings(tmp_path, monkeypatch) -> None:
     get_settings.cache_clear()
 
 
-def test_create_and_verify_session_token():
+def test_create_and_verify_session_token(tmp_path, monkeypatch):
     """Session tokens should be creatable and verifiable."""
-    from yinshi.auth import create_session_token, verify_session_token
+    _configure_test_env(monkeypatch, tmp_path, auth_enabled=True)
 
-    token = create_session_token("user-id-123")
+    from yinshi.auth import create_session_token, verify_session_token
+    from yinshi.db import init_control_db, init_db
+
+    init_db()
+    init_control_db()
+    tenant = _create_test_user()
+    token = create_session_token(tenant.user_id)
     assert isinstance(token, str)
     assert len(token) > 0
 
     user_id = verify_session_token(token)
-    assert user_id == "user-id-123"
+    assert user_id == tenant.user_id
 
 
-def test_verify_invalid_token():
+def test_verify_invalid_token(tmp_path, monkeypatch):
     """Invalid tokens should return None."""
+    _configure_test_env(monkeypatch, tmp_path, auth_enabled=True)
+
     from yinshi.auth import verify_session_token
 
     assert verify_session_token("garbage-token") is None
 
 
-def test_verify_empty_token():
+def test_verify_empty_token(tmp_path, monkeypatch):
     """Empty token should return None."""
+    _configure_test_env(monkeypatch, tmp_path, auth_enabled=True)
+
     from yinshi.auth import verify_session_token
 
     assert verify_session_token("") is None
+
+
+def test_old_format_session_token_is_rejected(tmp_path, monkeypatch):
+    """Legacy string-only session tokens should be invalid after the hard cutover."""
+    _configure_test_env(monkeypatch, tmp_path, auth_enabled=True)
+
+    from itsdangerous import URLSafeTimedSerializer
+
+    from yinshi.auth import verify_session_token
+    from yinshi.config import get_settings
+    from yinshi.db import init_control_db, init_db
+
+    init_db()
+    init_control_db()
+    tenant = _create_test_user()
+    serializer = URLSafeTimedSerializer(get_settings().secret_key)
+    legacy_token = serializer.dumps(tenant.user_id, salt="yinshi-session")
+
+    assert verify_session_token(legacy_token) is None
 
 
 def test_csrf_check_blocks_mutating_without_header(auth_enabled_app):
@@ -313,14 +354,10 @@ def test_callback_github_api_error_redirects(auth_enabled_app):
     from yinshi.main import app
 
     mock_github = MagicMock()
-    mock_github.authorize_access_token = AsyncMock(
-        return_value={"access_token": "fake-token"}
-    )
+    mock_github.authorize_access_token = AsyncMock(return_value={"access_token": "fake-token"})
 
     mock_http_client = AsyncMock()
-    mock_http_client.get = AsyncMock(
-        side_effect=httpx.ConnectError("Connection refused")
-    )
+    mock_http_client.get = AsyncMock(side_effect=httpx.ConnectError("Connection refused"))
     mock_http_client.__aenter__.return_value = mock_http_client
 
     with (
@@ -339,9 +376,7 @@ def test_callback_github_provisioning_error_redirects(auth_enabled_app):
     from yinshi.main import app
 
     mock_github = MagicMock()
-    mock_github.authorize_access_token = AsyncMock(
-        return_value={"access_token": "fake-token"}
-    )
+    mock_github.authorize_access_token = AsyncMock(return_value={"access_token": "fake-token"})
 
     mock_user_response = MagicMock()
     mock_user_response.json.return_value = {
@@ -359,9 +394,7 @@ def test_callback_github_provisioning_error_redirects(auth_enabled_app):
     mock_emails_response.raise_for_status = MagicMock()
 
     mock_http_client = AsyncMock()
-    mock_http_client.get = AsyncMock(
-        side_effect=[mock_user_response, mock_emails_response]
-    )
+    mock_http_client.get = AsyncMock(side_effect=[mock_user_response, mock_emails_response])
     mock_http_client.__aenter__.return_value = mock_http_client
 
     with (
@@ -397,9 +430,7 @@ def test_github_install_redirects_authenticated_user(
 
     assert resp.status_code == 307
     location = resp.headers["location"]
-    assert location.startswith(
-        "https://github.com/apps/yinshi-dev/installations/new?state="
-    )
+    assert location.startswith("https://github.com/apps/yinshi-dev/installations/new?state=")
 
 
 def test_github_install_callback_stores_installation(
@@ -491,3 +522,63 @@ def test_list_github_installations_returns_current_user_rows(
             "html_url": "https://github.com/organizations/octo-org/settings/installations/9",
         }
     ]
+
+
+def test_logout_all_revokes_all_sessions_and_clears_cookie(auth_enabled_app) -> None:
+    """POST /auth/logout-all should revoke every session for the current user."""
+    from fastapi.testclient import TestClient
+
+    from yinshi.auth import create_session_token, verify_session_token
+    from yinshi.db import get_control_db
+    from yinshi.main import app
+
+    tenant = _create_test_user()
+    current_token = create_session_token(tenant.user_id)
+    second_token = create_session_token(tenant.user_id)
+
+    with TestClient(app) as client:
+        client.cookies.set("yinshi_session", current_token)
+        response = client.post("/auth/logout-all", headers={"X-Requested-With": "XMLHttpRequest"})
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+    assert verify_session_token(current_token) is None
+    assert verify_session_token(second_token) is None
+    set_cookie = response.headers.get("set-cookie", "")
+    assert "yinshi_session=" in set_cookie
+    assert "Max-Age=0" in set_cookie or "expires=" in set_cookie.lower()
+
+    with get_control_db() as db:
+        rows = db.execute(
+            "SELECT revoked_at FROM auth_sessions WHERE user_id = ? ORDER BY created_at",
+            (tenant.user_id,),
+        ).fetchall()
+    assert len(rows) == 2
+    assert all(row["revoked_at"] is not None for row in rows)
+
+
+def test_google_callback_rate_limit_returns_429(auth_enabled_app) -> None:
+    """OAuth callbacks should be limited by client IP."""
+    from fastapi.testclient import TestClient
+
+    from yinshi.main import app
+
+    reset_rate_limiter()
+    mock_token_exchange = AsyncMock(
+        side_effect=OAuthError(error="access_denied", description="User denied"),
+    )
+
+    with (
+        TestClient(app) as client,
+        patch(
+            "yinshi.api.auth_routes.oauth.google.authorize_access_token",
+            new=mock_token_exchange,
+        ),
+    ):
+        for _ in range(10):
+            response = client.get("/auth/callback/google", follow_redirects=False)
+            assert response.status_code == 307
+        limited_response = client.get("/auth/callback/google", follow_redirects=False)
+
+    assert limited_response.status_code == 429
+    reset_rate_limiter()

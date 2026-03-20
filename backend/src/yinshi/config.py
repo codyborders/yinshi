@@ -78,11 +78,31 @@ class Settings(BaseSettings):
         return b""
 
 
+def _auth_is_enabled(settings: Settings) -> bool:
+    """Return whether authentication is configured to run."""
+    if settings.disable_auth:
+        return False
+    if settings.google_client_id:
+        return True
+    if settings.github_client_id:
+        return True
+    return False
+
+
+def _validate_settings(settings: Settings) -> None:
+    """Reject invalid security-critical configuration."""
+    if not _auth_is_enabled(settings):
+        return
+    if settings.secret_key:
+        return
+    raise RuntimeError("SECRET_KEY must be set when authentication is enabled")
+
+
 @lru_cache()
 def get_settings() -> Settings:
     """Get cached settings instance."""
     settings = Settings()
-    # Generate a random secret key if none provided
+    _validate_settings(settings)
     if not settings.secret_key:
         settings.secret_key = _generate_secret()
     return settings

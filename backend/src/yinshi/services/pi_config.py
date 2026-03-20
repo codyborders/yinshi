@@ -34,8 +34,11 @@ _PI_CONFIG_DIRECTORY_NAME = "pi-config"
 _AGENT_DIRECTORY_NAME = "agent"
 _MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 _MAX_EXTRACTED_BYTES = 200 * 1024 * 1024
+_EXTRACT_CHUNK_BYTES = 64 * 1024
 _INSTRUCTION_FILENAMES = ("AGENTS.md", "CLAUDE.md")
-_DIRECTORY_CATEGORIES = frozenset({"skills", "extensions", "prompts", "agents", "themes", "sessions"})
+_DIRECTORY_CATEGORIES = frozenset(
+    {"skills", "extensions", "prompts", "agents", "themes", "sessions"}
+)
 _FILE_CATEGORIES = frozenset({"settings", "models"})
 _CATEGORY_PATHS = {
     "skills": Path("agent/skills"),
@@ -280,13 +283,17 @@ def _extract_archive(zip_data: bytes, temp_root: Path) -> None:
                 target_path.mkdir(parents=True, exist_ok=True)
                 continue
 
-            total_extracted_bytes += member.file_size
-            if total_extracted_bytes > _MAX_EXTRACTED_BYTES:
-                raise PiConfigError("Archive expands beyond the allowed size limit")
-
             target_path.parent.mkdir(parents=True, exist_ok=True)
             with archive.open(member) as source_file:
-                target_path.write_bytes(source_file.read())
+                with target_path.open("wb") as target_file:
+                    while True:
+                        chunk = source_file.read(_EXTRACT_CHUNK_BYTES)
+                        if not chunk:
+                            break
+                        total_extracted_bytes += len(chunk)
+                        if total_extracted_bytes > _MAX_EXTRACTED_BYTES:
+                            raise PiConfigError("Archive expands beyond the allowed size limit")
+                        target_file.write(chunk)
 
 
 def _find_extracted_config_root(extracted_root: Path) -> Path:
@@ -375,9 +382,7 @@ def _scan_categories(config_root: Path) -> list[str]:
             available_categories.add(category)
 
     for instruction_path in _instruction_runtime_paths(config_root):
-        disabled_instruction_path = instruction_path.with_name(
-            f"{instruction_path.name}.disabled"
-        )
+        disabled_instruction_path = instruction_path.with_name(f"{instruction_path.name}.disabled")
         if instruction_path.exists() or disabled_instruction_path.exists():
             available_categories.add("instructions")
             break
@@ -527,14 +532,14 @@ async def _finalize_github_import(
             status="ready",
             error_message=None,
         )
-    except Exception as exc:
+    except Exception:
         logger.exception("Pi config GitHub import failed for user %s", user_id[:8])
         _remove_path(config_root)
         clear_pi_settings(user_id)
         _update_pi_config_row(
             user_id,
             status="error",
-            error_message=str(exc),
+            error_message="Import failed. Check server logs for details.",
             available_categories=_dump_categories_json([]),
             enabled_categories=_dump_categories_json([]),
         )
@@ -654,7 +659,9 @@ async def sync_pi_config(
 
     _update_pi_config_row(normalized_user_id, status="syncing", error_message=None)
     try:
-        clone_url, resolved_access_token = await _resolve_clone_details(normalized_user_id, repo_url)
+        clone_url, resolved_access_token = await _resolve_clone_details(
+            normalized_user_id, repo_url
+        )
         effective_access_token = access_token or resolved_access_token
         await clone_repo(clone_url, str(config_root), access_token=effective_access_token)
         with _git_askpass_env(effective_access_token) as git_env:
@@ -665,9 +672,7 @@ async def sync_pi_config(
         _mirror_instruction_files(config_root)
         available_categories = _scan_categories(config_root)
         enabled_categories = [
-            category
-            for category in available_categories
-            if category not in disabled_categories
+            category for category in available_categories if category not in disabled_categories
         ]
         _extract_and_store_settings(
             normalized_user_id,
@@ -685,12 +690,12 @@ async def sync_pi_config(
         )
         _set_last_synced_at_now(normalized_user_id)
         return cast(dict[str, Any], get_pi_config(normalized_user_id))
-    except Exception as exc:
+    except Exception:
         logger.exception("Pi config sync failed for user %s", normalized_user_id[:8])
         _update_pi_config_row(
             normalized_user_id,
             status="error",
-            error_message=str(exc),
+            error_message="Sync failed. Check server logs for details.",
         )
         raise
 

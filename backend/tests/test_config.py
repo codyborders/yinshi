@@ -1,5 +1,7 @@
 """Tests for application configuration."""
 
+import pytest
+
 
 def test_default_settings():
     """Settings should have sensible defaults."""
@@ -34,4 +36,19 @@ def test_get_settings_cached():
     s1 = get_settings()
     s2 = get_settings()
     assert s1 is s2
+    get_settings.cache_clear()
+
+
+def test_auth_enabled_requires_explicit_secret_key(monkeypatch):
+    """Auth-enabled settings should fail fast without an explicit secret key."""
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", "fake-client-id")
+    monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "fake-secret")
+    monkeypatch.setenv("DISABLE_AUTH", "false")
+    monkeypatch.delenv("SECRET_KEY", raising=False)
+
+    from yinshi.config import get_settings
+
+    get_settings.cache_clear()
+    with pytest.raises(RuntimeError, match="SECRET_KEY"):
+        get_settings()
     get_settings.cache_clear()

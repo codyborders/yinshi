@@ -1,10 +1,12 @@
 """OAuth authentication and session middleware (Google + GitHub)."""
 
 import logging
+import sqlite3
+import uuid
 
 from authlib.integrations.starlette_client import OAuth
 from fastapi import Request, Response
-from itsdangerous import URLSafeTimedSerializer
+from itsdangerous import BadSignature, BadTimeSignature, URLSafeTimedSerializer
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 
 from yinshi.config import get_settings
@@ -50,24 +52,134 @@ def setup_oauth() -> None:
         logger.warning("No OAuth provider configured -- auth disabled")
 
 
-def create_session_token(user_id: str) -> str:
-    """Create a signed session token encoding a user_id."""
+def _session_serializer() -> URLSafeTimedSerializer:
+    """Build the serializer used for auth session cookies."""
     settings = get_settings()
-    serializer = URLSafeTimedSerializer(settings.secret_key)
-    return serializer.dumps(user_id, salt="yinshi-session")
+    return URLSafeTimedSerializer(settings.secret_key)
+
+
+def _normalize_user_id(user_id: str) -> str:
+    """Return a validated user id string."""
+    if not isinstance(user_id, str):
+        raise TypeError("user_id must be a string")
+    normalized_user_id = user_id.strip()
+    if not normalized_user_id:
+        raise ValueError("user_id must not be empty")
+    return normalized_user_id
+
+
+def _normalize_auth_session_id(auth_session_id: str) -> str:
+    """Return a validated auth session id string."""
+    if not isinstance(auth_session_id, str):
+        raise TypeError("auth_session_id must be a string")
+    normalized_auth_session_id = auth_session_id.strip()
+    if not normalized_auth_session_id:
+        raise ValueError("auth_session_id must not be empty")
+    return normalized_auth_session_id
+
+
+def _create_auth_session(user_id: str) -> str:
+    """Insert and return a new auth session identifier."""
+    normalized_user_id = _normalize_user_id(user_id)
+    auth_session_id = uuid.uuid4().hex
+    with get_control_db() as db:
+        db.execute(
+            "INSERT INTO auth_sessions (id, user_id) VALUES (?, ?)",
+            (auth_session_id, normalized_user_id),
+        )
+        db.commit()
+    return auth_session_id
+
+
+def _serialize_session_token(user_id: str, auth_session_id: str) -> str:
+    """Serialize the session payload into a signed token."""
+    normalized_user_id = _normalize_user_id(user_id)
+    normalized_auth_session_id = _normalize_auth_session_id(auth_session_id)
+    serializer = _session_serializer()
+    return serializer.dumps(
+        {
+            "user_id": normalized_user_id,
+            "auth_session_id": normalized_auth_session_id,
+        },
+        salt="yinshi-session",
+    )
+
+
+def _load_auth_session_row(user_id: str, auth_session_id: str) -> sqlite3.Row | None:
+    """Return the auth session row for a signed cookie payload."""
+    normalized_user_id = _normalize_user_id(user_id)
+    normalized_auth_session_id = _normalize_auth_session_id(auth_session_id)
+    with get_control_db() as db:
+        row = db.execute(
+            "SELECT id, revoked_at FROM auth_sessions WHERE id = ? AND user_id = ?",
+            (normalized_auth_session_id, normalized_user_id),
+        ).fetchone()
+    return row
+
+
+def revoke_auth_sessions(user_id: str) -> None:
+    """Revoke every auth session that belongs to a user."""
+    normalized_user_id = _normalize_user_id(user_id)
+    with get_control_db() as db:
+        db.execute(
+            """
+            UPDATE auth_sessions
+            SET revoked_at = CURRENT_TIMESTAMP
+            WHERE user_id = ? AND revoked_at IS NULL
+            """,
+            (normalized_user_id,),
+        )
+        db.commit()
+
+
+def create_session_token(user_id: str) -> str:
+    """Create a signed session token encoding user and auth session ids."""
+    normalized_user_id = _normalize_user_id(user_id)
+    auth_session_id = _create_auth_session(normalized_user_id)
+    return _serialize_session_token(normalized_user_id, auth_session_id)
 
 
 def verify_session_token(token: str) -> str | None:
     """Verify and decode a session token. Returns user_id or None."""
-    settings = get_settings()
-    serializer = URLSafeTimedSerializer(settings.secret_key)
-    try:
-        user_id = serializer.loads(token, salt="yinshi-session", max_age=SESSION_MAX_AGE)
-    except Exception:
+    if not isinstance(token, str):
         return None
-    if isinstance(user_id, str):
-        return user_id
-    return None
+    normalized_token = token.strip()
+    if not normalized_token:
+        return None
+
+    serializer = _session_serializer()
+    try:
+        payload = serializer.loads(
+            normalized_token,
+            salt="yinshi-session",
+            max_age=SESSION_MAX_AGE,
+        )
+    except (BadSignature, BadTimeSignature):
+        return None
+
+    if not isinstance(payload, dict):
+        return None
+
+    user_id = payload.get("user_id")
+    auth_session_id = payload.get("auth_session_id")
+    if not isinstance(user_id, str):
+        return None
+    if not isinstance(auth_session_id, str):
+        return None
+
+    normalized_user_id = user_id.strip()
+    normalized_auth_session_id = auth_session_id.strip()
+    if not normalized_user_id:
+        return None
+    if not normalized_auth_session_id:
+        return None
+
+    session_row = _load_auth_session_row(normalized_user_id, normalized_auth_session_id)
+    if session_row is None:
+        return None
+    if session_row["revoked_at"] is not None:
+        return None
+    return normalized_user_id
 
 
 def _auth_disabled() -> bool:

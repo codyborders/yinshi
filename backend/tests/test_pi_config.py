@@ -8,6 +8,7 @@ removal, and container gating.
 
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import zipfile
@@ -16,6 +17,8 @@ from typing import Any
 from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
+
+from tests.conftest import reset_rate_limiter
 
 
 def _enable_container_support() -> None:
@@ -32,15 +35,17 @@ def _build_pi_archive() -> bytes:
     with zipfile.ZipFile(buffer, "w") as archive:
         archive.writestr("AGENTS.md", "Global instructions")
         archive.writestr("PYTHON.md", "Ignored custom instructions")
-        archive.writestr("auth.json", "{\"secret\": true}")
+        archive.writestr("auth.json", '{"secret": true}')
         archive.writestr(".git/HEAD", "ref: refs/heads/main\n")
         archive.writestr("agent/extensions/hook.js", "export default {};\n")
         archive.writestr(
             "agent/settings.json",
-            json.dumps({
-                "retry": {"enabled": False},
-                "packages": ["pi-skills"],
-            }),
+            json.dumps(
+                {
+                    "retry": {"enabled": False},
+                    "packages": ["pi-skills"],
+                }
+            ),
         )
         archive.writestr("agent/models.json", json.dumps({"providers": []}))
     return buffer.getvalue()
@@ -268,9 +273,12 @@ def test_sync_pi_config_refreshes_categories_and_instruction_mirror(
 
     (config_root / "agent" / "AGENTS.md").unlink(missing_ok=True)
     remote_state["prompts"] = True
-    with patch("yinshi.services.pi_config.clone_repo", side_effect=fake_clone_repo), patch(
-        "yinshi.services.pi_config._run_git",
-        new=AsyncMock(return_value=""),
+    with (
+        patch("yinshi.services.pi_config.clone_repo", side_effect=fake_clone_repo),
+        patch(
+            "yinshi.services.pi_config._run_git",
+            new=AsyncMock(return_value=""),
+        ),
     ):
         sync_response = auth_client.post("/api/settings/pi-config/sync")
 
@@ -315,9 +323,12 @@ def test_sync_pi_config_reapplies_disabled_categories_without_collision(
     assert (config_root / "agent" / "settings.json.disabled").is_file()
     assert (config_root / "agent" / "AGENTS.md.disabled").is_file()
 
-    with patch("yinshi.services.pi_config.clone_repo", side_effect=fake_clone_repo), patch(
-        "yinshi.services.pi_config._run_git",
-        new=AsyncMock(return_value=""),
+    with (
+        patch("yinshi.services.pi_config.clone_repo", side_effect=fake_clone_repo),
+        patch(
+            "yinshi.services.pi_config._run_git",
+            new=AsyncMock(return_value=""),
+        ),
     ):
         sync_response = auth_client.post("/api/settings/pi-config/sync")
 
@@ -361,9 +372,12 @@ def test_sync_pi_config_removes_stale_instruction_mirror_when_source_is_deleted(
     assert (config_root / "agent" / "AGENTS.md").is_file()
 
     remote_state["instructions"] = False
-    with patch("yinshi.services.pi_config.clone_repo", side_effect=fake_clone_repo), patch(
-        "yinshi.services.pi_config._run_git",
-        new=AsyncMock(return_value=""),
+    with (
+        patch("yinshi.services.pi_config.clone_repo", side_effect=fake_clone_repo),
+        patch(
+            "yinshi.services.pi_config._run_git",
+            new=AsyncMock(return_value=""),
+        ),
     ):
         sync_response = auth_client.post("/api/settings/pi-config/sync")
 
@@ -468,3 +482,162 @@ def test_prompt_does_not_forward_pi_settings_when_runtime_is_inactive(
     assert response.status_code == 200
     assert mock_sidecar.warmup.call_args.kwargs["agent_dir"] is None
     assert mock_sidecar.warmup.call_args.kwargs["settings_payload"] is None
+
+
+def test_upload_pi_config_rate_limit_returns_429(auth_client: TestClient) -> None:
+    """Pi config uploads should be limited per authenticated user."""
+    _enable_container_support()
+
+    reset_rate_limiter()
+    for index in range(10):
+        response = auth_client.post(
+            "/api/settings/pi-config/upload",
+            files={
+                "file": (
+                    f"pi-config-{index}.zip",
+                    _build_pi_archive(),
+                    "application/zip",
+                )
+            },
+        )
+        assert response.status_code in {201, 409}
+
+    limited_response = auth_client.post(
+        "/api/settings/pi-config/upload",
+        files={"file": ("pi-config.zip", _build_pi_archive(), "application/zip")},
+    )
+
+    assert limited_response.status_code == 429
+    reset_rate_limiter()
+
+
+def test_upload_validation_error_remains_user_visible(auth_client: TestClient) -> None:
+    """Safe upload validation errors should still pass through to the API caller."""
+    _enable_container_support()
+
+    response = auth_client.post(
+        "/api/settings/pi-config/upload",
+        files={"file": ("pi-config.zip", b"not-a-zip", "application/octet-stream")},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Uploaded file is not a zip archive"
+
+
+def test_github_import_failure_message_is_sanitized(auth_client: TestClient) -> None:
+    """Background import failures should store a generic user-facing error message."""
+    from yinshi.services.pi_config import (
+        _finalize_github_import,
+        _insert_pi_config_row,
+        get_pi_config,
+    )
+
+    tenant = getattr(auth_client, "yinshi_tenant")
+    _insert_pi_config_row(
+        tenant.user_id,
+        source_type="github",
+        source_label="example",
+        repo_url="https://github.com/example/pi-config.git",
+        status="cloning",
+        available_categories=[],
+        enabled_categories=[],
+    )
+
+    async def fake_clone_repo(url: str, dest: str, access_token: str | None = None) -> str:
+        raise RuntimeError("git clone leaked /private/tmp/path")
+
+    with patch("yinshi.services.pi_config.clone_repo", side_effect=fake_clone_repo):
+        asyncio.run(
+            _finalize_github_import(
+                tenant.user_id,
+                tenant.data_dir,
+                "https://github.com/example/pi-config.git",
+                "example",
+                None,
+            )
+        )
+
+    payload = get_pi_config(tenant.user_id)
+    assert payload is not None
+    assert payload["status"] == "error"
+    assert payload["error_message"] == "Import failed. Check server logs for details."
+
+
+def test_sync_failure_message_is_sanitized(auth_client: TestClient) -> None:
+    """Pi config sync failures should store a generic user-facing error message."""
+    from yinshi.services.pi_config import _insert_pi_config_row, get_pi_config, sync_pi_config
+
+    _enable_container_support()
+    tenant = getattr(auth_client, "yinshi_tenant")
+    _insert_pi_config_row(
+        tenant.user_id,
+        source_type="github",
+        source_label="example",
+        repo_url="https://github.com/example/pi-config.git",
+        status="ready",
+        available_categories=[],
+        enabled_categories=[],
+    )
+
+    async def fake_clone_repo(url: str, dest: str, access_token: str | None = None) -> str:
+        raise RuntimeError("git clone leaked /private/tmp/path")
+
+    with patch("yinshi.services.pi_config.clone_repo", side_effect=fake_clone_repo):
+        try:
+            asyncio.run(sync_pi_config(tenant.user_id, tenant.data_dir))
+        except RuntimeError:
+            pass
+
+    payload = get_pi_config(tenant.user_id)
+    assert payload is not None
+    assert payload["status"] == "error"
+    assert payload["error_message"] == "Sync failed. Check server logs for details."
+
+
+def test_extract_archive_counts_actual_decompressed_bytes(tmp_path) -> None:
+    """Extraction should enforce limits using bytes read from the stream."""
+    from yinshi.exceptions import PiConfigError
+    from yinshi.services import pi_config
+
+    class FakeMember:
+        """Minimal archive member for the zip extraction test."""
+
+        def __init__(self) -> None:
+            self.filename = "agent/settings.json"
+            self.file_size = 1
+            self.external_attr = 0
+
+        def is_dir(self) -> bool:
+            return False
+
+    class FakeArchive:
+        """Archive whose stream expands beyond the trusted header size."""
+
+        def __enter__(self) -> "FakeArchive":
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> bool:
+            return False
+
+        def infolist(self) -> list[FakeMember]:
+            return [FakeMember()]
+
+        def open(self, member: FakeMember) -> io.BytesIO:
+            return io.BytesIO(b"x" * 32)
+
+    temp_root = tmp_path / "extract-root"
+    temp_root.mkdir()
+
+    with (
+        patch("yinshi.services.pi_config.zipfile.ZipFile", return_value=FakeArchive()),
+        patch(
+            "yinshi.services.pi_config._MAX_EXTRACTED_BYTES",
+            16,
+        ),
+    ):
+        try:
+            pi_config._extract_archive(b"PK\x03\x04", temp_root)
+        except PiConfigError as exc:
+            assert str(exc) == "Archive expands beyond the allowed size limit"
+        else:
+            raise AssertionError("Expected PiConfigError for oversized extracted content")
