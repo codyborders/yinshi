@@ -32,6 +32,7 @@ export default function PiConfigSection() {
     error,
     importing,
     syncing,
+    updatingCategories,
     importFromGithub,
     importFromUpload,
     syncConfig,
@@ -175,6 +176,7 @@ export default function PiConfigSection() {
                 <input
                   type="checkbox"
                   checked={config.enabled_categories.includes(category)}
+                  disabled={updatingCategories}
                   onChange={(event) => {
                     void toggleCategory(category, event.target.checked);
                   }}

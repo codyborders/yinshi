@@ -8,6 +8,7 @@ export interface UsePiConfigReturn {
   error: string | null;
   importing: boolean;
   syncing: boolean;
+  updatingCategories: boolean;
   loadConfig: () => Promise<void>;
   importFromGithub: (repoUrl: string) => Promise<boolean>;
   importFromUpload: (file: File) => Promise<boolean>;
@@ -43,6 +44,7 @@ export function usePiConfig(): UsePiConfigReturn {
   const [error, setError] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  const [updatingCategories, setUpdatingCategories] = useState(false);
   const isMountedRef = useRef(true);
 
   async function loadConfigInternal(polling: boolean): Promise<void> {
@@ -162,12 +164,24 @@ export function usePiConfig(): UsePiConfigReturn {
     if (!config) {
       return false;
     }
+    if (updatingCategories) {
+      return false;
+    }
     setError(null);
+    setUpdatingCategories(true);
+    const previousConfig = config;
     const enabledCategories = buildEnabledCategories(
-      config.enabled_categories,
+      previousConfig.enabled_categories,
       category,
       enabled,
     );
+    const optimisticConfig: PiConfig = {
+      ...previousConfig,
+      enabled_categories: enabledCategories,
+    };
+    if (isMountedRef.current) {
+      setConfig(optimisticConfig);
+    }
     try {
       const nextConfig = await api.patch<PiConfig>("/api/settings/pi-config/categories", {
         enabled_categories: enabledCategories,
@@ -178,9 +192,14 @@ export function usePiConfig(): UsePiConfigReturn {
       return true;
     } catch (requestError) {
       if (isMountedRef.current) {
+        setConfig(previousConfig);
         setError(getErrorMessage(requestError, "Failed to update Pi config categories"));
       }
       return false;
+    } finally {
+      if (isMountedRef.current) {
+        setUpdatingCategories(false);
+      }
     }
   }
 
@@ -210,6 +229,7 @@ export function usePiConfig(): UsePiConfigReturn {
     error,
     importing,
     syncing,
+    updatingCategories,
     loadConfig,
     importFromGithub,
     importFromUpload,

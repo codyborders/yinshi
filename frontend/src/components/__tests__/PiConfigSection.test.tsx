@@ -17,6 +17,7 @@ describe("PiConfigSection", () => {
       error: null,
       importing: false,
       syncing: false,
+      updatingCategories: false,
       importFromGithub: vi.fn(),
       importFromUpload: vi.fn(),
       loadConfig: vi.fn(),
@@ -51,6 +52,7 @@ describe("PiConfigSection", () => {
       error: null,
       importing: false,
       syncing: false,
+      updatingCategories: false,
       importFromGithub: vi.fn(),
       importFromUpload: vi.fn(),
       loadConfig: vi.fn(),
@@ -65,5 +67,36 @@ describe("PiConfigSection", () => {
 
     fireEvent.click(toggles[1]);
     expect(toggleCategory).toHaveBeenCalledWith("settings", true);
+  });
+
+  it("disables category checkboxes while a toggle request is in flight", () => {
+    usePiConfigMock.mockReturnValue({
+      config: {
+        id: "cfg-1",
+        created_at: "2026-03-20T12:00:00Z",
+        updated_at: "2026-03-20T12:00:00Z",
+        source_type: "github",
+        source_label: "example/repo",
+        last_synced_at: "2026-03-20T12:00:00Z",
+        status: "ready",
+        error_message: null,
+        available_categories: ["settings"],
+        enabled_categories: ["settings"],
+      },
+      loading: false,
+      error: null,
+      importing: false,
+      syncing: false,
+      updatingCategories: true,
+      importFromGithub: vi.fn(),
+      importFromUpload: vi.fn(),
+      loadConfig: vi.fn(),
+      syncConfig: vi.fn(),
+      removeConfig: vi.fn(),
+      toggleCategory: vi.fn(),
+    });
+
+    render(<PiConfigSection />);
+    expect(screen.getByRole("checkbox")).toBeDisabled();
   });
 });

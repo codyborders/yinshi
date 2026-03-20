@@ -21,7 +21,12 @@ from yinshi.exceptions import PiConfigError, PiConfigNotFoundError
 from yinshi.models import PI_CONFIG_CATEGORIES, PI_CONFIG_CATEGORY_ORDER
 from yinshi.services.git import _git_askpass_env, _run_git, _validate_clone_url, clone_repo
 from yinshi.services.github_app import resolve_github_clone_access
-from yinshi.services.user_settings import clear_pi_settings, set_pi_settings_enabled, store_pi_settings
+from yinshi.services.user_settings import (
+    clear_pi_settings,
+    get_sidecar_settings_payload,
+    set_pi_settings_enabled,
+    store_pi_settings,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -329,6 +334,28 @@ def _mirror_instruction_files(config_root: Path) -> None:
         shutil.copyfile(source_path, agent_dir / filename)
 
 
+def _clear_instruction_runtime_files(config_root: Path) -> None:
+    """Remove mirrored instruction files so sync can rebuild them from root files."""
+    for instruction_path in _instruction_runtime_paths(config_root):
+        disabled_path = instruction_path.with_name(f"{instruction_path.name}.disabled")
+        _remove_path(instruction_path)
+        _remove_path(disabled_path)
+
+
+def _clear_disabled_category_artifacts(config_root: Path) -> None:
+    """Remove local disabled artifacts so sync starts from the fetched tree."""
+    for relative_path in _CATEGORY_PATHS.values():
+        actual_path = config_root / relative_path
+        disabled_path = actual_path.with_name(f"{actual_path.name}.disabled")
+        _remove_path(disabled_path)
+
+
+def _reset_runtime_artifacts_for_sync(config_root: Path) -> None:
+    """Delete local runtime artifacts that are derived from toggle state."""
+    _clear_disabled_category_artifacts(config_root)
+    _clear_instruction_runtime_files(config_root)
+
+
 def _instruction_runtime_paths(config_root: Path) -> list[Path]:
     """Return the mirrored instruction file paths inside agent/."""
     agent_dir = config_root / _AGENT_DIRECTORY_NAME
@@ -633,6 +660,7 @@ async def sync_pi_config(
         with _git_askpass_env(effective_access_token) as git_env:
             await _run_git(["reset", "--hard", "origin/HEAD"], cwd=str(config_root), env=git_env)
 
+        _reset_runtime_artifacts_for_sync(config_root)
         _scrub_pi_config(config_root, keep_git=True)
         _mirror_instruction_files(config_root)
         available_categories = _scan_categories(config_root)
@@ -716,19 +744,27 @@ def update_enabled_categories(
     return cast(dict[str, Any], get_pi_config(normalized_user_id))
 
 
-def resolve_agent_dir(user_id: str, data_dir: str) -> str | None:
-    """Return the agentDir path when a ready Pi config should be active."""
+def resolve_pi_runtime(user_id: str, data_dir: str) -> tuple[str | None, dict[str, object] | None]:
+    """Return the active Pi runtime inputs for the current request, if any."""
     settings = get_settings()
     if not settings.container_enabled:
-        return None
+        return None, None
 
     config = get_pi_config(user_id)
     if config is None:
-        return None
+        return None, None
     if config["status"] != "ready":
-        return None
+        return None, None
 
     agent_dir = _pi_agent_dir_path(data_dir)
     if not agent_dir.is_dir():
-        return None
-    return str(agent_dir)
+        return None, None
+
+    settings_payload = get_sidecar_settings_payload(user_id)
+    return str(agent_dir), settings_payload
+
+
+def resolve_agent_dir(user_id: str, data_dir: str) -> str | None:
+    """Return the agentDir path when a ready Pi config should be active."""
+    agent_dir, _settings_payload = resolve_pi_runtime(user_id, data_dir)
+    return agent_dir

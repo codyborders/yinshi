@@ -198,8 +198,7 @@ async def _resolve_execution_context(
 
     _validate_workspace_path(tenant, workspace_path)
 
-    from yinshi.services.pi_config import resolve_agent_dir
-    from yinshi.services.user_settings import get_sidecar_settings_payload
+    from yinshi.services.pi_config import resolve_pi_runtime
 
     container_mgr = getattr(request.app.state, "container_manager", None)
     sidecar_socket: str | None = None
@@ -225,7 +224,7 @@ async def _resolve_execution_context(
             workspace_path,
         )
 
-    host_agent_dir = resolve_agent_dir(tenant.user_id, tenant.data_dir)
+    host_agent_dir, settings_payload = resolve_pi_runtime(tenant.user_id, tenant.data_dir)
     if host_agent_dir:
         if container_mgr and is_path_inside(host_agent_dir, tenant.data_dir):
             agent_dir = _remap_path(host_agent_dir, tenant.data_dir)
@@ -252,7 +251,6 @@ async def _resolve_execution_context(
     except KeyNotFoundError as exc:
         raise HTTPException(status_code=402, detail=str(exc)) from exc
 
-    settings_payload = get_sidecar_settings_payload(tenant.user_id)
     return ExecutionContext(
         sidecar_socket=sidecar_socket,
         effective_cwd=effective_cwd,

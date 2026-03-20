@@ -281,6 +281,99 @@ def test_sync_pi_config_refreshes_categories_and_instruction_mirror(
     assert (config_root / "agent" / "AGENTS.md").is_file()
 
 
+def test_sync_pi_config_reapplies_disabled_categories_without_collision(
+    auth_client: TestClient,
+) -> None:
+    """Sync should recreate disabled artifacts instead of failing on stale .disabled paths."""
+    _enable_container_support()
+    tenant = getattr(auth_client, "yinshi_tenant")
+    config_root = Path(tenant.data_dir) / "pi-config"
+
+    async def fake_clone_repo(url: str, dest: str, access_token: str | None = None) -> str:
+        dest_path = Path(dest)
+        (dest_path / "agent").mkdir(parents=True, exist_ok=True)
+        (dest_path / ".git").mkdir(exist_ok=True)
+        (dest_path / "AGENTS.md").write_text("Synced instructions", encoding="utf-8")
+        (dest_path / "agent" / "settings.json").write_text(
+            json.dumps({"retry": {"enabled": False}}),
+            encoding="utf-8",
+        )
+        return dest
+
+    with patch("yinshi.services.pi_config.clone_repo", side_effect=fake_clone_repo):
+        create_response = auth_client.post(
+            "/api/settings/pi-config/github",
+            json={"repo_url": "https://github.com/example/pi-config.git"},
+        )
+    assert create_response.status_code == 201
+
+    disable_response = auth_client.patch(
+        "/api/settings/pi-config/categories",
+        json={"enabled_categories": []},
+    )
+    assert disable_response.status_code == 200
+    assert (config_root / "agent" / "settings.json.disabled").is_file()
+    assert (config_root / "agent" / "AGENTS.md.disabled").is_file()
+
+    with patch("yinshi.services.pi_config.clone_repo", side_effect=fake_clone_repo), patch(
+        "yinshi.services.pi_config._run_git",
+        new=AsyncMock(return_value=""),
+    ):
+        sync_response = auth_client.post("/api/settings/pi-config/sync")
+
+    assert sync_response.status_code == 200
+    payload = sync_response.json()
+    assert payload["enabled_categories"] == []
+    assert (config_root / "agent" / "settings.json.disabled").is_file()
+    assert (config_root / "agent" / "AGENTS.md.disabled").is_file()
+
+
+def test_sync_pi_config_removes_stale_instruction_mirror_when_source_is_deleted(
+    auth_client: TestClient,
+) -> None:
+    """Sync should delete the mirrored instruction file when the root source disappears."""
+    _enable_container_support()
+    tenant = getattr(auth_client, "yinshi_tenant")
+    config_root = Path(tenant.data_dir) / "pi-config"
+    remote_state = {"instructions": True}
+
+    async def fake_clone_repo(url: str, dest: str, access_token: str | None = None) -> str:
+        dest_path = Path(dest)
+        (dest_path / "agent").mkdir(parents=True, exist_ok=True)
+        (dest_path / ".git").mkdir(exist_ok=True)
+        (dest_path / "agent" / "settings.json").write_text(
+            json.dumps({"retry": {"enabled": False}}),
+            encoding="utf-8",
+        )
+        instruction_path = dest_path / "AGENTS.md"
+        if remote_state["instructions"]:
+            instruction_path.write_text("Synced instructions", encoding="utf-8")
+        else:
+            instruction_path.unlink(missing_ok=True)
+        return dest
+
+    with patch("yinshi.services.pi_config.clone_repo", side_effect=fake_clone_repo):
+        create_response = auth_client.post(
+            "/api/settings/pi-config/github",
+            json={"repo_url": "https://github.com/example/pi-config.git"},
+        )
+    assert create_response.status_code == 201
+    assert (config_root / "agent" / "AGENTS.md").is_file()
+
+    remote_state["instructions"] = False
+    with patch("yinshi.services.pi_config.clone_repo", side_effect=fake_clone_repo), patch(
+        "yinshi.services.pi_config._run_git",
+        new=AsyncMock(return_value=""),
+    ):
+        sync_response = auth_client.post("/api/settings/pi-config/sync")
+
+    assert sync_response.status_code == 200
+    payload = sync_response.json()
+    assert payload["available_categories"] == ["settings"]
+    assert not (config_root / "agent" / "AGENTS.md").exists()
+    assert not (config_root / "agent" / "AGENTS.md.disabled").exists()
+
+
 def test_delete_pi_config_removes_files_and_settings(auth_client: TestClient) -> None:
     """DELETE should remove the imported config directory and stored settings row."""
     _enable_container_support()
@@ -309,3 +402,69 @@ def test_pi_config_import_rejected_when_container_support_is_disabled(
     )
     assert response.status_code == 409
     assert "container isolation" in response.json()["detail"]
+
+
+def test_prompt_does_not_forward_pi_settings_when_runtime_is_inactive(
+    auth_client: TestClient,
+    git_repo: str,
+) -> None:
+    """Prompt execution should not forward Pi settings when container isolation is off."""
+    from tests.factories import create_full_stack, make_mock_sidecar
+
+    _enable_container_support()
+    tenant = getattr(auth_client, "yinshi_tenant")
+    upload_response = auth_client.post(
+        "/api/settings/pi-config/upload",
+        files={"file": ("pi-config.zip", _build_pi_archive(), "application/zip")},
+    )
+    assert upload_response.status_code == 201
+
+    from yinshi.config import get_settings
+
+    settings = get_settings()
+    original_container_enabled = settings.container_enabled
+    settings.container_enabled = False
+
+    stack = create_full_stack(auth_client, git_repo, name="prompt-test")
+    session_id = stack["session"]["id"]
+
+    from yinshi.db import get_control_db
+    from yinshi.services.crypto import encrypt_api_key
+    from yinshi.services.keys import get_user_dek
+
+    dek = get_user_dek(tenant.user_id)
+    encrypted_key = encrypt_api_key("sk-user-minimax-key", dek)
+    with get_control_db() as db:
+        db.execute(
+            "INSERT INTO api_keys (user_id, provider, encrypted_key) VALUES (?, ?, ?)",
+            (tenant.user_id, "minimax", encrypted_key),
+        )
+        db.commit()
+
+    async def fake_query(
+        sid: str,
+        prompt: str,
+        model: str | None = None,
+        cwd: str | None = None,
+        api_key: str | None = None,
+        agent_dir: str | None = None,
+        settings_payload: dict[str, object] | None = None,
+    ):
+        yield {"type": "message", "data": {"type": "result", "usage": {}}}
+
+    mock_sidecar = make_mock_sidecar(fake_query)
+    try:
+        with patch(
+            "yinshi.api.stream.create_sidecar_connection",
+            return_value=mock_sidecar,
+        ):
+            response = auth_client.post(
+                f"/api/sessions/{session_id}/prompt",
+                json={"prompt": "run without pi runtime"},
+            )
+    finally:
+        settings.container_enabled = original_container_enabled
+
+    assert response.status_code == 200
+    assert mock_sidecar.warmup.call_args.kwargs["agent_dir"] is None
+    assert mock_sidecar.warmup.call_args.kwargs["settings_payload"] is None
