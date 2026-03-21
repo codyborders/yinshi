@@ -17,6 +17,7 @@ Yinshi is a browser-based coding environment that uses [pi](https://pi.dev) agen
 - **Zero local setup** - No IDE, no CLI, no environment configuration. Works from a phone, tablet, or any browser.
 - **Isolation by default** - Every workspace runs on its own git branch. Experiments can't break production code.
 - **Bring your own key** - Supply your own API keys for the underlying model providers. Keys are encrypted at rest with AES-256-GCM.
+- **Bring your own pi config** - Import custom pi configurations (skills, extensions, prompts, agents, themes, and more) from a GitHub repository or a zip upload.
 - **Multi-tenant** - Each user gets an isolated SQLite database. A control database manages authentication and shared state.
 - **Mobile-first** - The interface adapts from phone to desktop. Start a coding session on your laptop, check progress from your phone.
 
