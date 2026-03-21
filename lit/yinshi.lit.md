@@ -1,5 +1,5 @@
 ---
-title: "Yinshi -- A Literate Program"
+title: "Yinshi"
 author: "Generated from source"
 toc: true
 toc-depth: 3
