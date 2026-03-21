@@ -2,8 +2,6 @@
 
 Yinshi is a browser-based coding environment that uses [pi](https://pi.dev) agents.
 
-Point Yinshi at a GitHub repo, and an AI agent writes code on an isolated branch while you review the diff. No local setup required - just open a browser and go.
-
 ## How It Works
 
 1. **Import a repo** - Paste a GitHub URL, `user/repo` shorthand, or a local path. Yinshi clones it and stores the bare repo on the server. Private repos are supported through a GitHub App integration.
@@ -102,4 +100,4 @@ The full annotated source is available as a literate program: [lit/yinshi.lit.md
 
 ## License
 
-Private.
+Use it or don't.
