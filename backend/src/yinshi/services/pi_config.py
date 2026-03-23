@@ -72,14 +72,6 @@ def _validate_data_dir(data_dir: str) -> Path:
     return Path(normalized_data_dir)
 
 
-def _ensure_container_support() -> None:
-    """Reject Pi config mutations when container isolation is disabled."""
-    settings = get_settings()
-    if settings.container_enabled:
-        return
-    raise PiConfigError("Pi config requires container isolation to be enabled")
-
-
 def _pi_config_root_path(data_dir: str) -> Path:
     """Return the root directory that stores a user's imported Pi config."""
     data_root = _validate_data_dir(data_dir)
@@ -553,7 +545,6 @@ async def import_from_github(
     access_token: str | None = None,
 ) -> dict[str, Any]:
     """Create a Pi config record and clone it in the background."""
-    _ensure_container_support()
     normalized_user_id = _validate_user_id(user_id)
     normalized_repo_url = repo_url.strip()
     if get_pi_config(normalized_user_id) is not None:
@@ -592,7 +583,6 @@ async def import_from_upload(
     filename: str,
 ) -> dict[str, Any]:
     """Import a Pi config from an uploaded archive."""
-    _ensure_container_support()
     normalized_user_id = _validate_user_id(user_id)
     if get_pi_config(normalized_user_id) is not None:
         raise PiConfigError("Pi config already exists")
@@ -640,7 +630,6 @@ async def sync_pi_config(
     access_token: str | None = None,
 ) -> dict[str, Any]:
     """Sync an existing GitHub-backed Pi config with its remote origin."""
-    _ensure_container_support()
     normalized_user_id = _validate_user_id(user_id)
     row = _require_pi_config_row(normalized_user_id)
     if row["source_type"] != "github":

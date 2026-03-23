@@ -3,7 +3,7 @@
 These tests exercise the public settings API and verify the observable
 filesystem and control-plane side effects: scrubbing, instruction mirroring,
 stored settings payloads, category toggles, GitHub background import, sync,
-removal, and container gating.
+removal, and runtime activation.
 """
 
 from __future__ import annotations
@@ -21,8 +21,8 @@ from fastapi.testclient import TestClient
 from tests.conftest import reset_rate_limiter
 
 
-def _enable_container_support() -> None:
-    """Mutate cached settings so Pi config endpoints are available."""
+def _activate_container_runtime() -> None:
+    """Mutate cached settings so Pi runtime is active for runtime-path tests."""
     from yinshi.config import get_settings
 
     settings = get_settings()
@@ -86,7 +86,6 @@ def test_get_pi_config_returns_404_when_missing(auth_client: TestClient) -> None
 
 def test_upload_pi_config_scrubs_and_stores_metadata(auth_client: TestClient) -> None:
     """Upload should scrub unsafe files, mirror instructions, and persist settings."""
-    _enable_container_support()
     tenant = getattr(auth_client, "yinshi_tenant")
 
     response = auth_client.post(
@@ -118,7 +117,6 @@ def test_update_pi_config_categories_renames_paths_and_disables_settings(
     auth_client: TestClient,
 ) -> None:
     """PATCH should rename disabled paths and stop forwarding imported settings."""
-    _enable_container_support()
     tenant = getattr(auth_client, "yinshi_tenant")
     upload_response = auth_client.post(
         "/api/settings/pi-config/upload",
@@ -149,7 +147,6 @@ def test_github_import_clones_in_background_and_keeps_git_metadata(
     auth_client: TestClient,
 ) -> None:
     """GitHub import should return cloning immediately and finish with mirrored files."""
-    _enable_container_support()
     tenant = getattr(auth_client, "yinshi_tenant")
 
     async def fake_clone_repo(url: str, dest: str, access_token: str | None = None) -> str:
@@ -184,7 +181,7 @@ def test_prompt_forwards_agent_dir_and_settings_payload(
     """Prompt execution should forward the imported agentDir and sanitized settings."""
     from tests.factories import create_full_stack, make_mock_sidecar
 
-    _enable_container_support()
+    _activate_container_runtime()
     tenant = getattr(auth_client, "yinshi_tenant")
     upload_response = auth_client.post(
         "/api/settings/pi-config/upload",
@@ -242,7 +239,6 @@ def test_sync_pi_config_refreshes_categories_and_instruction_mirror(
     auth_client: TestClient,
 ) -> None:
     """Sync should refresh mirrored instructions and newly discovered categories."""
-    _enable_container_support()
     tenant = getattr(auth_client, "yinshi_tenant")
     config_root = Path(tenant.data_dir) / "pi-config"
     remote_state = {"prompts": False}
@@ -293,7 +289,6 @@ def test_sync_pi_config_reapplies_disabled_categories_without_collision(
     auth_client: TestClient,
 ) -> None:
     """Sync should recreate disabled artifacts instead of failing on stale .disabled paths."""
-    _enable_container_support()
     tenant = getattr(auth_client, "yinshi_tenant")
     config_root = Path(tenant.data_dir) / "pi-config"
 
@@ -343,7 +338,6 @@ def test_sync_pi_config_removes_stale_instruction_mirror_when_source_is_deleted(
     auth_client: TestClient,
 ) -> None:
     """Sync should delete the mirrored instruction file when the root source disappears."""
-    _enable_container_support()
     tenant = getattr(auth_client, "yinshi_tenant")
     config_root = Path(tenant.data_dir) / "pi-config"
     remote_state = {"instructions": True}
@@ -390,7 +384,6 @@ def test_sync_pi_config_removes_stale_instruction_mirror_when_source_is_deleted(
 
 def test_delete_pi_config_removes_files_and_settings(auth_client: TestClient) -> None:
     """DELETE should remove the imported config directory and stored settings row."""
-    _enable_container_support()
     tenant = getattr(auth_client, "yinshi_tenant")
     upload_response = auth_client.post(
         "/api/settings/pi-config/upload",
@@ -406,18 +399,6 @@ def test_delete_pi_config_removes_files_and_settings(auth_client: TestClient) ->
     assert _get_user_settings_row(tenant.user_id) is None
 
 
-def test_pi_config_import_rejected_when_container_support_is_disabled(
-    auth_client: TestClient,
-) -> None:
-    """Import should be rejected until container isolation is enabled."""
-    response = auth_client.post(
-        "/api/settings/pi-config/upload",
-        files={"file": ("pi-config.zip", _build_pi_archive(), "application/zip")},
-    )
-    assert response.status_code == 409
-    assert "container isolation" in response.json()["detail"]
-
-
 def test_prompt_does_not_forward_pi_settings_when_runtime_is_inactive(
     auth_client: TestClient,
     git_repo: str,
@@ -425,7 +406,7 @@ def test_prompt_does_not_forward_pi_settings_when_runtime_is_inactive(
     """Prompt execution should not forward Pi settings when container isolation is off."""
     from tests.factories import create_full_stack, make_mock_sidecar
 
-    _enable_container_support()
+    _activate_container_runtime()
     tenant = getattr(auth_client, "yinshi_tenant")
     upload_response = auth_client.post(
         "/api/settings/pi-config/upload",
@@ -486,8 +467,6 @@ def test_prompt_does_not_forward_pi_settings_when_runtime_is_inactive(
 
 def test_upload_pi_config_rate_limit_returns_429(auth_client: TestClient) -> None:
     """Pi config uploads should be limited per authenticated user."""
-    _enable_container_support()
-
     reset_rate_limiter()
     for index in range(10):
         response = auth_client.post(
@@ -513,8 +492,6 @@ def test_upload_pi_config_rate_limit_returns_429(auth_client: TestClient) -> Non
 
 def test_upload_validation_error_remains_user_visible(auth_client: TestClient) -> None:
     """Safe upload validation errors should still pass through to the API caller."""
-    _enable_container_support()
-
     response = auth_client.post(
         "/api/settings/pi-config/upload",
         files={"file": ("pi-config.zip", b"not-a-zip", "application/octet-stream")},
@@ -567,7 +544,6 @@ def test_sync_failure_message_is_sanitized(auth_client: TestClient) -> None:
     """Pi config sync failures should store a generic user-facing error message."""
     from yinshi.services.pi_config import _insert_pi_config_row, get_pi_config, sync_pi_config
 
-    _enable_container_support()
     tenant = getattr(auth_client, "yinshi_tenant")
     _insert_pi_config_row(
         tenant.user_id,

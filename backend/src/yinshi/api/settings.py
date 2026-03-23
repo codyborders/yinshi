@@ -55,8 +55,6 @@ def _pi_config_http_exception(error: PiConfigError) -> HTTPException:
     message = str(error)
     if "already exists" in message:
         return HTTPException(status_code=409, detail=message)
-    if "container isolation" in message:
-        return HTTPException(status_code=409, detail=message)
     if "still cloning" in message:
         return HTTPException(status_code=409, detail=message)
     return HTTPException(status_code=400, detail=message)

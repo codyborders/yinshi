@@ -3265,12 +3265,12 @@ class="sourceCode python"><code class="sourceCode python"><span id="cb17-1"><a h
 <span id="cb17-72"><a href="#cb17-72" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> Path(normalized_data_dir)</span>
 <span id="cb17-73"><a href="#cb17-73" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb17-74"><a href="#cb17-74" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb17-75"><a href="#cb17-75" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> _ensure_container_support() <span class="op">-&gt;</span> <span class="va">None</span>:</span>
-<span id="cb17-76"><a href="#cb17-76" aria-hidden="true" tabindex="-1"></a>    <span class="co">&quot;&quot;&quot;Reject Pi config mutations when container isolation is disabled.&quot;&quot;&quot;</span></span>
-<span id="cb17-77"><a href="#cb17-77" aria-hidden="true" tabindex="-1"></a>    settings <span class="op">=</span> get_settings()</span>
-<span id="cb17-78"><a href="#cb17-78" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> settings.container_enabled:</span>
-<span id="cb17-79"><a href="#cb17-79" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span></span>
-<span id="cb17-80"><a href="#cb17-80" aria-hidden="true" tabindex="-1"></a>    <span class="cf">raise</span> PiConfigError(<span class="st">&quot;Pi config requires container isolation to be enabled&quot;</span>)</span>
+<span id="cb17-75"><a href="#cb17-75" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb17-76"><a href="#cb17-76" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb17-77"><a href="#cb17-77" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb17-78"><a href="#cb17-78" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb17-79"><a href="#cb17-79" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb17-80"><a href="#cb17-80" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb17-81"><a href="#cb17-81" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb17-82"><a href="#cb17-82" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb17-83"><a href="#cb17-83" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> _pi_config_root_path(data_dir: <span class="bu">str</span>) <span class="op">-&gt;</span> Path:</span>
@@ -3746,7 +3746,7 @@ class="sourceCode python"><code class="sourceCode python"><span id="cb17-1"><a h
 <span id="cb17-553"><a href="#cb17-553" aria-hidden="true" tabindex="-1"></a>    access_token: <span class="bu">str</span> <span class="op">|</span> <span class="va">None</span> <span class="op">=</span> <span class="va">None</span>,</span>
 <span id="cb17-554"><a href="#cb17-554" aria-hidden="true" tabindex="-1"></a>) <span class="op">-&gt;</span> <span class="bu">dict</span>[<span class="bu">str</span>, Any]:</span>
 <span id="cb17-555"><a href="#cb17-555" aria-hidden="true" tabindex="-1"></a>    <span class="co">&quot;&quot;&quot;Create a Pi config record and clone it in the background.&quot;&quot;&quot;</span></span>
-<span id="cb17-556"><a href="#cb17-556" aria-hidden="true" tabindex="-1"></a>    _ensure_container_support()</span>
+<span id="cb17-556"><a href="#cb17-556" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb17-557"><a href="#cb17-557" aria-hidden="true" tabindex="-1"></a>    normalized_user_id <span class="op">=</span> _validate_user_id(user_id)</span>
 <span id="cb17-558"><a href="#cb17-558" aria-hidden="true" tabindex="-1"></a>    normalized_repo_url <span class="op">=</span> repo_url.strip()</span>
 <span id="cb17-559"><a href="#cb17-559" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> get_pi_config(normalized_user_id) <span class="kw">is</span> <span class="kw">not</span> <span class="va">None</span>:</span>
@@ -3785,7 +3785,7 @@ class="sourceCode python"><code class="sourceCode python"><span id="cb17-1"><a h
 <span id="cb17-592"><a href="#cb17-592" aria-hidden="true" tabindex="-1"></a>    filename: <span class="bu">str</span>,</span>
 <span id="cb17-593"><a href="#cb17-593" aria-hidden="true" tabindex="-1"></a>) <span class="op">-&gt;</span> <span class="bu">dict</span>[<span class="bu">str</span>, Any]:</span>
 <span id="cb17-594"><a href="#cb17-594" aria-hidden="true" tabindex="-1"></a>    <span class="co">&quot;&quot;&quot;Import a Pi config from an uploaded archive.&quot;&quot;&quot;</span></span>
-<span id="cb17-595"><a href="#cb17-595" aria-hidden="true" tabindex="-1"></a>    _ensure_container_support()</span>
+<span id="cb17-595"><a href="#cb17-595" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb17-596"><a href="#cb17-596" aria-hidden="true" tabindex="-1"></a>    normalized_user_id <span class="op">=</span> _validate_user_id(user_id)</span>
 <span id="cb17-597"><a href="#cb17-597" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> get_pi_config(normalized_user_id) <span class="kw">is</span> <span class="kw">not</span> <span class="va">None</span>:</span>
 <span id="cb17-598"><a href="#cb17-598" aria-hidden="true" tabindex="-1"></a>        <span class="cf">raise</span> PiConfigError(<span class="st">&quot;Pi config already exists&quot;</span>)</span>
@@ -3833,7 +3833,7 @@ class="sourceCode python"><code class="sourceCode python"><span id="cb17-1"><a h
 <span id="cb17-640"><a href="#cb17-640" aria-hidden="true" tabindex="-1"></a>    access_token: <span class="bu">str</span> <span class="op">|</span> <span class="va">None</span> <span class="op">=</span> <span class="va">None</span>,</span>
 <span id="cb17-641"><a href="#cb17-641" aria-hidden="true" tabindex="-1"></a>) <span class="op">-&gt;</span> <span class="bu">dict</span>[<span class="bu">str</span>, Any]:</span>
 <span id="cb17-642"><a href="#cb17-642" aria-hidden="true" tabindex="-1"></a>    <span class="co">&quot;&quot;&quot;Sync an existing GitHub-backed Pi config with its remote origin.&quot;&quot;&quot;</span></span>
-<span id="cb17-643"><a href="#cb17-643" aria-hidden="true" tabindex="-1"></a>    _ensure_container_support()</span>
+<span id="cb17-643"><a href="#cb17-643" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb17-644"><a href="#cb17-644" aria-hidden="true" tabindex="-1"></a>    normalized_user_id <span class="op">=</span> _validate_user_id(user_id)</span>
 <span id="cb17-645"><a href="#cb17-645" aria-hidden="true" tabindex="-1"></a>    row <span class="op">=</span> _require_pi_config_row(normalized_user_id)</span>
 <span id="cb17-646"><a href="#cb17-646" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> row[<span class="st">&quot;source_type&quot;</span>] <span class="op">!=</span> <span class="st">&quot;github&quot;</span>:</span>
@@ -6546,11 +6546,11 @@ class="sourceCode python"><code class="sourceCode python"><span id="cb27-1"><a h
 <span id="cb27-55"><a href="#cb27-55" aria-hidden="true" tabindex="-1"></a>    message <span class="op">=</span> <span class="bu">str</span>(error)</span>
 <span id="cb27-56"><a href="#cb27-56" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> <span class="st">&quot;already exists&quot;</span> <span class="kw">in</span> message:</span>
 <span id="cb27-57"><a href="#cb27-57" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span> HTTPException(status_code<span class="op">=</span><span class="dv">409</span>, detail<span class="op">=</span>message)</span>
-<span id="cb27-58"><a href="#cb27-58" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> <span class="st">&quot;container isolation&quot;</span> <span class="kw">in</span> message:</span>
+<span id="cb27-58"><a href="#cb27-58" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> <span class="st">&quot;still cloning&quot;</span> <span class="kw">in</span> message:</span>
 <span id="cb27-59"><a href="#cb27-59" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span> HTTPException(status_code<span class="op">=</span><span class="dv">409</span>, detail<span class="op">=</span>message)</span>
-<span id="cb27-60"><a href="#cb27-60" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> <span class="st">&quot;still cloning&quot;</span> <span class="kw">in</span> message:</span>
-<span id="cb27-61"><a href="#cb27-61" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span> HTTPException(status_code<span class="op">=</span><span class="dv">409</span>, detail<span class="op">=</span>message)</span>
-<span id="cb27-62"><a href="#cb27-62" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> HTTPException(status_code<span class="op">=</span><span class="dv">400</span>, detail<span class="op">=</span>message)</span>
+<span id="cb27-60"><a href="#cb27-60" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> HTTPException(status_code<span class="op">=</span><span class="dv">400</span>, detail<span class="op">=</span>message)</span>
+<span id="cb27-61"><a href="#cb27-61" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb27-62"><a href="#cb27-62" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb27-63"><a href="#cb27-63" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb27-64"><a href="#cb27-64" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb27-65"><a href="#cb27-65" aria-hidden="true" tabindex="-1"></a><span class="at">@router.get</span>(<span class="st">&quot;/keys&quot;</span>, response_model<span class="op">=</span><span class="bu">list</span>[ApiKeyOut])</span>
