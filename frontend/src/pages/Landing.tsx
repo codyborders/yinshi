@@ -27,7 +27,7 @@ const CAPABILITIES = [
   },
   {
     title: "AI Agent Sessions",
-    desc: "Converse with a coding agent that reads, writes, and refactors code inside your workspace. Every change is tracked on its own branch -- review, merge, or discard.",
+    desc: "Converse with a coding agent that reads, writes, and refactors code inside your workspace. Every change is tracked on its own branch - review, merge, or discard.",
     icon: (
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} className="h-6 w-6">
         <path strokeLinecap="round" strokeLinejoin="round" d="M8.625 12a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0zm0 0H8.25m4.125 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0zm0 0H12m4.125 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0zm0 0h-.375M21 12c0 4.556-4.03 8.25-9 8.25a9.764 9.764 0 0 1-2.555-.337A5.972 5.972 0 0 1 5.41 20.97a5.969 5.969 0 0 1-.474-.065 4.48 4.48 0 0 0 .978-2.025c.09-.457-.133-.901-.467-1.226C3.93 16.178 3 14.189 3 12c0-4.556 4.03-8.25 9-8.25s9 3.694 9 8.25z" />
@@ -102,10 +102,10 @@ export default function Landing() {
         </div>
         <div className="landing-hero-text">
           <h1 className="landing-title">Yinshi</h1>
-          <p className="landing-subtitle">Browser-based coding with AI agents</p>
+          <p className="landing-subtitle">Run coding agents in your browser</p>
           <div className="landing-desc landing-markdown">
             <ReactMarkdown remarkPlugins={[remarkGfm]}>
-              {`Point Yinshi at a repo. An AI agent writes code on an isolated branch while you review the diff. No local setup, no risk to main -- just open a browser and go.`}
+              {`Yinshi makes it easy to manage coding agents across git repos and worktrees. `}
             </ReactMarkdown>
           </div>
           <div className="landing-cta-group">
@@ -134,10 +134,16 @@ export default function Landing() {
 
       {/* ---- How it works ---- */}
       <section className="landing-philosophy">
-        <blockquote className="landing-quote landing-markdown">
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>
-            {`Import a GitHub repo. Yinshi creates a worktree on a throwaway branch, connects an AI agent, and lets you chat with it about your code -- from any device, anywhere.`}
-          </ReactMarkdown>
+        <blockquote className="landing-quote">
+          <p>
+            Import repos from Github or your local machine. Yinshi spawns a
+            worktree, connects a{" "}
+            <a href="https://pi.dev" target="_blank" rel="noopener noreferrer">
+              pi agent
+            </a>
+            , and enables context engineering from any device, anywhere you have
+            an internet connection.
+          </p>
         </blockquote>
       </section>
 
@@ -161,7 +167,7 @@ export default function Landing() {
       <section className="landing-final">
         <div className="landing-final-text landing-markdown">
           <ReactMarkdown remarkPlugins={[remarkGfm]}>
-            {`No IDE required. Just a browser and a repo.`}
+            {`No IDE or app required. Fire up your browser, import your repos and pi configs, and get to work.`}
           </ReactMarkdown>
         </div>
         <a href="/auth/login" className="landing-cta">
@@ -178,3 +184,4 @@ export default function Landing() {
     </div>
   );
 }
+
