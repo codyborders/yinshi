@@ -516,6 +516,16 @@
   color: var(--lp-vermillion);
 }
 
+.landing-quote a {
+  color: #2563eb;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.landing-quote a:hover {
+  color: #1d4ed8;
+}
+
 /* ---- Capabilities ---- */
 
 .landing-capabilities {
