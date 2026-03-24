@@ -11,6 +11,8 @@
     "test:e2e": "playwright test --reporter=list"
   },
   "dependencies": {
+    "@datadog/browser-rum": "^6.31.0",
+    "@datadog/browser-rum-react": "^6.31.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-markdown": "^10.1.0",
@@ -18,9 +20,9 @@
     "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
+    "@playwright/test": "^1.54.2",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
-    "@playwright/test": "^1.54.2",
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^4.3.1",

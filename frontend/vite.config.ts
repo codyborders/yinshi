@@ -2,8 +2,14 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { configDefaults } from "vitest/config";
+import { execSync } from "child_process";
+
+const gitCommitHash = execSync("git rev-parse --short HEAD").toString().trim();
 
 export default defineConfig({
+  define: {
+    __GIT_COMMIT_HASH__: JSON.stringify(gitCommitHash),
+  },
   plugins: [react()],
   test: {
     environment: "jsdom",
