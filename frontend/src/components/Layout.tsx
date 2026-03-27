@@ -32,7 +32,7 @@ export default function Layout() {
         <Sidebar onNavigate={close} />
       </div>
 
-      <main className="flex flex-1 flex-col overflow-hidden">
+      <main className="flex min-h-0 flex-1 flex-col overflow-hidden">
         <Outlet />
       </main>
     </div>

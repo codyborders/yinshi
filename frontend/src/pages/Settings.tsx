@@ -343,49 +343,51 @@ export default function Settings() {
   }, [connections]);
 
   return (
-    <div className="mx-auto max-w-5xl p-6">
-      <h1 className="mb-6 text-2xl font-bold text-gray-100">Settings</h1>
+    <div className="h-full overflow-y-auto">
+      <div className="mx-auto max-w-5xl p-6 pb-12">
+        <h1 className="mb-6 text-2xl font-bold text-gray-100">Settings</h1>
 
-      <section className="mb-8">
-        <h2 className="mb-2 text-lg font-semibold text-gray-200">Account</h2>
-        <p className="text-sm text-gray-400">{email}</p>
-      </section>
+        <section className="mb-8">
+          <h2 className="mb-2 text-lg font-semibold text-gray-200">Account</h2>
+          <p className="text-sm text-gray-400">{email}</p>
+        </section>
 
-      <section>
-        <h2 className="mb-4 text-lg font-semibold text-gray-200">Providers</h2>
-        <p className="mb-4 text-sm text-gray-400">
-          Yinshi does not provide shared model credits. Connect your own model
-          providers here before starting sessions. Secrets are encrypted at rest
-          and never shown again after saving.
-        </p>
+        <section>
+          <h2 className="mb-4 text-lg font-semibold text-gray-200">Providers</h2>
+          <p className="mb-4 text-sm text-gray-400">
+            Yinshi does not provide shared model credits. Connect your own model
+            providers here before starting sessions. Secrets are encrypted at rest
+            and never shown again after saving.
+          </p>
 
-        {(loading || loadingConnections) && (
-          <div className="rounded border border-gray-700 bg-gray-800 px-4 py-3 text-sm text-gray-400">
-            Loading provider catalog...
-          </div>
-        )}
+          {(loading || loadingConnections) && (
+            <div className="rounded border border-gray-700 bg-gray-800 px-4 py-3 text-sm text-gray-400">
+              Loading provider catalog...
+            </div>
+          )}
 
-        {(catalogError || connectionsError) && (
-          <div className="mb-4 rounded border border-red-900/50 bg-gray-800 px-4 py-3 text-sm text-red-400">
-            {catalogError || connectionsError}
-          </div>
-        )}
+          {(catalogError || connectionsError) && (
+            <div className="mb-4 rounded border border-red-900/50 bg-gray-800 px-4 py-3 text-sm text-red-400">
+              {catalogError || connectionsError}
+            </div>
+          )}
 
-        {catalog && (
-          <div className="grid gap-4 md:grid-cols-2">
-            {catalog.providers.map((provider) => (
-              <ProviderCard
-                key={provider.id}
-                provider={provider}
-                connection={connectionByProviderId.get(provider.id)}
-                onConnectionChange={loadConnections}
-              />
-            ))}
-          </div>
-        )}
-      </section>
+          {catalog && (
+            <div className="grid gap-4 md:grid-cols-2">
+              {catalog.providers.map((provider) => (
+                <ProviderCard
+                  key={provider.id}
+                  provider={provider}
+                  connection={connectionByProviderId.get(provider.id)}
+                  onConnectionChange={loadConnections}
+                />
+              ))}
+            </div>
+          )}
+        </section>
 
-      <PiConfigSection />
+        <PiConfigSection />
+      </div>
     </div>
   );
 }
