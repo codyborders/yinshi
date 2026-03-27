@@ -175,14 +175,277 @@ def get_settings() -> Settings:
 
 ## model_catalog.py
 
-A single constant shared between the backend and the sidecar establishes the
-default session model. Keeping this in its own module avoids circular imports
-when both `db.py` and `models.py` need the value.
+The provider catalog is the backend's registry of every LLM provider that Yinshi
+knows about. Each entry declares the provider's authentication strategies (plain
+API key, API key with extra config fields, or OAuth), its human-readable label,
+any provider-specific setup fields the Settings UI must collect, and whether the
+provider is currently supported. A fallback constructor handles unknown provider
+identifiers returned by the sidecar so the catalog endpoint never crashes on new
+providers. The module also owns the canonical default model constant and a
+legacy-alias map that translates short names from older sessions into fully
+qualified `provider/model` references.
 
 ```python {chunk="model_catalog" file="backend/src/yinshi/model_catalog.py"}
-"""Shared backend constants for session model identifiers."""
+"""Shared model and provider catalog helpers."""
 
-DEFAULT_SESSION_MODEL = "minimax-m2.7"
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+DEFAULT_SESSION_MODEL = "minimax/MiniMax-M2.7"
+
+LEGACY_MODEL_ALIASES = {
+    "haiku": "anthropic/claude-haiku-4-5-20251001",
+    "minimax": DEFAULT_SESSION_MODEL,
+    "minimax-m2.5-highspeed": "minimax/MiniMax-M2.5-highspeed",
+    "minimax-m2.7": DEFAULT_SESSION_MODEL,
+    "minimax-m2.7-highspeed": "minimax/MiniMax-M2.7-highspeed",
+    "opus": "anthropic/claude-opus-4-20250514",
+    "sonnet": "anthropic/claude-sonnet-4-20250514",
+}
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderSetupField:
+    """Describe one provider-specific setup field."""
+
+    key: str
+    label: str
+    required: bool
+    secret: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderMetadata:
+    """Metadata that Yinshi adds on top of the pi provider registry."""
+
+    id: str
+    label: str
+    auth_strategies: tuple[str, ...]
+    setup_fields: tuple[ProviderSetupField, ...]
+    docs_url: str
+    supported: bool = True
+
+
+def _titleize_provider(provider_id: str) -> str:
+    """Convert a provider identifier into a readable label."""
+    if not isinstance(provider_id, str):
+        raise TypeError("provider_id must be a string")
+    normalized_provider_id = provider_id.strip()
+    if not normalized_provider_id:
+        raise ValueError("provider_id must not be empty")
+    pieces = normalized_provider_id.replace("-", " ").split()
+    return " ".join(piece.upper() if len(piece) <= 3 else piece.capitalize() for piece in pieces)
+
+
+_COMMON_DOCS_URL = "https://www.npmjs.com/package/@mariozechner/pi-ai"
+
+PROVIDER_METADATA_BY_ID: dict[str, ProviderMetadata] = {
+    "anthropic": ProviderMetadata(
+        id="anthropic",
+        label="Anthropic",
+        auth_strategies=("api_key", "oauth"),
+        setup_fields=(),
+        docs_url=_COMMON_DOCS_URL,
+    ),
+    "azure-openai-responses": ProviderMetadata(
+        id="azure-openai-responses",
+        label="Azure OpenAI",
+        auth_strategies=("api_key_with_config",),
+        setup_fields=(
+            ProviderSetupField("baseUrl", "Base URL", False),
+            ProviderSetupField("resourceName", "Resource Name", False),
+            ProviderSetupField("azureDeploymentName", "Deployment Name", False),
+            ProviderSetupField("apiVersion", "API Version", False),
+        ),
+        docs_url=_COMMON_DOCS_URL,
+    ),
+    "github-copilot": ProviderMetadata(
+        id="github-copilot",
+        label="GitHub Copilot",
+        auth_strategies=("oauth",),
+        setup_fields=(),
+        docs_url=_COMMON_DOCS_URL,
+    ),
+    "google-vertex": ProviderMetadata(
+        id="google-vertex",
+        label="Google Vertex AI",
+        auth_strategies=("api_key",),
+        setup_fields=(),
+        docs_url=_COMMON_DOCS_URL,
+    ),
+    "google": ProviderMetadata(
+        id="google",
+        label="Google",
+        auth_strategies=("api_key",),
+        setup_fields=(),
+        docs_url=_COMMON_DOCS_URL,
+    ),
+    "google-antigravity": ProviderMetadata(
+        id="google-antigravity",
+        label="Google Antigravity",
+        auth_strategies=("oauth",),
+        setup_fields=(),
+        docs_url=_COMMON_DOCS_URL,
+    ),
+    "google-gemini-cli": ProviderMetadata(
+        id="google-gemini-cli",
+        label="Google Gemini CLI",
+        auth_strategies=("oauth",),
+        setup_fields=(),
+        docs_url=_COMMON_DOCS_URL,
+    ),
+    "minimax": ProviderMetadata(
+        id="minimax",
+        label="MiniMax",
+        auth_strategies=("api_key",),
+        setup_fields=(),
+        docs_url=_COMMON_DOCS_URL,
+    ),
+    "minimax-cn": ProviderMetadata(
+        id="minimax-cn",
+        label="MiniMax China",
+        auth_strategies=("api_key",),
+        setup_fields=(),
+        docs_url=_COMMON_DOCS_URL,
+    ),
+    "mistral": ProviderMetadata(
+        id="mistral",
+        label="Mistral",
+        auth_strategies=("api_key",),
+        setup_fields=(),
+        docs_url=_COMMON_DOCS_URL,
+    ),
+    "openai": ProviderMetadata(
+        id="openai",
+        label="OpenAI",
+        auth_strategies=("api_key",),
+        setup_fields=(),
+        docs_url=_COMMON_DOCS_URL,
+    ),
+    "openai-codex": ProviderMetadata(
+        id="openai-codex",
+        label="OpenAI Codex",
+        auth_strategies=("oauth",),
+        setup_fields=(),
+        docs_url=_COMMON_DOCS_URL,
+    ),
+    "openrouter": ProviderMetadata(
+        id="openrouter",
+        label="OpenRouter",
+        auth_strategies=("api_key",),
+        setup_fields=(),
+        docs_url=_COMMON_DOCS_URL,
+    ),
+    "opencode": ProviderMetadata(
+        id="opencode",
+        label="OpenCode Zen",
+        auth_strategies=("api_key",),
+        setup_fields=(),
+        docs_url=_COMMON_DOCS_URL,
+    ),
+    "opencode-go": ProviderMetadata(
+        id="opencode-go",
+        label="OpenCode Go",
+        auth_strategies=("api_key",),
+        setup_fields=(),
+        docs_url=_COMMON_DOCS_URL,
+    ),
+    "vercel-ai-gateway": ProviderMetadata(
+        id="vercel-ai-gateway",
+        label="Vercel AI Gateway",
+        auth_strategies=("api_key",),
+        setup_fields=(),
+        docs_url=_COMMON_DOCS_URL,
+    ),
+    "groq": ProviderMetadata(
+        id="groq",
+        label="Groq",
+        auth_strategies=("api_key",),
+        setup_fields=(),
+        docs_url=_COMMON_DOCS_URL,
+    ),
+    "cerebras": ProviderMetadata(
+        id="cerebras",
+        label="Cerebras",
+        auth_strategies=("api_key",),
+        setup_fields=(),
+        docs_url=_COMMON_DOCS_URL,
+    ),
+    "xai": ProviderMetadata(
+        id="xai",
+        label="xAI",
+        auth_strategies=("api_key",),
+        setup_fields=(),
+        docs_url=_COMMON_DOCS_URL,
+    ),
+    "zai": ProviderMetadata(
+        id="zai",
+        label="ZAI",
+        auth_strategies=("api_key",),
+        setup_fields=(),
+        docs_url=_COMMON_DOCS_URL,
+    ),
+    "huggingface": ProviderMetadata(
+        id="huggingface",
+        label="Hugging Face",
+        auth_strategies=("api_key",),
+        setup_fields=(),
+        docs_url=_COMMON_DOCS_URL,
+    ),
+    "kimi-coding": ProviderMetadata(
+        id="kimi-coding",
+        label="Kimi Coding",
+        auth_strategies=("api_key",),
+        setup_fields=(),
+        docs_url=_COMMON_DOCS_URL,
+    ),
+    # Bedrock requires AWS SDK credential resolution rather than the auth.json-style
+    # API key path that Yinshi currently supports per session.
+    "amazon-bedrock": ProviderMetadata(
+        id="amazon-bedrock",
+        label="Amazon Bedrock",
+        auth_strategies=(),
+        setup_fields=(),
+        docs_url=_COMMON_DOCS_URL,
+        supported=False,
+    ),
+}
+
+
+def get_provider_metadata(provider_id: str) -> ProviderMetadata:
+    """Return metadata for a provider id, defaulting to unsupported."""
+    if not isinstance(provider_id, str):
+        raise TypeError("provider_id must be a string")
+    normalized_provider_id = provider_id.strip()
+    if not normalized_provider_id:
+        raise ValueError("provider_id must not be empty")
+    metadata = PROVIDER_METADATA_BY_ID.get(normalized_provider_id)
+    if metadata is not None:
+        return metadata
+    return ProviderMetadata(
+        id=normalized_provider_id,
+        label=_titleize_provider(normalized_provider_id),
+        auth_strategies=(),
+        setup_fields=(),
+        docs_url=_COMMON_DOCS_URL,
+        supported=False,
+    )
+
+
+def normalize_model_ref(model: str | None) -> str:
+    """Normalize stored or user-provided model values into canonical refs."""
+    if model is None:
+        return DEFAULT_SESSION_MODEL
+    if not isinstance(model, str):
+        raise TypeError("model must be a string or None")
+    normalized_model = model.strip()
+    if not normalized_model:
+        raise ValueError("model must not be empty")
+    canonical_model = LEGACY_MODEL_ALIASES.get(normalized_model.lower())
+    if canonical_model is not None:
+        return canonical_model
+    return normalized_model
 ```
 
 # Exception Hierarchy
@@ -523,6 +786,21 @@ CREATE TABLE IF NOT EXISTS api_keys (
     last_used_at TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS provider_connections (
+    id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    provider TEXT NOT NULL,
+    auth_strategy TEXT NOT NULL,
+    encrypted_secret BLOB NOT NULL,
+    label TEXT DEFAULT '',
+    config_json TEXT DEFAULT '{}' NOT NULL,
+    status TEXT DEFAULT 'connected' NOT NULL,
+    last_used_at TIMESTAMP,
+    expires_at TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS auth_sessions (
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -548,6 +826,7 @@ CREATE TABLE IF NOT EXISTS usage_log (
 CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
 CREATE INDEX IF NOT EXISTS idx_oauth_user ON oauth_identities(user_id);
 CREATE INDEX IF NOT EXISTS idx_api_keys_user ON api_keys(user_id);
+CREATE INDEX IF NOT EXISTS idx_provider_connections_user ON provider_connections(user_id);
 CREATE INDEX IF NOT EXISTS idx_auth_sessions_user ON auth_sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_usage_user ON usage_log(user_id);
 CREATE INDEX IF NOT EXISTS idx_usage_session ON usage_log(session_id);
@@ -598,6 +877,9 @@ BEGIN UPDATE pi_configs SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id; EN
 
 CREATE TRIGGER IF NOT EXISTS update_user_settings_updated_at AFTER UPDATE ON user_settings
 BEGIN UPDATE user_settings SET updated_at = CURRENT_TIMESTAMP WHERE user_id = NEW.user_id; END;
+
+CREATE TRIGGER IF NOT EXISTS update_provider_connections_updated_at AFTER UPDATE ON provider_connections
+BEGIN UPDATE provider_connections SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id; END;
 """
 
 
@@ -626,6 +908,59 @@ def _migrate_control(conn: sqlite3.Connection) -> None:
         logger.info("Control migration: adding available_categories column to pi_configs")
         conn.execute(
             "ALTER TABLE pi_configs ADD COLUMN available_categories TEXT DEFAULT '[]' NOT NULL"
+        )
+        conn.commit()
+
+    provider_connection_columns = [
+        row[1] for row in conn.execute("PRAGMA table_info(provider_connections)").fetchall()
+    ]
+    if not provider_connection_columns:
+        logger.info("Control migration: creating provider_connections table")
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS provider_connections (
+                id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+                user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                provider TEXT NOT NULL,
+                auth_strategy TEXT NOT NULL,
+                encrypted_secret BLOB NOT NULL,
+                label TEXT DEFAULT '',
+                config_json TEXT DEFAULT '{}' NOT NULL,
+                status TEXT DEFAULT 'connected' NOT NULL,
+                last_used_at TIMESTAMP,
+                expires_at TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_provider_connections_user
+            ON provider_connections(user_id);
+            CREATE TRIGGER IF NOT EXISTS update_provider_connections_updated_at
+            AFTER UPDATE ON provider_connections
+            BEGIN
+                UPDATE provider_connections SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id;
+            END;
+            """
+        )
+        conn.commit()
+
+    migrated_row = conn.execute(
+        "SELECT COUNT(*) FROM provider_connections WHERE auth_strategy = 'api_key'"
+    ).fetchone()
+    api_key_count = conn.execute("SELECT COUNT(*) FROM api_keys").fetchone()
+    assert migrated_row is not None, "provider connection count must be queryable"
+    assert api_key_count is not None, "api key count must be queryable"
+    if api_key_count[0] > 0 and migrated_row[0] < api_key_count[0]:
+        logger.info("Control migration: backfilling api_keys into provider_connections")
+        conn.execute(
+            """
+            INSERT INTO provider_connections
+            (id, created_at, updated_at, user_id, provider, auth_strategy,
+             encrypted_secret, label, config_json, status, last_used_at, expires_at)
+            SELECT id, created_at, created_at, user_id, provider, 'api_key',
+                   encrypted_key, label, '{}', 'connected', last_used_at, NULL
+            FROM api_keys
+            WHERE id NOT IN (SELECT id FROM provider_connections)
+            """
         )
         conn.commit()
 
@@ -659,10 +994,11 @@ membership tests to ensure consistent serialization and reject unknown values.
 """Pydantic models for API request/response schemas."""
 
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 
-from yinshi.model_catalog import DEFAULT_SESSION_MODEL
+from yinshi.model_catalog import DEFAULT_SESSION_MODEL, get_provider_metadata, normalize_model_ref
 
 PI_CONFIG_CATEGORY_ORDER = (
     "skills",
@@ -736,11 +1072,25 @@ class SessionCreate(BaseModel):
 
     model: str = Field(DEFAULT_SESSION_MODEL, max_length=100)
 
+    @field_validator("model")
+    @classmethod
+    def validate_model(cls, value: str) -> str:
+        """Normalize session model values to canonical refs."""
+        return normalize_model_ref(value)
+
 
 class SessionUpdate(BaseModel):
     """Request to update a session."""
 
     model: str | None = Field(None, max_length=100)
+
+    @field_validator("model")
+    @classmethod
+    def validate_model(cls, value: str | None) -> str | None:
+        """Normalize optional session model values to canonical refs."""
+        if value is None:
+            return None
+        return normalize_model_ref(value)
 
 
 class SessionOut(BaseModel):
@@ -773,6 +1123,14 @@ class WSPrompt(BaseModel):
     prompt: str = Field(..., max_length=100_000)
     model: str | None = Field(None, max_length=100)
 
+    @field_validator("model")
+    @classmethod
+    def validate_model(cls, value: str | None) -> str | None:
+        """Normalize optional prompt model values to canonical refs."""
+        if value is None:
+            return None
+        return normalize_model_ref(value)
+
 
 class WSCancel(BaseModel):
     """WebSocket message from client to cancel."""
@@ -794,16 +1152,140 @@ class UserOut(BaseModel):
     tier: str = "free"
 
 
-class ApiKeyCreate(BaseModel):
-    """Request to store an API key."""
+class ProviderSetupFieldOut(BaseModel):
+    """Describe one provider setup field to the frontend."""
 
-    provider: str = Field(..., pattern=r"^(anthropic|minimax)$")
+    key: str
+    label: str
+    required: bool
+    secret: bool = False
+
+
+class ProviderDescriptorOut(BaseModel):
+    """One provider in the catalog response."""
+
+    id: str
+    label: str
+    auth_strategies: list[str]
+    setup_fields: list[ProviderSetupFieldOut]
+    docs_url: str
+    connected: bool
+    model_count: int
+
+
+class ModelDescriptorOut(BaseModel):
+    """One model in the catalog response."""
+
+    ref: str
+    provider: str
+    id: str
+    label: str
+    api: str
+    reasoning: bool
+    inputs: list[str]
+    context_window: int
+    max_tokens: int
+
+
+class ProviderCatalogOut(BaseModel):
+    """Catalog response for providers and models."""
+
+    default_model: str
+    providers: list[ProviderDescriptorOut]
+    models: list[ModelDescriptorOut]
+
+
+class ProviderConnectionCreate(BaseModel):
+    """Request to create a provider connection."""
+
+    provider: str = Field(..., min_length=1, max_length=100)
+    auth_strategy: str = Field(..., min_length=1, max_length=100)
+    secret: str | dict[str, Any]
+    label: str = Field("", max_length=255)
+    config: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("provider")
+    @classmethod
+    def validate_provider(cls, value: str) -> str:
+        """Reject blank providers."""
+        normalized_value = value.strip()
+        if not normalized_value:
+            raise ValueError("Provider must not be empty")
+        return normalized_value
+
+    @field_validator("auth_strategy")
+    @classmethod
+    def validate_auth_strategy(cls, value: str, info) -> str:
+        """Require one of the provider's supported auth strategies."""
+        normalized_value = value.strip()
+        if not normalized_value:
+            raise ValueError("Auth strategy must not be empty")
+        provider = info.data.get("provider")
+        if isinstance(provider, str):
+            metadata = get_provider_metadata(provider)
+            if normalized_value not in metadata.auth_strategies:
+                raise ValueError(
+                    f"{provider} does not support auth strategy {normalized_value}"
+                )
+        return normalized_value
+
+    @field_validator("secret")
+    @classmethod
+    def validate_secret(cls, value: str | dict[str, Any], info) -> str | dict[str, Any]:
+        """Match secret shape to the requested auth strategy."""
+        auth_strategy = info.data.get("auth_strategy")
+        if auth_strategy == "api_key":
+            if not isinstance(value, str):
+                raise TypeError("API key connections require a string secret")
+            normalized_value = value.strip()
+            if not normalized_value:
+                raise ValueError("API key secret must not be empty")
+            return normalized_value
+        if auth_strategy == "api_key_with_config":
+            if isinstance(value, str):
+                normalized_value = value.strip()
+                if not normalized_value:
+                    raise ValueError("API key secret must not be empty")
+                return normalized_value
+            if not isinstance(value, dict):
+                raise TypeError("API key + config connections require a string or object secret")
+            if not value:
+                raise ValueError("API key + config secret must not be empty")
+            return value
+        if auth_strategy == "oauth":
+            if not isinstance(value, dict):
+                raise TypeError("OAuth connections require an object secret")
+            if not value:
+                raise ValueError("OAuth secret must not be empty")
+            return value
+        return value
+
+
+class ProviderConnectionOut(BaseModel):
+    """Provider connection response without the secret payload."""
+
+    id: str
+    created_at: datetime
+    updated_at: datetime
+    provider: str
+    auth_strategy: str
+    label: str = ""
+    config: dict[str, Any] = Field(default_factory=dict)
+    status: str
+    last_used_at: datetime | None = None
+    expires_at: datetime | None = None
+
+
+class ApiKeyCreate(BaseModel):
+    """Compatibility wrapper for legacy API-key endpoints."""
+
+    provider: str = Field(..., min_length=1, max_length=100)
     key: str = Field(..., min_length=1, max_length=500)
     label: str = Field("", max_length=255)
 
 
 class ApiKeyOut(BaseModel):
-    """API key response (key value is never returned)."""
+    """Compatibility wrapper for legacy API-key responses."""
 
     id: str
     created_at: datetime
@@ -1576,6 +2058,446 @@ def record_usage(
         "Usage recorded: user=%s provider=%s model=%s cost=%.2fc source=%s",
         user_id, provider, model, cost, key_source,
     )
+```
+
+# Provider Connections
+
+## services/provider_connections.py
+
+Provider connections generalize the earlier single-API-key-per-provider model
+into a storage layer that supports three authentication strategies: plain API
+keys, API keys bundled with extra configuration fields (such as Azure resource
+names), and OAuth token sets. Each connection is encrypted at rest using the
+user's DEK via the same AES-256-GCM pipeline as legacy API keys.
+
+The resolution path (`resolve_provider_connection`) first checks the new
+`provider_connections` table, then falls back to the legacy `api_keys` table
+so existing users continue to work during the migration window. Normalization
+helpers enforce type safety and validate auth strategy compatibility against
+the provider metadata registry before any database write.
+
+```python {chunk="provider_connections" file="backend/src/yinshi/services/provider_connections.py"}
+"""Persistent provider connection storage and resolution."""
+
+from __future__ import annotations
+
+import json
+import logging
+from datetime import datetime
+from typing import Any, cast
+
+from yinshi.db import get_control_db
+from yinshi.exceptions import KeyNotFoundError
+from yinshi.model_catalog import ProviderMetadata, get_provider_metadata
+from yinshi.services.crypto import decrypt_api_key, encrypt_api_key
+from yinshi.services.keys import get_user_dek
+
+logger = logging.getLogger(__name__)
+
+
+def _normalize_user_id(user_id: str) -> str:
+    """Require a non-empty user identifier."""
+    if not isinstance(user_id, str):
+        raise TypeError("user_id must be a string")
+    normalized_user_id = user_id.strip()
+    if not normalized_user_id:
+        raise ValueError("user_id must not be empty")
+    return normalized_user_id
+
+
+def _normalize_provider(provider: str) -> str:
+    """Require a non-empty provider identifier."""
+    if not isinstance(provider, str):
+        raise TypeError("provider must be a string")
+    normalized_provider = provider.strip()
+    if not normalized_provider:
+        raise ValueError("provider must not be empty")
+    return normalized_provider
+
+
+def _normalize_auth_strategy(auth_strategy: str) -> str:
+    """Require a supported auth strategy for a provider connection."""
+    if not isinstance(auth_strategy, str):
+        raise TypeError("auth_strategy must be a string")
+    normalized_auth_strategy = auth_strategy.strip()
+    if not normalized_auth_strategy:
+        raise ValueError("auth_strategy must not be empty")
+    if normalized_auth_strategy not in {"api_key", "api_key_with_config", "oauth"}:
+        raise ValueError(f"Unsupported auth strategy: {auth_strategy}")
+    return normalized_auth_strategy
+
+
+def _serialize_secret(secret: str | dict[str, object], auth_strategy: str) -> str:
+    """Serialize a provider secret into a stable encrypted payload."""
+    normalized_auth_strategy = _normalize_auth_strategy(auth_strategy)
+    if normalized_auth_strategy == "api_key":
+        if not isinstance(secret, str):
+            raise TypeError("API key secrets must be strings")
+        normalized_secret = secret.strip()
+        if not normalized_secret:
+            raise ValueError("API key secret must not be empty")
+        return normalized_secret
+    if normalized_auth_strategy == "api_key_with_config":
+        if not isinstance(secret, dict):
+            raise TypeError("API key + config secrets must be objects")
+        if not secret:
+            raise ValueError("API key + config secret must not be empty")
+        return json.dumps(secret, sort_keys=True)
+
+    if not isinstance(secret, dict):
+        raise TypeError("OAuth secrets must be objects")
+    if not secret:
+        raise ValueError("OAuth secrets must not be empty")
+    return json.dumps(secret, sort_keys=True)
+
+
+def _deserialize_secret(secret_payload: str, auth_strategy: str) -> str | dict[str, object]:
+    """Decode an encrypted provider secret payload."""
+    normalized_auth_strategy = _normalize_auth_strategy(auth_strategy)
+    if normalized_auth_strategy == "api_key":
+        if not isinstance(secret_payload, str):
+            raise TypeError("Stored API key payload must be a string")
+        return secret_payload
+    if normalized_auth_strategy == "api_key_with_config":
+        decoded_secret = json.loads(secret_payload)
+        if not isinstance(decoded_secret, dict):
+            raise ValueError("Stored API key + config payload must decode to an object")
+        normalized_secret = {str(key): value for key, value in decoded_secret.items()}
+        return cast(dict[str, object], normalized_secret)
+
+    decoded_secret = json.loads(secret_payload)
+    if not isinstance(decoded_secret, dict):
+        raise ValueError("Stored OAuth payload must decode to an object")
+    normalized_secret = {str(key): value for key, value in decoded_secret.items()}
+    return cast(dict[str, object], normalized_secret)
+
+
+def _normalize_text_setting(field_name: str, value: object) -> str:
+    """Normalize one string-valued provider setting."""
+    if not isinstance(field_name, str):
+        raise TypeError("field_name must be a string")
+    if not field_name:
+        raise ValueError("field_name must not be empty")
+    if not isinstance(value, str):
+        raise TypeError(f"{field_name} must be a string")
+    normalized_value = value.strip()
+    if not normalized_value:
+        raise ValueError(f"{field_name} must not be empty")
+    return normalized_value
+
+
+def _normalize_public_config(
+    provider_metadata: ProviderMetadata,
+    config: dict[str, object] | None,
+) -> dict[str, object]:
+    """Validate and normalize the non-secret config payload."""
+    if config is None:
+        config = {}
+    if not isinstance(config, dict):
+        raise TypeError("config must be a dictionary or None")
+    secret_field_keys = {field.key for field in provider_metadata.setup_fields if field.secret}
+    public_fields = [field for field in provider_metadata.setup_fields if not field.secret]
+    public_field_keys = {field.key for field in public_fields}
+    unexpected_keys = set(config) - public_field_keys
+    if unexpected_keys:
+        unexpected_key = sorted(unexpected_keys)[0]
+        if unexpected_key in secret_field_keys:
+            raise ValueError(f"{unexpected_key} is secret and must not be sent in config")
+        raise ValueError(f"Unexpected config field for {provider_metadata.id}: {unexpected_key}")
+
+    normalized_config: dict[str, object] = {}
+    for field in public_fields:
+        raw_value = config.get(field.key)
+        if raw_value is None:
+            if field.required:
+                raise ValueError(f"{field.label} is required")
+            continue
+        normalized_value = _normalize_text_setting(field.label, raw_value)
+        normalized_config[field.key] = normalized_value
+    return normalized_config
+
+
+def _normalize_api_key_with_config_secret(
+    provider_metadata: ProviderMetadata,
+    secret: str | dict[str, object],
+) -> dict[str, object]:
+    """Normalize encrypted secret payloads for api_key_with_config providers."""
+    secret_field_keys = {field.key for field in provider_metadata.setup_fields if field.secret}
+    required_secret_field_keys = {
+        field.key
+        for field in provider_metadata.setup_fields
+        if field.secret and field.required
+    }
+    if isinstance(secret, str):
+        normalized_api_key = _normalize_text_setting("API key", secret)
+        normalized_secret: dict[str, object] = {"apiKey": normalized_api_key}
+    else:
+        if not isinstance(secret, dict):
+            raise TypeError("API key + config secrets must be an object or string")
+        normalized_secret = {}
+        for key, value in secret.items():
+            if key != "apiKey" and key not in secret_field_keys:
+                raise ValueError(f"Unexpected secret field for {provider_metadata.id}: {key}")
+            normalized_secret[key] = _normalize_text_setting(str(key), value)
+        api_key = normalized_secret.get("apiKey")
+        if not isinstance(api_key, str) or not api_key:
+            raise ValueError("API key is required")
+
+    missing_secret_keys = sorted(
+        key for key in required_secret_field_keys if key not in normalized_secret
+    )
+    if missing_secret_keys:
+        raise ValueError(f"Missing required secret field: {missing_secret_keys[0]}")
+    return normalized_secret
+
+
+def _normalize_connection_secret(
+    provider_metadata: ProviderMetadata,
+    auth_strategy: str,
+    secret: str | dict[str, object],
+) -> str | dict[str, object]:
+    """Normalize one provider secret payload by auth strategy."""
+    normalized_auth_strategy = _normalize_auth_strategy(auth_strategy)
+    if normalized_auth_strategy == "api_key":
+        return _normalize_text_setting("API key", secret)
+    if normalized_auth_strategy == "api_key_with_config":
+        return _normalize_api_key_with_config_secret(provider_metadata, secret)
+    if normalized_auth_strategy != "oauth":
+        raise ValueError(f"Unsupported auth strategy: {auth_strategy}")
+    if not isinstance(secret, dict):
+        raise TypeError("OAuth secrets must be objects")
+    if not secret:
+        raise ValueError("OAuth secrets must not be empty")
+    normalized_secret = {str(key): value for key, value in secret.items()}
+    return cast(dict[str, object], normalized_secret)
+
+
+def _encode_config(config: dict[str, object] | None) -> str:
+    """Serialize non-secret provider config."""
+    if config is None:
+        return "{}"
+    if not isinstance(config, dict):
+        raise TypeError("config must be a dictionary or None")
+    normalized_config = {str(key): value for key, value in config.items()}
+    return json.dumps(normalized_config, sort_keys=True)
+
+
+def _decode_config(config_json: str | None) -> dict[str, object]:
+    """Deserialize non-secret provider config."""
+    if not config_json:
+        return {}
+    decoded_config = json.loads(config_json)
+    if not isinstance(decoded_config, dict):
+        raise ValueError("Stored config must decode to an object")
+    normalized_config = {str(key): value for key, value in decoded_config.items()}
+    return cast(dict[str, object], normalized_config)
+
+
+def list_provider_connections(user_id: str) -> list[dict[str, Any]]:
+    """List provider connections for a user."""
+    normalized_user_id = _normalize_user_id(user_id)
+    with get_control_db() as db:
+        rows = db.execute(
+            "SELECT id, created_at, updated_at, provider, auth_strategy, label, "
+            "config_json, status, last_used_at, expires_at "
+            "FROM provider_connections WHERE user_id = ? "
+            "ORDER BY updated_at DESC, created_at DESC",
+            (normalized_user_id,),
+        ).fetchall()
+    connections: list[dict[str, Any]] = []
+    for row in rows:
+        connection = dict(row)
+        connection["config"] = _decode_config(connection.pop("config_json", "{}"))
+        connections.append(connection)
+    return connections
+
+
+def create_provider_connection(
+    user_id: str,
+    provider: str,
+    auth_strategy: str,
+    secret: str | dict[str, object],
+    *,
+    label: str = "",
+    config: dict[str, object] | None = None,
+    status: str = "connected",
+    expires_at: datetime | None = None,
+) -> dict[str, Any]:
+    """Store an encrypted provider connection for a user."""
+    normalized_user_id = _normalize_user_id(user_id)
+    normalized_provider = _normalize_provider(provider)
+    normalized_auth_strategy = _normalize_auth_strategy(auth_strategy)
+    provider_metadata = get_provider_metadata(normalized_provider)
+    if normalized_auth_strategy not in provider_metadata.auth_strategies:
+        raise ValueError(
+            f"{normalized_provider} does not support auth strategy {normalized_auth_strategy}"
+        )
+    if not isinstance(label, str):
+        raise TypeError("label must be a string")
+    if not isinstance(status, str):
+        raise TypeError("status must be a string")
+    normalized_secret_object = _normalize_connection_secret(
+        provider_metadata,
+        normalized_auth_strategy,
+        secret,
+    )
+    normalized_config = _normalize_public_config(provider_metadata, config)
+    normalized_secret = _serialize_secret(normalized_secret_object, normalized_auth_strategy)
+    encrypted_secret = encrypt_api_key(normalized_secret, get_user_dek(normalized_user_id))
+    config_json = _encode_config(normalized_config)
+
+    with get_control_db() as db:
+        cursor = db.execute(
+            "INSERT INTO provider_connections "
+            "(user_id, provider, auth_strategy, encrypted_secret, label, config_json, status, expires_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                normalized_user_id,
+                normalized_provider,
+                normalized_auth_strategy,
+                encrypted_secret,
+                label,
+                config_json,
+                status,
+                expires_at.isoformat() if expires_at else None,
+            ),
+        )
+        db.commit()
+        row = db.execute(
+            "SELECT id, created_at, updated_at, provider, auth_strategy, label, "
+            "config_json, status, last_used_at, expires_at "
+            "FROM provider_connections WHERE rowid = ?",
+            (cursor.lastrowid,),
+        ).fetchone()
+    assert row is not None, "provider connection insert must return a row"
+    connection = dict(row)
+    connection["config"] = _decode_config(connection.pop("config_json", "{}"))
+    return connection
+
+
+def delete_provider_connection(user_id: str, connection_id: str) -> None:
+    """Delete one provider connection belonging to a user."""
+    normalized_user_id = _normalize_user_id(user_id)
+    if not isinstance(connection_id, str):
+        raise TypeError("connection_id must be a string")
+    normalized_connection_id = connection_id.strip()
+    if not normalized_connection_id:
+        raise ValueError("connection_id must not be empty")
+    with get_control_db() as db:
+        row = db.execute(
+            "SELECT id FROM provider_connections WHERE id = ? AND user_id = ?",
+            (normalized_connection_id, normalized_user_id),
+        ).fetchone()
+        if row is None:
+            raise KeyNotFoundError("Connection not found")
+        db.execute("DELETE FROM provider_connections WHERE id = ?", (normalized_connection_id,))
+        db.commit()
+
+
+def resolve_provider_connection(
+    user_id: str,
+    provider: str,
+) -> dict[str, Any]:
+    """Return the newest provider connection for a provider, including decrypted secret."""
+    normalized_user_id = _normalize_user_id(user_id)
+    normalized_provider = _normalize_provider(provider)
+    with get_control_db() as db:
+        row = db.execute(
+            "SELECT id, provider, auth_strategy, encrypted_secret, label, config_json, "
+            "status, last_used_at, expires_at "
+            "FROM provider_connections WHERE user_id = ? AND provider = ? "
+            "ORDER BY updated_at DESC, created_at DESC LIMIT 1",
+            (normalized_user_id, normalized_provider),
+        ).fetchone()
+        if row is not None:
+            secret_payload = decrypt_api_key(
+                row["encrypted_secret"],
+                get_user_dek(normalized_user_id),
+            )
+            db.execute(
+                "UPDATE provider_connections SET last_used_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (row["id"],),
+            )
+            db.commit()
+            connection = dict(row)
+            connection["secret"] = _deserialize_secret(secret_payload, connection["auth_strategy"])
+            connection["config"] = _decode_config(connection.pop("config_json", "{}"))
+            return connection
+
+        # Keep reading legacy BYOK rows during the migration window so existing
+        # users and tests continue to work before they are backfilled.
+        legacy_row = db.execute(
+            "SELECT rowid, encrypted_key FROM api_keys WHERE user_id = ? AND provider = ? "
+            "ORDER BY created_at DESC LIMIT 1",
+            (normalized_user_id, normalized_provider),
+        ).fetchone()
+        if legacy_row is None:
+            raise KeyNotFoundError(
+                f"No provider connection found for {normalized_provider}. Add it in Settings."
+            )
+
+        legacy_secret = decrypt_api_key(
+            legacy_row["encrypted_key"],
+            get_user_dek(normalized_user_id),
+        )
+        db.execute(
+            "UPDATE api_keys SET last_used_at = CURRENT_TIMESTAMP WHERE rowid = ?",
+            (legacy_row["rowid"],),
+        )
+        db.commit()
+
+    return {
+        "id": f"legacy-{normalized_provider}",
+        "provider": normalized_provider,
+        "auth_strategy": "api_key",
+        "label": "",
+        "status": "connected",
+        "last_used_at": None,
+        "expires_at": None,
+        "secret": legacy_secret,
+        "config": {},
+    }
+
+
+def update_provider_connection_secret(
+    user_id: str,
+    connection_id: str,
+    auth_strategy: str,
+    secret: str | dict[str, object],
+) -> None:
+    """Persist a refreshed provider secret payload."""
+    normalized_user_id = _normalize_user_id(user_id)
+    if not isinstance(connection_id, str):
+        raise TypeError("connection_id must be a string")
+    normalized_connection_id = connection_id.strip()
+    if not normalized_connection_id:
+        raise ValueError("connection_id must not be empty")
+    normalized_auth_strategy = _normalize_auth_strategy(auth_strategy)
+    with get_control_db() as db:
+        row = db.execute(
+            "SELECT provider FROM provider_connections WHERE id = ? AND user_id = ?",
+            (normalized_connection_id, normalized_user_id),
+        ).fetchone()
+    if row is None:
+        logger.warning("Skipping secret refresh for missing connection %s", normalized_connection_id[:8])
+        return
+    normalized_secret = _normalize_connection_secret(
+        get_provider_metadata(row["provider"]),
+        normalized_auth_strategy,
+        secret,
+    )
+    encrypted_secret = encrypt_api_key(
+        _serialize_secret(normalized_secret, normalized_auth_strategy),
+        get_user_dek(normalized_user_id),
+    )
+    with get_control_db() as db:
+        db.execute(
+            "UPDATE provider_connections SET encrypted_secret = ?, last_used_at = CURRENT_TIMESTAMP "
+            "WHERE id = ? AND user_id = ?",
+            (encrypted_secret, normalized_connection_id, normalized_user_id),
+        )
+        db.commit()
+    logger.info("Refreshed provider connection secret for %s", normalized_connection_id[:8])
 ```
 
 # Account Management
@@ -3961,14 +4883,17 @@ class SidecarClient:
     def _build_options(
         model: str,
         cwd: str,
-        api_key: str | None = None,
+        provider_auth: dict[str, Any] | None = None,
+        provider_config: dict[str, Any] | None = None,
         agent_dir: str | None = None,
         settings_payload: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Build the options dict sent with warmup/query messages."""
         options: dict[str, Any] = {"model": model, "cwd": cwd}
-        if api_key:
-            options["apiKey"] = api_key
+        if provider_auth:
+            options["providerAuth"] = provider_auth
+        if provider_config:
+            options["providerConfig"] = provider_config
         if agent_dir:
             options["agentDir"] = agent_dir
         if settings_payload:
@@ -3980,7 +4905,8 @@ class SidecarClient:
         session_id: str,
         model: str = DEFAULT_SESSION_MODEL,
         cwd: str = ".",
-        api_key: str | None = None,
+        provider_auth: dict[str, Any] | None = None,
+        provider_config: dict[str, Any] | None = None,
         agent_dir: str | None = None,
         settings_payload: dict[str, Any] | None = None,
     ) -> None:
@@ -3991,7 +4917,8 @@ class SidecarClient:
             "options": self._build_options(
                 model,
                 cwd,
-                api_key,
+                provider_auth,
+                provider_config,
                 agent_dir=agent_dir,
                 settings_payload=settings_payload,
             ),
@@ -4003,7 +4930,8 @@ class SidecarClient:
         prompt: str,
         model: str = DEFAULT_SESSION_MODEL,
         cwd: str = ".",
-        api_key: str | None = None,
+        provider_auth: dict[str, Any] | None = None,
+        provider_config: dict[str, Any] | None = None,
         agent_dir: str | None = None,
         settings_payload: dict[str, Any] | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
@@ -4015,7 +4943,8 @@ class SidecarClient:
             "options": self._build_options(
                 model,
                 cwd,
-                api_key,
+                provider_auth,
+                provider_config,
                 agent_dir=agent_dir,
                 settings_payload=settings_payload,
             ),
@@ -4041,13 +4970,33 @@ class SidecarClient:
                 if data.get("type") == "result":
                     break
 
-    async def resolve_model(self, model_key: str) -> dict[str, str | None]:
+    async def resolve_model(
+        self,
+        model_key: str,
+        *,
+        agent_dir: str | None = None,
+        provider_auth: dict[str, Any] | None = None,
+        provider_config: dict[str, Any] | None = None,
+    ) -> dict[str, str | None]:
         """Ask the sidecar to resolve a model key.
 
         Returns {'provider': '...', 'model': '...'}.
         """
         request_id = f"resolve-{model_key}"
-        await self._send({"type": "resolve", "id": request_id, "model": model_key})
+        await self._send(
+            {
+                "type": "resolve",
+                "id": request_id,
+                "model": model_key,
+                "options": self._build_options(
+                    model_key,
+                    ".",
+                    provider_auth,
+                    provider_config,
+                    agent_dir=agent_dir,
+                ),
+            }
+        )
 
         msg = await self._read_line()
         if msg is None:
@@ -4065,6 +5014,94 @@ class SidecarClient:
             raise SidecarError("Resolved model must be a non-empty string")
 
         return {"provider": provider, "model": model}
+
+    async def get_catalog(self, *, agent_dir: str | None = None) -> dict[str, Any]:
+        """Request the provider/model catalog from the sidecar."""
+        request_id = "catalog"
+        await self._send(
+            {
+                "type": "catalog",
+                "id": request_id,
+                "options": {"agentDir": agent_dir} if agent_dir else {},
+            }
+        )
+        msg = await self._read_line()
+        if msg is None:
+            raise SidecarError("Sidecar connection lost during catalog request")
+        if msg.get("type") == "error":
+            raise SidecarError(f"Catalog request failed: {msg.get('error', 'unknown')}")
+        if msg.get("type") != "catalog":
+            raise SidecarError(f"Unexpected response type: {msg.get('type')}")
+        return msg
+
+    async def resolve_provider_auth(
+        self,
+        *,
+        provider: str,
+        model: str,
+        provider_auth: dict[str, Any],
+        provider_config: dict[str, Any] | None = None,
+        agent_dir: str | None = None,
+    ) -> dict[str, Any]:
+        """Resolve one provider auth payload into runtime-ready values."""
+        request_id = f"auth-resolve-{provider}"
+        await self._send(
+            {
+                "type": "auth_resolve",
+                "id": request_id,
+                "provider": provider,
+                "model": model,
+                "providerAuth": provider_auth,
+                "providerConfig": provider_config,
+                "agentDir": agent_dir,
+            }
+        )
+        msg = await self._read_line()
+        if msg is None:
+            raise SidecarError("Sidecar connection lost during auth resolve")
+        if msg.get("type") == "error":
+            raise SidecarError(f"Provider auth resolve failed: {msg.get('error', 'unknown')}")
+        if msg.get("type") != "auth_resolved":
+            raise SidecarError(f"Unexpected response type: {msg.get('type')}")
+        return msg
+
+    async def start_oauth_flow(self, provider: str) -> dict[str, Any]:
+        """Start an OAuth connection flow for a provider."""
+        request_id = f"oauth-start-{provider}"
+        await self._send({"type": "oauth_start", "id": request_id, "provider": provider})
+        msg = await self._read_line()
+        if msg is None:
+            raise SidecarError("Sidecar connection lost during OAuth start")
+        if msg.get("type") == "error":
+            raise SidecarError(f"OAuth start failed: {msg.get('error', 'unknown')}")
+        if msg.get("type") != "oauth_started":
+            raise SidecarError(f"Unexpected response type: {msg.get('type')}")
+        return msg
+
+    async def get_oauth_flow_status(self, flow_id: str) -> dict[str, Any]:
+        """Query the state of a started OAuth flow."""
+        request_id = f"oauth-status-{flow_id}"
+        await self._send({"type": "oauth_status", "id": request_id, "flowId": flow_id})
+        msg = await self._read_line()
+        if msg is None:
+            raise SidecarError("Sidecar connection lost during OAuth status check")
+        if msg.get("type") == "error":
+            raise SidecarError(f"OAuth status failed: {msg.get('error', 'unknown')}")
+        if msg.get("type") != "oauth_status":
+            raise SidecarError(f"Unexpected response type: {msg.get('type')}")
+        return msg
+
+    async def clear_oauth_flow(self, flow_id: str) -> None:
+        """Clear one completed or failed OAuth flow from the sidecar."""
+        request_id = f"oauth-clear-{flow_id}"
+        await self._send({"type": "oauth_clear", "id": request_id, "flowId": flow_id})
+        msg = await self._read_line()
+        if msg is None:
+            raise SidecarError("Sidecar connection lost during OAuth cleanup")
+        if msg.get("type") == "error":
+            raise SidecarError(f"OAuth cleanup failed: {msg.get('error', 'unknown')}")
+        if msg.get("type") != "oauth_cleared":
+            raise SidecarError(f"Unexpected response type: {msg.get('type')}")
 
     async def cancel(self, session_id: str) -> None:
         """Cancel an active session."""
@@ -4598,6 +5635,8 @@ from yinshi.exceptions import GitHubAppError, GitHubInstallationUnusableError
 from yinshi.rate_limit import limiter
 from yinshi.services.accounts import resolve_or_create_user
 from yinshi.services.github_app import get_installation_details
+from yinshi.services.provider_connections import create_provider_connection
+from yinshi.services.sidecar import create_sidecar_connection
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -4895,6 +5934,83 @@ async def github_install_callback(request: Request) -> RedirectResponse:
         db.commit()
 
     return RedirectResponse(url="/app?github_connected=1")
+
+
+@router.post("/providers/{provider}/start")
+async def start_provider_auth(provider: str, request: Request) -> dict[str, str | None]:
+    """Start a provider OAuth flow through the sidecar."""
+    user_id = _current_user_id(request)
+    if user_id is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    sidecar = await create_sidecar_connection()
+    try:
+        flow = await sidecar.start_oauth_flow(provider)
+    finally:
+        await sidecar.disconnect()
+    return {
+        "flow_id": flow["flow_id"],
+        "provider": flow["provider"],
+        "auth_url": flow["auth_url"],
+        "instructions": flow.get("instructions"),
+    }
+
+
+@router.get("/providers/{provider}/callback")
+async def callback_provider_auth(provider: str, flow_id: str, request: Request) -> JSONResponse:
+    """Poll an OAuth flow and persist its credential when complete."""
+    user_id = _current_user_id(request)
+    if user_id is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    sidecar = await create_sidecar_connection()
+    try:
+        flow = await sidecar.get_oauth_flow_status(flow_id)
+        if flow["provider"] != provider:
+            raise HTTPException(status_code=400, detail="Provider mismatch")
+        status = flow["status"]
+        if status in {"pending", "starting"}:
+            return JSONResponse(
+                status_code=202,
+                content={
+                    "status": status,
+                    "provider": provider,
+                    "flow_id": flow_id,
+                    "instructions": flow.get("instructions"),
+                    "progress": flow.get("progress", []),
+                },
+            )
+        if status == "error":
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "status": "error",
+                    "provider": provider,
+                    "flow_id": flow_id,
+                    "error": flow.get("error") or "OAuth flow failed",
+                },
+            )
+        if status != "complete":
+            raise HTTPException(status_code=500, detail=f"Unexpected OAuth status: {status}")
+
+        credentials = flow.get("credentials")
+        if not isinstance(credentials, dict) or not credentials:
+            raise HTTPException(status_code=500, detail="OAuth flow did not return credentials")
+        create_provider_connection(
+            user_id,
+            provider,
+            "oauth",
+            credentials,
+            label="",
+        )
+        await sidecar.clear_oauth_flow(flow_id)
+        return JSONResponse(
+            {
+                "status": "complete",
+                "provider": provider,
+                "flow_id": flow_id,
+            }
+        )
+    finally:
+        await sidecar.disconnect()
 
 
 # --- Backward compatibility: /auth/login redirects to /auth/login/google ---
@@ -5415,6 +6531,7 @@ from yinshi.api.deps import (
     check_workspace_owner,
     get_db_for_request,
 )
+from yinshi.model_catalog import normalize_model_ref
 from yinshi.models import MessageOut, SessionCreate, SessionOut, SessionUpdate
 
 logger = logging.getLogger(__name__)
@@ -5437,6 +6554,18 @@ _EXCLUDED_DIRS = frozenset(
     }
 )
 _TREE_FILE_LIMIT = 5000
+
+
+def _normalize_session_row(db, row: Any) -> dict[str, Any]:
+    """Normalize stored session models and persist repairs on read."""
+    normalized_row = dict(row)
+    original_model = normalized_row["model"]
+    normalized_model = normalize_model_ref(original_model)
+    if normalized_model != original_model:
+        db.execute("UPDATE sessions SET model = ? WHERE id = ?", (normalized_model, normalized_row["id"]))
+        db.commit()
+        normalized_row["model"] = normalized_model
+    return normalized_row
 
 
 def _list_workspace_files(workspace_path: str) -> list[str]:
@@ -5474,7 +6603,7 @@ def list_sessions(workspace_id: str, request: Request) -> list[dict[str, Any]]:
             "SELECT * FROM sessions WHERE workspace_id = ? ORDER BY created_at DESC",
             (workspace_id,),
         ).fetchall()
-        return [dict(r) for r in rows]
+        return [_normalize_session_row(db, row) for row in rows]
 
 
 @router.post(
@@ -5505,7 +6634,8 @@ def create_session(
         row = db.execute(
             "SELECT * FROM sessions WHERE rowid = ?", (cursor.lastrowid,)
         ).fetchone()
-        return dict(row)
+        assert row is not None, "created session must be queryable"
+        return _normalize_session_row(db, row)
 
 
 @router.get("/api/sessions/{session_id}", response_model=SessionOut)
@@ -5518,7 +6648,7 @@ def get_session(session_id: str, request: Request) -> dict[str, Any]:
         if not row:
             raise HTTPException(status_code=404, detail="Session not found")
         check_session_owner(db, session_id, request)
-        return dict(row)
+        return _normalize_session_row(db, row)
 
 
 @router.patch("/api/sessions/{session_id}", response_model=SessionOut)
@@ -5549,7 +6679,8 @@ def update_session(
         updated = db.execute(
             "SELECT * FROM sessions WHERE id = ?", (session_id,)
         ).fetchone()
-        return dict(updated)
+        assert updated is not None, "updated session must be queryable"
+        return _normalize_session_row(db, updated)
 
 
 @router.get("/api/sessions/{session_id}/messages", response_model=list[MessageOut])
@@ -5621,7 +6752,7 @@ from typing import Any, cast
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from yinshi.api.deps import check_owner, get_db_for_request, get_tenant, get_user_email
 from yinshi.config import get_settings
@@ -5634,8 +6765,13 @@ from yinshi.exceptions import (
     SidecarError,
     WorkspaceNotFoundError,
 )
+from yinshi.model_catalog import get_provider_metadata, normalize_model_ref
 from yinshi.rate_limit import limiter
-from yinshi.services.keys import record_usage, resolve_api_key_for_prompt
+from yinshi.services.keys import record_usage
+from yinshi.services.provider_connections import (
+    resolve_provider_connection,
+    update_provider_connection_secret,
+)
 from yinshi.services.sidecar import SidecarClient, create_sidecar_connection
 from yinshi.services.workspace import ensure_workspace_checkout_for_tenant
 from yinshi.utils.paths import is_path_inside
@@ -5657,16 +6793,26 @@ class ExecutionContext:
 
     sidecar_socket: str | None
     effective_cwd: str
-    api_key: str | None
     key_source: str
     provider: str
+    provider_auth: dict[str, object] | None
+    provider_config: dict[str, object] | None
     agent_dir: str | None = None
     settings_payload: dict[str, object] | None = None
+    model_ref: str = ""
 
 
 class PromptRequest(BaseModel):
     prompt: str = Field(..., max_length=100_000)
     model: str | None = None
+
+    @field_validator("model")
+    @classmethod
+    def validate_model(cls, value: str | None) -> str | None:
+        """Normalize optional model values into canonical refs."""
+        if value is None:
+            return None
+        return normalize_model_ref(value)
 
 
 _FILLER_PREFIXES = [
@@ -5879,9 +7025,11 @@ async def _resolve_execution_context(
         return ExecutionContext(
             sidecar_socket=None,
             effective_cwd=workspace_path,
-            api_key=None,
             key_source="platform",
             provider="",
+            provider_auth=None,
+            provider_config=None,
+            model_ref=model,
         )
 
     _validate_workspace_path(tenant, workspace_path)
@@ -5922,33 +7070,63 @@ async def _resolve_execution_context(
 
     sidecar_tmp = await create_sidecar_connection(sidecar_socket)
     try:
-        resolved = await sidecar_tmp.resolve_model(model)
+        resolved = await sidecar_tmp.resolve_model(model, agent_dir=agent_dir)
         provider: str | None = resolved["provider"]
-    finally:
-        await sidecar_tmp.disconnect()
-
-    if not provider:
-        raise HTTPException(
-            status_code=400,
-            detail="Could not determine provider for model",
+        if not provider:
+            raise HTTPException(
+                status_code=400,
+                detail="Could not determine provider for model",
+            )
+        provider_metadata = get_provider_metadata(provider)
+        if not provider_metadata.supported:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Provider {provider} is not supported in Yinshi yet",
+            )
+        model_ref = cast(str, resolved["model"])
+        connection = resolve_provider_connection(tenant.user_id, provider)
+        provider_auth: dict[str, object] = {
+            "provider": provider,
+            "authStrategy": connection["auth_strategy"],
+            "secret": cast(object, connection["secret"]),
+        }
+        provider_config = cast(dict[str, object], connection["config"])
+        auth_resolved = await sidecar_tmp.resolve_provider_auth(
+            provider=provider,
+            model=model_ref,
+            provider_auth=cast(dict[str, Any], provider_auth),
+            provider_config=provider_config,
+            agent_dir=agent_dir,
         )
-
-    try:
-        api_key, key_source = resolve_api_key_for_prompt(
-            tenant.user_id,
-            provider,
+        refreshed_auth = auth_resolved.get("auth")
+        if refreshed_auth is not None and refreshed_auth != connection["secret"]:
+            update_provider_connection_secret(
+                tenant.user_id,
+                connection["id"],
+                connection["auth_strategy"],
+                cast(str | dict[str, object], refreshed_auth),
+            )
+            provider_auth["secret"] = cast(object, refreshed_auth)
+        resolved_model_ref = cast(str, auth_resolved.get("model_ref") or model_ref)
+        resolved_provider_config = cast(
+            dict[str, object] | None,
+            auth_resolved.get("model_config"),
         )
     except KeyNotFoundError as exc:
         raise HTTPException(status_code=402, detail=str(exc)) from exc
+    finally:
+        await sidecar_tmp.disconnect()
 
     return ExecutionContext(
         sidecar_socket=sidecar_socket,
         effective_cwd=effective_cwd,
-        api_key=api_key,
-        key_source=key_source,
+        key_source=connection["auth_strategy"],
         provider=provider,
+        provider_auth=provider_auth,
+        provider_config=resolved_provider_config or provider_config,
         agent_dir=agent_dir,
         settings_payload=settings_payload,
+        model_ref=resolved_model_ref,
     )
 
 
@@ -5984,7 +7162,7 @@ async def prompt_session(
         raise HTTPException(status_code=409, detail="Session already has an active stream")
 
     workspace_path = session["workspace_path"]
-    model = body.model or session["model"]
+    model = normalize_model_ref(body.model or session["model"])
     prompt = body.prompt
     turn_id = uuid.uuid4().hex
 
@@ -6034,9 +7212,10 @@ async def prompt_session(
                 _active_sessions[session_id] = sidecar
             await sidecar.warmup(
                 session_id,
-                model=model,
+                model=context.model_ref or model,
                 cwd=context.effective_cwd,
-                api_key=context.api_key,
+                provider_auth=cast(dict[str, Any] | None, context.provider_auth),
+                provider_config=cast(dict[str, Any] | None, context.provider_config),
                 agent_dir=context.agent_dir,
                 settings_payload=context.settings_payload,
             )
@@ -6046,9 +7225,10 @@ async def prompt_session(
             async for event in sidecar.query(
                 session_id,
                 prompt,
-                model=model,
+                model=context.model_ref or model,
                 cwd=context.effective_cwd,
-                api_key=context.api_key,
+                provider_auth=cast(dict[str, Any] | None, context.provider_auth),
+                provider_config=cast(dict[str, Any] | None, context.provider_config),
                 agent_dir=context.agent_dir,
                 settings_payload=context.settings_payload,
             ):
@@ -6159,7 +7339,7 @@ async def prompt_session(
                         user_id=tenant.user_id,
                         session_id=session_id,
                         provider=result_provider,
-                        model=model,
+                        model=context.model_ref or model,
                         usage=usage_data,
                         key_source=context.key_source,
                     )
@@ -6228,10 +7408,10 @@ from typing import Any
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, UploadFile
 
 from yinshi.api.deps import require_tenant
-from yinshi.db import get_control_db
 from yinshi.exceptions import (
     GitHubAccessError,
     GitHubAppError,
+    KeyNotFoundError,
     PiConfigError,
     PiConfigNotFoundError,
 )
@@ -6241,10 +7421,10 @@ from yinshi.models import (
     PiConfigCategoryUpdate,
     PiConfigImport,
     PiConfigOut,
+    ProviderConnectionCreate,
+    ProviderConnectionOut,
 )
 from yinshi.rate_limit import limiter
-from yinshi.services.crypto import encrypt_api_key
-from yinshi.services.keys import get_user_dek
 from yinshi.services.pi_config import (
     get_pi_config,
     import_from_github,
@@ -6252,6 +7432,11 @@ from yinshi.services.pi_config import (
     remove_pi_config,
     sync_pi_config,
     update_enabled_categories,
+)
+from yinshi.services.provider_connections import (
+    create_provider_connection,
+    delete_provider_connection,
+    list_provider_connections,
 )
 
 logger = logging.getLogger(__name__)
@@ -6282,53 +7467,94 @@ def _pi_config_http_exception(error: PiConfigError) -> HTTPException:
     return HTTPException(status_code=400, detail=message)
 
 
+def _connection_http_exception(error: Exception) -> HTTPException:
+    """Convert provider connection validation errors into user-facing 400s."""
+    return HTTPException(status_code=400, detail=str(error))
+
+
 @router.get("/keys", response_model=list[ApiKeyOut])
 def list_keys(request: Request) -> list[dict[str, Any]]:
     """List API keys (provider + label only, never the key value)."""
     tenant = require_tenant(request)
-    with get_control_db() as db:
-        rows = db.execute(
-            "SELECT id, created_at, provider, label, last_used_at "
-            "FROM api_keys WHERE user_id = ? ORDER BY created_at DESC",
-            (tenant.user_id,),
-        ).fetchall()
-        return [dict(r) for r in rows]
+    connections = list_provider_connections(tenant.user_id)
+    return [
+        {
+            "id": connection["id"],
+            "created_at": connection["created_at"],
+            "provider": connection["provider"],
+            "label": connection["label"],
+            "last_used_at": connection["last_used_at"],
+        }
+        for connection in connections
+        if connection["auth_strategy"] in {"api_key", "api_key_with_config"}
+    ]
 
 
 @router.post("/keys", response_model=ApiKeyOut, status_code=201)
 def add_key(body: ApiKeyCreate, request: Request) -> dict[str, Any]:
     """Store an encrypted API key."""
     tenant = require_tenant(request)
-    dek = get_user_dek(tenant.user_id)
-
-    encrypted = encrypt_api_key(body.key, dek)
-
-    with get_control_db() as db:
-        cursor = db.execute(
-            "INSERT INTO api_keys (user_id, provider, encrypted_key, label) " "VALUES (?, ?, ?, ?)",
-            (tenant.user_id, body.provider, encrypted, body.label),
+    try:
+        connection = create_provider_connection(
+            tenant.user_id,
+            body.provider,
+            "api_key",
+            body.key,
+            label=body.label,
         )
-        db.commit()
-        row = db.execute(
-            "SELECT id, created_at, provider, label, last_used_at " "FROM api_keys WHERE rowid = ?",
-            (cursor.lastrowid,),
-        ).fetchone()
-        return dict(row)
+    except (TypeError, ValueError) as error:
+        raise _connection_http_exception(error) from error
+    return {
+        "id": connection["id"],
+        "created_at": connection["created_at"],
+        "provider": connection["provider"],
+        "label": connection["label"],
+        "last_used_at": connection["last_used_at"],
+    }
 
 
 @router.delete("/keys/{key_id}", status_code=204)
 def delete_key(key_id: str, request: Request) -> None:
     """Revoke an API key."""
     tenant = require_tenant(request)
-    with get_control_db() as db:
-        row = db.execute(
-            "SELECT id FROM api_keys WHERE id = ? AND user_id = ?",
-            (key_id, tenant.user_id),
-        ).fetchone()
-        if not row:
-            raise HTTPException(status_code=404, detail="Key not found")
-        db.execute("DELETE FROM api_keys WHERE id = ?", (key_id,))
-        db.commit()
+    try:
+        delete_provider_connection(tenant.user_id, key_id)
+    except KeyNotFoundError as error:
+        raise HTTPException(status_code=404, detail="Key not found") from error
+
+
+@router.get("/connections", response_model=list[ProviderConnectionOut])
+def list_connections(request: Request) -> list[dict[str, Any]]:
+    """List generic provider connections for the authenticated user."""
+    tenant = require_tenant(request)
+    return list_provider_connections(tenant.user_id)
+
+
+@router.post("/connections", response_model=ProviderConnectionOut, status_code=201)
+def add_connection(body: ProviderConnectionCreate, request: Request) -> dict[str, Any]:
+    """Store one generic provider connection."""
+    tenant = require_tenant(request)
+    try:
+        return create_provider_connection(
+            tenant.user_id,
+            body.provider,
+            body.auth_strategy,
+            body.secret,
+            label=body.label,
+            config=body.config,
+        )
+    except (TypeError, ValueError) as error:
+        raise _connection_http_exception(error) from error
+
+
+@router.delete("/connections/{connection_id}", status_code=204)
+def delete_connection(connection_id: str, request: Request) -> None:
+    """Delete one generic provider connection."""
+    tenant = require_tenant(request)
+    try:
+        delete_provider_connection(tenant.user_id, connection_id)
+    except KeyNotFoundError as error:
+        raise HTTPException(status_code=404, detail="Connection not found") from error
 
 
 @router.get("/pi-config", response_model=PiConfigOut)
@@ -6431,6 +7657,95 @@ async def delete_pi_config_route(request: Request) -> None:
         raise _pi_config_http_exception(error) from error
 ```
 
+## catalog.py
+
+The catalog endpoint merges runtime provider and model data from the pi sidecar
+with Yinshi's own provider metadata (auth strategies, setup fields, connection
+status). It filters out unsupported providers so the frontend only sees providers
+the user can actually configure, and annotates each provider with whether the
+current user already has a connection stored.
+
+```python {chunk="catalog" file="backend/src/yinshi/api/catalog.py"}
+"""Catalog endpoints for provider and model discovery."""
+
+from __future__ import annotations
+
+from typing import Any
+
+from fastapi import APIRouter, Request
+
+from yinshi.api.deps import require_tenant
+from yinshi.model_catalog import get_provider_metadata
+from yinshi.models import ProviderCatalogOut
+from yinshi.services.pi_config import resolve_pi_runtime
+from yinshi.services.provider_connections import list_provider_connections
+from yinshi.services.sidecar import create_sidecar_connection
+
+router = APIRouter(tags=["catalog"])
+
+
+def _build_provider_entry(
+    provider_row: dict[str, Any],
+    connected_provider_ids: set[str],
+) -> dict[str, Any]:
+    """Merge sidecar provider rows with Yinshi metadata."""
+    provider_id = provider_row["id"]
+    metadata = get_provider_metadata(provider_id)
+    return {
+        "id": provider_id,
+        "label": metadata.label,
+        "auth_strategies": list(metadata.auth_strategies),
+        "setup_fields": [
+            {
+                "key": field.key,
+                "label": field.label,
+                "required": field.required,
+                "secret": field.secret,
+            }
+            for field in metadata.setup_fields
+        ],
+        "docs_url": metadata.docs_url,
+        "connected": provider_id in connected_provider_ids,
+        "model_count": provider_row["model_count"],
+    }
+
+
+@router.get("/api/catalog", response_model=ProviderCatalogOut)
+async def get_catalog(request: Request) -> dict[str, Any]:
+    """Return the current user's provider/model catalog."""
+    tenant = require_tenant(request)
+    agent_dir, _settings_payload = resolve_pi_runtime(tenant.user_id, tenant.data_dir)
+    connections = list_provider_connections(tenant.user_id)
+    connected_provider_ids = {connection["provider"] for connection in connections}
+
+    sidecar = await create_sidecar_connection()
+    try:
+        catalog = await sidecar.get_catalog(agent_dir=agent_dir)
+    finally:
+        await sidecar.disconnect()
+
+    supported_provider_ids = {
+        provider_row["id"]
+        for provider_row in catalog["providers"]
+        if get_provider_metadata(provider_row["id"]).supported
+    }
+    providers = [
+        _build_provider_entry(provider_row, connected_provider_ids)
+        for provider_row in catalog["providers"]
+        if provider_row["id"] in supported_provider_ids
+    ]
+    models = [
+        model_row
+        for model_row in catalog["models"]
+        if model_row["provider"] in supported_provider_ids
+    ]
+    return {
+        "default_model": catalog["default_model"],
+        "providers": providers,
+        "models": models,
+    }
+```
+
 # Package Markers
 
 ## backend/src/yinshi/__init__.py
@@ -6489,7 +7804,7 @@ from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from starlette.middleware.sessions import SessionMiddleware
 
-from yinshi.api import auth_routes, github, repos, sessions, settings, stream, workspaces
+from yinshi.api import auth_routes, catalog, github, repos, sessions, settings, stream, workspaces
 from yinshi.auth import AuthMiddleware, setup_oauth
 from yinshi.config import get_settings
 from yinshi.db import init_control_db, init_db
@@ -6569,6 +7884,7 @@ app.add_middleware(AuthMiddleware)
 
 # Routes
 app.include_router(auth_routes.router)
+app.include_router(catalog.router)
 app.include_router(github.router)
 app.include_router(repos.router)
 app.include_router(workspaces.router)
@@ -6619,9 +7935,28 @@ with `BrowserRouter` and `AuthProvider` wrapping the root `App` component.
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
+import { datadogRum } from "@datadog/browser-rum";
+import { reactPlugin } from "@datadog/browser-rum-react";
 import App from "./App";
 import { AuthProvider } from "./hooks/useAuth";
 import "./index.css";
+
+declare const __GIT_COMMIT_HASH__: string;
+
+datadogRum.init({
+  applicationId: "6ca07893-ea15-4577-88cb-ef72b856ad3e",
+  clientToken: "pubbe7e2760d9e429d5cda2d2eb49a408be",
+  site: "datadoghq.com",
+  service: "yinshi",
+  env: "prod",
+  version: __GIT_COMMIT_HASH__,
+  sessionSampleRate: 100,
+  sessionReplaySampleRate: 100,
+  trackResources: true,
+  trackUserInteractions: true,
+  trackLongTasks: true,
+  plugins: [reactPlugin({ router: false })],
+});
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
@@ -7190,6 +8525,16 @@ accents, and animation keyframes.
   color: var(--lp-vermillion);
 }
 
+.landing-quote a {
+  color: #2563eb;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.landing-quote a:hover {
+  color: #1d4ed8;
+}
+
 /* ---- Capabilities ---- */
 
 .landing-capabilities {
@@ -7438,115 +8783,88 @@ display label, and a list of aliases. Resolution functions normalize user input
 (from slash commands or the model selector dropdown) to the canonical key.
 
 ```typescript {chunk="session_models_ts" file="frontend/src/models/sessionModels.ts"}
-export interface SessionModelOption {
-  value: string;
-  label: string;
-  aliases: string[];
-}
+import type { ModelDescriptor } from "../api/client";
 
-export const DEFAULT_SESSION_MODEL = "minimax-m2.7";
+export const DEFAULT_SESSION_MODEL = "minimax/MiniMax-M2.7";
 
-export const SESSION_MODEL_OPTIONS: SessionModelOption[] = [
-  {
-    value: "minimax-m2.7",
-    label: "MiniMax M2.7",
-    aliases: ["minimax", "MiniMax-M2.7"],
-  },
-  {
-    value: "minimax-m2.7-highspeed",
-    label: "MiniMax M2.7 Highspeed",
-    aliases: ["MiniMax-M2.7-highspeed", "Minimax-M2.7-highspeed"],
-  },
-  {
-    value: "sonnet",
-    label: "Claude Sonnet 4",
-    aliases: ["claude-sonnet-4-20250514"],
-  },
-  {
-    value: "opus",
-    label: "Claude Opus 4",
-    aliases: ["claude-opus-4-20250514"],
-  },
-  {
-    value: "haiku",
-    label: "Claude Haiku 4.5",
-    aliases: ["claude-haiku-4-5-20251001"],
-  },
-];
+const LEGACY_MODEL_ALIASES = new Map<string, string>([
+  ["haiku", "anthropic/claude-haiku-4-5-20251001"],
+  ["minimax", DEFAULT_SESSION_MODEL],
+  ["minimax-m2.5-highspeed", "minimax/MiniMax-M2.5-highspeed"],
+  ["minimax-m2.7", DEFAULT_SESSION_MODEL],
+  ["minimax-m2.7-highspeed", "minimax/MiniMax-M2.7-highspeed"],
+  ["opus", "anthropic/claude-opus-4-20250514"],
+  ["sonnet", "anthropic/claude-sonnet-4-20250514"],
+]);
 
 function normalizeModelValue(value: string): string {
-  const trimmedValue = value.trim();
-  return trimmedValue.toLowerCase();
+  return value.trim().toLowerCase();
 }
 
-export function resolveSessionModelKey(model: string): string | null {
+export function resolveSessionModelKey(
+  model: string,
+  models: ModelDescriptor[],
+): string | null {
   const normalizedModel = normalizeModelValue(model);
   if (!normalizedModel) {
     return null;
   }
-
-  const matchingOption = SESSION_MODEL_OPTIONS.find((option) => {
-    if (normalizeModelValue(option.value) === normalizedModel) {
-      return true;
-    }
-    if (normalizeModelValue(option.label) === normalizedModel) {
-      return true;
-    }
-    return option.aliases.some(
-      (alias) => normalizeModelValue(alias) === normalizedModel,
-    );
-  });
-  if (!matchingOption) {
-    return null;
+  const aliasMatch = LEGACY_MODEL_ALIASES.get(normalizedModel);
+  if (aliasMatch) {
+    return aliasMatch;
   }
-
-  return matchingOption.value;
+  const matchingModel = models.find((candidate) => {
+    if (normalizeModelValue(candidate.ref) === normalizedModel) {
+      return true;
+    }
+    if (normalizeModelValue(candidate.id) === normalizedModel) {
+      return true;
+    }
+    return normalizeModelValue(candidate.label) === normalizedModel;
+  });
+  return matchingModel ? matchingModel.ref : null;
 }
 
 export function getSessionModelOption(
   model: string | null | undefined,
-): SessionModelOption | null {
+  models: ModelDescriptor[],
+): ModelDescriptor | null {
   if (!model) {
     return null;
   }
-
-  const resolvedKey = resolveSessionModelKey(model);
+  const resolvedKey = resolveSessionModelKey(model, models);
   if (!resolvedKey) {
     return null;
   }
-
-  const matchingOption = SESSION_MODEL_OPTIONS.find(
-    (option) => option.value === resolvedKey,
-  );
-  if (!matchingOption) {
-    return null;
-  }
-
-  return matchingOption;
+  return models.find((candidate) => candidate.ref === resolvedKey) || null;
 }
 
-export function getSessionModelLabel(model: string): string {
-  const matchingOption = getSessionModelOption(model);
-  if (!matchingOption) {
+export function getSessionModelLabel(
+  model: string,
+  models: ModelDescriptor[],
+): string {
+  const matchingModel = getSessionModelOption(model, models);
+  if (!matchingModel) {
     return model;
   }
-
-  return matchingOption.label;
+  return matchingModel.label;
 }
 
-export function describeSessionModel(model: string): string {
-  const matchingOption = getSessionModelOption(model);
-  if (!matchingOption) {
+export function describeSessionModel(
+  model: string,
+  models: ModelDescriptor[],
+): string {
+  const matchingModel = getSessionModelOption(model, models);
+  if (!matchingModel) {
     return `\`${model}\``;
   }
-
-  return `**${matchingOption.label}** (\`${matchingOption.value}\`)`;
+  return `**${matchingModel.label}** (\`${matchingModel.ref}\`)`;
 }
 
-export function availableSessionModelsMarkdown(): string {
-  return SESSION_MODEL_OPTIONS.map(
-    (option) => `- **${option.label}** (\`${option.value}\`)`,
-  ).join("\n");
+export function availableSessionModelsMarkdown(models: ModelDescriptor[]): string {
+  return models
+    .map((model) => `- **${model.label}** (\`${model.ref}\`)`)
+    .join("\n");
 }
 ```
 
@@ -7764,6 +9082,54 @@ export interface ApiKey {
   last_used_at: string | null;
 }
 
+export interface ProviderSetupField {
+  key: string;
+  label: string;
+  required: boolean;
+  secret: boolean;
+}
+
+export interface ProviderDescriptor {
+  id: string;
+  label: string;
+  auth_strategies: string[];
+  setup_fields: ProviderSetupField[];
+  docs_url: string;
+  connected: boolean;
+  model_count: number;
+}
+
+export interface ModelDescriptor {
+  ref: string;
+  provider: string;
+  id: string;
+  label: string;
+  api: string;
+  reasoning: boolean;
+  inputs: string[];
+  context_window: number;
+  max_tokens: number;
+}
+
+export interface ProviderCatalog {
+  default_model: string;
+  providers: ProviderDescriptor[];
+  models: ModelDescriptor[];
+}
+
+export interface ProviderConnection {
+  id: string;
+  created_at: string;
+  updated_at: string;
+  provider: string;
+  auth_strategy: string;
+  label: string;
+  config: Record<string, unknown>;
+  status: string;
+  last_used_at: string | null;
+  expires_at: string | null;
+}
+
 export interface PiConfig {
   id: string;
   created_at: string;
@@ -7929,6 +9295,13 @@ export const api = {
     return response.json();
   },
 };
+
+export async function pollAuthFlow(provider: string, flowId: string): Promise<{ status: string }> {
+  return request<{ status: string }>(
+    "GET",
+    `/auth/providers/${provider}/callback?flow_id=${encodeURIComponent(flowId)}`,
+  );
+}
 
 export type SSEEvent =
   | { type: "assistant"; message: { content: ContentBlock[] } }
@@ -8361,6 +9734,56 @@ export function useSession() {
   }, []);
 
   return { sessions, loading, error, listSessions, createSession, getSession };
+}
+```
+
+## useCatalog.ts
+
+A lightweight hook that fetches the merged provider/model catalog from the
+backend on mount. The Settings and Session pages use this to populate provider
+cards and model selection dropdowns. A cleanup flag prevents state updates after
+unmount to avoid React warnings on fast navigation.
+
+```typescript {chunk="use_catalog" file="frontend/src/hooks/useCatalog.ts"}
+import { useEffect, useState } from "react";
+
+import { api, type ProviderCatalog } from "../api/client";
+
+export function useCatalog() {
+  const [catalog, setCatalog] = useState<ProviderCatalog | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadCatalog() {
+      try {
+        const loadedCatalog = await api.get<ProviderCatalog>("/api/catalog");
+        if (cancelled) {
+          return;
+        }
+        setCatalog(loadedCatalog);
+        setError(null);
+      } catch (loadError) {
+        if (cancelled) {
+          return;
+        }
+        setError(loadError instanceof Error ? loadError.message : "Failed to load catalog");
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      }
+    }
+
+    void loadCatalog();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  return { catalog, loading, error, setCatalog };
 }
 ```
 
@@ -10845,7 +12268,7 @@ const CAPABILITIES = [
   },
   {
     title: "AI Agent Sessions",
-    desc: "Converse with a coding agent that reads, writes, and refactors code inside your workspace. Every change is tracked on its own branch -- review, merge, or discard.",
+    desc: "Converse with a coding agent that reads, writes, and refactors code inside your workspace. Every change is tracked on its own branch - review, merge, or discard.",
     icon: (
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} className="h-6 w-6">
         <path strokeLinecap="round" strokeLinejoin="round" d="M8.625 12a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0zm0 0H8.25m4.125 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0zm0 0H12m4.125 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0zm0 0h-.375M21 12c0 4.556-4.03 8.25-9 8.25a9.764 9.764 0 0 1-2.555-.337A5.972 5.972 0 0 1 5.41 20.97a5.969 5.969 0 0 1-.474-.065 4.48 4.48 0 0 0 .978-2.025c.09-.457-.133-.901-.467-1.226C3.93 16.178 3 14.189 3 12c0-4.556 4.03-8.25 9-8.25s9 3.694 9 8.25z" />
@@ -10920,10 +12343,10 @@ export default function Landing() {
         </div>
         <div className="landing-hero-text">
           <h1 className="landing-title">Yinshi</h1>
-          <p className="landing-subtitle">Browser-based coding with AI agents</p>
+          <p className="landing-subtitle">Run coding agents in your browser</p>
           <div className="landing-desc landing-markdown">
             <ReactMarkdown remarkPlugins={[remarkGfm]}>
-              {`Point Yinshi at a repo. An AI agent writes code on an isolated branch while you review the diff. No local setup, no risk to main -- just open a browser and go.`}
+              {`Yinshi makes it easy to manage coding agents across git repos and worktrees. `}
             </ReactMarkdown>
           </div>
           <div className="landing-cta-group">
@@ -10952,10 +12375,16 @@ export default function Landing() {
 
       {/* ---- How it works ---- */}
       <section className="landing-philosophy">
-        <blockquote className="landing-quote landing-markdown">
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>
-            {`Import a GitHub repo. Yinshi creates a worktree on a throwaway branch, connects an AI agent, and lets you chat with it about your code -- from any device, anywhere.`}
-          </ReactMarkdown>
+        <blockquote className="landing-quote">
+          <p>
+            Import repos from Github or your local machine. Yinshi spawns a
+            worktree, connects a{" "}
+            <a href="https://pi.dev" target="_blank" rel="noopener noreferrer">
+              pi agent
+            </a>
+            , and enables context engineering from any device, anywhere you have
+            an internet connection.
+          </p>
         </blockquote>
       </section>
 
@@ -10979,7 +12408,7 @@ export default function Landing() {
       <section className="landing-final">
         <div className="landing-final-text landing-markdown">
           <ReactMarkdown remarkPlugins={[remarkGfm]}>
-            {`No IDE required. Just a browser and a repo.`}
+            {`No IDE or app required. Fire up your browser, import your repos and pi configs, and get to work.`}
           </ReactMarkdown>
         </div>
         <a href="/auth/login" className="landing-cta">
@@ -10996,6 +12425,7 @@ export default function Landing() {
     </div>
   );
 }
+
 ```
 
 ## Login.tsx
@@ -11121,9 +12551,9 @@ import { useParams } from "react-router-dom";
 import { api, type Message } from "../api/client";
 import ChatView from "../components/ChatView";
 import { useAgentStream, type ChatMessage } from "../hooks/useAgentStream";
+import { useCatalog } from "../hooks/useCatalog";
 import {
   DEFAULT_SESSION_MODEL,
-  SESSION_MODEL_OPTIONS,
   availableSessionModelsMarkdown,
   describeSessionModel,
   getSessionModelOption,
@@ -11135,14 +12565,11 @@ function nextCmdId(): string {
   return `cmd-${Date.now()}-${++cmdIdCounter}`;
 }
 
-const AVAILABLE_MODEL_KEYS = SESSION_MODEL_OPTIONS.map(
-  (option) => `\`${option.value}\``,
-).join(", ");
-
 export default function Session() {
   const { id } = useParams<{ id: string }>();
   const { messages, sendPrompt, cancel, streaming, setMessages } =
     useAgentStream(id);
+  const { catalog, loading: loadingCatalog } = useCatalog();
   const [sessionModel, setSessionModel] = useState(DEFAULT_SESSION_MODEL);
   const [loadingHistory, setLoadingHistory] = useState(true);
   const [historyError, setHistoryError] = useState<string | null>(null);
@@ -11223,13 +12650,14 @@ export default function Session() {
   const updateSessionModel = useCallback(
     async (requestedModel: string, announce: boolean) => {
       if (!id) return false;
+      if (!catalog) return false;
 
-      const resolvedModel = resolveSessionModelKey(requestedModel);
+      const resolvedModel = resolveSessionModelKey(requestedModel, catalog.models);
       if (!resolvedModel) {
         if (announce) {
           addSystemMessage(
             "Unknown model. Available models:\n\n" +
-              availableSessionModelsMarkdown(),
+              availableSessionModelsMarkdown(catalog.models),
           );
         }
         return false;
@@ -11244,7 +12672,7 @@ export default function Session() {
         setSessionModel(updated.model);
         if (announce) {
           addSystemMessage(
-            `Model changed to ${describeSessionModel(updated.model)}`,
+            `Model changed to ${describeSessionModel(updated.model, catalog.models)}`,
           );
         }
         return true;
@@ -11257,12 +12685,16 @@ export default function Session() {
         setUpdatingModel(false);
       }
     },
-    [addSystemMessage, id],
+    [addSystemMessage, catalog, id],
   );
 
   const handleCommand = useCallback(
     async (name: string, args: string) => {
       if (!id) return;
+
+      const availableModelKeys = catalog
+        ? catalog.models.map((model) => `\`${model.ref}\``).join(", ")
+        : "";
 
       switch (name) {
         case "help":
@@ -11273,7 +12705,7 @@ export default function Session() {
               "- `/tree` -- Show workspace file tree\n" +
               "- `/export` -- Download chat as markdown\n" +
               "- `/clear` -- Clear chat display\n\n" +
-              `Available model keys: ${AVAILABLE_MODEL_KEYS}`,
+              `Available model keys: ${availableModelKeys}`,
           );
           break;
 
@@ -11282,9 +12714,9 @@ export default function Session() {
             await updateSessionModel(args, true);
           } else {
             addSystemMessage(
-              `Current model: ${describeSessionModel(sessionModel)}\n\n` +
+              `Current model: ${describeSessionModel(sessionModel, catalog?.models || [])}\n\n` +
                 "Available models:\n\n" +
-                availableSessionModelsMarkdown(),
+                availableSessionModelsMarkdown(catalog?.models || []),
             );
           }
           break;
@@ -11332,6 +12764,7 @@ export default function Session() {
     },
     [
       addSystemMessage,
+      catalog,
       id,
       messages,
       sessionModel,
@@ -11340,8 +12773,9 @@ export default function Session() {
     ],
   );
 
-  const selectedModelOption = getSessionModelOption(sessionModel);
-  const selectedModelValue = selectedModelOption?.value || sessionModel;
+  const catalogModels = catalog?.models || [];
+  const selectedModelOption = getSessionModelOption(sessionModel, catalogModels);
+  const selectedModelValue = selectedModelOption?.ref || sessionModel;
 
   return (
     <>
@@ -11362,7 +12796,7 @@ export default function Session() {
           <select
             id="session-model"
             value={selectedModelValue}
-            disabled={streaming || updatingModel}
+            disabled={streaming || updatingModel || loadingCatalog}
             onChange={(event) => {
               void updateSessionModel(event.target.value, false);
             }}
@@ -11371,9 +12805,9 @@ export default function Session() {
             {!selectedModelOption && (
               <option value={sessionModel}>{sessionModel}</option>
             )}
-            {SESSION_MODEL_OPTIONS.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
+            {catalogModels.map((model) => (
+              <option key={model.ref} value={model.ref}>
+                {model.label}
               </option>
             ))}
           </select>
@@ -11424,56 +12858,352 @@ encrypted storage. Existing keys show provider, label, and creation date but
 never the key value. The Pi config section is rendered by `PiConfigSection`.
 
 ```typescript {chunk="settings_page" file="frontend/src/pages/Settings.tsx"}
-import { useEffect, useState } from "react";
-import { api, type ApiKey } from "../api/client";
+import { useEffect, useMemo, useState } from "react";
+
+import {
+  api,
+  pollAuthFlow,
+  type ProviderConnection,
+  type ProviderDescriptor,
+} from "../api/client";
 import PiConfigSection from "../components/PiConfigSection";
 import { useAuth } from "../hooks/useAuth";
+import { useCatalog } from "../hooks/useCatalog";
 
-export default function Settings() {
-  const { email } = useAuth();
-  const [keys, setKeys] = useState<ApiKey[]>([]);
-  const [provider, setProvider] = useState<"anthropic" | "minimax">("anthropic");
-  const [keyValue, setKeyValue] = useState("");
+function formatTimestamp(timestamp: string | null): string {
+  if (!timestamp) {
+    return "Never used";
+  }
+  return new Date(timestamp).toLocaleString();
+}
+
+function buildInitialConfig(provider: ProviderDescriptor): Record<string, string> {
+  const initialConfig: Record<string, string> = {};
+  for (const field of provider.setup_fields) {
+    initialConfig[field.key] = "";
+  }
+  return initialConfig;
+}
+
+function normalizeFieldValue(value: string | undefined): string {
+  return (value || "").trim();
+}
+
+function ProviderCard({
+  provider,
+  connection,
+  onConnectionChange,
+}: {
+  provider: ProviderDescriptor;
+  connection: ProviderConnection | undefined;
+  onConnectionChange: () => Promise<void>;
+}) {
+  const [authStrategy, setAuthStrategy] = useState(provider.auth_strategies[0] || "api_key");
+  const [secret, setSecret] = useState("");
   const [label, setLabel] = useState("");
+  const [config, setConfig] = useState<Record<string, string>>(() => buildInitialConfig(provider));
   const [saving, setSaving] = useState(false);
+  const [connecting, setConnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    api.get<ApiKey[]>("/api/settings/keys").then(setKeys).catch(() => {});
-  }, []);
+    setAuthStrategy(provider.auth_strategies[0] || "api_key");
+    setConfig(buildInitialConfig(provider));
+    setSecret("");
+    setLabel("");
+    setError(null);
+  }, [provider]);
 
-  async function addKey(e: React.FormEvent) {
-    e.preventDefault();
-    if (!keyValue.trim()) return;
+  const hasKeyForm = authStrategy === "api_key" || authStrategy === "api_key_with_config";
+  const hasOauth = authStrategy === "oauth";
+  const secretSetupFields = useMemo(
+    () => provider.setup_fields.filter((field) => field.secret),
+    [provider.setup_fields],
+  );
+  const publicSetupFields = useMemo(
+    () => provider.setup_fields.filter((field) => !field.secret),
+    [provider.setup_fields],
+  );
+  const nonSecretConfig = useMemo(() => {
+    const trimmedConfigEntries = publicSetupFields
+      .map((field) => [field.key, normalizeFieldValue(config[field.key])] as const)
+      .filter(([, value]) => value.length > 0);
+    return Object.fromEntries(trimmedConfigEntries);
+  }, [config, publicSetupFields]);
+  const structuredSecret = useMemo(() => {
+    const normalizedSecret = normalizeFieldValue(secret);
+    if (authStrategy !== "api_key_with_config") {
+      return normalizedSecret;
+    }
+    const secretPayload: Record<string, string> = { apiKey: normalizedSecret };
+    for (const field of secretSetupFields) {
+      const fieldValue = normalizeFieldValue(config[field.key]);
+      if (fieldValue) {
+        secretPayload[field.key] = fieldValue;
+      }
+    }
+    return secretPayload;
+  }, [authStrategy, config, secret, secretSetupFields]);
+  const missingRequiredField = useMemo(() => {
+    if (!hasKeyForm) {
+      return null;
+    }
+    if (!normalizeFieldValue(secret)) {
+      return "API key";
+    }
+    for (const field of provider.setup_fields) {
+      if (!field.required) {
+        continue;
+      }
+      if (!normalizeFieldValue(config[field.key])) {
+        return field.label;
+      }
+    }
+    return null;
+  }, [config, hasKeyForm, provider.setup_fields, secret]);
+
+  async function saveConnection() {
+    if (!hasKeyForm || missingRequiredField) {
+      return;
+    }
     setSaving(true);
     setError(null);
     try {
-      const created = await api.post<ApiKey>("/api/settings/keys", {
-        provider,
-        key: keyValue,
+      await api.post("/api/settings/connections", {
+        provider: provider.id,
+        auth_strategy: authStrategy,
+        secret: structuredSecret,
         label,
+        config: nonSecretConfig,
       });
-      setKeys((prev) => [created, ...prev]);
-      setKeyValue("");
+      setSecret("");
       setLabel("");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to save key");
+      setConfig(buildInitialConfig(provider));
+      await onConnectionChange();
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : "Failed to save provider connection");
     } finally {
       setSaving(false);
     }
   }
 
-  async function deleteKey(id: string) {
+  async function connectProvider() {
+    if (!hasOauth) {
+      return;
+    }
+    setConnecting(true);
+    setError(null);
     try {
-      await api.delete(`/api/settings/keys/${id}`);
-      setKeys((prev) => prev.filter((k) => k.id !== id));
-    } catch {
-      /* ignore */
+      const started = await api.post<{
+        flow_id: string;
+        provider: string;
+        auth_url: string;
+        instructions: string | null;
+      }>(`/auth/providers/${provider.id}/start`);
+      if (started.auth_url) {
+        window.open(started.auth_url, "_blank", "noopener,noreferrer");
+      }
+      for (let attempt = 0; attempt < 120; attempt += 1) {
+        await new Promise((resolve) => window.setTimeout(resolve, 1000));
+        const status = await pollAuthFlow(provider.id, started.flow_id);
+        if (status.status === "complete") {
+          await onConnectionChange();
+          return;
+        }
+        if (status.status === "error") {
+          throw new Error("Provider authorization failed");
+        }
+      }
+      throw new Error("Provider authorization timed out");
+    } catch (connectError) {
+      setError(connectError instanceof Error ? connectError.message : "Provider authorization failed");
+    } finally {
+      setConnecting(false);
+    }
+  }
+
+  async function removeConnection() {
+    if (!connection) {
+      return;
+    }
+    try {
+      await api.delete(`/api/settings/connections/${connection.id}`);
+      await onConnectionChange();
+    } catch (deleteError) {
+      setError(deleteError instanceof Error ? deleteError.message : "Failed to remove provider connection");
     }
   }
 
   return (
-    <div className="mx-auto max-w-2xl p-6">
+    <div className="rounded-xl border border-gray-800 bg-gray-900/70 p-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h3 className="text-base font-semibold text-gray-100">{provider.label}</h3>
+          <p className="mt-1 text-sm text-gray-400">
+            {provider.model_count} models
+          </p>
+        </div>
+        {connection ? (
+          <div className="text-right text-xs text-gray-500">
+            <div className="text-green-400">Connected</div>
+            {connection.label ? (
+              <div className="text-gray-300">{connection.label}</div>
+            ) : null}
+            <div>{formatTimestamp(connection.last_used_at)}</div>
+          </div>
+        ) : (
+          <div className="text-xs text-gray-500">Not connected</div>
+        )}
+      </div>
+
+      {provider.auth_strategies.length > 1 && (
+        <div className="mt-4 flex gap-2">
+          {provider.auth_strategies.map((strategy) => (
+            <button
+              key={strategy}
+              type="button"
+              onClick={() => setAuthStrategy(strategy)}
+              className={`rounded px-3 py-1 text-xs ${
+                authStrategy === strategy
+                  ? "bg-gray-200 text-gray-900"
+                  : "border border-gray-700 text-gray-300"
+              }`}
+            >
+              {strategy === "oauth" ? "Connect" : strategy === "api_key_with_config" ? "Key + Config" : "API Key"}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {hasKeyForm && (
+        <div className="mt-4 space-y-3">
+          <input
+            type="text"
+            value={label}
+            onChange={(event) => setLabel(event.target.value)}
+            placeholder="Label (optional)"
+            className="w-full rounded border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-gray-200 placeholder-gray-500"
+          />
+          <input
+            type="password"
+            value={secret}
+            onChange={(event) => setSecret(event.target.value)}
+            placeholder="Enter API key"
+            className="w-full rounded border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-gray-200 placeholder-gray-500"
+          />
+          {provider.setup_fields.map((field) => (
+            <input
+              key={field.key}
+              type={field.secret ? "password" : "text"}
+              value={config[field.key] || ""}
+              onChange={(event) => {
+                setConfig((previousConfig) => ({
+                  ...previousConfig,
+                  [field.key]: event.target.value,
+                }));
+              }}
+              placeholder={field.label}
+              className="w-full rounded border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-gray-200 placeholder-gray-500"
+            />
+          ))}
+          <button
+            type="button"
+            onClick={() => {
+              void saveConnection();
+            }}
+            disabled={saving || missingRequiredField !== null}
+            className="btn-primary px-4 py-2 text-sm disabled:opacity-50"
+          >
+            {saving ? "Saving..." : "Save Connection"}
+          </button>
+          {missingRequiredField ? (
+            <p className="text-sm text-gray-500">{missingRequiredField} is required.</p>
+          ) : null}
+        </div>
+      )}
+
+      {hasOauth && (
+        <div className="mt-4 space-y-3">
+          <p className="text-sm text-gray-400">
+            Open the provider authorization flow in a new window, complete sign-in,
+            and this page will pick up the connected account automatically.
+          </p>
+          <button
+            type="button"
+            onClick={() => {
+              void connectProvider();
+            }}
+            disabled={connecting}
+            className="btn-primary px-4 py-2 text-sm disabled:opacity-50"
+          >
+            {connecting ? "Connecting..." : "Connect Provider"}
+          </button>
+        </div>
+      )}
+
+      <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+        <a
+          href={provider.docs_url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-xs text-blue-400 hover:text-blue-300"
+        >
+          Provider docs
+        </a>
+        {connection && (
+          <button
+            type="button"
+            onClick={() => {
+              void removeConnection();
+            }}
+            className="text-sm text-red-400 hover:text-red-300"
+          >
+            Remove
+          </button>
+        )}
+      </div>
+
+      {error && <p className="mt-3 text-sm text-red-400">{error}</p>}
+    </div>
+  );
+}
+
+export default function Settings() {
+  const { email } = useAuth();
+  const { catalog, loading, error: catalogError } = useCatalog();
+  const [connections, setConnections] = useState<ProviderConnection[]>([]);
+  const [loadingConnections, setLoadingConnections] = useState(true);
+  const [connectionsError, setConnectionsError] = useState<string | null>(null);
+
+  async function loadConnections() {
+    setLoadingConnections(true);
+    try {
+      const loadedConnections = await api.get<ProviderConnection[]>("/api/settings/connections");
+      setConnections(loadedConnections);
+      setConnectionsError(null);
+    } catch (loadError) {
+      setConnectionsError(loadError instanceof Error ? loadError.message : "Failed to load connections");
+    } finally {
+      setLoadingConnections(false);
+    }
+  }
+
+  useEffect(() => {
+    void loadConnections();
+  }, []);
+
+  const connectionByProviderId = useMemo(() => {
+    const mappedConnections = new Map<string, ProviderConnection>();
+    for (const connection of connections) {
+      if (!mappedConnections.has(connection.provider)) {
+        mappedConnections.set(connection.provider, connection);
+      }
+    }
+    return mappedConnections;
+  }, [connections]);
+
+  return (
+    <div className="mx-auto max-w-5xl p-6">
       <h1 className="mb-6 text-2xl font-bold text-gray-100">Settings</h1>
 
       <section className="mb-8">
@@ -11482,83 +13212,36 @@ export default function Settings() {
       </section>
 
       <section>
-        <h2 className="mb-4 text-lg font-semibold text-gray-200">API Keys</h2>
+        <h2 className="mb-4 text-lg font-semibold text-gray-200">Providers</h2>
         <p className="mb-4 text-sm text-gray-400">
-          Yinshi does not provide shared model credits. Add your own API keys
-          here before starting sessions. Keys are encrypted at rest and never
-          visible after saving.
+          Yinshi does not provide shared model credits. Connect your own model
+          providers here before starting sessions. Secrets are encrypted at rest
+          and never shown again after saving.
         </p>
 
-        <form onSubmit={addKey} className="mb-6 space-y-3">
-          <div className="flex gap-3">
-            <select
-              value={provider}
-              onChange={(e) => setProvider(e.target.value as "anthropic" | "minimax")}
-              className="rounded border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-gray-200"
-            >
-              <option value="anthropic">Anthropic</option>
-              <option value="minimax">MiniMax</option>
-            </select>
-            <input
-              type="text"
-              value={label}
-              onChange={(e) => setLabel(e.target.value)}
-              placeholder="Label (optional)"
-              className="rounded border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-gray-200 placeholder-gray-500"
-            />
+        {(loading || loadingConnections) && (
+          <div className="rounded border border-gray-700 bg-gray-800 px-4 py-3 text-sm text-gray-400">
+            Loading provider catalog...
           </div>
-          <div className="flex gap-3">
-            <input
-              type="password"
-              value={keyValue}
-              onChange={(e) => setKeyValue(e.target.value)}
-              placeholder="sk-..."
-              className="flex-1 rounded border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-gray-200 placeholder-gray-500"
-            />
-            <button
-              type="submit"
-              disabled={saving || !keyValue.trim()}
-              className="btn-primary px-4 py-2 text-sm disabled:opacity-50"
-            >
-              {saving ? "Saving..." : "Add Key"}
-            </button>
-          </div>
-          {error && <p className="text-sm text-red-400">{error}</p>}
-        </form>
+        )}
 
-        {keys.length === 0 ? (
-          <p className="text-sm text-gray-500">
-            No API keys configured yet. Add one before starting a session.
-          </p>
-        ) : (
-          <ul className="space-y-2">
-            {keys.map((k) => (
-              <li
-                key={k.id}
-                className="flex items-center justify-between rounded border border-gray-700 bg-gray-800 px-4 py-3"
-              >
-                <div>
-                  <span className="text-sm font-medium text-gray-200">
-                    {k.provider}
-                  </span>
-                  {k.label && (
-                    <span className="ml-2 text-sm text-gray-400">
-                      {k.label}
-                    </span>
-                  )}
-                  <span className="ml-2 text-xs text-gray-500">
-                    Added {new Date(k.created_at).toLocaleDateString()}
-                  </span>
-                </div>
-                <button
-                  onClick={() => deleteKey(k.id)}
-                  className="text-sm text-red-400 hover:text-red-300"
-                >
-                  Remove
-                </button>
-              </li>
+        {(catalogError || connectionsError) && (
+          <div className="mb-4 rounded border border-red-900/50 bg-gray-800 px-4 py-3 text-sm text-red-400">
+            {catalogError || connectionsError}
+          </div>
+        )}
+
+        {catalog && (
+          <div className="grid gap-4 md:grid-cols-2">
+            {catalog.providers.map((provider) => (
+              <ProviderCard
+                key={provider.id}
+                provider={provider}
+                connection={connectionByProviderId.get(provider.id)}
+                onConnectionChange={loadConnections}
+              />
             ))}
-          </ul>
+          </div>
         )}
       </section>
 
@@ -11632,9 +13315,10 @@ Imported Pi settings are normalized and applied via the SettingsManager before
 the agent session is created.
 
 ```javascript {chunk="sidecar_js" file="sidecar/src/sidecar.js"}
-import net from "node:net";
 import fs from "node:fs";
+import net from "node:net";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -11645,98 +13329,282 @@ import {
   SettingsManager,
   createCodingTools,
 } from "@mariozechner/pi-coding-agent";
-import { getModel } from "@mariozechner/pi-ai";
+import { getOAuthProvider } from "@mariozechner/pi-ai/oauth";
 
 import { HEALTH_CHECK_INTERVAL } from "./constants.js";
 
 const __sidecarDir = path.dirname(fileURLToPath(import.meta.url));
+const DEFAULT_MODEL_REF = "minimax/MiniMax-M2.7";
+const LEGACY_MODEL_ALIASES = new Map([
+  ["haiku", "anthropic/claude-haiku-4-5-20251001"],
+  ["minimax", DEFAULT_MODEL_REF],
+  ["minimax-m2.5-highspeed", "minimax/MiniMax-M2.5-highspeed"],
+  ["minimax-m2.7", DEFAULT_MODEL_REF],
+  ["minimax-m2.7-highspeed", "minimax/MiniMax-M2.7-highspeed"],
+  ["minimax-m2.7-highspeed", "minimax/MiniMax-M2.7-highspeed"],
+  ["minimax-m2.7", DEFAULT_MODEL_REF],
+  ["opus", "anthropic/claude-opus-4-20250514"],
+  ["sonnet", "anthropic/claude-sonnet-4-20250514"],
+]);
 
 function sendToSocket(socket, message) {
-  if (socket.destroyed) return;
-  socket.write(JSON.stringify(message) + "\n");
+  if (socket.destroyed) {
+    return;
+  }
+  socket.write(`${JSON.stringify(message)}\n`);
 }
 
-const ANTHROPIC_MODEL_IDS = {
-  opus: "claude-opus-4-20250514",
-  sonnet: "claude-sonnet-4-20250514",
-  haiku: "claude-haiku-4-5-20251001",
-};
+function normalizeImportedSettings(importedSettings) {
+  if (importedSettings === null || importedSettings === undefined) {
+    return null;
+  }
+  if (typeof importedSettings !== "object" || Array.isArray(importedSettings)) {
+    throw new Error("Imported settings must be an object");
+  }
+  return importedSettings;
+}
 
-const DEFAULT_MODEL_KEY = "minimax-m2.7";
+function normalizeModelLookup(modelKey) {
+  if (typeof modelKey !== "string") {
+    return "";
+  }
+  const trimmedKey = modelKey.trim();
+  if (!trimmedKey) {
+    return "";
+  }
+  const normalizedKey = trimmedKey.toLowerCase();
+  if (LEGACY_MODEL_ALIASES.has(normalizedKey)) {
+    return LEGACY_MODEL_ALIASES.get(normalizedKey) || "";
+  }
+  return trimmedKey;
+}
 
-function createMinimaxFallbackModel(id, name) {
+function buildModelsJsonPath(agentDir) {
+  if (!agentDir || typeof agentDir !== "string") {
+    return null;
+  }
+  const modelsJsonPath = path.join(agentDir, "models.json");
+  if (!fs.existsSync(modelsJsonPath)) {
+    return null;
+  }
+  return modelsJsonPath;
+}
+
+function normalizeApiKeyWithConfigSecret(secret) {
+  if (typeof secret === "string") {
+    const normalizedSecret = secret.trim();
+    if (!normalizedSecret) {
+      throw new Error("API key + config auth requires a non-empty apiKey");
+    }
+    return { apiKey: normalizedSecret };
+  }
+  if (!secret || typeof secret !== "object" || Array.isArray(secret)) {
+    throw new Error("API key + config auth requires an object secret");
+  }
+  const normalizedSecret = {};
+  for (const [key, value] of Object.entries(secret)) {
+    if (typeof value !== "string") {
+      throw new Error(`API key + config secret field ${key} must be a string`);
+    }
+    const trimmedValue = value.trim();
+    if (!trimmedValue) {
+      throw new Error(`API key + config secret field ${key} must not be empty`);
+    }
+    normalizedSecret[key] = trimmedValue;
+  }
+  if (typeof normalizedSecret.apiKey !== "string" || !normalizedSecret.apiKey) {
+    throw new Error("API key + config auth requires an apiKey field");
+  }
+  return normalizedSecret;
+}
+
+function createAuthStorage(providerAuth) {
+  const authStorage = AuthStorage.inMemory();
+  if (!providerAuth || typeof providerAuth !== "object") {
+    return authStorage;
+  }
+  if (typeof providerAuth.provider !== "string" || !providerAuth.provider) {
+    throw new Error("providerAuth.provider must be a non-empty string");
+  }
+  if (typeof providerAuth.authStrategy !== "string" || !providerAuth.authStrategy) {
+    throw new Error("providerAuth.authStrategy must be a non-empty string");
+  }
+  if (providerAuth.authStrategy === "api_key") {
+    if (typeof providerAuth.secret !== "string" || !providerAuth.secret) {
+      throw new Error("API key auth requires a non-empty secret");
+    }
+    authStorage.set(providerAuth.provider, {
+      type: "api_key",
+      key: providerAuth.secret,
+    });
+    return authStorage;
+  }
+  if (providerAuth.authStrategy === "api_key_with_config") {
+    const normalizedSecret = normalizeApiKeyWithConfigSecret(providerAuth.secret);
+    authStorage.set(providerAuth.provider, {
+      type: "api_key",
+      key: normalizedSecret.apiKey,
+    });
+    return authStorage;
+  }
+  if (providerAuth.authStrategy === "oauth") {
+    if (!providerAuth.secret || typeof providerAuth.secret !== "object" || Array.isArray(providerAuth.secret)) {
+      throw new Error("OAuth auth requires an object secret");
+    }
+    authStorage.set(providerAuth.provider, {
+      type: "oauth",
+      ...providerAuth.secret,
+    });
+    return authStorage;
+  }
+  throw new Error(`Unsupported auth strategy: ${providerAuth.authStrategy}`);
+}
+
+function createModelRegistry(providerAuth, agentDir) {
+  const authStorage = createAuthStorage(providerAuth);
+  const modelsJsonPath = buildModelsJsonPath(agentDir);
+  // Pass null when there is no imported agentDir so the SDK does not fall back
+  // to the host machine's ~/.pi/agent/models.json and leak host-local models.
+  const registry = new ModelRegistry(authStorage, modelsJsonPath);
+  return { authStorage, registry };
+}
+
+function toCatalogModel(model) {
   return {
-    id,
-    name,
-    api: "openai-completions",
-    provider: "minimax",
-    baseUrl: "https://api.minimaxi.chat/v1",
-    reasoning: false,
-    input: ["text"],
-    contextWindow: 200000,
-    maxTokens: 16384,
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    ref: `${model.provider}/${model.id}`,
+    provider: model.provider,
+    id: model.id,
+    label: model.name,
+    api: model.api,
+    reasoning: Boolean(model.reasoning),
+    inputs: [...model.input],
+    context_window: model.contextWindow,
+    max_tokens: model.maxTokens,
   };
 }
 
-const MINIMAX_FALLBACK_MODELS = {
-  "MiniMax-M2.5-highspeed": createMinimaxFallbackModel(
-    "MiniMax-M2.5-highspeed",
-    "MiniMax M2.5 Highspeed",
-  ),
-  "MiniMax-M2.7": createMinimaxFallbackModel(
-    "MiniMax-M2.7",
-    "MiniMax M2.7",
-  ),
-  "MiniMax-M2.7-highspeed": createMinimaxFallbackModel(
-    "MiniMax-M2.7-highspeed",
-    "MiniMax M2.7 Highspeed",
-  ),
-};
-
-const MINIMAX_MODEL_IDS_BY_KEY = {
-  minimax: "MiniMax-M2.7",
-  "minimax-m2.7": "MiniMax-M2.7",
-  "minimax-m2.7-highspeed": "MiniMax-M2.7-highspeed",
-  "minimax-m2.5-highspeed": "MiniMax-M2.5-highspeed",
-};
-
-function resolveMinimaxModel(modelKey) {
-  if (typeof modelKey !== "string") {
-    return null;
-  }
-
-  const normalizedKey = modelKey.trim().toLowerCase();
-  if (!normalizedKey) {
-    return null;
-  }
-
-  const modelId = MINIMAX_MODEL_IDS_BY_KEY[normalizedKey];
-  if (!modelId) {
-    return null;
-  }
-
-  const model = getModel("minimax", modelId);
-  return { model: model || MINIMAX_FALLBACK_MODELS[modelId] };
+function toCatalogProvider(providerId, models) {
+  return {
+    id: providerId,
+    model_count: models.length,
+  };
 }
 
-function resolveModel(modelKey) {
-  if (ANTHROPIC_MODEL_IDS[modelKey]) {
-    const model = getModel("anthropic", ANTHROPIC_MODEL_IDS[modelKey]);
-    return model ? { model } : null;
+function getCatalog(agentDir) {
+  const { registry } = createModelRegistry(null, agentDir);
+  const models = registry.getAll().map(toCatalogModel);
+  const providerIds = new Set(models.map((model) => model.provider));
+  const providers = [...providerIds]
+    .sort()
+    .map((providerId) => {
+      const providerModels = models.filter((model) => model.provider === providerId);
+      return toCatalogProvider(providerId, providerModels);
+    });
+  return {
+    default_model: DEFAULT_MODEL_REF,
+    providers,
+    models,
+  };
+}
+
+function resolveModel(modelKey, providerAuth, agentDir, providerConfig) {
+  const normalizedLookup = normalizeModelLookup(modelKey || DEFAULT_MODEL_REF);
+  const { registry } = createModelRegistry(providerAuth, agentDir);
+  const models = registry.getAll();
+
+  if (normalizedLookup.includes("/")) {
+    const slashIndex = normalizedLookup.indexOf("/");
+    const provider = normalizedLookup.slice(0, slashIndex);
+    const modelId = normalizedLookup.slice(slashIndex + 1);
+    const resolved = registry.find(provider, modelId);
+    if (!resolved) {
+      throw new Error(`Unknown model: ${modelKey}`);
+    }
+    return applyProviderConfig(resolved, providerConfig);
   }
 
-  const minimaxModel = resolveMinimaxModel(modelKey);
-  if (minimaxModel) {
-    return minimaxModel;
+  const directMatches = models.filter(
+    (model) => model.id.toLowerCase() === normalizedLookup.toLowerCase(),
+  );
+  if (directMatches.length === 1) {
+    return applyProviderConfig(directMatches[0], providerConfig);
   }
 
-  return null;
+  const labelMatches = models.filter(
+    (model) => model.name.toLowerCase() === normalizedLookup.toLowerCase(),
+  );
+  if (labelMatches.length === 1) {
+    return applyProviderConfig(labelMatches[0], providerConfig);
+  }
+
+  throw new Error(`Unknown model: ${modelKey}`);
+}
+
+function applyProviderConfig(model, providerConfig) {
+  if (!providerConfig || typeof providerConfig !== "object") {
+    return model;
+  }
+  if (model.provider !== "azure-openai-responses") {
+    return model;
+  }
+
+  const configuredModel = { ...model };
+  if (typeof providerConfig.baseUrl === "string" && providerConfig.baseUrl.trim()) {
+    configuredModel.baseUrl = providerConfig.baseUrl.trim();
+  }
+  if (typeof providerConfig.azureDeploymentName === "string" && providerConfig.azureDeploymentName.trim()) {
+    configuredModel.azureDeploymentName = providerConfig.azureDeploymentName.trim();
+  }
+  return configuredModel;
+}
+
+async function resolveProviderRuntimeAuth(provider, modelRef, providerAuth, agentDir, providerConfig) {
+  if (!providerAuth || typeof providerAuth !== "object") {
+    return {
+      provider,
+      auth: null,
+      model_ref: modelRef,
+      runtime_api_key: null,
+      model_config: providerConfig || null,
+    };
+  }
+
+  const { authStorage } = createModelRegistry(providerAuth, agentDir);
+  const runtimeApiKey = await authStorage.getApiKey(provider, { includeFallback: false });
+  const credential = authStorage.get(provider);
+  const resolvedModel = resolveModel(modelRef, providerAuth, agentDir, providerConfig);
+  const modelConfig = {};
+  if (resolvedModel.provider === "github-copilot" && typeof resolvedModel.baseUrl === "string") {
+    modelConfig.baseUrl = resolvedModel.baseUrl;
+  }
+  if (resolvedModel.provider === "azure-openai-responses") {
+    if (typeof resolvedModel.baseUrl === "string" && resolvedModel.baseUrl) {
+      modelConfig.baseUrl = resolvedModel.baseUrl;
+    }
+    if (typeof resolvedModel.azureDeploymentName === "string" && resolvedModel.azureDeploymentName) {
+      modelConfig.azureDeploymentName = resolvedModel.azureDeploymentName;
+    }
+  }
+  let returnedAuth = providerAuth.secret ?? null;
+  if (providerAuth.authStrategy === "oauth") {
+    returnedAuth = credential || null;
+  }
+  if (providerAuth.authStrategy === "api_key_with_config") {
+    returnedAuth = normalizeApiKeyWithConfigSecret(providerAuth.secret);
+  }
+  return {
+    provider,
+    auth: returnedAuth,
+    model_ref: `${resolvedModel.provider}/${resolvedModel.id}`,
+    runtime_api_key: runtimeApiKey || null,
+    model_config: Object.keys(modelConfig).length > 0 ? modelConfig : null,
+  };
 }
 
 export class YinshiSidecar {
   constructor() {
     this.activeSessions = new Map();
+    this.activeOAuthFlows = new Map();
     this.socketPath = process.env.SIDECAR_SOCKET_PATH || "/tmp/yinshi-sidecar.sock";
     this.server = net.createServer((socket) => this.handleConnection(socket));
     this.healthCheckInterval = null;
@@ -11746,12 +13614,10 @@ export class YinshiSidecar {
   }
 
   initialize() {
-    // API keys come per-session from the backend via the socket protocol.
-    // In containerized mode there is no .env file in the image.
     if (process.env.SIDECAR_LOAD_DOTENV === "1") {
       this._loadDotEnv();
     }
-    console.log(`[sidecar] Initialized with pi SDK`);
+    console.log("[sidecar] Initialized with pi SDK");
   }
 
   _loadDotEnv() {
@@ -11763,9 +13629,13 @@ export class YinshiSidecar {
     const content = fs.readFileSync(envPath, "utf-8");
     for (const line of content.split("\n")) {
       const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith("#")) continue;
+      if (!trimmed || trimmed.startsWith("#")) {
+        continue;
+      }
       const eqIndex = trimmed.indexOf("=");
-      if (eqIndex === -1) continue;
+      if (eqIndex === -1) {
+        continue;
+      }
       const key = trimmed.slice(0, eqIndex).trim();
       const value = trimmed.slice(eqIndex + 1).trim();
       if (!process.env[key]) {
@@ -11782,7 +13652,9 @@ export class YinshiSidecar {
       this.server.listen(this.socketPath, () => {
         console.log(`SOCKET_PATH=${this.socketPath}`);
         this.healthCheckInterval = setInterval(() => {
-          console.log(`[sidecar] Health: ${this.activeSessions.size} session(s)`);
+          console.log(
+            `[sidecar] Health: ${this.activeSessions.size} session(s), ${this.activeOAuthFlows.size} auth flow(s)`,
+          );
         }, HEALTH_CHECK_INTERVAL);
         resolve();
       });
@@ -11804,7 +13676,9 @@ export class YinshiSidecar {
       buffer = lines.pop() || "";
       for (const line of lines) {
         const trimmed = line.trim();
-        if (trimmed.length === 0) continue;
+        if (!trimmed) {
+          continue;
+        }
         this.handleData(trimmed, socket);
       }
     });
@@ -11826,85 +13700,230 @@ export class YinshiSidecar {
   handleRequest(request, socket) {
     const { type, id } = request;
     switch (type) {
-      case "query":
-        this.processQuery(id, socket, request.prompt, request.options || {});
+      case "auth_resolve":
+        void this.handleAuthResolve(id, socket, request);
         break;
       case "cancel":
-        this.cancelSession(id);
+        void this.cancelSession(id);
         break;
-      case "warmup":
-        this.warmupSession(id, socket, request.options || {});
+      case "catalog":
+        this.handleCatalog(id, socket, request.options || {});
         break;
-      case "resolve":
-        this.handleResolve(id, socket, request.model);
+      case "oauth_clear":
+        this.clearOAuthFlow(id, socket, request.flowId);
+        break;
+      case "oauth_start":
+        void this.startOAuthFlow(id, socket, request.provider);
+        break;
+      case "oauth_status":
+        this.handleOAuthStatus(id, socket, request.flowId);
         break;
       case "ping":
         sendToSocket(socket, { type: "pong" });
+        break;
+      case "query":
+        void this.processQuery(id, socket, request.prompt, request.options || {});
+        break;
+      case "resolve":
+        this.handleResolve(id, socket, request.model, request.options || {});
+        break;
+      case "warmup":
+        void this.warmupSession(id, socket, request.options || {});
         break;
       default:
         sendToSocket(socket, { id: id || "unknown", type: "error", error: `Unknown request type: ${type}` });
     }
   }
 
-  handleResolve(id, socket, modelKey) {
-    if (!modelKey) {
-      sendToSocket(socket, { id: id || "unknown", type: "error", error: "Model key required" });
+  handleCatalog(id, socket, options) {
+    try {
+      const catalog = getCatalog(options.agentDir || null);
+      sendToSocket(socket, {
+        id: id || "catalog",
+        type: "catalog",
+        ...catalog,
+      });
+    } catch (err) {
+      sendToSocket(socket, {
+        id: id || "catalog",
+        type: "error",
+        error: err instanceof Error ? err.message : "Failed to build model catalog",
+      });
+    }
+  }
+
+  handleResolve(id, socket, modelKey, options) {
+    try {
+      const resolved = resolveModel(
+        modelKey,
+        options.providerAuth || null,
+        options.agentDir || null,
+        options.providerConfig || null,
+      );
+      sendToSocket(socket, {
+        id,
+        type: "resolved",
+        provider: resolved.provider,
+        model: `${resolved.provider}/${resolved.id}`,
+      });
+    } catch (err) {
+      sendToSocket(socket, {
+        id: id || "unknown",
+        type: "error",
+        error: err instanceof Error ? err.message : `Unknown model: ${modelKey}`,
+      });
+    }
+  }
+
+  async handleAuthResolve(id, socket, request) {
+    try {
+      if (typeof request.provider !== "string" || !request.provider) {
+        throw new Error("Provider is required");
+      }
+      if (typeof request.model !== "string" || !request.model) {
+        throw new Error("Model is required");
+      }
+      const resolved = await resolveProviderRuntimeAuth(
+        request.provider,
+        request.model,
+        request.providerAuth || null,
+        request.agentDir || null,
+        request.providerConfig || null,
+      );
+      sendToSocket(socket, {
+        id,
+        type: "auth_resolved",
+        ...resolved,
+      });
+    } catch (err) {
+      sendToSocket(socket, {
+        id: id || "auth-resolve",
+        type: "error",
+        error: err instanceof Error ? err.message : "Failed to resolve provider auth",
+      });
+    }
+  }
+
+  async startOAuthFlow(id, socket, providerId) {
+    try {
+      if (typeof providerId !== "string" || !providerId) {
+        throw new Error("Provider is required");
+      }
+      const provider = getOAuthProvider(providerId);
+      if (!provider) {
+        throw new Error(`OAuth provider is not available: ${providerId}`);
+      }
+
+      const flowId = randomUUID();
+      const flow = {
+        id: flowId,
+        provider: providerId,
+        status: "starting",
+        authUrl: null,
+        instructions: null,
+        progress: [],
+        credentials: null,
+        error: null,
+      };
+      this.activeOAuthFlows.set(flowId, flow);
+
+      const loginPromise = provider.login({
+        onAuth: (info) => {
+          flow.authUrl = info.url;
+          flow.instructions = info.instructions || null;
+          flow.status = "pending";
+        },
+        onPrompt: async () => "",
+        onProgress: (message) => {
+          flow.progress.push(message);
+        },
+      });
+
+      loginPromise
+        .then((credentials) => {
+          flow.credentials = credentials;
+          if (flow.status === "starting") {
+            flow.status = "pending";
+          }
+          flow.status = "complete";
+        })
+        .catch((err) => {
+          flow.error = err instanceof Error ? err.message : String(err);
+          flow.status = "error";
+        });
+
+      const startDeadline = Date.now() + 5_000;
+      while (!flow.authUrl && flow.status !== "error" && Date.now() < startDeadline) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      if (!flow.authUrl && flow.status !== "error") {
+        throw new Error("OAuth flow did not expose an authorization URL");
+      }
+
+      sendToSocket(socket, {
+        id,
+        type: "oauth_started",
+        flow_id: flowId,
+        provider: providerId,
+        auth_url: flow.authUrl,
+        instructions: flow.instructions,
+      });
+    } catch (err) {
+      sendToSocket(socket, {
+        id: id || "oauth-start",
+        type: "error",
+        error: err instanceof Error ? err.message : "Failed to start OAuth flow",
+      });
+    }
+  }
+
+  handleOAuthStatus(id, socket, flowId) {
+    if (typeof flowId !== "string" || !flowId) {
+      sendToSocket(socket, { id: id || "oauth-status", type: "error", error: "flowId is required" });
       return;
     }
-    const resolved = resolveModel(modelKey);
-    if (!resolved) {
-      sendToSocket(socket, { id: id || "unknown", type: "error", error: `Unknown model: ${modelKey}` });
+    const flow = this.activeOAuthFlows.get(flowId);
+    if (!flow) {
+      sendToSocket(socket, { id: id || "oauth-status", type: "error", error: "OAuth flow not found" });
       return;
     }
     sendToSocket(socket, {
       id,
-      type: "resolved",
-      provider: resolved.model.provider,
-      model: resolved.model.id,
+      type: "oauth_status",
+      flow_id: flow.id,
+      provider: flow.provider,
+      status: flow.status,
+      auth_url: flow.authUrl,
+      instructions: flow.instructions,
+      progress: flow.progress,
+      credentials: flow.status === "complete" ? flow.credentials : null,
+      error: flow.error,
     });
   }
 
-  _normalizeImportedSettings(importedSettings) {
-    if (importedSettings === null || importedSettings === undefined) {
-      return null;
+  clearOAuthFlow(id, socket, flowId) {
+    if (typeof flowId !== "string" || !flowId) {
+      sendToSocket(socket, { id: id || "oauth-clear", type: "error", error: "flowId is required" });
+      return;
     }
-    if (typeof importedSettings !== "object" || Array.isArray(importedSettings)) {
-      throw new Error("Imported settings must be an object");
-    }
-    return importedSettings;
+    this.activeOAuthFlows.delete(flowId);
+    sendToSocket(socket, {
+      id,
+      type: "oauth_cleared",
+      flow_id: flowId,
+    });
   }
 
-  async _createPiSession(
-    sessionId,
-    modelKey,
-    cwd,
-    userApiKey = null,
-    agentDir = null,
-    importedSettings = null,
-  ) {
-    const resolved = resolveModel(modelKey);
-    if (!resolved) {
-      throw new Error(`Unknown model: ${modelKey}`);
-    }
-
-    const { model } = resolved;
-
-    // Per-session auth storage to prevent key leakage between concurrent sessions
-    const sessionAuth = AuthStorage.create();
-    const sessionRegistry = new ModelRegistry(sessionAuth);
-
-    // BYOK key from backend > env var fallback (for dev mode)
-    const envKey = `${model.provider.toUpperCase()}_API_KEY`;
-    const effectiveKey = userApiKey || process.env[envKey] || null;
-    if (effectiveKey) {
-      sessionAuth.setRuntimeApiKey(model.provider, effectiveKey);
-    }
+  async _createPiSession(sessionId, modelRef, cwd, providerAuth, providerConfig, agentDir, importedSettings) {
+    const { authStorage: sessionAuth } = createModelRegistry(providerAuth, agentDir);
+    const sessionRegistry = new ModelRegistry(sessionAuth, buildModelsJsonPath(agentDir));
+    const model = resolveModel(modelRef, providerAuth, agentDir, providerConfig);
 
     const settingsManager = SettingsManager.inMemory({
       compaction: { enabled: true },
       retry: { enabled: true, maxRetries: 3 },
     });
-    const normalizedImportedSettings = this._normalizeImportedSettings(importedSettings);
+    const normalizedImportedSettings = normalizeImportedSettings(importedSettings);
     if (normalizedImportedSettings) {
       settingsManager.applyOverrides(normalizedImportedSettings);
     }
@@ -11924,7 +13943,6 @@ export class YinshiSidecar {
     }
 
     const { session } = await createAgentSession(sessionOptions);
-
     console.log(
       `[sidecar] Created pi session ${sessionId} with model ${model.name || model.id}`
       + (agentDir ? ` and agentDir ${agentDir}` : ""),
@@ -11938,26 +13956,30 @@ export class YinshiSidecar {
       return;
     }
 
-    const modelKey = options.model || DEFAULT_MODEL_KEY;
+    const modelRef = options.model || DEFAULT_MODEL_REF;
     const cwd = options.cwd || process.cwd();
-    const userApiKey = options.apiKey || null;
+    const providerAuth = options.providerAuth || null;
+    const providerConfig = options.providerConfig || null;
     const agentDir = options.agentDir || null;
     const importedSettings = options.settings || null;
 
     try {
       const { session: piSession, model } = await this._createPiSession(
         sessionId,
-        modelKey,
+        modelRef,
         cwd,
-        userApiKey,
+        providerAuth,
+        providerConfig,
         agentDir,
         importedSettings,
       );
       this.activeSessions.set(sessionId, {
         piSession,
         model,
-        modelKey,
+        modelRef,
         cwd,
+        providerAuth,
+        providerConfig,
         unsubscribe: null,
       });
       console.log(`[sidecar] Warmed up session ${sessionId}`);
@@ -11968,29 +13990,42 @@ export class YinshiSidecar {
   }
 
   async processQuery(sessionId, socket, prompt, options) {
-    const modelKey = options.model || DEFAULT_MODEL_KEY;
+    const modelRef = options.model || DEFAULT_MODEL_REF;
     const cwd = options.cwd || process.cwd();
-    const userApiKey = options.apiKey || null;
+    const providerAuth = options.providerAuth || null;
+    const providerConfig = options.providerConfig || null;
     const agentDir = options.agentDir || null;
     const importedSettings = options.settings || null;
 
     try {
       let entry = this.activeSessions.get(sessionId);
-
-      if (!entry || entry.modelKey !== modelKey) {
+      const authChanged = JSON.stringify(entry?.providerAuth || null) !== JSON.stringify(providerAuth);
+      const configChanged = JSON.stringify(entry?.providerConfig || null) !== JSON.stringify(providerConfig);
+      if (!entry || entry.modelRef !== modelRef || authChanged || configChanged) {
         if (entry) {
-          if (entry.unsubscribe) entry.unsubscribe();
+          if (entry.unsubscribe) {
+            entry.unsubscribe();
+          }
           entry.piSession.dispose();
         }
         const { session: piSession, model } = await this._createPiSession(
           sessionId,
-          modelKey,
+          modelRef,
           cwd,
-          userApiKey,
+          providerAuth,
+          providerConfig,
           agentDir,
           importedSettings,
         );
-        entry = { piSession, model, modelKey, cwd, unsubscribe: null };
+        entry = {
+          piSession,
+          model,
+          modelRef,
+          cwd,
+          providerAuth,
+          providerConfig,
+          unsubscribe: null,
+        };
         this.activeSessions.set(sessionId, entry);
       }
 
@@ -12005,22 +14040,21 @@ export class YinshiSidecar {
       entry.unsubscribe = piSession.subscribe((event) => {
         switch (event.type) {
           case "message_update": {
-            const ame = event.assistantMessageEvent;
-            if (ame.type === "text_delta") {
+            const assistantEvent = event.assistantMessageEvent;
+            if (assistantEvent.type === "text_delta") {
               sendToSocket(socket, {
                 id: sessionId,
                 type: "message",
                 data: {
                   type: "assistant",
                   message: {
-                    content: [{ type: "text", text: ame.delta }],
+                    content: [{ type: "text", text: assistantEvent.delta }],
                   },
                 },
               });
             }
             break;
           }
-
           case "tool_execution_start":
             sendToSocket(socket, {
               id: sessionId,
@@ -12032,22 +14066,17 @@ export class YinshiSidecar {
               },
             });
             break;
-
-          case "tool_execution_end":
-            break;
-
           case "turn_end":
             if (event.message && event.message.usage) {
-              const u = event.message.usage;
+              const eventUsage = event.message.usage;
               usage = {
-                input_tokens: u.input || 0,
-                output_tokens: u.output || 0,
-                cache_read_input_tokens: u.cacheRead || 0,
-                cache_creation_input_tokens: u.cacheWrite || 0,
+                input_tokens: eventUsage.input || 0,
+                output_tokens: eventUsage.output || 0,
+                cache_read_input_tokens: eventUsage.cacheRead || 0,
+                cache_creation_input_tokens: eventUsage.cacheWrite || 0,
               };
             }
             break;
-
           case "agent_end":
             sendToSocket(socket, {
               id: sessionId,
@@ -12056,17 +14085,18 @@ export class YinshiSidecar {
                 type: "result",
                 usage: usage || {},
                 provider: model.provider,
+                model: `${model.provider}/${model.id}`,
               },
             });
             usage = null;
             break;
-
           case "auto_retry_start":
-            console.log(`[sidecar] Retrying (attempt ${event.attempt}/${event.maxAttempts}): ${event.errorMessage}`);
+            console.log(
+              `[sidecar] Retrying (attempt ${event.attempt}/${event.maxAttempts}): ${event.errorMessage}`,
+            );
             break;
-
           case "auto_compaction_start":
-            console.log(`[sidecar] Auto-compacting context...`);
+            console.log("[sidecar] Auto-compacting context...");
             break;
         }
       });
@@ -12097,19 +14127,30 @@ export class YinshiSidecar {
       if (fs.existsSync(this.socketPath)) {
         fs.unlinkSync(this.socketPath);
       }
-    } catch (_) {}
+    } catch {
+      // ignore cleanup races
+    }
 
     if (this.server) {
-      try { this.server.close(); } catch (_) {}
+      try {
+        this.server.close();
+      } catch {
+        // ignore cleanup races
+      }
     }
 
-    for (const [id, entry] of this.activeSessions) {
+    for (const [, entry] of this.activeSessions) {
       try {
-        if (entry.unsubscribe) entry.unsubscribe();
+        if (entry.unsubscribe) {
+          entry.unsubscribe();
+        }
         entry.piSession.dispose();
-      } catch (_) {}
+      } catch {
+        // ignore cleanup races
+      }
     }
     this.activeSessions.clear();
+    this.activeOAuthFlows.clear();
 
     if (this.healthCheckInterval) {
       clearInterval(this.healthCheckInterval);

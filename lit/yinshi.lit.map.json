@@ -20,10 +20,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 3,
+          "outputCount": 260,
           "chunkName": "model_catalog",
-          "litmdStart": 182,
-          "litmdCount": 3,
+          "litmdStart": 188,
+          "litmdCount": 260,
           "indent": ""
         }
       ]
@@ -35,7 +35,7 @@
           "outputStart": 0,
           "outputCount": 119,
           "chunkName": "exceptions",
-          "litmdStart": 198,
+          "litmdStart": 461,
           "litmdCount": 119,
           "indent": ""
         }
@@ -46,10 +46,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 299,
+          "outputCount": 371,
           "chunkName": "db",
-          "litmdStart": 346,
-          "litmdCount": 299,
+          "litmdStart": 609,
+          "litmdCount": 371,
           "indent": ""
         }
       ]
@@ -59,10 +59,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 206,
+          "outputCount": 353,
           "chunkName": "models",
-          "litmdStart": 658,
-          "litmdCount": 206,
+          "litmdStart": 993,
+          "litmdCount": 353,
           "indent": ""
         }
       ]
@@ -74,7 +74,7 @@
           "outputStart": 0,
           "outputCount": 132,
           "chunkName": "tenant",
-          "litmdStart": 877,
+          "litmdStart": 1359,
           "litmdCount": 132,
           "indent": ""
         }
@@ -87,7 +87,7 @@
           "outputStart": 0,
           "outputCount": 15,
           "chunkName": "utils_paths",
-          "litmdStart": 1018,
+          "litmdStart": 1500,
           "litmdCount": 15,
           "indent": ""
         }
@@ -100,7 +100,7 @@
           "outputStart": 0,
           "outputCount": 244,
           "chunkName": "auth",
-          "litmdStart": 1048,
+          "litmdStart": 1530,
           "litmdCount": 244,
           "indent": ""
         }
@@ -113,7 +113,7 @@
           "outputStart": 0,
           "outputCount": 28,
           "chunkName": "rate_limit",
-          "litmdStart": 1303,
+          "litmdStart": 1785,
           "litmdCount": 28,
           "indent": ""
         }
@@ -126,7 +126,7 @@
           "outputStart": 0,
           "outputCount": 67,
           "chunkName": "crypto",
-          "litmdStart": 1344,
+          "litmdStart": 1826,
           "litmdCount": 67,
           "indent": ""
         }
@@ -139,8 +139,21 @@
           "outputStart": 0,
           "outputCount": 155,
           "chunkName": "keys",
-          "litmdStart": 1423,
+          "litmdStart": 1905,
           "litmdCount": 155,
+          "indent": ""
+        }
+      ]
+    },
+    "backend/src/yinshi/services/provider_connections.py": {
+      "rootChunk": "provider_connections",
+      "segments": [
+        {
+          "outputStart": 0,
+          "outputCount": 421,
+          "chunkName": "provider_connections",
+          "litmdStart": 2079,
+          "litmdCount": 421,
           "indent": ""
         }
       ]
@@ -152,7 +165,7 @@
           "outputStart": 0,
           "outputCount": 241,
           "chunkName": "accounts",
-          "litmdStart": 1592,
+          "litmdStart": 2514,
           "litmdCount": 241,
           "indent": ""
         }
@@ -165,7 +178,7 @@
           "outputStart": 0,
           "outputCount": 222,
           "chunkName": "git",
-          "litmdStart": 1847,
+          "litmdStart": 2769,
           "litmdCount": 222,
           "indent": ""
         }
@@ -178,7 +191,7 @@
           "outputStart": 0,
           "outputCount": 285,
           "chunkName": "workspace",
-          "litmdStart": 2082,
+          "litmdStart": 3004,
           "litmdCount": 285,
           "indent": ""
         }
@@ -191,7 +204,7 @@
           "outputStart": 0,
           "outputCount": 450,
           "chunkName": "github_app",
-          "litmdStart": 2397,
+          "litmdStart": 3319,
           "litmdCount": 450,
           "indent": ""
         }
@@ -204,7 +217,7 @@
           "outputStart": 0,
           "outputCount": 29,
           "chunkName": "github_api",
-          "litmdStart": 2856,
+          "litmdStart": 3778,
           "litmdCount": 29,
           "indent": ""
         }
@@ -215,10 +228,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 775,
+          "outputCount": 764,
           "chunkName": "pi_config",
-          "litmdStart": 2901,
-          "litmdCount": 775,
+          "litmdStart": 3823,
+          "litmdCount": 764,
           "indent": ""
         }
       ]
@@ -230,7 +243,7 @@
           "outputStart": 0,
           "outputCount": 163,
           "chunkName": "user_settings",
-          "litmdStart": 3690,
+          "litmdStart": 4601,
           "litmdCount": 163,
           "indent": ""
         }
@@ -241,10 +254,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 238,
+          "outputCount": 353,
           "chunkName": "sidecar",
-          "litmdStart": 3867,
-          "litmdCount": 238,
+          "litmdStart": 4778,
+          "litmdCount": 353,
           "indent": ""
         }
       ]
@@ -256,7 +269,7 @@
           "outputStart": 0,
           "outputCount": 313,
           "chunkName": "container",
-          "litmdStart": 4120,
+          "litmdStart": 5146,
           "litmdCount": 313,
           "indent": ""
         }
@@ -269,7 +282,7 @@
           "outputStart": 0,
           "outputCount": 102,
           "chunkName": "deps",
-          "litmdStart": 4470,
+          "litmdStart": 5496,
           "litmdCount": 102,
           "indent": ""
         }
@@ -280,10 +293,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 397,
+          "outputCount": 476,
           "chunkName": "auth_routes",
-          "litmdStart": 4584,
-          "litmdCount": 397,
+          "litmdStart": 5610,
+          "litmdCount": 476,
           "indent": ""
         }
       ]
@@ -295,7 +308,7 @@
           "outputStart": 0,
           "outputCount": 273,
           "chunkName": "repos",
-          "litmdStart": 4993,
+          "litmdStart": 6098,
           "litmdCount": 273,
           "indent": ""
         }
@@ -308,7 +321,7 @@
           "outputStart": 0,
           "outputCount": 128,
           "chunkName": "workspaces",
-          "litmdStart": 5277,
+          "litmdStart": 6382,
           "litmdCount": 128,
           "indent": ""
         }
@@ -319,10 +332,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 186,
+          "outputCount": 201,
           "chunkName": "sessions",
-          "litmdStart": 5415,
-          "litmdCount": 186,
+          "litmdStart": 6520,
+          "litmdCount": 201,
           "indent": ""
         }
       ]
@@ -332,10 +345,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 607,
+          "outputCount": 656,
           "chunkName": "stream",
-          "litmdStart": 5615,
-          "litmdCount": 607,
+          "litmdStart": 6735,
+          "litmdCount": 656,
           "indent": ""
         }
       ]
@@ -345,10 +358,23 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 211,
+          "outputCount": 255,
           "chunkName": "settings",
-          "litmdStart": 6233,
-          "litmdCount": 211,
+          "litmdStart": 7402,
+          "litmdCount": 255,
+          "indent": ""
+        }
+      ]
+    },
+    "backend/src/yinshi/api/catalog.py": {
+      "rootChunk": "catalog",
+      "segments": [
+        {
+          "outputStart": 0,
+          "outputCount": 78,
+          "chunkName": "catalog",
+          "litmdStart": 7668,
+          "litmdCount": 78,
           "indent": ""
         }
       ]
@@ -360,7 +386,7 @@
           "outputStart": 0,
           "outputCount": 1,
           "chunkName": "yinshi_init",
-          "litmdStart": 6453,
+          "litmdStart": 7755,
           "litmdCount": 1,
           "indent": ""
         }
@@ -377,7 +403,7 @@
           "outputStart": 0,
           "outputCount": 1,
           "chunkName": "services_init",
-          "litmdStart": 6468,
+          "litmdStart": 7770,
           "litmdCount": 1,
           "indent": ""
         }
@@ -390,7 +416,7 @@
           "outputStart": 0,
           "outputCount": 1,
           "chunkName": "api_init",
-          "litmdStart": 6476,
+          "litmdStart": 7778,
           "litmdCount": 1,
           "indent": ""
         }
@@ -401,10 +427,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 111,
+          "outputCount": 112,
           "chunkName": "main",
-          "litmdStart": 6491,
-          "litmdCount": 111,
+          "litmdStart": 7793,
+          "litmdCount": 112,
           "indent": ""
         }
       ]
@@ -414,10 +440,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 16,
+          "outputCount": 35,
           "chunkName": "main_tsx",
-          "litmdStart": 6631,
-          "litmdCount": 16,
+          "litmdStart": 7934,
+          "litmdCount": 35,
           "indent": ""
         }
       ]
@@ -429,7 +455,7 @@
           "outputStart": 0,
           "outputCount": 22,
           "chunkName": "app_tsx",
-          "litmdStart": 6655,
+          "litmdStart": 7977,
           "litmdCount": 22,
           "indent": ""
         }
@@ -440,10 +466,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 757,
+          "outputCount": 767,
           "chunkName": "index_css",
-          "litmdStart": 6687,
-          "litmdCount": 757,
+          "litmdStart": 8009,
+          "litmdCount": 767,
           "indent": ""
         }
       ]
@@ -453,10 +479,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 110,
+          "outputCount": 83,
           "chunkName": "session_models_ts",
-          "litmdStart": 7453,
-          "litmdCount": 110,
+          "litmdStart": 8785,
+          "litmdCount": 83,
           "indent": ""
         }
       ]
@@ -468,7 +494,7 @@
           "outputStart": 0,
           "outputCount": 21,
           "chunkName": "repo_ts",
-          "litmdStart": 7572,
+          "litmdStart": 8877,
           "litmdCount": 21,
           "indent": ""
         }
@@ -481,7 +507,7 @@
           "outputStart": 0,
           "outputCount": 80,
           "chunkName": "use_auth",
-          "litmdStart": 7605,
+          "litmdStart": 8910,
           "litmdCount": 80,
           "indent": ""
         }
@@ -494,7 +520,7 @@
           "outputStart": 0,
           "outputCount": 29,
           "chunkName": "use_theme",
-          "litmdStart": 7693,
+          "litmdStart": 8998,
           "litmdCount": 29,
           "indent": ""
         }
@@ -507,7 +533,7 @@
           "outputStart": 0,
           "outputCount": 9,
           "chunkName": "use_mobile_drawer",
-          "litmdStart": 7731,
+          "litmdStart": 9036,
           "litmdCount": 9,
           "indent": ""
         }
@@ -518,10 +544,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 283,
+          "outputCount": 338,
           "chunkName": "client_ts",
-          "litmdStart": 7754,
-          "litmdCount": 283,
+          "litmdStart": 9059,
+          "litmdCount": 338,
           "indent": ""
         }
       ]
@@ -533,7 +559,7 @@
           "outputStart": 0,
           "outputCount": 259,
           "chunkName": "use_agent_stream",
-          "litmdStart": 8050,
+          "litmdStart": 9410,
           "litmdCount": 259,
           "indent": ""
         }
@@ -546,8 +572,21 @@
           "outputStart": 0,
           "outputCount": 60,
           "chunkName": "use_session",
-          "litmdStart": 8317,
+          "litmdStart": 9677,
           "litmdCount": 60,
+          "indent": ""
+        }
+      ]
+    },
+    "frontend/src/hooks/useCatalog.ts": {
+      "rootChunk": "use_catalog",
+      "segments": [
+        {
+          "outputStart": 0,
+          "outputCount": 40,
+          "chunkName": "use_catalog",
+          "litmdStart": 9747,
+          "litmdCount": 40,
           "indent": ""
         }
       ]
@@ -559,7 +598,7 @@
           "outputStart": 0,
           "outputCount": 240,
           "chunkName": "use_pi_config",
-          "litmdStart": 8389,
+          "litmdStart": 9799,
           "litmdCount": 240,
           "indent": ""
         }
@@ -572,7 +611,7 @@
           "outputStart": 0,
           "outputCount": 268,
           "chunkName": "pi_config_section",
-          "litmdStart": 8638,
+          "litmdStart": 10048,
           "litmdCount": 268,
           "indent": ""
         }
@@ -585,7 +624,7 @@
           "outputStart": 0,
           "outputCount": 12,
           "chunkName": "require_auth",
-          "litmdStart": 8917,
+          "litmdStart": 10327,
           "litmdCount": 12,
           "indent": ""
         }
@@ -598,7 +637,7 @@
           "outputStart": 0,
           "outputCount": 40,
           "chunkName": "layout",
-          "litmdStart": 8938,
+          "litmdStart": 10348,
           "litmdCount": 40,
           "indent": ""
         }
@@ -611,7 +650,7 @@
           "outputStart": 0,
           "outputCount": 725,
           "chunkName": "sidebar",
-          "litmdStart": 8990,
+          "litmdStart": 10400,
           "litmdCount": 725,
           "indent": ""
         }
@@ -624,7 +663,7 @@
           "outputStart": 0,
           "outputCount": 283,
           "chunkName": "chat_view",
-          "litmdStart": 9727,
+          "litmdStart": 11137,
           "litmdCount": 283,
           "indent": ""
         }
@@ -637,7 +676,7 @@
           "outputStart": 0,
           "outputCount": 51,
           "chunkName": "message_bubble",
-          "litmdStart": 10019,
+          "litmdStart": 11429,
           "litmdCount": 51,
           "indent": ""
         }
@@ -650,7 +689,7 @@
           "outputStart": 0,
           "outputCount": 166,
           "chunkName": "assistant_turn",
-          "litmdStart": 10080,
+          "litmdStart": 11490,
           "litmdCount": 166,
           "indent": ""
         }
@@ -663,7 +702,7 @@
           "outputStart": 0,
           "outputCount": 395,
           "chunkName": "tool_call_block",
-          "litmdStart": 10257,
+          "litmdStart": 11667,
           "litmdCount": 395,
           "indent": ""
         }
@@ -676,7 +715,7 @@
           "outputStart": 0,
           "outputCount": 69,
           "chunkName": "thinking_block",
-          "litmdStart": 10661,
+          "litmdStart": 12071,
           "litmdCount": 69,
           "indent": ""
         }
@@ -689,7 +728,7 @@
           "outputStart": 0,
           "outputCount": 18,
           "chunkName": "streaming_dots",
-          "litmdStart": 10739,
+          "litmdStart": 12149,
           "litmdCount": 18,
           "indent": ""
         }
@@ -702,7 +741,7 @@
           "outputStart": 0,
           "outputCount": 53,
           "chunkName": "slash_command_menu",
-          "litmdStart": 10766,
+          "litmdStart": 12176,
           "litmdCount": 53,
           "indent": ""
         }
@@ -713,10 +752,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 180,
+          "outputCount": 187,
           "chunkName": "landing",
-          "litmdStart": 10831,
-          "litmdCount": 180,
+          "litmdStart": 12241,
+          "litmdCount": 187,
           "indent": ""
         }
       ]
@@ -728,7 +767,7 @@
           "outputStart": 0,
           "outputCount": 83,
           "chunkName": "login",
-          "litmdStart": 11020,
+          "litmdStart": 12437,
           "litmdCount": 83,
           "indent": ""
         }
@@ -741,7 +780,7 @@
           "outputStart": 0,
           "outputCount": 9,
           "chunkName": "empty_state",
-          "litmdStart": 11111,
+          "litmdStart": 12528,
           "litmdCount": 9,
           "indent": ""
         }
@@ -752,10 +791,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 298,
+          "outputCount": 302,
           "chunkName": "session_page",
-          "litmdStart": 11131,
-          "litmdCount": 298,
+          "litmdStart": 12548,
+          "litmdCount": 302,
           "indent": ""
         }
       ]
@@ -765,10 +804,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 142,
+          "outputCount": 391,
           "chunkName": "settings_page",
-          "litmdStart": 11439,
-          "litmdCount": 142,
+          "litmdStart": 12860,
+          "litmdCount": 391,
           "indent": ""
         }
       ]
@@ -780,7 +819,7 @@
           "outputStart": 0,
           "outputCount": 1,
           "chunkName": "constants_js",
-          "litmdStart": 11608,
+          "litmdStart": 13278,
           "litmdCount": 1,
           "indent": ""
         }
@@ -793,7 +832,7 @@
           "outputStart": 0,
           "outputCount": 14,
           "chunkName": "index_js",
-          "litmdStart": 11618,
+          "litmdStart": 13288,
           "litmdCount": 14,
           "indent": ""
         }
@@ -804,10 +843,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 485,
+          "outputCount": 843,
           "chunkName": "sidecar_js",
-          "litmdStart": 11647,
-          "litmdCount": 485,
+          "litmdStart": 13317,
+          "litmdCount": 843,
           "indent": ""
         }
       ]
