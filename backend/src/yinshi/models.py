@@ -241,13 +241,24 @@ class ProviderConnectionCreate(BaseModel):
     def validate_secret(cls, value: str | dict[str, Any], info) -> str | dict[str, Any]:
         """Match secret shape to the requested auth strategy."""
         auth_strategy = info.data.get("auth_strategy")
-        if auth_strategy in {"api_key", "api_key_with_config"}:
+        if auth_strategy == "api_key":
             if not isinstance(value, str):
                 raise TypeError("API key connections require a string secret")
             normalized_value = value.strip()
             if not normalized_value:
                 raise ValueError("API key secret must not be empty")
             return normalized_value
+        if auth_strategy == "api_key_with_config":
+            if isinstance(value, str):
+                normalized_value = value.strip()
+                if not normalized_value:
+                    raise ValueError("API key secret must not be empty")
+                return normalized_value
+            if not isinstance(value, dict):
+                raise TypeError("API key + config connections require a string or object secret")
+            if not value:
+                raise ValueError("API key + config secret must not be empty")
+            return value
         if auth_strategy == "oauth":
             if not isinstance(value, dict):
                 raise TypeError("OAuth connections require an object secret")

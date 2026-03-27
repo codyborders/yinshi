@@ -16,7 +16,7 @@ test("settings can add and remove a BYOK key without exposing the raw secret", a
     })
     .first();
   await openAiCard.getByPlaceholder("Label (optional)").fill("Work key");
-  await openAiCard.getByPlaceholder("Enter provider secret").fill(rawKey);
+  await openAiCard.getByPlaceholder("Enter API key").fill(rawKey);
   await openAiCard.getByRole("button", { name: "Save Connection" }).click();
 
   await expect(openAiCard).toContainText("Connected");

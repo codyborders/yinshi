@@ -25,6 +25,10 @@ function buildInitialConfig(provider: ProviderDescriptor): Record<string, string
   return initialConfig;
 }
 
+function normalizeFieldValue(value: string | undefined): string {
+  return (value || "").trim();
+}
+
 function ProviderCard({
   provider,
   connection,
@@ -52,16 +56,54 @@ function ProviderCard({
 
   const hasKeyForm = authStrategy === "api_key" || authStrategy === "api_key_with_config";
   const hasOauth = authStrategy === "oauth";
-
+  const secretSetupFields = useMemo(
+    () => provider.setup_fields.filter((field) => field.secret),
+    [provider.setup_fields],
+  );
+  const publicSetupFields = useMemo(
+    () => provider.setup_fields.filter((field) => !field.secret),
+    [provider.setup_fields],
+  );
   const nonSecretConfig = useMemo(() => {
-    const trimmedConfigEntries = Object.entries(config)
-      .map(([key, value]) => [key, value.trim()] as const)
+    const trimmedConfigEntries = publicSetupFields
+      .map((field) => [field.key, normalizeFieldValue(config[field.key])] as const)
       .filter(([, value]) => value.length > 0);
     return Object.fromEntries(trimmedConfigEntries);
-  }, [config]);
+  }, [config, publicSetupFields]);
+  const structuredSecret = useMemo(() => {
+    const normalizedSecret = normalizeFieldValue(secret);
+    if (authStrategy !== "api_key_with_config") {
+      return normalizedSecret;
+    }
+    const secretPayload: Record<string, string> = { apiKey: normalizedSecret };
+    for (const field of secretSetupFields) {
+      const fieldValue = normalizeFieldValue(config[field.key]);
+      if (fieldValue) {
+        secretPayload[field.key] = fieldValue;
+      }
+    }
+    return secretPayload;
+  }, [authStrategy, config, secret, secretSetupFields]);
+  const missingRequiredField = useMemo(() => {
+    if (!hasKeyForm) {
+      return null;
+    }
+    if (!normalizeFieldValue(secret)) {
+      return "API key";
+    }
+    for (const field of provider.setup_fields) {
+      if (!field.required) {
+        continue;
+      }
+      if (!normalizeFieldValue(config[field.key])) {
+        return field.label;
+      }
+    }
+    return null;
+  }, [config, hasKeyForm, provider.setup_fields, secret]);
 
   async function saveConnection() {
-    if (!hasKeyForm || !secret.trim()) {
+    if (!hasKeyForm || missingRequiredField) {
       return;
     }
     setSaving(true);
@@ -70,7 +112,7 @@ function ProviderCard({
       await api.post("/api/settings/connections", {
         provider: provider.id,
         auth_strategy: authStrategy,
-        secret,
+        secret: structuredSecret,
         label,
         config: nonSecretConfig,
       });
@@ -186,7 +228,7 @@ function ProviderCard({
             type="password"
             value={secret}
             onChange={(event) => setSecret(event.target.value)}
-            placeholder="Enter provider secret"
+            placeholder="Enter API key"
             className="w-full rounded border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-gray-200 placeholder-gray-500"
           />
           {provider.setup_fields.map((field) => (
@@ -209,11 +251,14 @@ function ProviderCard({
             onClick={() => {
               void saveConnection();
             }}
-            disabled={saving || !secret.trim()}
+            disabled={saving || missingRequiredField !== null}
             className="btn-primary px-4 py-2 text-sm disabled:opacity-50"
           >
             {saving ? "Saving..." : "Save Connection"}
           </button>
+          {missingRequiredField ? (
+            <p className="text-sm text-gray-500">{missingRequiredField} is required.</p>
+          ) : null}
         </div>
       )}
 

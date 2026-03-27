@@ -36,6 +36,7 @@ class ProviderMetadata:
     auth_strategies: tuple[str, ...]
     setup_fields: tuple[ProviderSetupField, ...]
     docs_url: str
+    supported: bool = True
 
 
 def _titleize_provider(provider_id: str) -> str:
@@ -52,18 +53,6 @@ def _titleize_provider(provider_id: str) -> str:
 _COMMON_DOCS_URL = "https://www.npmjs.com/package/@mariozechner/pi-ai"
 
 PROVIDER_METADATA_BY_ID: dict[str, ProviderMetadata] = {
-    "amazon-bedrock": ProviderMetadata(
-        id="amazon-bedrock",
-        label="Amazon Bedrock",
-        auth_strategies=("api_key_with_config",),
-        setup_fields=(
-            ProviderSetupField("aws_access_key_id", "Access Key ID", True, secret=True),
-            ProviderSetupField("aws_secret_access_key", "Secret Access Key", True, secret=True),
-            ProviderSetupField("aws_region", "Region", True),
-            ProviderSetupField("aws_session_token", "Session Token", False, secret=True),
-        ),
-        docs_url=_COMMON_DOCS_URL,
-    ),
     "anthropic": ProviderMetadata(
         id="anthropic",
         label="Anthropic",
@@ -87,6 +76,13 @@ PROVIDER_METADATA_BY_ID: dict[str, ProviderMetadata] = {
         id="github-copilot",
         label="GitHub Copilot",
         auth_strategies=("oauth",),
+        setup_fields=(),
+        docs_url=_COMMON_DOCS_URL,
+    ),
+    "google-vertex": ProviderMetadata(
+        id="google-vertex",
+        label="Google Vertex AI",
+        auth_strategies=("api_key",),
         setup_fields=(),
         docs_url=_COMMON_DOCS_URL,
     ),
@@ -118,6 +114,20 @@ PROVIDER_METADATA_BY_ID: dict[str, ProviderMetadata] = {
         setup_fields=(),
         docs_url=_COMMON_DOCS_URL,
     ),
+    "minimax-cn": ProviderMetadata(
+        id="minimax-cn",
+        label="MiniMax China",
+        auth_strategies=("api_key",),
+        setup_fields=(),
+        docs_url=_COMMON_DOCS_URL,
+    ),
+    "mistral": ProviderMetadata(
+        id="mistral",
+        label="Mistral",
+        auth_strategies=("api_key",),
+        setup_fields=(),
+        docs_url=_COMMON_DOCS_URL,
+    ),
     "openai": ProviderMetadata(
         id="openai",
         label="OpenAI",
@@ -132,11 +142,91 @@ PROVIDER_METADATA_BY_ID: dict[str, ProviderMetadata] = {
         setup_fields=(),
         docs_url=_COMMON_DOCS_URL,
     ),
+    "openrouter": ProviderMetadata(
+        id="openrouter",
+        label="OpenRouter",
+        auth_strategies=("api_key",),
+        setup_fields=(),
+        docs_url=_COMMON_DOCS_URL,
+    ),
+    "opencode": ProviderMetadata(
+        id="opencode",
+        label="OpenCode Zen",
+        auth_strategies=("api_key",),
+        setup_fields=(),
+        docs_url=_COMMON_DOCS_URL,
+    ),
+    "opencode-go": ProviderMetadata(
+        id="opencode-go",
+        label="OpenCode Go",
+        auth_strategies=("api_key",),
+        setup_fields=(),
+        docs_url=_COMMON_DOCS_URL,
+    ),
+    "vercel-ai-gateway": ProviderMetadata(
+        id="vercel-ai-gateway",
+        label="Vercel AI Gateway",
+        auth_strategies=("api_key",),
+        setup_fields=(),
+        docs_url=_COMMON_DOCS_URL,
+    ),
+    "groq": ProviderMetadata(
+        id="groq",
+        label="Groq",
+        auth_strategies=("api_key",),
+        setup_fields=(),
+        docs_url=_COMMON_DOCS_URL,
+    ),
+    "cerebras": ProviderMetadata(
+        id="cerebras",
+        label="Cerebras",
+        auth_strategies=("api_key",),
+        setup_fields=(),
+        docs_url=_COMMON_DOCS_URL,
+    ),
+    "xai": ProviderMetadata(
+        id="xai",
+        label="xAI",
+        auth_strategies=("api_key",),
+        setup_fields=(),
+        docs_url=_COMMON_DOCS_URL,
+    ),
+    "zai": ProviderMetadata(
+        id="zai",
+        label="ZAI",
+        auth_strategies=("api_key",),
+        setup_fields=(),
+        docs_url=_COMMON_DOCS_URL,
+    ),
+    "huggingface": ProviderMetadata(
+        id="huggingface",
+        label="Hugging Face",
+        auth_strategies=("api_key",),
+        setup_fields=(),
+        docs_url=_COMMON_DOCS_URL,
+    ),
+    "kimi-coding": ProviderMetadata(
+        id="kimi-coding",
+        label="Kimi Coding",
+        auth_strategies=("api_key",),
+        setup_fields=(),
+        docs_url=_COMMON_DOCS_URL,
+    ),
+    # Bedrock requires AWS SDK credential resolution rather than the auth.json-style
+    # API key path that Yinshi currently supports per session.
+    "amazon-bedrock": ProviderMetadata(
+        id="amazon-bedrock",
+        label="Amazon Bedrock",
+        auth_strategies=(),
+        setup_fields=(),
+        docs_url=_COMMON_DOCS_URL,
+        supported=False,
+    ),
 }
 
 
 def get_provider_metadata(provider_id: str) -> ProviderMetadata:
-    """Return metadata for a provider id, falling back to generic API-key behavior."""
+    """Return metadata for a provider id, defaulting to unsupported."""
     if not isinstance(provider_id, str):
         raise TypeError("provider_id must be a string")
     normalized_provider_id = provider_id.strip()
@@ -148,9 +238,10 @@ def get_provider_metadata(provider_id: str) -> ProviderMetadata:
     return ProviderMetadata(
         id=normalized_provider_id,
         label=_titleize_provider(normalized_provider_id),
-        auth_strategies=("api_key",),
+        auth_strategies=(),
         setup_fields=(),
         docs_url=_COMMON_DOCS_URL,
+        supported=False,
     )
 
 

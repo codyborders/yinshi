@@ -51,3 +51,26 @@ def test_delete_key_not_found(auth_client: TestClient):
         "/api/settings/keys/nonexistent",
     )
     assert resp.status_code == 404
+
+
+def test_add_api_key_with_config_connection(auth_client: TestClient):
+    """Structured api_key_with_config secrets should be accepted and not echoed back."""
+    resp = auth_client.post(
+        "/api/settings/connections",
+        json={
+            "provider": "azure-openai-responses",
+            "auth_strategy": "api_key_with_config",
+            "secret": {"apiKey": "sk-azure-test"},
+            "label": "Azure",
+            "config": {"baseUrl": "https://example.openai.azure.com"},
+        },
+    )
+    assert resp.status_code == 201
+    body = resp.json()
+    assert body["provider"] == "azure-openai-responses"
+    assert body["config"] == {"baseUrl": "https://example.openai.azure.com"}
+    assert "sk-azure-test" not in resp.text
+
+    list_resp = auth_client.get("/api/settings/connections")
+    assert list_resp.status_code == 200
+    assert "sk-azure-test" not in list_resp.text

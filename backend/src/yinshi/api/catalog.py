@@ -56,12 +56,23 @@ async def get_catalog(request: Request) -> dict[str, Any]:
     finally:
         await sidecar.disconnect()
 
+    supported_provider_ids = {
+        provider_row["id"]
+        for provider_row in catalog["providers"]
+        if get_provider_metadata(provider_row["id"]).supported
+    }
     providers = [
         _build_provider_entry(provider_row, connected_provider_ids)
         for provider_row in catalog["providers"]
+        if provider_row["id"] in supported_provider_ids
+    ]
+    models = [
+        model_row
+        for model_row in catalog["models"]
+        if model_row["provider"] in supported_provider_ids
     ]
     return {
         "default_model": catalog["default_model"],
         "providers": providers,
-        "models": catalog["models"],
+        "models": models,
     }

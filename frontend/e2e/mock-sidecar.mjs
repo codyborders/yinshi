@@ -147,6 +147,13 @@ const server = net.createServer((socket) => {
         } else {
           runtimeApiKey = "oauth-runtime-key";
         }
+      } else if (
+        authStrategy === "api_key_with_config"
+        && secret
+        && typeof secret === "object"
+        && typeof secret.apiKey === "string"
+      ) {
+        runtimeApiKey = secret.apiKey;
       } else if (typeof secret === "string") {
         runtimeApiKey = secret;
       }

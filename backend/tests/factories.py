@@ -124,6 +124,10 @@ def make_mock_sidecar(query_fn: Callable[..., Any], **overrides: Any) -> AsyncMo
         if auth_strategy in {"api_key", "api_key_with_config"}:
             if isinstance(secret, str):
                 runtime_api_key = secret
+            elif isinstance(secret, dict):
+                api_key = secret.get("apiKey")
+                if isinstance(api_key, str):
+                    runtime_api_key = api_key
         else:
             if isinstance(secret, dict):
                 access_token = secret.get("accessToken")

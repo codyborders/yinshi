@@ -30,7 +30,7 @@ from yinshi.exceptions import (
     SidecarError,
     WorkspaceNotFoundError,
 )
-from yinshi.model_catalog import normalize_model_ref
+from yinshi.model_catalog import get_provider_metadata, normalize_model_ref
 from yinshi.rate_limit import limiter
 from yinshi.services.keys import record_usage
 from yinshi.services.provider_connections import (
@@ -341,6 +341,12 @@ async def _resolve_execution_context(
             raise HTTPException(
                 status_code=400,
                 detail="Could not determine provider for model",
+            )
+        provider_metadata = get_provider_metadata(provider)
+        if not provider_metadata.supported:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Provider {provider} is not supported in Yinshi yet",
             )
         model_ref = cast(str, resolved["model"])
         connection = resolve_provider_connection(tenant.user_id, provider)

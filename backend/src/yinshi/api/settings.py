@@ -65,6 +65,11 @@ def _pi_config_http_exception(error: PiConfigError) -> HTTPException:
     return HTTPException(status_code=400, detail=message)
 
 
+def _connection_http_exception(error: Exception) -> HTTPException:
+    """Convert provider connection validation errors into user-facing 400s."""
+    return HTTPException(status_code=400, detail=str(error))
+
+
 @router.get("/keys", response_model=list[ApiKeyOut])
 def list_keys(request: Request) -> list[dict[str, Any]]:
     """List API keys (provider + label only, never the key value)."""
@@ -87,13 +92,16 @@ def list_keys(request: Request) -> list[dict[str, Any]]:
 def add_key(body: ApiKeyCreate, request: Request) -> dict[str, Any]:
     """Store an encrypted API key."""
     tenant = require_tenant(request)
-    connection = create_provider_connection(
-        tenant.user_id,
-        body.provider,
-        "api_key",
-        body.key,
-        label=body.label,
-    )
+    try:
+        connection = create_provider_connection(
+            tenant.user_id,
+            body.provider,
+            "api_key",
+            body.key,
+            label=body.label,
+        )
+    except (TypeError, ValueError) as error:
+        raise _connection_http_exception(error) from error
     return {
         "id": connection["id"],
         "created_at": connection["created_at"],
@@ -124,14 +132,17 @@ def list_connections(request: Request) -> list[dict[str, Any]]:
 def add_connection(body: ProviderConnectionCreate, request: Request) -> dict[str, Any]:
     """Store one generic provider connection."""
     tenant = require_tenant(request)
-    return create_provider_connection(
-        tenant.user_id,
-        body.provider,
-        body.auth_strategy,
-        body.secret,
-        label=body.label,
-        config=body.config,
-    )
+    try:
+        return create_provider_connection(
+            tenant.user_id,
+            body.provider,
+            body.auth_strategy,
+            body.secret,
+            label=body.label,
+            config=body.config,
+        )
+    except (TypeError, ValueError) as error:
+        raise _connection_http_exception(error) from error
 
 
 @router.delete("/connections/{connection_id}", status_code=204)

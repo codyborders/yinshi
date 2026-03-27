@@ -64,13 +64,41 @@ function normalizeModelLookup(modelKey) {
 
 function buildModelsJsonPath(agentDir) {
   if (!agentDir || typeof agentDir !== "string") {
-    return undefined;
+    return null;
   }
   const modelsJsonPath = path.join(agentDir, "models.json");
   if (!fs.existsSync(modelsJsonPath)) {
-    return undefined;
+    return null;
   }
   return modelsJsonPath;
+}
+
+function normalizeApiKeyWithConfigSecret(secret) {
+  if (typeof secret === "string") {
+    const normalizedSecret = secret.trim();
+    if (!normalizedSecret) {
+      throw new Error("API key + config auth requires a non-empty apiKey");
+    }
+    return { apiKey: normalizedSecret };
+  }
+  if (!secret || typeof secret !== "object" || Array.isArray(secret)) {
+    throw new Error("API key + config auth requires an object secret");
+  }
+  const normalizedSecret = {};
+  for (const [key, value] of Object.entries(secret)) {
+    if (typeof value !== "string") {
+      throw new Error(`API key + config secret field ${key} must be a string`);
+    }
+    const trimmedValue = value.trim();
+    if (!trimmedValue) {
+      throw new Error(`API key + config secret field ${key} must not be empty`);
+    }
+    normalizedSecret[key] = trimmedValue;
+  }
+  if (typeof normalizedSecret.apiKey !== "string" || !normalizedSecret.apiKey) {
+    throw new Error("API key + config auth requires an apiKey field");
+  }
+  return normalizedSecret;
 }
 
 function createAuthStorage(providerAuth) {
@@ -84,13 +112,21 @@ function createAuthStorage(providerAuth) {
   if (typeof providerAuth.authStrategy !== "string" || !providerAuth.authStrategy) {
     throw new Error("providerAuth.authStrategy must be a non-empty string");
   }
-  if (providerAuth.authStrategy === "api_key" || providerAuth.authStrategy === "api_key_with_config") {
+  if (providerAuth.authStrategy === "api_key") {
     if (typeof providerAuth.secret !== "string" || !providerAuth.secret) {
       throw new Error("API key auth requires a non-empty secret");
     }
     authStorage.set(providerAuth.provider, {
       type: "api_key",
       key: providerAuth.secret,
+    });
+    return authStorage;
+  }
+  if (providerAuth.authStrategy === "api_key_with_config") {
+    const normalizedSecret = normalizeApiKeyWithConfigSecret(providerAuth.secret);
+    authStorage.set(providerAuth.provider, {
+      type: "api_key",
+      key: normalizedSecret.apiKey,
     });
     return authStorage;
   }
@@ -110,6 +146,8 @@ function createAuthStorage(providerAuth) {
 function createModelRegistry(providerAuth, agentDir) {
   const authStorage = createAuthStorage(providerAuth);
   const modelsJsonPath = buildModelsJsonPath(agentDir);
+  // Pass null when there is no imported agentDir so the SDK does not fall back
+  // to the host machine's ~/.pi/agent/models.json and leak host-local models.
   const registry = new ModelRegistry(authStorage, modelsJsonPath);
   return { authStorage, registry };
 }
@@ -230,9 +268,16 @@ async function resolveProviderRuntimeAuth(provider, modelRef, providerAuth, agen
       modelConfig.azureDeploymentName = resolvedModel.azureDeploymentName;
     }
   }
+  let returnedAuth = providerAuth.secret ?? null;
+  if (providerAuth.authStrategy === "oauth") {
+    returnedAuth = credential || null;
+  }
+  if (providerAuth.authStrategy === "api_key_with_config") {
+    returnedAuth = normalizeApiKeyWithConfigSecret(providerAuth.secret);
+  }
   return {
     provider,
-    auth: credential || null,
+    auth: returnedAuth,
     model_ref: `${resolvedModel.provider}/${resolvedModel.id}`,
     runtime_api_key: runtimeApiKey || null,
     model_config: Object.keys(modelConfig).length > 0 ? modelConfig : null,
