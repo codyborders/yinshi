@@ -3,9 +3,9 @@ import { useParams } from "react-router-dom";
 import { api, type Message } from "../api/client";
 import ChatView from "../components/ChatView";
 import { useAgentStream, type ChatMessage } from "../hooks/useAgentStream";
+import { useCatalog } from "../hooks/useCatalog";
 import {
   DEFAULT_SESSION_MODEL,
-  SESSION_MODEL_OPTIONS,
   availableSessionModelsMarkdown,
   describeSessionModel,
   getSessionModelOption,
@@ -17,14 +17,11 @@ function nextCmdId(): string {
   return `cmd-${Date.now()}-${++cmdIdCounter}`;
 }
 
-const AVAILABLE_MODEL_KEYS = SESSION_MODEL_OPTIONS.map(
-  (option) => `\`${option.value}\``,
-).join(", ");
-
 export default function Session() {
   const { id } = useParams<{ id: string }>();
   const { messages, sendPrompt, cancel, streaming, setMessages } =
     useAgentStream(id);
+  const { catalog, loading: loadingCatalog } = useCatalog();
   const [sessionModel, setSessionModel] = useState(DEFAULT_SESSION_MODEL);
   const [loadingHistory, setLoadingHistory] = useState(true);
   const [historyError, setHistoryError] = useState<string | null>(null);
@@ -105,13 +102,14 @@ export default function Session() {
   const updateSessionModel = useCallback(
     async (requestedModel: string, announce: boolean) => {
       if (!id) return false;
+      if (!catalog) return false;
 
-      const resolvedModel = resolveSessionModelKey(requestedModel);
+      const resolvedModel = resolveSessionModelKey(requestedModel, catalog.models);
       if (!resolvedModel) {
         if (announce) {
           addSystemMessage(
             "Unknown model. Available models:\n\n" +
-              availableSessionModelsMarkdown(),
+              availableSessionModelsMarkdown(catalog.models),
           );
         }
         return false;
@@ -126,7 +124,7 @@ export default function Session() {
         setSessionModel(updated.model);
         if (announce) {
           addSystemMessage(
-            `Model changed to ${describeSessionModel(updated.model)}`,
+            `Model changed to ${describeSessionModel(updated.model, catalog.models)}`,
           );
         }
         return true;
@@ -139,12 +137,16 @@ export default function Session() {
         setUpdatingModel(false);
       }
     },
-    [addSystemMessage, id],
+    [addSystemMessage, catalog, id],
   );
 
   const handleCommand = useCallback(
     async (name: string, args: string) => {
       if (!id) return;
+
+      const availableModelKeys = catalog
+        ? catalog.models.map((model) => `\`${model.ref}\``).join(", ")
+        : "";
 
       switch (name) {
         case "help":
@@ -155,7 +157,7 @@ export default function Session() {
               "- `/tree` -- Show workspace file tree\n" +
               "- `/export` -- Download chat as markdown\n" +
               "- `/clear` -- Clear chat display\n\n" +
-              `Available model keys: ${AVAILABLE_MODEL_KEYS}`,
+              `Available model keys: ${availableModelKeys}`,
           );
           break;
 
@@ -164,9 +166,9 @@ export default function Session() {
             await updateSessionModel(args, true);
           } else {
             addSystemMessage(
-              `Current model: ${describeSessionModel(sessionModel)}\n\n` +
+              `Current model: ${describeSessionModel(sessionModel, catalog?.models || [])}\n\n` +
                 "Available models:\n\n" +
-                availableSessionModelsMarkdown(),
+                availableSessionModelsMarkdown(catalog?.models || []),
             );
           }
           break;
@@ -214,6 +216,7 @@ export default function Session() {
     },
     [
       addSystemMessage,
+      catalog,
       id,
       messages,
       sessionModel,
@@ -222,8 +225,9 @@ export default function Session() {
     ],
   );
 
-  const selectedModelOption = getSessionModelOption(sessionModel);
-  const selectedModelValue = selectedModelOption?.value || sessionModel;
+  const catalogModels = catalog?.models || [];
+  const selectedModelOption = getSessionModelOption(sessionModel, catalogModels);
+  const selectedModelValue = selectedModelOption?.ref || sessionModel;
 
   return (
     <>
@@ -244,7 +248,7 @@ export default function Session() {
           <select
             id="session-model"
             value={selectedModelValue}
-            disabled={streaming || updatingModel}
+            disabled={streaming || updatingModel || loadingCatalog}
             onChange={(event) => {
               void updateSessionModel(event.target.value, false);
             }}
@@ -253,9 +257,9 @@ export default function Session() {
             {!selectedModelOption && (
               <option value={sessionModel}>{sessionModel}</option>
             )}
-            {SESSION_MODEL_OPTIONS.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
+            {catalogModels.map((model) => (
+              <option key={model.ref} value={model.ref}>
+                {model.label}
               </option>
             ))}
           </select>

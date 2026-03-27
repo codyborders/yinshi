@@ -51,11 +51,24 @@ def _make_streaming_sidecar(
 def _make_model_resolver(
     *,
     provider: str = "minimax",
-    model: str = "MiniMax-M2.7",
+    model: str = "minimax/MiniMax-M2.7",
 ) -> AsyncMock:
     """Create a sidecar mock used only for model resolution."""
     mock = AsyncMock()
     mock.resolve_model = AsyncMock(return_value={"provider": provider, "model": model})
+    mock.resolve_provider_auth = AsyncMock(
+        side_effect=lambda **kwargs: {
+            "provider": kwargs["provider"],
+            "auth": kwargs["provider_auth"]["secret"],
+            "model_ref": kwargs["model"],
+            "runtime_api_key": (
+                kwargs["provider_auth"]["secret"]
+                if isinstance(kwargs["provider_auth"]["secret"], str)
+                else None
+            ),
+            "model_config": kwargs.get("provider_config"),
+        }
+    )
     mock.disconnect = AsyncMock()
     return mock
 
@@ -241,7 +254,10 @@ def test_authenticated_byok_required_journey(
         )
         assert third.status_code == 402
 
-    assert second_stream.warmup.call_args.kwargs["api_key"] == "sk-user-minimax-key"
+    provider_auth = second_stream.warmup.call_args.kwargs["provider_auth"]
+    assert provider_auth["provider"] == "minimax"
+    assert provider_auth["authStrategy"] == "api_key"
+    assert provider_auth["secret"] == "sk-user-minimax-key"
 
 
 def test_workspace_lifecycle_journey(

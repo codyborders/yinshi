@@ -24,13 +24,15 @@ test("slash commands render the expected session responses", async ({ page }) =>
   await composer.press("Enter");
   await expect(page.getByText("Current model:")).toBeVisible();
   await expect(
-    page.getByText("Current model: MiniMax M2.7 (minimax-m2.7)"),
+    page.getByText("Current model: MiniMax M2.7 (minimax/MiniMax-M2.7)"),
   ).toBeVisible();
 
   await composer.fill("/model sonnet");
   await composer.press("Enter");
   await expect(
-    page.getByText("Model changed to Claude Sonnet 4 (sonnet)"),
+    page.getByText(
+      "Model changed to Claude Sonnet 4 (anthropic/claude-sonnet-4-20250514)",
+    ),
   ).toBeVisible();
 
   await composer.fill("/tree");

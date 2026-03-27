@@ -105,14 +105,17 @@ class SidecarClient:
     def _build_options(
         model: str,
         cwd: str,
-        api_key: str | None = None,
+        provider_auth: dict[str, Any] | None = None,
+        provider_config: dict[str, Any] | None = None,
         agent_dir: str | None = None,
         settings_payload: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Build the options dict sent with warmup/query messages."""
         options: dict[str, Any] = {"model": model, "cwd": cwd}
-        if api_key:
-            options["apiKey"] = api_key
+        if provider_auth:
+            options["providerAuth"] = provider_auth
+        if provider_config:
+            options["providerConfig"] = provider_config
         if agent_dir:
             options["agentDir"] = agent_dir
         if settings_payload:
@@ -124,7 +127,8 @@ class SidecarClient:
         session_id: str,
         model: str = DEFAULT_SESSION_MODEL,
         cwd: str = ".",
-        api_key: str | None = None,
+        provider_auth: dict[str, Any] | None = None,
+        provider_config: dict[str, Any] | None = None,
         agent_dir: str | None = None,
         settings_payload: dict[str, Any] | None = None,
     ) -> None:
@@ -135,7 +139,8 @@ class SidecarClient:
             "options": self._build_options(
                 model,
                 cwd,
-                api_key,
+                provider_auth,
+                provider_config,
                 agent_dir=agent_dir,
                 settings_payload=settings_payload,
             ),
@@ -147,7 +152,8 @@ class SidecarClient:
         prompt: str,
         model: str = DEFAULT_SESSION_MODEL,
         cwd: str = ".",
-        api_key: str | None = None,
+        provider_auth: dict[str, Any] | None = None,
+        provider_config: dict[str, Any] | None = None,
         agent_dir: str | None = None,
         settings_payload: dict[str, Any] | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
@@ -159,7 +165,8 @@ class SidecarClient:
             "options": self._build_options(
                 model,
                 cwd,
-                api_key,
+                provider_auth,
+                provider_config,
                 agent_dir=agent_dir,
                 settings_payload=settings_payload,
             ),
@@ -185,13 +192,33 @@ class SidecarClient:
                 if data.get("type") == "result":
                     break
 
-    async def resolve_model(self, model_key: str) -> dict[str, str | None]:
+    async def resolve_model(
+        self,
+        model_key: str,
+        *,
+        agent_dir: str | None = None,
+        provider_auth: dict[str, Any] | None = None,
+        provider_config: dict[str, Any] | None = None,
+    ) -> dict[str, str | None]:
         """Ask the sidecar to resolve a model key.
 
         Returns {'provider': '...', 'model': '...'}.
         """
         request_id = f"resolve-{model_key}"
-        await self._send({"type": "resolve", "id": request_id, "model": model_key})
+        await self._send(
+            {
+                "type": "resolve",
+                "id": request_id,
+                "model": model_key,
+                "options": self._build_options(
+                    model_key,
+                    ".",
+                    provider_auth,
+                    provider_config,
+                    agent_dir=agent_dir,
+                ),
+            }
+        )
 
         msg = await self._read_line()
         if msg is None:
@@ -209,6 +236,94 @@ class SidecarClient:
             raise SidecarError("Resolved model must be a non-empty string")
 
         return {"provider": provider, "model": model}
+
+    async def get_catalog(self, *, agent_dir: str | None = None) -> dict[str, Any]:
+        """Request the provider/model catalog from the sidecar."""
+        request_id = "catalog"
+        await self._send(
+            {
+                "type": "catalog",
+                "id": request_id,
+                "options": {"agentDir": agent_dir} if agent_dir else {},
+            }
+        )
+        msg = await self._read_line()
+        if msg is None:
+            raise SidecarError("Sidecar connection lost during catalog request")
+        if msg.get("type") == "error":
+            raise SidecarError(f"Catalog request failed: {msg.get('error', 'unknown')}")
+        if msg.get("type") != "catalog":
+            raise SidecarError(f"Unexpected response type: {msg.get('type')}")
+        return msg
+
+    async def resolve_provider_auth(
+        self,
+        *,
+        provider: str,
+        model: str,
+        provider_auth: dict[str, Any],
+        provider_config: dict[str, Any] | None = None,
+        agent_dir: str | None = None,
+    ) -> dict[str, Any]:
+        """Resolve one provider auth payload into runtime-ready values."""
+        request_id = f"auth-resolve-{provider}"
+        await self._send(
+            {
+                "type": "auth_resolve",
+                "id": request_id,
+                "provider": provider,
+                "model": model,
+                "providerAuth": provider_auth,
+                "providerConfig": provider_config,
+                "agentDir": agent_dir,
+            }
+        )
+        msg = await self._read_line()
+        if msg is None:
+            raise SidecarError("Sidecar connection lost during auth resolve")
+        if msg.get("type") == "error":
+            raise SidecarError(f"Provider auth resolve failed: {msg.get('error', 'unknown')}")
+        if msg.get("type") != "auth_resolved":
+            raise SidecarError(f"Unexpected response type: {msg.get('type')}")
+        return msg
+
+    async def start_oauth_flow(self, provider: str) -> dict[str, Any]:
+        """Start an OAuth connection flow for a provider."""
+        request_id = f"oauth-start-{provider}"
+        await self._send({"type": "oauth_start", "id": request_id, "provider": provider})
+        msg = await self._read_line()
+        if msg is None:
+            raise SidecarError("Sidecar connection lost during OAuth start")
+        if msg.get("type") == "error":
+            raise SidecarError(f"OAuth start failed: {msg.get('error', 'unknown')}")
+        if msg.get("type") != "oauth_started":
+            raise SidecarError(f"Unexpected response type: {msg.get('type')}")
+        return msg
+
+    async def get_oauth_flow_status(self, flow_id: str) -> dict[str, Any]:
+        """Query the state of a started OAuth flow."""
+        request_id = f"oauth-status-{flow_id}"
+        await self._send({"type": "oauth_status", "id": request_id, "flowId": flow_id})
+        msg = await self._read_line()
+        if msg is None:
+            raise SidecarError("Sidecar connection lost during OAuth status check")
+        if msg.get("type") == "error":
+            raise SidecarError(f"OAuth status failed: {msg.get('error', 'unknown')}")
+        if msg.get("type") != "oauth_status":
+            raise SidecarError(f"Unexpected response type: {msg.get('type')}")
+        return msg
+
+    async def clear_oauth_flow(self, flow_id: str) -> None:
+        """Clear one completed or failed OAuth flow from the sidecar."""
+        request_id = f"oauth-clear-{flow_id}"
+        await self._send({"type": "oauth_clear", "id": request_id, "flowId": flow_id})
+        msg = await self._read_line()
+        if msg is None:
+            raise SidecarError("Sidecar connection lost during OAuth cleanup")
+        if msg.get("type") == "error":
+            raise SidecarError(f"OAuth cleanup failed: {msg.get('error', 'unknown')}")
+        if msg.get("type") != "oauth_cleared":
+            raise SidecarError(f"Unexpected response type: {msg.get('type')}")
 
     async def cancel(self, session_id: str) -> None:
         """Cancel an active session."""

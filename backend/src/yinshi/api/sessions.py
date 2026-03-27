@@ -11,6 +11,7 @@ from yinshi.api.deps import (
     check_workspace_owner,
     get_db_for_request,
 )
+from yinshi.model_catalog import normalize_model_ref
 from yinshi.models import MessageOut, SessionCreate, SessionOut, SessionUpdate
 
 logger = logging.getLogger(__name__)
@@ -33,6 +34,18 @@ _EXCLUDED_DIRS = frozenset(
     }
 )
 _TREE_FILE_LIMIT = 5000
+
+
+def _normalize_session_row(db, row: Any) -> dict[str, Any]:
+    """Normalize stored session models and persist repairs on read."""
+    normalized_row = dict(row)
+    original_model = normalized_row["model"]
+    normalized_model = normalize_model_ref(original_model)
+    if normalized_model != original_model:
+        db.execute("UPDATE sessions SET model = ? WHERE id = ?", (normalized_model, normalized_row["id"]))
+        db.commit()
+        normalized_row["model"] = normalized_model
+    return normalized_row
 
 
 def _list_workspace_files(workspace_path: str) -> list[str]:
@@ -70,7 +83,7 @@ def list_sessions(workspace_id: str, request: Request) -> list[dict[str, Any]]:
             "SELECT * FROM sessions WHERE workspace_id = ? ORDER BY created_at DESC",
             (workspace_id,),
         ).fetchall()
-        return [dict(r) for r in rows]
+        return [_normalize_session_row(db, row) for row in rows]
 
 
 @router.post(
@@ -101,7 +114,8 @@ def create_session(
         row = db.execute(
             "SELECT * FROM sessions WHERE rowid = ?", (cursor.lastrowid,)
         ).fetchone()
-        return dict(row)
+        assert row is not None, "created session must be queryable"
+        return _normalize_session_row(db, row)
 
 
 @router.get("/api/sessions/{session_id}", response_model=SessionOut)
@@ -114,7 +128,7 @@ def get_session(session_id: str, request: Request) -> dict[str, Any]:
         if not row:
             raise HTTPException(status_code=404, detail="Session not found")
         check_session_owner(db, session_id, request)
-        return dict(row)
+        return _normalize_session_row(db, row)
 
 
 @router.patch("/api/sessions/{session_id}", response_model=SessionOut)
@@ -145,7 +159,8 @@ def update_session(
         updated = db.execute(
             "SELECT * FROM sessions WHERE id = ?", (session_id,)
         ).fetchone()
-        return dict(updated)
+        assert updated is not None, "updated session must be queryable"
+        return _normalize_session_row(db, updated)
 
 
 @router.get("/api/sessions/{session_id}/messages", response_model=list[MessageOut])

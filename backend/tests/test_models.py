@@ -49,7 +49,7 @@ def test_session_create_defaults():
     from yinshi.models import SessionCreate
 
     s = SessionCreate()
-    assert s.model == "minimax-m2.7"
+    assert s.model == "minimax/MiniMax-M2.7"
 
 
 def test_ws_prompt():

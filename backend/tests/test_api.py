@@ -475,7 +475,7 @@ def test_create_session(client: TestClient, git_repo: str) -> None:
     assert resp.status_code == 201
     data = resp.json()
     assert data["workspace_id"] == ws_id
-    assert data["model"] == "sonnet"
+    assert data["model"] == "anthropic/claude-sonnet-4-20250514"
     assert data["status"] == "idle"
 
 
@@ -560,9 +560,11 @@ def test_prompt_rate_limit_returns_429(
                 return_value=ExecutionContext(
                     sidecar_socket=None,
                     effective_cwd="/tmp",
-                    api_key=None,
                     key_source="platform",
                     provider="test-provider",
+                    provider_auth=None,
+                    provider_config=None,
+                    model_ref="minimax/MiniMax-M2.7",
                 )
             ),
         ),
@@ -674,7 +676,8 @@ def test_prompt_repairs_migrated_workspace_paths(
         prompt,
         model=None,
         cwd=None,
-        api_key=None,
+        provider_auth=None,
+        provider_config=None,
         agent_dir=None,
         settings_payload=None,
     ):
@@ -721,7 +724,8 @@ def test_prompt_streams_sidecar_events(client: TestClient, session_id: str) -> N
         prompt,
         model=None,
         cwd=None,
-        api_key=None,
+        provider_auth=None,
+        provider_config=None,
         agent_dir=None,
         settings_payload=None,
     ):
@@ -769,7 +773,8 @@ def test_prompt_saves_partial_on_sidecar_error(client: TestClient, session_id: s
         prompt,
         model=None,
         cwd=None,
-        api_key=None,
+        provider_auth=None,
+        provider_config=None,
         agent_dir=None,
         settings_payload=None,
     ):
@@ -829,7 +834,8 @@ def test_first_prompt_updates_workspace_name(client: TestClient, git_repo: str) 
         prompt,
         model=None,
         cwd=None,
-        api_key=None,
+        provider_auth=None,
+        provider_config=None,
         agent_dir=None,
         settings_payload=None,
     ):
@@ -869,7 +875,8 @@ def test_second_prompt_does_not_update_workspace_name(client: TestClient, git_re
         prompt,
         model=None,
         cwd=None,
-        api_key=None,
+        provider_auth=None,
+        provider_config=None,
         agent_dir=None,
         settings_payload=None,
     ):
@@ -1168,11 +1175,11 @@ def test_update_session_model(client: TestClient, test_entities: Entities) -> No
         json={"model": "sonnet"},
     )
     assert resp.status_code == 200
-    assert resp.json()["model"] == "sonnet"
+    assert resp.json()["model"] == "anthropic/claude-sonnet-4-20250514"
 
     # Verify it persisted
     get_resp = client.get(f"/api/sessions/{test_entities.session_id}")
-    assert get_resp.json()["model"] == "sonnet"
+    assert get_resp.json()["model"] == "anthropic/claude-sonnet-4-20250514"
 
 
 def test_update_session_not_found(client: TestClient) -> None:
@@ -1191,7 +1198,7 @@ def test_update_session_no_changes(client: TestClient, test_entities: Entities) 
         json={},
     )
     assert resp.status_code == 200
-    assert resp.json()["model"] == "minimax-m2.7"
+    assert resp.json()["model"] == "minimax/MiniMax-M2.7"
 
 
 def test_get_session_tree(client: TestClient, test_entities: Entities) -> None:

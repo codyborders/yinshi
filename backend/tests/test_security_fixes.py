@@ -65,7 +65,7 @@ def test_session_patch_filters_updatable_columns(
         json={"model": "sonnet"},
     )
     assert resp.status_code == 200
-    assert resp.json()["model"] == "sonnet"
+    assert resp.json()["model"] == "anthropic/claude-sonnet-4-20250514"
 
     # status should NOT be directly updatable via PATCH
     # (even if the field is sent, it should be filtered out)
@@ -74,7 +74,7 @@ def test_session_patch_filters_updatable_columns(
         json={"model": "opus"},
     )
     assert resp.status_code == 200
-    assert resp.json()["model"] == "opus"
+    assert resp.json()["model"] == "anthropic/claude-opus-4-20250514"
     # status should remain unchanged
     assert resp.json()["status"] == "idle"
 
@@ -103,7 +103,7 @@ def test_session_patch_exclude_unset(
         f"/api/workspaces/{ws['id']}/sessions",
         json={"model": "sonnet"},
     ).json()
-    assert sess["model"] == "sonnet"
+    assert sess["model"] == "anthropic/claude-sonnet-4-20250514"
 
     # PATCH with empty body -- model should NOT be reset
     resp = auth_client.patch(
@@ -111,7 +111,7 @@ def test_session_patch_exclude_unset(
         json={},
     )
     assert resp.status_code == 200
-    assert resp.json()["model"] == "sonnet"
+    assert resp.json()["model"] == "anthropic/claude-sonnet-4-20250514"
 
 
 # --- SEC-H2: Open redirect fix ---

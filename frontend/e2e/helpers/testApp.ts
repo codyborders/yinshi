@@ -157,7 +157,7 @@ export async function seedFullStack(
 
 export async function storeApiKey(
   session: AuthSession,
-  provider: "anthropic" | "minimax",
+  provider: string,
   key: string,
   label = "",
 ): Promise<StoredApiKey> {

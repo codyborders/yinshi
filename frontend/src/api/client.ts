@@ -23,6 +23,54 @@ export interface ApiKey {
   last_used_at: string | null;
 }
 
+export interface ProviderSetupField {
+  key: string;
+  label: string;
+  required: boolean;
+  secret: boolean;
+}
+
+export interface ProviderDescriptor {
+  id: string;
+  label: string;
+  auth_strategies: string[];
+  setup_fields: ProviderSetupField[];
+  docs_url: string;
+  connected: boolean;
+  model_count: number;
+}
+
+export interface ModelDescriptor {
+  ref: string;
+  provider: string;
+  id: string;
+  label: string;
+  api: string;
+  reasoning: boolean;
+  inputs: string[];
+  context_window: number;
+  max_tokens: number;
+}
+
+export interface ProviderCatalog {
+  default_model: string;
+  providers: ProviderDescriptor[];
+  models: ModelDescriptor[];
+}
+
+export interface ProviderConnection {
+  id: string;
+  created_at: string;
+  updated_at: string;
+  provider: string;
+  auth_strategy: string;
+  label: string;
+  config: Record<string, unknown>;
+  status: string;
+  last_used_at: string | null;
+  expires_at: string | null;
+}
+
 export interface PiConfig {
   id: string;
   created_at: string;
@@ -188,6 +236,13 @@ export const api = {
     return response.json();
   },
 };
+
+export async function pollAuthFlow(provider: string, flowId: string): Promise<{ status: string }> {
+  return request<{ status: string }>(
+    "GET",
+    `/auth/providers/${provider}/callback?flow_id=${encodeURIComponent(flowId)}`,
+  );
+}
 
 export type SSEEvent =
   | { type: "assistant"; message: { content: ContentBlock[] } }

@@ -25,6 +25,8 @@ from yinshi.exceptions import GitHubAppError, GitHubInstallationUnusableError
 from yinshi.rate_limit import limiter
 from yinshi.services.accounts import resolve_or_create_user
 from yinshi.services.github_app import get_installation_details
+from yinshi.services.provider_connections import create_provider_connection
+from yinshi.services.sidecar import create_sidecar_connection
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -322,6 +324,83 @@ async def github_install_callback(request: Request) -> RedirectResponse:
         db.commit()
 
     return RedirectResponse(url="/app?github_connected=1")
+
+
+@router.post("/providers/{provider}/start")
+async def start_provider_auth(provider: str, request: Request) -> dict[str, str | None]:
+    """Start a provider OAuth flow through the sidecar."""
+    user_id = _current_user_id(request)
+    if user_id is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    sidecar = await create_sidecar_connection()
+    try:
+        flow = await sidecar.start_oauth_flow(provider)
+    finally:
+        await sidecar.disconnect()
+    return {
+        "flow_id": flow["flow_id"],
+        "provider": flow["provider"],
+        "auth_url": flow["auth_url"],
+        "instructions": flow.get("instructions"),
+    }
+
+
+@router.get("/providers/{provider}/callback")
+async def callback_provider_auth(provider: str, flow_id: str, request: Request) -> JSONResponse:
+    """Poll an OAuth flow and persist its credential when complete."""
+    user_id = _current_user_id(request)
+    if user_id is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    sidecar = await create_sidecar_connection()
+    try:
+        flow = await sidecar.get_oauth_flow_status(flow_id)
+        if flow["provider"] != provider:
+            raise HTTPException(status_code=400, detail="Provider mismatch")
+        status = flow["status"]
+        if status in {"pending", "starting"}:
+            return JSONResponse(
+                status_code=202,
+                content={
+                    "status": status,
+                    "provider": provider,
+                    "flow_id": flow_id,
+                    "instructions": flow.get("instructions"),
+                    "progress": flow.get("progress", []),
+                },
+            )
+        if status == "error":
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "status": "error",
+                    "provider": provider,
+                    "flow_id": flow_id,
+                    "error": flow.get("error") or "OAuth flow failed",
+                },
+            )
+        if status != "complete":
+            raise HTTPException(status_code=500, detail=f"Unexpected OAuth status: {status}")
+
+        credentials = flow.get("credentials")
+        if not isinstance(credentials, dict) or not credentials:
+            raise HTTPException(status_code=500, detail="OAuth flow did not return credentials")
+        create_provider_connection(
+            user_id,
+            provider,
+            "oauth",
+            credentials,
+            label="",
+        )
+        await sidecar.clear_oauth_flow(flow_id)
+        return JSONResponse(
+            {
+                "status": "complete",
+                "provider": provider,
+                "flow_id": flow_id,
+            }
+        )
+    finally:
+        await sidecar.disconnect()
 
 
 # --- Backward compatibility: /auth/login redirects to /auth/login/google ---

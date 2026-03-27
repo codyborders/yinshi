@@ -15,26 +15,89 @@ fs.mkdirSync(path.dirname(socketPath), { recursive: true });
 fs.rmSync(socketPath, { force: true });
 
 function resolveModel(modelKey = "minimax-m2.7") {
-  const key = String(modelKey).toLowerCase();
-  if (key.includes("sonnet") || key.includes("claude")) {
+  const key = String(modelKey).trim();
+  const lowerKey = key.toLowerCase();
+  if (lowerKey === "sonnet" || lowerKey.includes("anthropic/") || lowerKey.includes("claude")) {
     return {
       provider: "anthropic",
-      model: "claude-sonnet-4-20250514",
+      model: "anthropic/claude-sonnet-4-20250514",
     };
   }
 
-  if (key.includes("highspeed")) {
+  if (lowerKey.includes("openai/") || lowerKey.includes("gpt")) {
+    return {
+      provider: "openai",
+      model: "openai/gpt-4o-mini",
+    };
+  }
+
+  if (lowerKey.includes("highspeed")) {
     return {
       provider: "minimax",
-      model: "MiniMax-M2.7-highspeed",
+      model: "minimax/MiniMax-M2.7-highspeed",
     };
   }
 
   return {
     provider: "minimax",
-    model: "MiniMax-M2.7",
+    model: "minimax/MiniMax-M2.7",
   };
 }
+
+const catalog = {
+  default_model: "minimax/MiniMax-M2.7",
+  providers: [
+    { id: "anthropic", model_count: 1 },
+    { id: "minimax", model_count: 2 },
+    { id: "openai", model_count: 1 },
+  ],
+  models: [
+    {
+      ref: "anthropic/claude-sonnet-4-20250514",
+      provider: "anthropic",
+      id: "claude-sonnet-4-20250514",
+      label: "Claude Sonnet 4",
+      api: "anthropic-messages",
+      reasoning: true,
+      inputs: ["text", "image"],
+      context_window: 200000,
+      max_tokens: 16384,
+    },
+    {
+      ref: "minimax/MiniMax-M2.7",
+      provider: "minimax",
+      id: "MiniMax-M2.7",
+      label: "MiniMax M2.7",
+      api: "openai-completions",
+      reasoning: false,
+      inputs: ["text"],
+      context_window: 200000,
+      max_tokens: 16384,
+    },
+    {
+      ref: "minimax/MiniMax-M2.7-highspeed",
+      provider: "minimax",
+      id: "MiniMax-M2.7-highspeed",
+      label: "MiniMax M2.7 Highspeed",
+      api: "openai-completions",
+      reasoning: false,
+      inputs: ["text"],
+      context_window: 200000,
+      max_tokens: 16384,
+    },
+    {
+      ref: "openai/gpt-4o-mini",
+      provider: "openai",
+      id: "gpt-4o-mini",
+      label: "GPT-4o Mini",
+      api: "openai-responses",
+      reasoning: false,
+      inputs: ["text", "image"],
+      context_window: 128000,
+      max_tokens: 16384,
+    },
+  ],
+};
 
 const sessionOptions = new Map();
 
@@ -51,11 +114,51 @@ const server = net.createServer((socket) => {
     }
 
     if (message.type === "resolve") {
+      const resolvedModel = resolveModel(message.model);
       socket.write(
         `${JSON.stringify({
           type: "resolved",
           id: message.id,
-          ...resolveModel(message.model),
+          provider: resolvedModel.provider,
+          model: resolvedModel.model,
+        })}\n`,
+      );
+      return;
+    }
+
+    if (message.type === "catalog") {
+      socket.write(
+        `${JSON.stringify({
+          type: "catalog",
+          id: message.id,
+          ...catalog,
+        })}\n`,
+      );
+      return;
+    }
+
+    if (message.type === "auth_resolve") {
+      const authStrategy = message.providerAuth?.authStrategy;
+      const secret = message.providerAuth?.secret ?? null;
+      let runtimeApiKey = null;
+      if (authStrategy === "oauth") {
+        if (secret && typeof secret === "object" && typeof secret.accessToken === "string") {
+          runtimeApiKey = secret.accessToken;
+        } else {
+          runtimeApiKey = "oauth-runtime-key";
+        }
+      } else if (typeof secret === "string") {
+        runtimeApiKey = secret;
+      }
+      socket.write(
+        `${JSON.stringify({
+          type: "auth_resolved",
+          id: message.id,
+          provider: message.provider,
+          auth: secret,
+          model_ref: resolveModel(message.model).model,
+          runtime_api_key: runtimeApiKey,
+          model_config: null,
         })}\n`,
       );
       return;
@@ -75,7 +178,7 @@ const server = net.createServer((socket) => {
 
     if (message.type === "query") {
       const options = sessionOptions.get(message.id) ?? message.options ?? {};
-      const provider = resolveModel(options.model ?? "minimax-m2.7").provider;
+      const provider = resolveModel(options.model ?? "minimax/MiniMax-M2.7").provider;
       const prompt = String(message.prompt ?? "");
       const assistantEvent = {
         type: "message",

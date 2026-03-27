@@ -3,25 +3,26 @@ import { expect, test } from "@playwright/test";
 import { authenticateContext, uniqueEmail } from "./helpers/testApp";
 
 test("settings can add and remove a BYOK key without exposing the raw secret", async ({ page }) => {
-  const rawKey = "sk-ant-playwright-secret-key";
+  const rawKey = "sk-openai-playwright-secret-key";
 
   await authenticateContext(page.context(), uniqueEmail("settings"));
   await page.goto("/app/settings");
 
   await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
 
-  await page.getByRole("combobox").selectOption("anthropic");
-  await page.getByPlaceholder("Label (optional)").fill("Work key");
-  await page.getByPlaceholder("sk-...").fill(rawKey);
-  await page.getByRole("button", { name: "Add Key" }).click();
+  const openAiCard = page
+    .locator("div.rounded-xl", {
+      has: page.getByRole("heading", { name: "OpenAI" }),
+    })
+    .first();
+  await openAiCard.getByPlaceholder("Label (optional)").fill("Work key");
+  await openAiCard.getByPlaceholder("Enter provider secret").fill(rawKey);
+  await openAiCard.getByRole("button", { name: "Save Connection" }).click();
 
-  const keyItem = page.locator("li").filter({ hasText: "Work key" });
-  await expect(keyItem).toContainText("anthropic");
-  await expect(keyItem).toContainText("Work key");
+  await expect(openAiCard).toContainText("Connected");
+  await expect(openAiCard).toContainText("Work key");
   await expect(page.locator("body")).not.toContainText(rawKey);
 
-  await page.getByRole("button", { name: "Remove" }).click();
-  await expect(
-    page.getByText("No API keys configured yet. Add one before starting a session."),
-  ).toBeVisible();
+  await openAiCard.getByRole("button", { name: "Remove" }).click();
+  await expect(openAiCard).toContainText("Not connected");
 });

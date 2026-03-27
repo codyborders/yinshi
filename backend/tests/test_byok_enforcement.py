@@ -232,8 +232,18 @@ def _make_byok_mock_sidecar(
 ):
     """Build a mock SidecarClient for BYOK prompt tests."""
     mock = AsyncMock()
+    model_ref = f"{resolve_provider}/{resolve_model_id}"
     mock.resolve_model = AsyncMock(
-        return_value={"provider": resolve_provider, "model": resolve_model_id}
+        return_value={"provider": resolve_provider, "model": model_ref}
+    )
+    mock.resolve_provider_auth = AsyncMock(
+        return_value={
+            "provider": resolve_provider,
+            "auth": "sk-user-minimax-key" if resolve_provider == "minimax" else None,
+            "model_ref": model_ref,
+            "runtime_api_key": "sk-user-minimax-key" if resolve_provider == "minimax" else None,
+            "model_config": None,
+        }
     )
     mock.warmup = AsyncMock()
     mock.disconnect = AsyncMock()
@@ -243,7 +253,8 @@ def _make_byok_mock_sidecar(
         prompt,
         model=None,
         cwd=None,
-        api_key=None,
+        provider_auth=None,
+        provider_config=None,
         agent_dir=None,
         settings_payload=None,
     ):
@@ -321,7 +332,10 @@ def test_prompt_uses_byok_key_when_stored(tenant_prompt_env):
 
     assert resp.status_code == 200
     mock.warmup.assert_called_once()
-    assert mock.warmup.call_args.kwargs["api_key"] == "sk-user-minimax-key"
+    provider_auth = mock.warmup.call_args.kwargs["provider_auth"]
+    assert provider_auth["provider"] == "minimax"
+    assert provider_auth["authStrategy"] == "api_key"
+    assert provider_auth["secret"] == "sk-user-minimax-key"
 
 
 def test_prompt_402_for_non_minimax_without_byok(tenant_prompt_env):
@@ -376,7 +390,8 @@ def test_prompt_dev_mode_no_enforcement(
             prompt,
             model=None,
             cwd=None,
-            api_key=None,
+            provider_auth=None,
+            provider_config=None,
             agent_dir=None,
             settings_payload=None,
         ):

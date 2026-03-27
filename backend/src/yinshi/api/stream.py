@@ -17,7 +17,7 @@ from typing import Any, cast
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from yinshi.api.deps import check_owner, get_db_for_request, get_tenant, get_user_email
 from yinshi.config import get_settings
@@ -30,8 +30,13 @@ from yinshi.exceptions import (
     SidecarError,
     WorkspaceNotFoundError,
 )
+from yinshi.model_catalog import normalize_model_ref
 from yinshi.rate_limit import limiter
-from yinshi.services.keys import record_usage, resolve_api_key_for_prompt
+from yinshi.services.keys import record_usage
+from yinshi.services.provider_connections import (
+    resolve_provider_connection,
+    update_provider_connection_secret,
+)
 from yinshi.services.sidecar import SidecarClient, create_sidecar_connection
 from yinshi.services.workspace import ensure_workspace_checkout_for_tenant
 from yinshi.utils.paths import is_path_inside
@@ -53,16 +58,26 @@ class ExecutionContext:
 
     sidecar_socket: str | None
     effective_cwd: str
-    api_key: str | None
     key_source: str
     provider: str
+    provider_auth: dict[str, object] | None
+    provider_config: dict[str, object] | None
     agent_dir: str | None = None
     settings_payload: dict[str, object] | None = None
+    model_ref: str = ""
 
 
 class PromptRequest(BaseModel):
     prompt: str = Field(..., max_length=100_000)
     model: str | None = None
+
+    @field_validator("model")
+    @classmethod
+    def validate_model(cls, value: str | None) -> str | None:
+        """Normalize optional model values into canonical refs."""
+        if value is None:
+            return None
+        return normalize_model_ref(value)
 
 
 _FILLER_PREFIXES = [
@@ -275,9 +290,11 @@ async def _resolve_execution_context(
         return ExecutionContext(
             sidecar_socket=None,
             effective_cwd=workspace_path,
-            api_key=None,
             key_source="platform",
             provider="",
+            provider_auth=None,
+            provider_config=None,
+            model_ref=model,
         )
 
     _validate_workspace_path(tenant, workspace_path)
@@ -318,33 +335,57 @@ async def _resolve_execution_context(
 
     sidecar_tmp = await create_sidecar_connection(sidecar_socket)
     try:
-        resolved = await sidecar_tmp.resolve_model(model)
+        resolved = await sidecar_tmp.resolve_model(model, agent_dir=agent_dir)
         provider: str | None = resolved["provider"]
-    finally:
-        await sidecar_tmp.disconnect()
-
-    if not provider:
-        raise HTTPException(
-            status_code=400,
-            detail="Could not determine provider for model",
+        if not provider:
+            raise HTTPException(
+                status_code=400,
+                detail="Could not determine provider for model",
+            )
+        model_ref = cast(str, resolved["model"])
+        connection = resolve_provider_connection(tenant.user_id, provider)
+        provider_auth: dict[str, object] = {
+            "provider": provider,
+            "authStrategy": connection["auth_strategy"],
+            "secret": cast(object, connection["secret"]),
+        }
+        provider_config = cast(dict[str, object], connection["config"])
+        auth_resolved = await sidecar_tmp.resolve_provider_auth(
+            provider=provider,
+            model=model_ref,
+            provider_auth=cast(dict[str, Any], provider_auth),
+            provider_config=provider_config,
+            agent_dir=agent_dir,
         )
-
-    try:
-        api_key, key_source = resolve_api_key_for_prompt(
-            tenant.user_id,
-            provider,
+        refreshed_auth = auth_resolved.get("auth")
+        if refreshed_auth is not None and refreshed_auth != connection["secret"]:
+            update_provider_connection_secret(
+                tenant.user_id,
+                connection["id"],
+                connection["auth_strategy"],
+                cast(str | dict[str, object], refreshed_auth),
+            )
+            provider_auth["secret"] = cast(object, refreshed_auth)
+        resolved_model_ref = cast(str, auth_resolved.get("model_ref") or model_ref)
+        resolved_provider_config = cast(
+            dict[str, object] | None,
+            auth_resolved.get("model_config"),
         )
     except KeyNotFoundError as exc:
         raise HTTPException(status_code=402, detail=str(exc)) from exc
+    finally:
+        await sidecar_tmp.disconnect()
 
     return ExecutionContext(
         sidecar_socket=sidecar_socket,
         effective_cwd=effective_cwd,
-        api_key=api_key,
-        key_source=key_source,
+        key_source=connection["auth_strategy"],
         provider=provider,
+        provider_auth=provider_auth,
+        provider_config=resolved_provider_config or provider_config,
         agent_dir=agent_dir,
         settings_payload=settings_payload,
+        model_ref=resolved_model_ref,
     )
 
 
@@ -380,7 +421,7 @@ async def prompt_session(
         raise HTTPException(status_code=409, detail="Session already has an active stream")
 
     workspace_path = session["workspace_path"]
-    model = body.model or session["model"]
+    model = normalize_model_ref(body.model or session["model"])
     prompt = body.prompt
     turn_id = uuid.uuid4().hex
 
@@ -430,9 +471,10 @@ async def prompt_session(
                 _active_sessions[session_id] = sidecar
             await sidecar.warmup(
                 session_id,
-                model=model,
+                model=context.model_ref or model,
                 cwd=context.effective_cwd,
-                api_key=context.api_key,
+                provider_auth=cast(dict[str, Any] | None, context.provider_auth),
+                provider_config=cast(dict[str, Any] | None, context.provider_config),
                 agent_dir=context.agent_dir,
                 settings_payload=context.settings_payload,
             )
@@ -442,9 +484,10 @@ async def prompt_session(
             async for event in sidecar.query(
                 session_id,
                 prompt,
-                model=model,
+                model=context.model_ref or model,
                 cwd=context.effective_cwd,
-                api_key=context.api_key,
+                provider_auth=cast(dict[str, Any] | None, context.provider_auth),
+                provider_config=cast(dict[str, Any] | None, context.provider_config),
                 agent_dir=context.agent_dir,
                 settings_payload=context.settings_payload,
             ):
@@ -555,7 +598,7 @@ async def prompt_session(
                         user_id=tenant.user_id,
                         session_id=session_id,
                         provider=result_provider,
-                        model=model,
+                        model=context.model_ref or model,
                         usage=usage_data,
                         key_source=context.key_source,
                     )

@@ -6,10 +6,10 @@ from typing import Any
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, UploadFile
 
 from yinshi.api.deps import require_tenant
-from yinshi.db import get_control_db
 from yinshi.exceptions import (
     GitHubAccessError,
     GitHubAppError,
+    KeyNotFoundError,
     PiConfigError,
     PiConfigNotFoundError,
 )
@@ -19,10 +19,10 @@ from yinshi.models import (
     PiConfigCategoryUpdate,
     PiConfigImport,
     PiConfigOut,
+    ProviderConnectionCreate,
+    ProviderConnectionOut,
 )
 from yinshi.rate_limit import limiter
-from yinshi.services.crypto import encrypt_api_key
-from yinshi.services.keys import get_user_dek
 from yinshi.services.pi_config import (
     get_pi_config,
     import_from_github,
@@ -30,6 +30,11 @@ from yinshi.services.pi_config import (
     remove_pi_config,
     sync_pi_config,
     update_enabled_categories,
+)
+from yinshi.services.provider_connections import (
+    create_provider_connection,
+    delete_provider_connection,
+    list_provider_connections,
 )
 
 logger = logging.getLogger(__name__)
@@ -64,49 +69,79 @@ def _pi_config_http_exception(error: PiConfigError) -> HTTPException:
 def list_keys(request: Request) -> list[dict[str, Any]]:
     """List API keys (provider + label only, never the key value)."""
     tenant = require_tenant(request)
-    with get_control_db() as db:
-        rows = db.execute(
-            "SELECT id, created_at, provider, label, last_used_at "
-            "FROM api_keys WHERE user_id = ? ORDER BY created_at DESC",
-            (tenant.user_id,),
-        ).fetchall()
-        return [dict(r) for r in rows]
+    connections = list_provider_connections(tenant.user_id)
+    return [
+        {
+            "id": connection["id"],
+            "created_at": connection["created_at"],
+            "provider": connection["provider"],
+            "label": connection["label"],
+            "last_used_at": connection["last_used_at"],
+        }
+        for connection in connections
+        if connection["auth_strategy"] in {"api_key", "api_key_with_config"}
+    ]
 
 
 @router.post("/keys", response_model=ApiKeyOut, status_code=201)
 def add_key(body: ApiKeyCreate, request: Request) -> dict[str, Any]:
     """Store an encrypted API key."""
     tenant = require_tenant(request)
-    dek = get_user_dek(tenant.user_id)
-
-    encrypted = encrypt_api_key(body.key, dek)
-
-    with get_control_db() as db:
-        cursor = db.execute(
-            "INSERT INTO api_keys (user_id, provider, encrypted_key, label) " "VALUES (?, ?, ?, ?)",
-            (tenant.user_id, body.provider, encrypted, body.label),
-        )
-        db.commit()
-        row = db.execute(
-            "SELECT id, created_at, provider, label, last_used_at " "FROM api_keys WHERE rowid = ?",
-            (cursor.lastrowid,),
-        ).fetchone()
-        return dict(row)
+    connection = create_provider_connection(
+        tenant.user_id,
+        body.provider,
+        "api_key",
+        body.key,
+        label=body.label,
+    )
+    return {
+        "id": connection["id"],
+        "created_at": connection["created_at"],
+        "provider": connection["provider"],
+        "label": connection["label"],
+        "last_used_at": connection["last_used_at"],
+    }
 
 
 @router.delete("/keys/{key_id}", status_code=204)
 def delete_key(key_id: str, request: Request) -> None:
     """Revoke an API key."""
     tenant = require_tenant(request)
-    with get_control_db() as db:
-        row = db.execute(
-            "SELECT id FROM api_keys WHERE id = ? AND user_id = ?",
-            (key_id, tenant.user_id),
-        ).fetchone()
-        if not row:
-            raise HTTPException(status_code=404, detail="Key not found")
-        db.execute("DELETE FROM api_keys WHERE id = ?", (key_id,))
-        db.commit()
+    try:
+        delete_provider_connection(tenant.user_id, key_id)
+    except KeyNotFoundError as error:
+        raise HTTPException(status_code=404, detail="Key not found") from error
+
+
+@router.get("/connections", response_model=list[ProviderConnectionOut])
+def list_connections(request: Request) -> list[dict[str, Any]]:
+    """List generic provider connections for the authenticated user."""
+    tenant = require_tenant(request)
+    return list_provider_connections(tenant.user_id)
+
+
+@router.post("/connections", response_model=ProviderConnectionOut, status_code=201)
+def add_connection(body: ProviderConnectionCreate, request: Request) -> dict[str, Any]:
+    """Store one generic provider connection."""
+    tenant = require_tenant(request)
+    return create_provider_connection(
+        tenant.user_id,
+        body.provider,
+        body.auth_strategy,
+        body.secret,
+        label=body.label,
+        config=body.config,
+    )
+
+
+@router.delete("/connections/{connection_id}", status_code=204)
+def delete_connection(connection_id: str, request: Request) -> None:
+    """Delete one generic provider connection."""
+    tenant = require_tenant(request)
+    try:
+        delete_provider_connection(tenant.user_id, connection_id)
+    except KeyNotFoundError as error:
+        raise HTTPException(status_code=404, detail="Connection not found") from error
 
 
 @router.get("/pi-config", response_model=PiConfigOut)

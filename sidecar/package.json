@@ -7,6 +7,6 @@
     "start": "node src/index.js"
   },
   "dependencies": {
-    "@mariozechner/pi-coding-agent": "^0.57.1"
+    "@mariozechner/pi-coding-agent": "^0.63.1"
   }
 }

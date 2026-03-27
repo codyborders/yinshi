@@ -177,6 +177,21 @@ CREATE TABLE IF NOT EXISTS api_keys (
     last_used_at TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS provider_connections (
+    id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    provider TEXT NOT NULL,
+    auth_strategy TEXT NOT NULL,
+    encrypted_secret BLOB NOT NULL,
+    label TEXT DEFAULT '',
+    config_json TEXT DEFAULT '{}' NOT NULL,
+    status TEXT DEFAULT 'connected' NOT NULL,
+    last_used_at TIMESTAMP,
+    expires_at TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS auth_sessions (
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -202,6 +217,7 @@ CREATE TABLE IF NOT EXISTS usage_log (
 CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
 CREATE INDEX IF NOT EXISTS idx_oauth_user ON oauth_identities(user_id);
 CREATE INDEX IF NOT EXISTS idx_api_keys_user ON api_keys(user_id);
+CREATE INDEX IF NOT EXISTS idx_provider_connections_user ON provider_connections(user_id);
 CREATE INDEX IF NOT EXISTS idx_auth_sessions_user ON auth_sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_usage_user ON usage_log(user_id);
 CREATE INDEX IF NOT EXISTS idx_usage_session ON usage_log(session_id);
@@ -252,6 +268,9 @@ BEGIN UPDATE pi_configs SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id; EN
 
 CREATE TRIGGER IF NOT EXISTS update_user_settings_updated_at AFTER UPDATE ON user_settings
 BEGIN UPDATE user_settings SET updated_at = CURRENT_TIMESTAMP WHERE user_id = NEW.user_id; END;
+
+CREATE TRIGGER IF NOT EXISTS update_provider_connections_updated_at AFTER UPDATE ON provider_connections
+BEGIN UPDATE provider_connections SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id; END;
 """
 
 
@@ -280,6 +299,59 @@ def _migrate_control(conn: sqlite3.Connection) -> None:
         logger.info("Control migration: adding available_categories column to pi_configs")
         conn.execute(
             "ALTER TABLE pi_configs ADD COLUMN available_categories TEXT DEFAULT '[]' NOT NULL"
+        )
+        conn.commit()
+
+    provider_connection_columns = [
+        row[1] for row in conn.execute("PRAGMA table_info(provider_connections)").fetchall()
+    ]
+    if not provider_connection_columns:
+        logger.info("Control migration: creating provider_connections table")
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS provider_connections (
+                id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+                user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                provider TEXT NOT NULL,
+                auth_strategy TEXT NOT NULL,
+                encrypted_secret BLOB NOT NULL,
+                label TEXT DEFAULT '',
+                config_json TEXT DEFAULT '{}' NOT NULL,
+                status TEXT DEFAULT 'connected' NOT NULL,
+                last_used_at TIMESTAMP,
+                expires_at TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_provider_connections_user
+            ON provider_connections(user_id);
+            CREATE TRIGGER IF NOT EXISTS update_provider_connections_updated_at
+            AFTER UPDATE ON provider_connections
+            BEGIN
+                UPDATE provider_connections SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id;
+            END;
+            """
+        )
+        conn.commit()
+
+    migrated_row = conn.execute(
+        "SELECT COUNT(*) FROM provider_connections WHERE auth_strategy = 'api_key'"
+    ).fetchone()
+    api_key_count = conn.execute("SELECT COUNT(*) FROM api_keys").fetchone()
+    assert migrated_row is not None, "provider connection count must be queryable"
+    assert api_key_count is not None, "api key count must be queryable"
+    if api_key_count[0] > 0 and migrated_row[0] < api_key_count[0]:
+        logger.info("Control migration: backfilling api_keys into provider_connections")
+        conn.execute(
+            """
+            INSERT INTO provider_connections
+            (id, created_at, updated_at, user_id, provider, auth_strategy,
+             encrypted_secret, label, config_json, status, last_used_at, expires_at)
+            SELECT id, created_at, created_at, user_id, provider, 'api_key',
+                   encrypted_key, label, '{}', 'connected', last_used_at, NULL
+            FROM api_keys
+            WHERE id NOT IN (SELECT id FROM provider_connections)
+            """
         )
         conn.commit()
 

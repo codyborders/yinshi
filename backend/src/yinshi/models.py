@@ -1,10 +1,11 @@
 """Pydantic models for API request/response schemas."""
 
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 
-from yinshi.model_catalog import DEFAULT_SESSION_MODEL
+from yinshi.model_catalog import DEFAULT_SESSION_MODEL, get_provider_metadata, normalize_model_ref
 
 PI_CONFIG_CATEGORY_ORDER = (
     "skills",
@@ -78,11 +79,25 @@ class SessionCreate(BaseModel):
 
     model: str = Field(DEFAULT_SESSION_MODEL, max_length=100)
 
+    @field_validator("model")
+    @classmethod
+    def validate_model(cls, value: str) -> str:
+        """Normalize session model values to canonical refs."""
+        return normalize_model_ref(value)
+
 
 class SessionUpdate(BaseModel):
     """Request to update a session."""
 
     model: str | None = Field(None, max_length=100)
+
+    @field_validator("model")
+    @classmethod
+    def validate_model(cls, value: str | None) -> str | None:
+        """Normalize optional session model values to canonical refs."""
+        if value is None:
+            return None
+        return normalize_model_ref(value)
 
 
 class SessionOut(BaseModel):
@@ -115,6 +130,14 @@ class WSPrompt(BaseModel):
     prompt: str = Field(..., max_length=100_000)
     model: str | None = Field(None, max_length=100)
 
+    @field_validator("model")
+    @classmethod
+    def validate_model(cls, value: str | None) -> str | None:
+        """Normalize optional prompt model values to canonical refs."""
+        if value is None:
+            return None
+        return normalize_model_ref(value)
+
 
 class WSCancel(BaseModel):
     """WebSocket message from client to cancel."""
@@ -136,16 +159,129 @@ class UserOut(BaseModel):
     tier: str = "free"
 
 
-class ApiKeyCreate(BaseModel):
-    """Request to store an API key."""
+class ProviderSetupFieldOut(BaseModel):
+    """Describe one provider setup field to the frontend."""
 
-    provider: str = Field(..., pattern=r"^(anthropic|minimax)$")
+    key: str
+    label: str
+    required: bool
+    secret: bool = False
+
+
+class ProviderDescriptorOut(BaseModel):
+    """One provider in the catalog response."""
+
+    id: str
+    label: str
+    auth_strategies: list[str]
+    setup_fields: list[ProviderSetupFieldOut]
+    docs_url: str
+    connected: bool
+    model_count: int
+
+
+class ModelDescriptorOut(BaseModel):
+    """One model in the catalog response."""
+
+    ref: str
+    provider: str
+    id: str
+    label: str
+    api: str
+    reasoning: bool
+    inputs: list[str]
+    context_window: int
+    max_tokens: int
+
+
+class ProviderCatalogOut(BaseModel):
+    """Catalog response for providers and models."""
+
+    default_model: str
+    providers: list[ProviderDescriptorOut]
+    models: list[ModelDescriptorOut]
+
+
+class ProviderConnectionCreate(BaseModel):
+    """Request to create a provider connection."""
+
+    provider: str = Field(..., min_length=1, max_length=100)
+    auth_strategy: str = Field(..., min_length=1, max_length=100)
+    secret: str | dict[str, Any]
+    label: str = Field("", max_length=255)
+    config: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("provider")
+    @classmethod
+    def validate_provider(cls, value: str) -> str:
+        """Reject blank providers."""
+        normalized_value = value.strip()
+        if not normalized_value:
+            raise ValueError("Provider must not be empty")
+        return normalized_value
+
+    @field_validator("auth_strategy")
+    @classmethod
+    def validate_auth_strategy(cls, value: str, info) -> str:
+        """Require one of the provider's supported auth strategies."""
+        normalized_value = value.strip()
+        if not normalized_value:
+            raise ValueError("Auth strategy must not be empty")
+        provider = info.data.get("provider")
+        if isinstance(provider, str):
+            metadata = get_provider_metadata(provider)
+            if normalized_value not in metadata.auth_strategies:
+                raise ValueError(
+                    f"{provider} does not support auth strategy {normalized_value}"
+                )
+        return normalized_value
+
+    @field_validator("secret")
+    @classmethod
+    def validate_secret(cls, value: str | dict[str, Any], info) -> str | dict[str, Any]:
+        """Match secret shape to the requested auth strategy."""
+        auth_strategy = info.data.get("auth_strategy")
+        if auth_strategy in {"api_key", "api_key_with_config"}:
+            if not isinstance(value, str):
+                raise TypeError("API key connections require a string secret")
+            normalized_value = value.strip()
+            if not normalized_value:
+                raise ValueError("API key secret must not be empty")
+            return normalized_value
+        if auth_strategy == "oauth":
+            if not isinstance(value, dict):
+                raise TypeError("OAuth connections require an object secret")
+            if not value:
+                raise ValueError("OAuth secret must not be empty")
+            return value
+        return value
+
+
+class ProviderConnectionOut(BaseModel):
+    """Provider connection response without the secret payload."""
+
+    id: str
+    created_at: datetime
+    updated_at: datetime
+    provider: str
+    auth_strategy: str
+    label: str = ""
+    config: dict[str, Any] = Field(default_factory=dict)
+    status: str
+    last_used_at: datetime | None = None
+    expires_at: datetime | None = None
+
+
+class ApiKeyCreate(BaseModel):
+    """Compatibility wrapper for legacy API-key endpoints."""
+
+    provider: str = Field(..., min_length=1, max_length=100)
     key: str = Field(..., min_length=1, max_length=500)
     label: str = Field("", max_length=255)
 
 
 class ApiKeyOut(BaseModel):
-    """API key response (key value is never returned)."""
+    """Compatibility wrapper for legacy API-key responses."""
 
     id: str
     created_at: datetime
