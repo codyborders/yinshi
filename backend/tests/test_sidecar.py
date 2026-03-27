@@ -1,7 +1,6 @@
 """Tests for sidecar client."""
 
 import json
-
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
@@ -93,3 +92,55 @@ async def test_sidecar_not_connected_raises():
     client = SidecarClient()
     with pytest.raises(SidecarNotConnectedError):
         await client._send({"type": "ping"})
+
+
+@pytest.mark.asyncio
+async def test_sidecar_connect_uses_large_line_limit(monkeypatch: pytest.MonkeyPatch):
+    """Connect should raise the stream limit for large catalog payloads.
+
+    The sidecar catalog now includes enough model metadata that the response can
+    exceed asyncio's default 64 KiB line limit. This test verifies that the Unix
+    stream connection is created with an explicit higher limit.
+    """
+    from yinshi.services.sidecar import SidecarClient, _SIDECAR_MESSAGE_LIMIT_BYTES
+
+    recorded_kwargs: dict[str, object] = {}
+
+    async def fake_open_unix_connection(path: str, **kwargs: object):
+        recorded_kwargs["path"] = path
+        recorded_kwargs.update(kwargs)
+        reader = AsyncMock()
+        reader.readline = AsyncMock(
+            return_value=b'{"type":"init_status","success":true}\n'
+        )
+        writer = MagicMock()
+        return reader, writer
+
+    monkeypatch.setattr("asyncio.open_unix_connection", fake_open_unix_connection)
+
+    client = SidecarClient()
+    await client.connect("/tmp/test-sidecar.sock")
+
+    assert recorded_kwargs["path"] == "/tmp/test-sidecar.sock"
+    assert recorded_kwargs["limit"] == _SIDECAR_MESSAGE_LIMIT_BYTES
+    assert client.connected is True
+
+
+@pytest.mark.asyncio
+async def test_sidecar_read_line_converts_limit_errors() -> None:
+    """Oversized sidecar messages should raise SidecarError instead of ValueError.
+
+    The socket reader can still reject lines if a future payload exceeds the
+    configured cap. This test keeps that failure path stable and domain-specific.
+    """
+    from yinshi.exceptions import SidecarError
+    from yinshi.services.sidecar import SidecarClient
+
+    client = SidecarClient()
+    client._reader = AsyncMock()
+    client._reader.readline = AsyncMock(
+        side_effect=ValueError("Separator is found, but chunk is longer than limit")
+    )
+
+    with pytest.raises(SidecarError, match="configured read limit"):
+        await client._read_line()

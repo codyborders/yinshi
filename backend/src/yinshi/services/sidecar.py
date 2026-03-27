@@ -12,6 +12,8 @@ from yinshi.model_catalog import DEFAULT_SESSION_MODEL
 
 logger = logging.getLogger(__name__)
 
+_SIDECAR_MESSAGE_LIMIT_BYTES = 1024 * 1024 * 8
+
 
 class SidecarClient:
     """Async client for a single sidecar connection via Unix domain socket.
@@ -51,8 +53,13 @@ class SidecarClient:
         if socket_path is None:
             settings = get_settings()
             socket_path = settings.sidecar_socket_path
+        assert isinstance(socket_path, str)
+        assert socket_path
         try:
-            self._reader, self._writer = await asyncio.open_unix_connection(socket_path)
+            self._reader, self._writer = await asyncio.open_unix_connection(
+                socket_path,
+                limit=_SIDECAR_MESSAGE_LIMIT_BYTES,
+            )
             self._connected = True
 
             init_line = await self._reader.readline()
@@ -93,9 +100,19 @@ class SidecarClient:
         """Read a single JSON line from the sidecar."""
         if not self._reader:
             return None
-        line = await self._reader.readline()
+        try:
+            line = await self._reader.readline()
+        except ValueError as exc:
+            message_text = str(exc)
+            if "longer than limit" in message_text:
+                raise SidecarError(
+                    "Sidecar message exceeded the configured read limit"
+                ) from exc
+            raise
         if not line:
             return None
+        if len(line) > _SIDECAR_MESSAGE_LIMIT_BYTES:
+            raise SidecarError("Sidecar message exceeded the configured read limit")
         message = json.loads(line.decode())
         if not isinstance(message, dict):
             raise SidecarError("Sidecar returned a non-object response")
