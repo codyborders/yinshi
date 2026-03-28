@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
 import { api, type Message } from "../api/client";
 import ChatView from "../components/ChatView";
@@ -8,6 +8,7 @@ import {
   DEFAULT_SESSION_MODEL,
   availableSessionModelsMarkdown,
   describeSessionModel,
+  formatSessionModelOptionLabel,
   getSessionModelOption,
   resolveSessionModelKey,
 } from "../models/sessionModels";
@@ -104,12 +105,40 @@ export default function Session() {
       if (!id) return false;
       if (!catalog) return false;
 
-      const resolvedModel = resolveSessionModelKey(requestedModel, catalog.models);
+      const connectedProviderIds = new Set(
+        catalog.providers
+          .filter((provider) => provider.connected)
+          .map((provider) => provider.id),
+      );
+      const providerLabelById = new Map(
+        catalog.providers.map((provider) => [provider.id, provider.label] as const),
+      );
+      const resolvedModel = resolveSessionModelKey(
+        requestedModel,
+        catalog.models,
+        connectedProviderIds,
+      );
       if (!resolvedModel) {
         if (announce) {
           addSystemMessage(
             "Unknown model. Available models:\n\n" +
               availableSessionModelsMarkdown(catalog.models),
+          );
+        }
+        return false;
+      }
+      const resolvedModelOption = getSessionModelOption(resolvedModel, catalog.models);
+      if (!resolvedModelOption) {
+        if (announce) {
+          addSystemMessage("Failed to resolve the requested model.");
+        }
+        return false;
+      }
+      if (!connectedProviderIds.has(resolvedModelOption.provider)) {
+        const providerLabel = providerLabelById.get(resolvedModelOption.provider) || resolvedModelOption.provider;
+        if (announce) {
+          addSystemMessage(
+            `Model ${describeSessionModel(resolvedModelOption.ref, catalog.models)} requires a ${providerLabel} connection in Settings.`,
           );
         }
         return false;
@@ -225,9 +254,52 @@ export default function Session() {
     ],
   );
 
-  const catalogModels = catalog?.models || [];
+  const {
+    catalogModels,
+    connectedProviderIds,
+    providerLabelById,
+  } = useMemo(() => {
+    const connectedProviderIds = new Set<string>();
+    const providerLabelById = new Map<string, string>();
+    const models = [...(catalog?.models || [])];
+
+    for (const provider of catalog?.providers || []) {
+      providerLabelById.set(provider.id, provider.label);
+      if (provider.connected) {
+        connectedProviderIds.add(provider.id);
+      }
+    }
+
+    models.sort((leftModel, rightModel) => {
+      const leftConnectionRank = connectedProviderIds.has(leftModel.provider) ? 0 : 1;
+      const rightConnectionRank = connectedProviderIds.has(rightModel.provider) ? 0 : 1;
+      if (leftConnectionRank !== rightConnectionRank) {
+        return leftConnectionRank - rightConnectionRank;
+      }
+
+      const leftProviderLabel = providerLabelById.get(leftModel.provider) || leftModel.provider;
+      const rightProviderLabel = providerLabelById.get(rightModel.provider) || rightModel.provider;
+      const providerComparison = leftProviderLabel.localeCompare(rightProviderLabel);
+      if (providerComparison !== 0) {
+        return providerComparison;
+      }
+      return leftModel.label.localeCompare(rightModel.label);
+    });
+
+    return {
+      catalogModels: models,
+      connectedProviderIds,
+      providerLabelById,
+    };
+  }, [catalog]);
   const selectedModelOption = getSessionModelOption(sessionModel, catalogModels);
   const selectedModelValue = selectedModelOption?.ref || sessionModel;
+  const selectedProviderLabel = selectedModelOption
+    ? providerLabelById.get(selectedModelOption.provider) || selectedModelOption.provider
+    : null;
+  const selectedModelRequiresConnection = selectedModelOption
+    ? !connectedProviderIds.has(selectedModelOption.provider)
+    : false;
 
   return (
     <>
@@ -258,8 +330,16 @@ export default function Session() {
               <option value={sessionModel}>{sessionModel}</option>
             )}
             {catalogModels.map((model) => (
-              <option key={model.ref} value={model.ref}>
-                {model.label}
+              <option
+                key={model.ref}
+                value={model.ref}
+                disabled={!connectedProviderIds.has(model.provider)}
+              >
+                {formatSessionModelOptionLabel(
+                  model,
+                  providerLabelById.get(model.provider),
+                  connectedProviderIds.has(model.provider),
+                )}
               </option>
             ))}
           </select>
@@ -280,6 +360,11 @@ export default function Session() {
           </div>
         ) : (
           <div className="flex h-full flex-col">
+            {selectedModelRequiresConnection && selectedProviderLabel && (
+              <div className="mx-4 mt-4 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-200">
+                Selected model requires a {selectedProviderLabel} connection. Pick a connected provider from the model list or add {selectedProviderLabel} in Settings.
+              </div>
+            )}
             {historyError && (
               <div className="mx-4 mt-4 rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-300">
                 {historyError}

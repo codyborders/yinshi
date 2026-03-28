@@ -16,9 +16,26 @@ function normalizeModelValue(value: string): string {
   return value.trim().toLowerCase();
 }
 
+function normalizePreferredProviderIds(
+  preferredProviderIds: Iterable<string> | undefined,
+): Set<string> {
+  const normalizedProviderIds = new Set<string>();
+  if (!preferredProviderIds) {
+    return normalizedProviderIds;
+  }
+  for (const providerId of preferredProviderIds) {
+    const normalizedProviderId = normalizeModelValue(providerId);
+    if (normalizedProviderId) {
+      normalizedProviderIds.add(normalizedProviderId);
+    }
+  }
+  return normalizedProviderIds;
+}
+
 export function resolveSessionModelKey(
   model: string,
   models: ModelDescriptor[],
+  preferredProviderIds?: Iterable<string>,
 ): string | null {
   const normalizedModel = normalizeModelValue(model);
   if (!normalizedModel) {
@@ -28,16 +45,40 @@ export function resolveSessionModelKey(
   if (aliasMatch) {
     return aliasMatch;
   }
-  const matchingModel = models.find((candidate) => {
+  const directRefMatch = models.find((candidate) => {
     if (normalizeModelValue(candidate.ref) === normalizedModel) {
       return true;
     }
+    return false;
+  });
+  if (directRefMatch) {
+    return directRefMatch.ref;
+  }
+
+  const matchingModels = models.filter((candidate) => {
     if (normalizeModelValue(candidate.id) === normalizedModel) {
       return true;
     }
     return normalizeModelValue(candidate.label) === normalizedModel;
   });
-  return matchingModel ? matchingModel.ref : null;
+  if (matchingModels.length === 0) {
+    return null;
+  }
+  if (matchingModels.length === 1) {
+    return matchingModels[0]?.ref || null;
+  }
+
+  const normalizedPreferredProviderIds = normalizePreferredProviderIds(preferredProviderIds);
+  if (normalizedPreferredProviderIds.size === 0) {
+    return null;
+  }
+  const preferredMatches = matchingModels.filter((candidate) =>
+    normalizedPreferredProviderIds.has(normalizeModelValue(candidate.provider)),
+  );
+  if (preferredMatches.length === 1) {
+    return preferredMatches[0]?.ref || null;
+  }
+  return null;
 }
 
 export function getSessionModelOption(
@@ -52,6 +93,18 @@ export function getSessionModelOption(
     return null;
   }
   return models.find((candidate) => candidate.ref === resolvedKey) || null;
+}
+
+export function formatSessionModelOptionLabel(
+  model: ModelDescriptor,
+  providerLabel: string | undefined,
+  connected: boolean,
+): string {
+  const normalizedProviderLabel = typeof providerLabel === "string" && providerLabel.trim()
+    ? providerLabel.trim()
+    : model.provider;
+  const connectionSuffix = connected ? "" : " (not connected)";
+  return `${normalizedProviderLabel} - ${model.label}${connectionSuffix}`;
 }
 
 export function getSessionModelLabel(
