@@ -1195,6 +1195,57 @@ class ProviderCatalogOut(BaseModel):
     models: list[ModelDescriptorOut]
 
 
+class ProviderAuthStartOut(BaseModel):
+    """Response returned when a provider OAuth flow starts."""
+
+    flow_id: str
+    provider: str
+    auth_url: str
+    instructions: str | None = None
+    manual_input_required: bool = False
+    manual_input_prompt: str | None = None
+    manual_input_submitted: bool = False
+
+
+class ProviderAuthStatusOut(BaseModel):
+    """Status payload for a provider OAuth flow."""
+
+    status: str
+    provider: str
+    flow_id: str
+    instructions: str | None = None
+    progress: list[str] = Field(default_factory=list)
+    manual_input_required: bool = False
+    manual_input_prompt: str | None = None
+    manual_input_submitted: bool = False
+    error: str | None = None
+
+
+class ProviderAuthInputIn(BaseModel):
+    """Manual OAuth input submitted from the browser UI."""
+
+    flow_id: str = Field(..., min_length=1, max_length=255)
+    authorization_input: str = Field(..., min_length=1, max_length=8192)
+
+    @field_validator("flow_id")
+    @classmethod
+    def validate_flow_id(cls, value: str) -> str:
+        """Reject blank OAuth flow identifiers."""
+        normalized_value = value.strip()
+        if not normalized_value:
+            raise ValueError("flow_id must not be empty")
+        return normalized_value
+
+    @field_validator("authorization_input")
+    @classmethod
+    def validate_authorization_input(cls, value: str) -> str:
+        """Reject blank pasted OAuth callback input."""
+        normalized_value = value.strip()
+        if not normalized_value:
+            raise ValueError("authorization_input must not be empty")
+        return normalized_value
+
+
 class ProviderConnectionCreate(BaseModel):
     """Request to create a provider connection."""
 
@@ -4790,6 +4841,8 @@ from yinshi.model_catalog import DEFAULT_SESSION_MODEL
 
 logger = logging.getLogger(__name__)
 
+_SIDECAR_MESSAGE_LIMIT_BYTES = 1024 * 1024 * 8
+
 
 class SidecarClient:
     """Async client for a single sidecar connection via Unix domain socket.
@@ -4829,8 +4882,13 @@ class SidecarClient:
         if socket_path is None:
             settings = get_settings()
             socket_path = settings.sidecar_socket_path
+        assert isinstance(socket_path, str)
+        assert socket_path
         try:
-            self._reader, self._writer = await asyncio.open_unix_connection(socket_path)
+            self._reader, self._writer = await asyncio.open_unix_connection(
+                socket_path,
+                limit=_SIDECAR_MESSAGE_LIMIT_BYTES,
+            )
             self._connected = True
 
             init_line = await self._reader.readline()
@@ -4871,9 +4929,19 @@ class SidecarClient:
         """Read a single JSON line from the sidecar."""
         if not self._reader:
             return None
-        line = await self._reader.readline()
+        try:
+            line = await self._reader.readline()
+        except ValueError as exc:
+            message_text = str(exc)
+            if "longer than limit" in message_text:
+                raise SidecarError(
+                    "Sidecar message exceeded the configured read limit"
+                ) from exc
+            raise
         if not line:
             return None
+        if len(line) > _SIDECAR_MESSAGE_LIMIT_BYTES:
+            raise SidecarError("Sidecar message exceeded the configured read limit")
         message = json.loads(line.decode())
         if not isinstance(message, dict):
             raise SidecarError("Sidecar returned a non-object response")
@@ -5088,6 +5156,43 @@ class SidecarClient:
         if msg.get("type") == "error":
             raise SidecarError(f"OAuth status failed: {msg.get('error', 'unknown')}")
         if msg.get("type") != "oauth_status":
+            raise SidecarError(f"Unexpected response type: {msg.get('type')}")
+        return msg
+
+    async def submit_oauth_flow_input(
+        self,
+        flow_id: str,
+        authorization_input: str,
+    ) -> dict[str, Any]:
+        """Submit a pasted OAuth callback URL or authorization code."""
+        if not isinstance(flow_id, str):
+            raise TypeError("flow_id must be a string")
+        normalized_flow_id = flow_id.strip()
+        if not normalized_flow_id:
+            raise ValueError("flow_id must not be empty")
+        if not isinstance(authorization_input, str):
+            raise TypeError("authorization_input must be a string")
+        normalized_authorization_input = authorization_input.strip()
+        if not normalized_authorization_input:
+            raise ValueError("authorization_input must not be empty")
+
+        request_id = f"oauth-submit-{normalized_flow_id}"
+        await self._send(
+            {
+                "type": "oauth_submit",
+                "id": request_id,
+                "flowId": normalized_flow_id,
+                "authorizationInput": normalized_authorization_input,
+            }
+        )
+        msg = await self._read_line()
+        if msg is None:
+            raise SidecarError("Sidecar connection lost during OAuth input submission")
+        if msg.get("type") == "error":
+            raise SidecarError(
+                f"OAuth input submission failed: {msg.get('error', 'unknown')}"
+            )
+        if msg.get("type") != "oauth_submitted":
             raise SidecarError(f"Unexpected response type: {msg.get('type')}")
         return msg
 
@@ -5632,6 +5737,7 @@ from yinshi.auth import (
 from yinshi.config import get_settings
 from yinshi.db import get_control_db
 from yinshi.exceptions import GitHubAppError, GitHubInstallationUnusableError
+from yinshi.models import ProviderAuthInputIn, ProviderAuthStartOut, ProviderAuthStatusOut
 from yinshi.rate_limit import limiter
 from yinshi.services.accounts import resolve_or_create_user
 from yinshi.services.github_app import get_installation_details
@@ -5699,6 +5805,105 @@ def _current_user_id(request: Request) -> str | None:
     if not token:
         return None
     return verify_session_token(token)
+
+
+def _normalize_provider_flow_status(status: object) -> str:
+    """Require a non-empty string OAuth flow status."""
+    if not isinstance(status, str):
+        raise HTTPException(status_code=500, detail="OAuth flow status is invalid")
+    normalized_status = status.strip()
+    if not normalized_status:
+        raise HTTPException(status_code=500, detail="OAuth flow status is invalid")
+    return normalized_status
+
+
+def _build_provider_auth_start_payload(flow: dict[str, Any]) -> dict[str, Any]:
+    """Validate and serialize one started provider OAuth flow."""
+    if not isinstance(flow, dict):
+        raise TypeError("flow must be a dictionary")
+    flow_id = flow.get("flow_id")
+    provider = flow.get("provider")
+    auth_url = flow.get("auth_url")
+    instructions = flow.get("instructions")
+    manual_input_prompt = flow.get("manual_input_prompt")
+    if not isinstance(flow_id, str) or not flow_id:
+        raise HTTPException(status_code=500, detail="OAuth flow id is invalid")
+    if not isinstance(provider, str) or not provider:
+        raise HTTPException(status_code=500, detail="OAuth flow provider is invalid")
+    if not isinstance(auth_url, str) or not auth_url:
+        raise HTTPException(status_code=500, detail="OAuth flow auth URL is invalid")
+    if instructions is not None and not isinstance(instructions, str):
+        raise HTTPException(status_code=500, detail="OAuth flow instructions are invalid")
+    if manual_input_prompt is not None and not isinstance(manual_input_prompt, str):
+        raise HTTPException(status_code=500, detail="OAuth flow manual input prompt is invalid")
+    return {
+        "flow_id": flow_id,
+        "provider": provider,
+        "auth_url": auth_url,
+        "instructions": instructions,
+        "manual_input_required": bool(flow.get("manual_input_required", False)),
+        "manual_input_prompt": manual_input_prompt,
+        "manual_input_submitted": bool(flow.get("manual_input_submitted", False)),
+    }
+
+
+def _build_provider_auth_status_payload(
+    flow: dict[str, Any],
+    *,
+    status: str,
+    error: str | None = None,
+) -> dict[str, Any]:
+    """Validate and serialize one provider OAuth status payload."""
+    if not isinstance(flow, dict):
+        raise TypeError("flow must be a dictionary")
+    normalized_status = _normalize_provider_flow_status(status)
+    flow_id = flow.get("flow_id")
+    provider = flow.get("provider")
+    instructions = flow.get("instructions")
+    manual_input_prompt = flow.get("manual_input_prompt")
+    progress = flow.get("progress", [])
+    if not isinstance(flow_id, str) or not flow_id:
+        raise HTTPException(status_code=500, detail="OAuth flow id is invalid")
+    if not isinstance(provider, str) or not provider:
+        raise HTTPException(status_code=500, detail="OAuth flow provider is invalid")
+    if instructions is not None and not isinstance(instructions, str):
+        raise HTTPException(status_code=500, detail="OAuth flow instructions are invalid")
+    if manual_input_prompt is not None and not isinstance(manual_input_prompt, str):
+        raise HTTPException(status_code=500, detail="OAuth flow manual input prompt is invalid")
+    if not isinstance(progress, list):
+        raise HTTPException(status_code=500, detail="OAuth flow progress is invalid")
+    normalized_progress: list[str] = []
+    for progress_entry in progress:
+        if not isinstance(progress_entry, str):
+            raise HTTPException(status_code=500, detail="OAuth flow progress is invalid")
+        normalized_progress.append(progress_entry)
+    if error is not None and not isinstance(error, str):
+        raise HTTPException(status_code=500, detail="OAuth flow error is invalid")
+    return {
+        "status": normalized_status,
+        "provider": provider,
+        "flow_id": flow_id,
+        "instructions": instructions,
+        "progress": normalized_progress,
+        "manual_input_required": bool(flow.get("manual_input_required", False)),
+        "manual_input_prompt": manual_input_prompt,
+        "manual_input_submitted": bool(flow.get("manual_input_submitted", False)),
+        "error": error,
+    }
+
+
+def _require_provider_match(provider: str, flow: dict[str, Any]) -> None:
+    """Reject OAuth flows that do not belong to the requested provider."""
+    if not isinstance(provider, str):
+        raise TypeError("provider must be a string")
+    normalized_provider = provider.strip()
+    if not normalized_provider:
+        raise ValueError("provider must not be empty")
+    flow_provider = flow.get("provider")
+    if not isinstance(flow_provider, str) or not flow_provider:
+        raise HTTPException(status_code=500, detail="OAuth flow provider is invalid")
+    if flow_provider != normalized_provider:
+        raise HTTPException(status_code=400, detail="Provider mismatch")
 
 
 # --- Google OAuth ---
@@ -5936,8 +6141,8 @@ async def github_install_callback(request: Request) -> RedirectResponse:
     return RedirectResponse(url="/app?github_connected=1")
 
 
-@router.post("/providers/{provider}/start")
-async def start_provider_auth(provider: str, request: Request) -> dict[str, str | None]:
+@router.post("/providers/{provider}/start", response_model=ProviderAuthStartOut)
+async def start_provider_auth(provider: str, request: Request) -> dict[str, Any]:
     """Start a provider OAuth flow through the sidecar."""
     user_id = _current_user_id(request)
     if user_id is None:
@@ -5947,12 +6152,7 @@ async def start_provider_auth(provider: str, request: Request) -> dict[str, str 
         flow = await sidecar.start_oauth_flow(provider)
     finally:
         await sidecar.disconnect()
-    return {
-        "flow_id": flow["flow_id"],
-        "provider": flow["provider"],
-        "auth_url": flow["auth_url"],
-        "instructions": flow.get("instructions"),
-    }
+    return _build_provider_auth_start_payload(flow)
 
 
 @router.get("/providers/{provider}/callback")
@@ -5964,29 +6164,24 @@ async def callback_provider_auth(provider: str, flow_id: str, request: Request) 
     sidecar = await create_sidecar_connection()
     try:
         flow = await sidecar.get_oauth_flow_status(flow_id)
-        if flow["provider"] != provider:
-            raise HTTPException(status_code=400, detail="Provider mismatch")
-        status = flow["status"]
+        _require_provider_match(provider, flow)
+        status = _normalize_provider_flow_status(flow.get("status"))
         if status in {"pending", "starting"}:
             return JSONResponse(
                 status_code=202,
-                content={
-                    "status": status,
-                    "provider": provider,
-                    "flow_id": flow_id,
-                    "instructions": flow.get("instructions"),
-                    "progress": flow.get("progress", []),
-                },
+                content=_build_provider_auth_status_payload(flow, status=status),
             )
         if status == "error":
+            error_message = flow.get("error")
+            if not isinstance(error_message, str) or not error_message:
+                error_message = "OAuth flow failed"
             return JSONResponse(
                 status_code=400,
-                content={
-                    "status": "error",
-                    "provider": provider,
-                    "flow_id": flow_id,
-                    "error": flow.get("error") or "OAuth flow failed",
-                },
+                content=_build_provider_auth_status_payload(
+                    flow,
+                    status="error",
+                    error=error_message,
+                ),
             )
         if status != "complete":
             raise HTTPException(status_code=500, detail=f"Unexpected OAuth status: {status}")
@@ -6003,11 +6198,58 @@ async def callback_provider_auth(provider: str, flow_id: str, request: Request) 
         )
         await sidecar.clear_oauth_flow(flow_id)
         return JSONResponse(
-            {
-                "status": "complete",
-                "provider": provider,
-                "flow_id": flow_id,
-            }
+            _build_provider_auth_status_payload(flow, status="complete")
+        )
+    finally:
+        await sidecar.disconnect()
+
+
+@router.post("/providers/{provider}/callback", response_model=ProviderAuthStatusOut)
+async def submit_provider_auth_callback(
+    provider: str,
+    payload: ProviderAuthInputIn,
+    request: Request,
+) -> JSONResponse:
+    """Submit pasted OAuth callback data into an active provider auth flow."""
+    if _current_user_id(request) is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    sidecar = await create_sidecar_connection()
+    try:
+        flow = await sidecar.get_oauth_flow_status(payload.flow_id)
+        _require_provider_match(provider, flow)
+        status = _normalize_provider_flow_status(flow.get("status"))
+        if status == "complete":
+            return JSONResponse(
+                _build_provider_auth_status_payload(flow, status="complete"),
+            )
+        if status == "error":
+            error_message = flow.get("error")
+            if not isinstance(error_message, str) or not error_message:
+                error_message = "OAuth flow failed"
+            return JSONResponse(
+                status_code=400,
+                content=_build_provider_auth_status_payload(
+                    flow,
+                    status="error",
+                    error=error_message,
+                ),
+            )
+
+        await sidecar.submit_oauth_flow_input(
+            payload.flow_id,
+            payload.authorization_input,
+        )
+        return JSONResponse(
+            status_code=202,
+            content=_build_provider_auth_status_payload(
+                {
+                    **flow,
+                    "manual_input_required": True,
+                    "manual_input_submitted": True,
+                },
+                status="pending",
+            ),
         )
     finally:
         await sidecar.disconnect()
@@ -8801,9 +9043,26 @@ function normalizeModelValue(value: string): string {
   return value.trim().toLowerCase();
 }
 
+function normalizePreferredProviderIds(
+  preferredProviderIds: Iterable<string> | undefined,
+): Set<string> {
+  const normalizedProviderIds = new Set<string>();
+  if (!preferredProviderIds) {
+    return normalizedProviderIds;
+  }
+  for (const providerId of preferredProviderIds) {
+    const normalizedProviderId = normalizeModelValue(providerId);
+    if (normalizedProviderId) {
+      normalizedProviderIds.add(normalizedProviderId);
+    }
+  }
+  return normalizedProviderIds;
+}
+
 export function resolveSessionModelKey(
   model: string,
   models: ModelDescriptor[],
+  preferredProviderIds?: Iterable<string>,
 ): string | null {
   const normalizedModel = normalizeModelValue(model);
   if (!normalizedModel) {
@@ -8813,16 +9072,40 @@ export function resolveSessionModelKey(
   if (aliasMatch) {
     return aliasMatch;
   }
-  const matchingModel = models.find((candidate) => {
+  const directRefMatch = models.find((candidate) => {
     if (normalizeModelValue(candidate.ref) === normalizedModel) {
       return true;
     }
+    return false;
+  });
+  if (directRefMatch) {
+    return directRefMatch.ref;
+  }
+
+  const matchingModels = models.filter((candidate) => {
     if (normalizeModelValue(candidate.id) === normalizedModel) {
       return true;
     }
     return normalizeModelValue(candidate.label) === normalizedModel;
   });
-  return matchingModel ? matchingModel.ref : null;
+  if (matchingModels.length === 0) {
+    return null;
+  }
+  if (matchingModels.length === 1) {
+    return matchingModels[0]?.ref || null;
+  }
+
+  const normalizedPreferredProviderIds = normalizePreferredProviderIds(preferredProviderIds);
+  if (normalizedPreferredProviderIds.size === 0) {
+    return null;
+  }
+  const preferredMatches = matchingModels.filter((candidate) =>
+    normalizedPreferredProviderIds.has(normalizeModelValue(candidate.provider)),
+  );
+  if (preferredMatches.length === 1) {
+    return preferredMatches[0]?.ref || null;
+  }
+  return null;
 }
 
 export function getSessionModelOption(
@@ -8837,6 +9120,18 @@ export function getSessionModelOption(
     return null;
   }
   return models.find((candidate) => candidate.ref === resolvedKey) || null;
+}
+
+export function formatSessionModelOptionLabel(
+  model: ModelDescriptor,
+  providerLabel: string | undefined,
+  connected: boolean,
+): string {
+  const normalizedProviderLabel = typeof providerLabel === "string" && providerLabel.trim()
+    ? providerLabel.trim()
+    : model.provider;
+  const connectionSuffix = connected ? "" : " (not connected)";
+  return `${normalizedProviderLabel} - ${model.label}${connectionSuffix}`;
 }
 
 export function getSessionModelLabel(
@@ -9130,6 +9425,28 @@ export interface ProviderConnection {
   expires_at: string | null;
 }
 
+export interface ProviderAuthStart {
+  flow_id: string;
+  provider: string;
+  auth_url: string;
+  instructions: string | null;
+  manual_input_required: boolean;
+  manual_input_prompt: string | null;
+  manual_input_submitted: boolean;
+}
+
+export interface ProviderAuthStatus {
+  status: string;
+  provider: string;
+  flow_id: string;
+  instructions?: string | null;
+  progress?: string[];
+  manual_input_required?: boolean;
+  manual_input_prompt?: string | null;
+  manual_input_submitted?: boolean;
+  error?: string | null;
+}
+
 export interface PiConfig {
   id: string;
   created_at: string;
@@ -9296,10 +9613,25 @@ export const api = {
   },
 };
 
-export async function pollAuthFlow(provider: string, flowId: string): Promise<{ status: string }> {
-  return request<{ status: string }>(
+export async function pollAuthFlow(provider: string, flowId: string): Promise<ProviderAuthStatus> {
+  return request<ProviderAuthStatus>(
     "GET",
     `/auth/providers/${provider}/callback?flow_id=${encodeURIComponent(flowId)}`,
+  );
+}
+
+export async function submitAuthFlowInput(
+  provider: string,
+  flowId: string,
+  authorizationInput: string,
+): Promise<ProviderAuthStatus> {
+  return request<ProviderAuthStatus>(
+    "POST",
+    `/auth/providers/${provider}/callback`,
+    {
+      flow_id: flowId,
+      authorization_input: authorizationInput,
+    },
   );
 }
 
@@ -10380,7 +10712,7 @@ export default function Layout() {
         <Sidebar onNavigate={close} />
       </div>
 
-      <main className="flex flex-1 flex-col overflow-hidden">
+      <main className="flex min-h-0 flex-1 flex-col overflow-hidden">
         <Outlet />
       </main>
     </div>
@@ -12546,7 +12878,7 @@ changes the session model via API, `/tree` fetches the workspace file listing,
 `/export` downloads the conversation as markdown, and `/clear` resets the display.
 
 ```typescript {chunk="session_page" file="frontend/src/pages/Session.tsx"}
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
 import { api, type Message } from "../api/client";
 import ChatView from "../components/ChatView";
@@ -12556,6 +12888,7 @@ import {
   DEFAULT_SESSION_MODEL,
   availableSessionModelsMarkdown,
   describeSessionModel,
+  formatSessionModelOptionLabel,
   getSessionModelOption,
   resolveSessionModelKey,
 } from "../models/sessionModels";
@@ -12652,12 +12985,40 @@ export default function Session() {
       if (!id) return false;
       if (!catalog) return false;
 
-      const resolvedModel = resolveSessionModelKey(requestedModel, catalog.models);
+      const connectedProviderIds = new Set(
+        catalog.providers
+          .filter((provider) => provider.connected)
+          .map((provider) => provider.id),
+      );
+      const providerLabelById = new Map(
+        catalog.providers.map((provider) => [provider.id, provider.label] as const),
+      );
+      const resolvedModel = resolveSessionModelKey(
+        requestedModel,
+        catalog.models,
+        connectedProviderIds,
+      );
       if (!resolvedModel) {
         if (announce) {
           addSystemMessage(
             "Unknown model. Available models:\n\n" +
               availableSessionModelsMarkdown(catalog.models),
+          );
+        }
+        return false;
+      }
+      const resolvedModelOption = getSessionModelOption(resolvedModel, catalog.models);
+      if (!resolvedModelOption) {
+        if (announce) {
+          addSystemMessage("Failed to resolve the requested model.");
+        }
+        return false;
+      }
+      if (!connectedProviderIds.has(resolvedModelOption.provider)) {
+        const providerLabel = providerLabelById.get(resolvedModelOption.provider) || resolvedModelOption.provider;
+        if (announce) {
+          addSystemMessage(
+            `Model ${describeSessionModel(resolvedModelOption.ref, catalog.models)} requires a ${providerLabel} connection in Settings.`,
           );
         }
         return false;
@@ -12773,9 +13134,52 @@ export default function Session() {
     ],
   );
 
-  const catalogModels = catalog?.models || [];
+  const {
+    catalogModels,
+    connectedProviderIds,
+    providerLabelById,
+  } = useMemo(() => {
+    const connectedProviderIds = new Set<string>();
+    const providerLabelById = new Map<string, string>();
+    const models = [...(catalog?.models || [])];
+
+    for (const provider of catalog?.providers || []) {
+      providerLabelById.set(provider.id, provider.label);
+      if (provider.connected) {
+        connectedProviderIds.add(provider.id);
+      }
+    }
+
+    models.sort((leftModel, rightModel) => {
+      const leftConnectionRank = connectedProviderIds.has(leftModel.provider) ? 0 : 1;
+      const rightConnectionRank = connectedProviderIds.has(rightModel.provider) ? 0 : 1;
+      if (leftConnectionRank !== rightConnectionRank) {
+        return leftConnectionRank - rightConnectionRank;
+      }
+
+      const leftProviderLabel = providerLabelById.get(leftModel.provider) || leftModel.provider;
+      const rightProviderLabel = providerLabelById.get(rightModel.provider) || rightModel.provider;
+      const providerComparison = leftProviderLabel.localeCompare(rightProviderLabel);
+      if (providerComparison !== 0) {
+        return providerComparison;
+      }
+      return leftModel.label.localeCompare(rightModel.label);
+    });
+
+    return {
+      catalogModels: models,
+      connectedProviderIds,
+      providerLabelById,
+    };
+  }, [catalog]);
   const selectedModelOption = getSessionModelOption(sessionModel, catalogModels);
   const selectedModelValue = selectedModelOption?.ref || sessionModel;
+  const selectedProviderLabel = selectedModelOption
+    ? providerLabelById.get(selectedModelOption.provider) || selectedModelOption.provider
+    : null;
+  const selectedModelRequiresConnection = selectedModelOption
+    ? !connectedProviderIds.has(selectedModelOption.provider)
+    : false;
 
   return (
     <>
@@ -12806,8 +13210,16 @@ export default function Session() {
               <option value={sessionModel}>{sessionModel}</option>
             )}
             {catalogModels.map((model) => (
-              <option key={model.ref} value={model.ref}>
-                {model.label}
+              <option
+                key={model.ref}
+                value={model.ref}
+                disabled={!connectedProviderIds.has(model.provider)}
+              >
+                {formatSessionModelOptionLabel(
+                  model,
+                  providerLabelById.get(model.provider),
+                  connectedProviderIds.has(model.provider),
+                )}
               </option>
             ))}
           </select>
@@ -12828,6 +13240,11 @@ export default function Session() {
           </div>
         ) : (
           <div className="flex h-full flex-col">
+            {selectedModelRequiresConnection && selectedProviderLabel && (
+              <div className="mx-4 mt-4 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-200">
+                Selected model requires a {selectedProviderLabel} connection. Pick a connected provider from the model list or add {selectedProviderLabel} in Settings.
+              </div>
+            )}
             {historyError && (
               <div className="mx-4 mt-4 rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-300">
                 {historyError}
@@ -12863,6 +13280,9 @@ import { useEffect, useMemo, useState } from "react";
 import {
   api,
   pollAuthFlow,
+  submitAuthFlowInput,
+  type ProviderAuthStart,
+  type ProviderAuthStatus,
   type ProviderConnection,
   type ProviderDescriptor,
 } from "../api/client";
@@ -12889,6 +13309,10 @@ function normalizeFieldValue(value: string | undefined): string {
   return (value || "").trim();
 }
 
+function defaultOauthInstructions(): string {
+  return "Open the provider authorization flow in a new window, complete sign-in, and Yinshi will finish the connection automatically. If the provider redirects to localhost and the browser shows an error, copy the full URL from the address bar and paste it here.";
+}
+
 function ProviderCard({
   provider,
   connection,
@@ -12904,13 +13328,52 @@ function ProviderCard({
   const [config, setConfig] = useState<Record<string, string>>(() => buildInitialConfig(provider));
   const [saving, setSaving] = useState(false);
   const [connecting, setConnecting] = useState(false);
+  const [oauthFlowId, setOauthFlowId] = useState<string | null>(null);
+  const [oauthInstructions, setOauthInstructions] = useState<string | null>(null);
+  const [oauthProgress, setOauthProgress] = useState<string[]>([]);
+  const [oauthManualInputRequired, setOauthManualInputRequired] = useState(false);
+  const [oauthManualInputPrompt, setOauthManualInputPrompt] = useState<string | null>(null);
+  const [oauthManualInputSubmitted, setOauthManualInputSubmitted] = useState(false);
+  const [oauthManualInputValue, setOauthManualInputValue] = useState("");
+  const [submittingOauthInput, setSubmittingOauthInput] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  function resetOauthFlowState() {
+    setOauthFlowId(null);
+    setOauthInstructions(null);
+    setOauthProgress([]);
+    setOauthManualInputRequired(false);
+    setOauthManualInputPrompt(null);
+    setOauthManualInputSubmitted(false);
+    setOauthManualInputValue("");
+    setSubmittingOauthInput(false);
+  }
+
+  function applyOauthFlowState(flow: ProviderAuthStart | ProviderAuthStatus) {
+    setOauthFlowId(flow.flow_id);
+    if ("instructions" in flow) {
+      setOauthInstructions(flow.instructions ?? null);
+    }
+    if ("progress" in flow && Array.isArray(flow.progress)) {
+      setOauthProgress(flow.progress);
+    }
+    if ("manual_input_required" in flow) {
+      setOauthManualInputRequired(Boolean(flow.manual_input_required));
+    }
+    if ("manual_input_prompt" in flow) {
+      setOauthManualInputPrompt(flow.manual_input_prompt ?? null);
+    }
+    if ("manual_input_submitted" in flow) {
+      setOauthManualInputSubmitted(Boolean(flow.manual_input_submitted));
+    }
+  }
 
   useEffect(() => {
     setAuthStrategy(provider.auth_strategies[0] || "api_key");
     setConfig(buildInitialConfig(provider));
     setSecret("");
     setLabel("");
+    resetOauthFlowState();
     setError(null);
   }, [provider]);
 
@@ -12992,26 +13455,25 @@ function ProviderCard({
       return;
     }
     setConnecting(true);
+    resetOauthFlowState();
     setError(null);
     try {
-      const started = await api.post<{
-        flow_id: string;
-        provider: string;
-        auth_url: string;
-        instructions: string | null;
-      }>(`/auth/providers/${provider.id}/start`);
+      const started = await api.post<ProviderAuthStart>(`/auth/providers/${provider.id}/start`);
+      applyOauthFlowState(started);
       if (started.auth_url) {
         window.open(started.auth_url, "_blank", "noopener,noreferrer");
       }
-      for (let attempt = 0; attempt < 120; attempt += 1) {
+      for (let attempt = 0; attempt < 600; attempt += 1) {
         await new Promise((resolve) => window.setTimeout(resolve, 1000));
         const status = await pollAuthFlow(provider.id, started.flow_id);
+        applyOauthFlowState(status);
         if (status.status === "complete") {
+          resetOauthFlowState();
           await onConnectionChange();
           return;
         }
         if (status.status === "error") {
-          throw new Error("Provider authorization failed");
+          throw new Error(status.error || "Provider authorization failed");
         }
       }
       throw new Error("Provider authorization timed out");
@@ -13019,6 +13481,33 @@ function ProviderCard({
       setError(connectError instanceof Error ? connectError.message : "Provider authorization failed");
     } finally {
       setConnecting(false);
+    }
+  }
+
+  async function submitOauthCallbackInput() {
+    if (!oauthFlowId) {
+      setError("Provider authorization flow is not active");
+      return;
+    }
+    const normalizedAuthorizationInput = normalizeFieldValue(oauthManualInputValue);
+    if (!normalizedAuthorizationInput) {
+      setError("Authorization input is required");
+      return;
+    }
+    setSubmittingOauthInput(true);
+    setError(null);
+    try {
+      const status = await submitAuthFlowInput(
+        provider.id,
+        oauthFlowId,
+        normalizedAuthorizationInput,
+      );
+      applyOauthFlowState(status);
+      setOauthManualInputValue("");
+    } catch (submitError) {
+      setError(submitError instanceof Error ? submitError.message : "Failed to submit authorization input");
+    } finally {
+      setSubmittingOauthInput(false);
     }
   }
 
@@ -13125,9 +13614,13 @@ function ProviderCard({
       {hasOauth && (
         <div className="mt-4 space-y-3">
           <p className="text-sm text-gray-400">
-            Open the provider authorization flow in a new window, complete sign-in,
-            and this page will pick up the connected account automatically.
+            {oauthInstructions || defaultOauthInstructions()}
           </p>
+          {oauthProgress.length > 0 ? (
+            <p className="text-xs text-gray-500">
+              {oauthProgress[oauthProgress.length - 1]}
+            </p>
+          ) : null}
           <button
             type="button"
             onClick={() => {
@@ -13138,6 +13631,41 @@ function ProviderCard({
           >
             {connecting ? "Connecting..." : "Connect Provider"}
           </button>
+          {oauthManualInputRequired && !connection ? (
+            <div className="rounded-lg border border-gray-800 bg-gray-950/60 p-3">
+              <p className="text-sm text-gray-300">
+                {oauthManualInputPrompt || "Paste the final redirect URL or authorization code here."}
+              </p>
+              <textarea
+                value={oauthManualInputValue}
+                onChange={(event) => setOauthManualInputValue(event.target.value)}
+                placeholder="http://localhost:1455/auth/callback?code=..."
+                rows={3}
+                className="mt-3 w-full rounded border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-gray-200 placeholder-gray-500"
+              />
+              <div className="mt-3 flex flex-wrap items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    void submitOauthCallbackInput();
+                  }}
+                  disabled={submittingOauthInput || oauthManualInputSubmitted}
+                  className="rounded border border-gray-600 px-4 py-2 text-sm text-gray-100 disabled:opacity-50"
+                >
+                  {submittingOauthInput
+                    ? "Submitting..."
+                    : oauthManualInputSubmitted
+                      ? "Submitted"
+                      : "Submit Callback URL"}
+                </button>
+                {oauthManualInputSubmitted ? (
+                  <span className="text-xs text-gray-500">
+                    Waiting for the provider to finish the OAuth flow.
+                  </span>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
         </div>
       )}
 
@@ -13203,49 +13731,51 @@ export default function Settings() {
   }, [connections]);
 
   return (
-    <div className="mx-auto max-w-5xl p-6">
-      <h1 className="mb-6 text-2xl font-bold text-gray-100">Settings</h1>
+    <div className="h-full overflow-y-auto">
+      <div className="mx-auto max-w-5xl p-6 pb-12">
+        <h1 className="mb-6 text-2xl font-bold text-gray-100">Settings</h1>
 
-      <section className="mb-8">
-        <h2 className="mb-2 text-lg font-semibold text-gray-200">Account</h2>
-        <p className="text-sm text-gray-400">{email}</p>
-      </section>
+        <section className="mb-8">
+          <h2 className="mb-2 text-lg font-semibold text-gray-200">Account</h2>
+          <p className="text-sm text-gray-400">{email}</p>
+        </section>
 
-      <section>
-        <h2 className="mb-4 text-lg font-semibold text-gray-200">Providers</h2>
-        <p className="mb-4 text-sm text-gray-400">
-          Yinshi does not provide shared model credits. Connect your own model
-          providers here before starting sessions. Secrets are encrypted at rest
-          and never shown again after saving.
-        </p>
+        <section>
+          <h2 className="mb-4 text-lg font-semibold text-gray-200">Providers</h2>
+          <p className="mb-4 text-sm text-gray-400">
+            Yinshi does not provide shared model credits. Connect your own model
+            providers here before starting sessions. Secrets are encrypted at rest
+            and never shown again after saving.
+          </p>
 
-        {(loading || loadingConnections) && (
-          <div className="rounded border border-gray-700 bg-gray-800 px-4 py-3 text-sm text-gray-400">
-            Loading provider catalog...
-          </div>
-        )}
+          {(loading || loadingConnections) && (
+            <div className="rounded border border-gray-700 bg-gray-800 px-4 py-3 text-sm text-gray-400">
+              Loading provider catalog...
+            </div>
+          )}
 
-        {(catalogError || connectionsError) && (
-          <div className="mb-4 rounded border border-red-900/50 bg-gray-800 px-4 py-3 text-sm text-red-400">
-            {catalogError || connectionsError}
-          </div>
-        )}
+          {(catalogError || connectionsError) && (
+            <div className="mb-4 rounded border border-red-900/50 bg-gray-800 px-4 py-3 text-sm text-red-400">
+              {catalogError || connectionsError}
+            </div>
+          )}
 
-        {catalog && (
-          <div className="grid gap-4 md:grid-cols-2">
-            {catalog.providers.map((provider) => (
-              <ProviderCard
-                key={provider.id}
-                provider={provider}
-                connection={connectionByProviderId.get(provider.id)}
-                onConnectionChange={loadConnections}
-              />
-            ))}
-          </div>
-        )}
-      </section>
+          {catalog && (
+            <div className="grid gap-4 md:grid-cols-2">
+              {catalog.providers.map((provider) => (
+                <ProviderCard
+                  key={provider.id}
+                  provider={provider}
+                  connection={connectionByProviderId.get(provider.id)}
+                  onConnectionChange={loadConnections}
+                />
+              ))}
+            </div>
+          )}
+        </section>
 
-      <PiConfigSection />
+        <PiConfigSection />
+      </div>
     </div>
   );
 }
@@ -13507,6 +14037,79 @@ function getCatalog(agentDir) {
   };
 }
 
+function _normalizeManualInputPrompt(promptMessage) {
+  if (typeof promptMessage === "string") {
+    const normalizedPromptMessage = promptMessage.trim();
+    if (normalizedPromptMessage) {
+      return normalizedPromptMessage;
+    }
+  }
+  return "Paste the final redirect URL or authorization code here.";
+}
+
+function _buildHostedCallbackInstructions(baseInstructions) {
+  const instructionParts = [];
+  if (typeof baseInstructions === "string") {
+    const normalizedBaseInstructions = baseInstructions.trim();
+    if (normalizedBaseInstructions) {
+      instructionParts.push(normalizedBaseInstructions);
+    }
+  }
+  instructionParts.push(
+    "If the browser lands on a localhost URL and shows an error, copy the full URL from the address bar and paste it back into Yinshi.",
+  );
+  return instructionParts.join(" ");
+}
+
+function _waitForOAuthManualInput(flow, promptMessage) {
+  if (!flow || typeof flow !== "object") {
+    throw new Error("OAuth flow is required");
+  }
+  if (flow.manualInputSubmitted) {
+    if (typeof flow.manualInputValue !== "string" || !flow.manualInputValue) {
+      throw new Error("Submitted OAuth manual input is missing");
+    }
+    return Promise.resolve(flow.manualInputValue);
+  }
+  flow.manualInputRequired = true;
+  flow.manualInputPrompt = _normalizeManualInputPrompt(promptMessage);
+  if (flow.manualInputPromise) {
+    return flow.manualInputPromise;
+  }
+  flow.manualInputPromise = new Promise((resolve, reject) => {
+    flow.manualInputResolve = resolve;
+    flow.manualInputReject = reject;
+  });
+  return flow.manualInputPromise;
+}
+
+function _submitOAuthManualInput(flow, authorizationInput) {
+  if (!flow || typeof flow !== "object") {
+    throw new Error("OAuth flow is required");
+  }
+  if (typeof authorizationInput !== "string") {
+    throw new Error("authorizationInput must be a string");
+  }
+  const normalizedAuthorizationInput = authorizationInput.trim();
+  if (!normalizedAuthorizationInput) {
+    throw new Error("authorizationInput must not be empty");
+  }
+  if (flow.manualInputSubmitted) {
+    throw new Error("OAuth manual input was already submitted");
+  }
+  flow.manualInputRequired = true;
+  flow.manualInputSubmitted = true;
+  flow.manualInputValue = normalizedAuthorizationInput;
+  flow.progress.push("Received manual OAuth callback input.");
+  if (flow.manualInputResolve) {
+    flow.manualInputResolve(normalizedAuthorizationInput);
+    flow.manualInputResolve = null;
+    flow.manualInputReject = null;
+  } else {
+    flow.manualInputPromise = Promise.resolve(normalizedAuthorizationInput);
+  }
+}
+
 function resolveModel(modelKey, providerAuth, agentDir, providerConfig) {
   const normalizedLookup = normalizeModelLookup(modelKey || DEFAULT_MODEL_REF);
   const { registry } = createModelRegistry(providerAuth, agentDir);
@@ -13718,6 +14321,9 @@ export class YinshiSidecar {
       case "oauth_status":
         this.handleOAuthStatus(id, socket, request.flowId);
         break;
+      case "oauth_submit":
+        this.submitOAuthFlowInput(id, socket, request.flowId, request.authorizationInput);
+        break;
       case "ping":
         sendToSocket(socket, { type: "pong" });
         break;
@@ -13824,16 +14430,32 @@ export class YinshiSidecar {
         progress: [],
         credentials: null,
         error: null,
+        manualInputRequired: Boolean(provider.usesCallbackServer),
+        manualInputPrompt: provider.usesCallbackServer
+          ? "Paste the final redirect URL or authorization code here."
+          : null,
+        manualInputSubmitted: false,
+        manualInputValue: null,
+        manualInputPromise: null,
+        manualInputResolve: null,
+        manualInputReject: null,
       };
       this.activeOAuthFlows.set(flowId, flow);
 
       const loginPromise = provider.login({
         onAuth: (info) => {
           flow.authUrl = info.url;
-          flow.instructions = info.instructions || null;
+          if (provider.usesCallbackServer) {
+            flow.instructions = _buildHostedCallbackInstructions(info.instructions || null);
+          } else {
+            flow.instructions = info.instructions || null;
+          }
           flow.status = "pending";
         },
-        onPrompt: async () => "",
+        onPrompt: async (prompt) => _waitForOAuthManualInput(flow, prompt?.message),
+        onManualCodeInput: provider.usesCallbackServer
+          ? async () => _waitForOAuthManualInput(flow, flow.manualInputPrompt)
+          : undefined,
         onProgress: (message) => {
           flow.progress.push(message);
         },
@@ -13867,6 +14489,9 @@ export class YinshiSidecar {
         provider: providerId,
         auth_url: flow.authUrl,
         instructions: flow.instructions,
+        manual_input_required: flow.manualInputRequired,
+        manual_input_prompt: flow.manualInputPrompt,
+        manual_input_submitted: flow.manualInputSubmitted,
       });
     } catch (err) {
       sendToSocket(socket, {
@@ -13898,13 +14523,50 @@ export class YinshiSidecar {
       progress: flow.progress,
       credentials: flow.status === "complete" ? flow.credentials : null,
       error: flow.error,
+      manual_input_required: flow.manualInputRequired,
+      manual_input_prompt: flow.manualInputPrompt,
+      manual_input_submitted: flow.manualInputSubmitted,
     });
+  }
+
+  submitOAuthFlowInput(id, socket, flowId, authorizationInput) {
+    if (typeof flowId !== "string" || !flowId) {
+      sendToSocket(socket, { id: id || "oauth-submit", type: "error", error: "flowId is required" });
+      return;
+    }
+    const flow = this.activeOAuthFlows.get(flowId);
+    if (!flow) {
+      sendToSocket(socket, { id: id || "oauth-submit", type: "error", error: "OAuth flow not found" });
+      return;
+    }
+    try {
+      _submitOAuthManualInput(flow, authorizationInput);
+      sendToSocket(socket, {
+        id,
+        type: "oauth_submitted",
+        flow_id: flow.id,
+        provider: flow.provider,
+        manual_input_required: flow.manualInputRequired,
+        manual_input_prompt: flow.manualInputPrompt,
+        manual_input_submitted: flow.manualInputSubmitted,
+      });
+    } catch (err) {
+      sendToSocket(socket, {
+        id: id || "oauth-submit",
+        type: "error",
+        error: err instanceof Error ? err.message : "Failed to submit OAuth input",
+      });
+    }
   }
 
   clearOAuthFlow(id, socket, flowId) {
     if (typeof flowId !== "string" || !flowId) {
       sendToSocket(socket, { id: id || "oauth-clear", type: "error", error: "flowId is required" });
       return;
+    }
+    const flow = this.activeOAuthFlows.get(flowId);
+    if (flow?.manualInputReject) {
+      flow.manualInputReject(new Error("OAuth flow was cleared before manual input was consumed"));
     }
     this.activeOAuthFlows.delete(flowId);
     sendToSocket(socket, {
