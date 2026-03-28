@@ -302,6 +302,23 @@
   border-color: var(--lp-ink);
 }
 
+.landing-nav-actions {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.landing-github-link {
+  color: var(--lp-ink-faded);
+  transition: color 0.3s ease;
+  display: flex;
+  align-items: center;
+}
+
+.landing-github-link:hover {
+  color: var(--lp-ink);
+}
+
 /* ---- Hero ---- */
 
 .landing-hero {
