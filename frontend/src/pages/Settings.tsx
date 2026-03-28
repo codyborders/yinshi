@@ -3,6 +3,9 @@ import { useEffect, useMemo, useState } from "react";
 import {
   api,
   pollAuthFlow,
+  submitAuthFlowInput,
+  type ProviderAuthStart,
+  type ProviderAuthStatus,
   type ProviderConnection,
   type ProviderDescriptor,
 } from "../api/client";
@@ -29,6 +32,10 @@ function normalizeFieldValue(value: string | undefined): string {
   return (value || "").trim();
 }
 
+function defaultOauthInstructions(): string {
+  return "Open the provider authorization flow in a new window, complete sign-in, and Yinshi will finish the connection automatically. If the provider redirects to localhost and the browser shows an error, copy the full URL from the address bar and paste it here.";
+}
+
 function ProviderCard({
   provider,
   connection,
@@ -44,13 +51,52 @@ function ProviderCard({
   const [config, setConfig] = useState<Record<string, string>>(() => buildInitialConfig(provider));
   const [saving, setSaving] = useState(false);
   const [connecting, setConnecting] = useState(false);
+  const [oauthFlowId, setOauthFlowId] = useState<string | null>(null);
+  const [oauthInstructions, setOauthInstructions] = useState<string | null>(null);
+  const [oauthProgress, setOauthProgress] = useState<string[]>([]);
+  const [oauthManualInputRequired, setOauthManualInputRequired] = useState(false);
+  const [oauthManualInputPrompt, setOauthManualInputPrompt] = useState<string | null>(null);
+  const [oauthManualInputSubmitted, setOauthManualInputSubmitted] = useState(false);
+  const [oauthManualInputValue, setOauthManualInputValue] = useState("");
+  const [submittingOauthInput, setSubmittingOauthInput] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  function resetOauthFlowState() {
+    setOauthFlowId(null);
+    setOauthInstructions(null);
+    setOauthProgress([]);
+    setOauthManualInputRequired(false);
+    setOauthManualInputPrompt(null);
+    setOauthManualInputSubmitted(false);
+    setOauthManualInputValue("");
+    setSubmittingOauthInput(false);
+  }
+
+  function applyOauthFlowState(flow: ProviderAuthStart | ProviderAuthStatus) {
+    setOauthFlowId(flow.flow_id);
+    if ("instructions" in flow) {
+      setOauthInstructions(flow.instructions ?? null);
+    }
+    if ("progress" in flow && Array.isArray(flow.progress)) {
+      setOauthProgress(flow.progress);
+    }
+    if ("manual_input_required" in flow) {
+      setOauthManualInputRequired(Boolean(flow.manual_input_required));
+    }
+    if ("manual_input_prompt" in flow) {
+      setOauthManualInputPrompt(flow.manual_input_prompt ?? null);
+    }
+    if ("manual_input_submitted" in flow) {
+      setOauthManualInputSubmitted(Boolean(flow.manual_input_submitted));
+    }
+  }
 
   useEffect(() => {
     setAuthStrategy(provider.auth_strategies[0] || "api_key");
     setConfig(buildInitialConfig(provider));
     setSecret("");
     setLabel("");
+    resetOauthFlowState();
     setError(null);
   }, [provider]);
 
@@ -132,26 +178,25 @@ function ProviderCard({
       return;
     }
     setConnecting(true);
+    resetOauthFlowState();
     setError(null);
     try {
-      const started = await api.post<{
-        flow_id: string;
-        provider: string;
-        auth_url: string;
-        instructions: string | null;
-      }>(`/auth/providers/${provider.id}/start`);
+      const started = await api.post<ProviderAuthStart>(`/auth/providers/${provider.id}/start`);
+      applyOauthFlowState(started);
       if (started.auth_url) {
         window.open(started.auth_url, "_blank", "noopener,noreferrer");
       }
-      for (let attempt = 0; attempt < 120; attempt += 1) {
+      for (let attempt = 0; attempt < 600; attempt += 1) {
         await new Promise((resolve) => window.setTimeout(resolve, 1000));
         const status = await pollAuthFlow(provider.id, started.flow_id);
+        applyOauthFlowState(status);
         if (status.status === "complete") {
+          resetOauthFlowState();
           await onConnectionChange();
           return;
         }
         if (status.status === "error") {
-          throw new Error("Provider authorization failed");
+          throw new Error(status.error || "Provider authorization failed");
         }
       }
       throw new Error("Provider authorization timed out");
@@ -159,6 +204,33 @@ function ProviderCard({
       setError(connectError instanceof Error ? connectError.message : "Provider authorization failed");
     } finally {
       setConnecting(false);
+    }
+  }
+
+  async function submitOauthCallbackInput() {
+    if (!oauthFlowId) {
+      setError("Provider authorization flow is not active");
+      return;
+    }
+    const normalizedAuthorizationInput = normalizeFieldValue(oauthManualInputValue);
+    if (!normalizedAuthorizationInput) {
+      setError("Authorization input is required");
+      return;
+    }
+    setSubmittingOauthInput(true);
+    setError(null);
+    try {
+      const status = await submitAuthFlowInput(
+        provider.id,
+        oauthFlowId,
+        normalizedAuthorizationInput,
+      );
+      applyOauthFlowState(status);
+      setOauthManualInputValue("");
+    } catch (submitError) {
+      setError(submitError instanceof Error ? submitError.message : "Failed to submit authorization input");
+    } finally {
+      setSubmittingOauthInput(false);
     }
   }
 
@@ -265,9 +337,13 @@ function ProviderCard({
       {hasOauth && (
         <div className="mt-4 space-y-3">
           <p className="text-sm text-gray-400">
-            Open the provider authorization flow in a new window, complete sign-in,
-            and this page will pick up the connected account automatically.
+            {oauthInstructions || defaultOauthInstructions()}
           </p>
+          {oauthProgress.length > 0 ? (
+            <p className="text-xs text-gray-500">
+              {oauthProgress[oauthProgress.length - 1]}
+            </p>
+          ) : null}
           <button
             type="button"
             onClick={() => {
@@ -278,6 +354,41 @@ function ProviderCard({
           >
             {connecting ? "Connecting..." : "Connect Provider"}
           </button>
+          {oauthManualInputRequired && !connection ? (
+            <div className="rounded-lg border border-gray-800 bg-gray-950/60 p-3">
+              <p className="text-sm text-gray-300">
+                {oauthManualInputPrompt || "Paste the final redirect URL or authorization code here."}
+              </p>
+              <textarea
+                value={oauthManualInputValue}
+                onChange={(event) => setOauthManualInputValue(event.target.value)}
+                placeholder="http://localhost:1455/auth/callback?code=..."
+                rows={3}
+                className="mt-3 w-full rounded border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-gray-200 placeholder-gray-500"
+              />
+              <div className="mt-3 flex flex-wrap items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    void submitOauthCallbackInput();
+                  }}
+                  disabled={submittingOauthInput || oauthManualInputSubmitted}
+                  className="rounded border border-gray-600 px-4 py-2 text-sm text-gray-100 disabled:opacity-50"
+                >
+                  {submittingOauthInput
+                    ? "Submitting..."
+                    : oauthManualInputSubmitted
+                      ? "Submitted"
+                      : "Submit Callback URL"}
+                </button>
+                {oauthManualInputSubmitted ? (
+                  <span className="text-xs text-gray-500">
+                    Waiting for the provider to finish the OAuth flow.
+                  </span>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
         </div>
       )}
 

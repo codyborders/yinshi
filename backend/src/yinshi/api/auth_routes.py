@@ -22,6 +22,7 @@ from yinshi.auth import (
 from yinshi.config import get_settings
 from yinshi.db import get_control_db
 from yinshi.exceptions import GitHubAppError, GitHubInstallationUnusableError
+from yinshi.models import ProviderAuthInputIn, ProviderAuthStartOut, ProviderAuthStatusOut
 from yinshi.rate_limit import limiter
 from yinshi.services.accounts import resolve_or_create_user
 from yinshi.services.github_app import get_installation_details
@@ -89,6 +90,105 @@ def _current_user_id(request: Request) -> str | None:
     if not token:
         return None
     return verify_session_token(token)
+
+
+def _normalize_provider_flow_status(status: object) -> str:
+    """Require a non-empty string OAuth flow status."""
+    if not isinstance(status, str):
+        raise HTTPException(status_code=500, detail="OAuth flow status is invalid")
+    normalized_status = status.strip()
+    if not normalized_status:
+        raise HTTPException(status_code=500, detail="OAuth flow status is invalid")
+    return normalized_status
+
+
+def _build_provider_auth_start_payload(flow: dict[str, Any]) -> dict[str, Any]:
+    """Validate and serialize one started provider OAuth flow."""
+    if not isinstance(flow, dict):
+        raise TypeError("flow must be a dictionary")
+    flow_id = flow.get("flow_id")
+    provider = flow.get("provider")
+    auth_url = flow.get("auth_url")
+    instructions = flow.get("instructions")
+    manual_input_prompt = flow.get("manual_input_prompt")
+    if not isinstance(flow_id, str) or not flow_id:
+        raise HTTPException(status_code=500, detail="OAuth flow id is invalid")
+    if not isinstance(provider, str) or not provider:
+        raise HTTPException(status_code=500, detail="OAuth flow provider is invalid")
+    if not isinstance(auth_url, str) or not auth_url:
+        raise HTTPException(status_code=500, detail="OAuth flow auth URL is invalid")
+    if instructions is not None and not isinstance(instructions, str):
+        raise HTTPException(status_code=500, detail="OAuth flow instructions are invalid")
+    if manual_input_prompt is not None and not isinstance(manual_input_prompt, str):
+        raise HTTPException(status_code=500, detail="OAuth flow manual input prompt is invalid")
+    return {
+        "flow_id": flow_id,
+        "provider": provider,
+        "auth_url": auth_url,
+        "instructions": instructions,
+        "manual_input_required": bool(flow.get("manual_input_required", False)),
+        "manual_input_prompt": manual_input_prompt,
+        "manual_input_submitted": bool(flow.get("manual_input_submitted", False)),
+    }
+
+
+def _build_provider_auth_status_payload(
+    flow: dict[str, Any],
+    *,
+    status: str,
+    error: str | None = None,
+) -> dict[str, Any]:
+    """Validate and serialize one provider OAuth status payload."""
+    if not isinstance(flow, dict):
+        raise TypeError("flow must be a dictionary")
+    normalized_status = _normalize_provider_flow_status(status)
+    flow_id = flow.get("flow_id")
+    provider = flow.get("provider")
+    instructions = flow.get("instructions")
+    manual_input_prompt = flow.get("manual_input_prompt")
+    progress = flow.get("progress", [])
+    if not isinstance(flow_id, str) or not flow_id:
+        raise HTTPException(status_code=500, detail="OAuth flow id is invalid")
+    if not isinstance(provider, str) or not provider:
+        raise HTTPException(status_code=500, detail="OAuth flow provider is invalid")
+    if instructions is not None and not isinstance(instructions, str):
+        raise HTTPException(status_code=500, detail="OAuth flow instructions are invalid")
+    if manual_input_prompt is not None and not isinstance(manual_input_prompt, str):
+        raise HTTPException(status_code=500, detail="OAuth flow manual input prompt is invalid")
+    if not isinstance(progress, list):
+        raise HTTPException(status_code=500, detail="OAuth flow progress is invalid")
+    normalized_progress: list[str] = []
+    for progress_entry in progress:
+        if not isinstance(progress_entry, str):
+            raise HTTPException(status_code=500, detail="OAuth flow progress is invalid")
+        normalized_progress.append(progress_entry)
+    if error is not None and not isinstance(error, str):
+        raise HTTPException(status_code=500, detail="OAuth flow error is invalid")
+    return {
+        "status": normalized_status,
+        "provider": provider,
+        "flow_id": flow_id,
+        "instructions": instructions,
+        "progress": normalized_progress,
+        "manual_input_required": bool(flow.get("manual_input_required", False)),
+        "manual_input_prompt": manual_input_prompt,
+        "manual_input_submitted": bool(flow.get("manual_input_submitted", False)),
+        "error": error,
+    }
+
+
+def _require_provider_match(provider: str, flow: dict[str, Any]) -> None:
+    """Reject OAuth flows that do not belong to the requested provider."""
+    if not isinstance(provider, str):
+        raise TypeError("provider must be a string")
+    normalized_provider = provider.strip()
+    if not normalized_provider:
+        raise ValueError("provider must not be empty")
+    flow_provider = flow.get("provider")
+    if not isinstance(flow_provider, str) or not flow_provider:
+        raise HTTPException(status_code=500, detail="OAuth flow provider is invalid")
+    if flow_provider != normalized_provider:
+        raise HTTPException(status_code=400, detail="Provider mismatch")
 
 
 # --- Google OAuth ---
@@ -326,8 +426,8 @@ async def github_install_callback(request: Request) -> RedirectResponse:
     return RedirectResponse(url="/app?github_connected=1")
 
 
-@router.post("/providers/{provider}/start")
-async def start_provider_auth(provider: str, request: Request) -> dict[str, str | None]:
+@router.post("/providers/{provider}/start", response_model=ProviderAuthStartOut)
+async def start_provider_auth(provider: str, request: Request) -> dict[str, Any]:
     """Start a provider OAuth flow through the sidecar."""
     user_id = _current_user_id(request)
     if user_id is None:
@@ -337,12 +437,7 @@ async def start_provider_auth(provider: str, request: Request) -> dict[str, str 
         flow = await sidecar.start_oauth_flow(provider)
     finally:
         await sidecar.disconnect()
-    return {
-        "flow_id": flow["flow_id"],
-        "provider": flow["provider"],
-        "auth_url": flow["auth_url"],
-        "instructions": flow.get("instructions"),
-    }
+    return _build_provider_auth_start_payload(flow)
 
 
 @router.get("/providers/{provider}/callback")
@@ -354,29 +449,24 @@ async def callback_provider_auth(provider: str, flow_id: str, request: Request) 
     sidecar = await create_sidecar_connection()
     try:
         flow = await sidecar.get_oauth_flow_status(flow_id)
-        if flow["provider"] != provider:
-            raise HTTPException(status_code=400, detail="Provider mismatch")
-        status = flow["status"]
+        _require_provider_match(provider, flow)
+        status = _normalize_provider_flow_status(flow.get("status"))
         if status in {"pending", "starting"}:
             return JSONResponse(
                 status_code=202,
-                content={
-                    "status": status,
-                    "provider": provider,
-                    "flow_id": flow_id,
-                    "instructions": flow.get("instructions"),
-                    "progress": flow.get("progress", []),
-                },
+                content=_build_provider_auth_status_payload(flow, status=status),
             )
         if status == "error":
+            error_message = flow.get("error")
+            if not isinstance(error_message, str) or not error_message:
+                error_message = "OAuth flow failed"
             return JSONResponse(
                 status_code=400,
-                content={
-                    "status": "error",
-                    "provider": provider,
-                    "flow_id": flow_id,
-                    "error": flow.get("error") or "OAuth flow failed",
-                },
+                content=_build_provider_auth_status_payload(
+                    flow,
+                    status="error",
+                    error=error_message,
+                ),
             )
         if status != "complete":
             raise HTTPException(status_code=500, detail=f"Unexpected OAuth status: {status}")
@@ -393,11 +483,58 @@ async def callback_provider_auth(provider: str, flow_id: str, request: Request) 
         )
         await sidecar.clear_oauth_flow(flow_id)
         return JSONResponse(
-            {
-                "status": "complete",
-                "provider": provider,
-                "flow_id": flow_id,
-            }
+            _build_provider_auth_status_payload(flow, status="complete")
+        )
+    finally:
+        await sidecar.disconnect()
+
+
+@router.post("/providers/{provider}/callback", response_model=ProviderAuthStatusOut)
+async def submit_provider_auth_callback(
+    provider: str,
+    payload: ProviderAuthInputIn,
+    request: Request,
+) -> JSONResponse:
+    """Submit pasted OAuth callback data into an active provider auth flow."""
+    if _current_user_id(request) is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    sidecar = await create_sidecar_connection()
+    try:
+        flow = await sidecar.get_oauth_flow_status(payload.flow_id)
+        _require_provider_match(provider, flow)
+        status = _normalize_provider_flow_status(flow.get("status"))
+        if status == "complete":
+            return JSONResponse(
+                _build_provider_auth_status_payload(flow, status="complete"),
+            )
+        if status == "error":
+            error_message = flow.get("error")
+            if not isinstance(error_message, str) or not error_message:
+                error_message = "OAuth flow failed"
+            return JSONResponse(
+                status_code=400,
+                content=_build_provider_auth_status_payload(
+                    flow,
+                    status="error",
+                    error=error_message,
+                ),
+            )
+
+        await sidecar.submit_oauth_flow_input(
+            payload.flow_id,
+            payload.authorization_input,
+        )
+        return JSONResponse(
+            status_code=202,
+            content=_build_provider_auth_status_payload(
+                {
+                    **flow,
+                    "manual_input_required": True,
+                    "manual_input_submitted": True,
+                },
+                status="pending",
+            ),
         )
     finally:
         await sidecar.disconnect()

@@ -190,6 +190,79 @@ function getCatalog(agentDir) {
   };
 }
 
+function _normalizeManualInputPrompt(promptMessage) {
+  if (typeof promptMessage === "string") {
+    const normalizedPromptMessage = promptMessage.trim();
+    if (normalizedPromptMessage) {
+      return normalizedPromptMessage;
+    }
+  }
+  return "Paste the final redirect URL or authorization code here.";
+}
+
+function _buildHostedCallbackInstructions(baseInstructions) {
+  const instructionParts = [];
+  if (typeof baseInstructions === "string") {
+    const normalizedBaseInstructions = baseInstructions.trim();
+    if (normalizedBaseInstructions) {
+      instructionParts.push(normalizedBaseInstructions);
+    }
+  }
+  instructionParts.push(
+    "If the browser lands on a localhost URL and shows an error, copy the full URL from the address bar and paste it back into Yinshi.",
+  );
+  return instructionParts.join(" ");
+}
+
+function _waitForOAuthManualInput(flow, promptMessage) {
+  if (!flow || typeof flow !== "object") {
+    throw new Error("OAuth flow is required");
+  }
+  if (flow.manualInputSubmitted) {
+    if (typeof flow.manualInputValue !== "string" || !flow.manualInputValue) {
+      throw new Error("Submitted OAuth manual input is missing");
+    }
+    return Promise.resolve(flow.manualInputValue);
+  }
+  flow.manualInputRequired = true;
+  flow.manualInputPrompt = _normalizeManualInputPrompt(promptMessage);
+  if (flow.manualInputPromise) {
+    return flow.manualInputPromise;
+  }
+  flow.manualInputPromise = new Promise((resolve, reject) => {
+    flow.manualInputResolve = resolve;
+    flow.manualInputReject = reject;
+  });
+  return flow.manualInputPromise;
+}
+
+function _submitOAuthManualInput(flow, authorizationInput) {
+  if (!flow || typeof flow !== "object") {
+    throw new Error("OAuth flow is required");
+  }
+  if (typeof authorizationInput !== "string") {
+    throw new Error("authorizationInput must be a string");
+  }
+  const normalizedAuthorizationInput = authorizationInput.trim();
+  if (!normalizedAuthorizationInput) {
+    throw new Error("authorizationInput must not be empty");
+  }
+  if (flow.manualInputSubmitted) {
+    throw new Error("OAuth manual input was already submitted");
+  }
+  flow.manualInputRequired = true;
+  flow.manualInputSubmitted = true;
+  flow.manualInputValue = normalizedAuthorizationInput;
+  flow.progress.push("Received manual OAuth callback input.");
+  if (flow.manualInputResolve) {
+    flow.manualInputResolve(normalizedAuthorizationInput);
+    flow.manualInputResolve = null;
+    flow.manualInputReject = null;
+  } else {
+    flow.manualInputPromise = Promise.resolve(normalizedAuthorizationInput);
+  }
+}
+
 function resolveModel(modelKey, providerAuth, agentDir, providerConfig) {
   const normalizedLookup = normalizeModelLookup(modelKey || DEFAULT_MODEL_REF);
   const { registry } = createModelRegistry(providerAuth, agentDir);
@@ -401,6 +474,9 @@ export class YinshiSidecar {
       case "oauth_status":
         this.handleOAuthStatus(id, socket, request.flowId);
         break;
+      case "oauth_submit":
+        this.submitOAuthFlowInput(id, socket, request.flowId, request.authorizationInput);
+        break;
       case "ping":
         sendToSocket(socket, { type: "pong" });
         break;
@@ -507,16 +583,32 @@ export class YinshiSidecar {
         progress: [],
         credentials: null,
         error: null,
+        manualInputRequired: Boolean(provider.usesCallbackServer),
+        manualInputPrompt: provider.usesCallbackServer
+          ? "Paste the final redirect URL or authorization code here."
+          : null,
+        manualInputSubmitted: false,
+        manualInputValue: null,
+        manualInputPromise: null,
+        manualInputResolve: null,
+        manualInputReject: null,
       };
       this.activeOAuthFlows.set(flowId, flow);
 
       const loginPromise = provider.login({
         onAuth: (info) => {
           flow.authUrl = info.url;
-          flow.instructions = info.instructions || null;
+          if (provider.usesCallbackServer) {
+            flow.instructions = _buildHostedCallbackInstructions(info.instructions || null);
+          } else {
+            flow.instructions = info.instructions || null;
+          }
           flow.status = "pending";
         },
-        onPrompt: async () => "",
+        onPrompt: async (prompt) => _waitForOAuthManualInput(flow, prompt?.message),
+        onManualCodeInput: provider.usesCallbackServer
+          ? async () => _waitForOAuthManualInput(flow, flow.manualInputPrompt)
+          : undefined,
         onProgress: (message) => {
           flow.progress.push(message);
         },
@@ -550,6 +642,9 @@ export class YinshiSidecar {
         provider: providerId,
         auth_url: flow.authUrl,
         instructions: flow.instructions,
+        manual_input_required: flow.manualInputRequired,
+        manual_input_prompt: flow.manualInputPrompt,
+        manual_input_submitted: flow.manualInputSubmitted,
       });
     } catch (err) {
       sendToSocket(socket, {
@@ -581,13 +676,50 @@ export class YinshiSidecar {
       progress: flow.progress,
       credentials: flow.status === "complete" ? flow.credentials : null,
       error: flow.error,
+      manual_input_required: flow.manualInputRequired,
+      manual_input_prompt: flow.manualInputPrompt,
+      manual_input_submitted: flow.manualInputSubmitted,
     });
+  }
+
+  submitOAuthFlowInput(id, socket, flowId, authorizationInput) {
+    if (typeof flowId !== "string" || !flowId) {
+      sendToSocket(socket, { id: id || "oauth-submit", type: "error", error: "flowId is required" });
+      return;
+    }
+    const flow = this.activeOAuthFlows.get(flowId);
+    if (!flow) {
+      sendToSocket(socket, { id: id || "oauth-submit", type: "error", error: "OAuth flow not found" });
+      return;
+    }
+    try {
+      _submitOAuthManualInput(flow, authorizationInput);
+      sendToSocket(socket, {
+        id,
+        type: "oauth_submitted",
+        flow_id: flow.id,
+        provider: flow.provider,
+        manual_input_required: flow.manualInputRequired,
+        manual_input_prompt: flow.manualInputPrompt,
+        manual_input_submitted: flow.manualInputSubmitted,
+      });
+    } catch (err) {
+      sendToSocket(socket, {
+        id: id || "oauth-submit",
+        type: "error",
+        error: err instanceof Error ? err.message : "Failed to submit OAuth input",
+      });
+    }
   }
 
   clearOAuthFlow(id, socket, flowId) {
     if (typeof flowId !== "string" || !flowId) {
       sendToSocket(socket, { id: id || "oauth-clear", type: "error", error: "flowId is required" });
       return;
+    }
+    const flow = this.activeOAuthFlows.get(flowId);
+    if (flow?.manualInputReject) {
+      flow.manualInputReject(new Error("OAuth flow was cleared before manual input was consumed"));
     }
     this.activeOAuthFlows.delete(flowId);
     sendToSocket(socket, {

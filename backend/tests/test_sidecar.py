@@ -144,3 +144,25 @@ async def test_sidecar_read_line_converts_limit_errors() -> None:
 
     with pytest.raises(SidecarError, match="configured read limit"):
         await client._read_line()
+
+
+@pytest.mark.asyncio
+async def test_sidecar_client_submit_oauth_flow_input() -> None:
+    """OAuth manual input submission should use the dedicated sidecar message."""
+    from yinshi.services.sidecar import SidecarClient
+
+    client = SidecarClient()
+    client._connected = True
+    client._writer = MagicMock()
+    client._writer.drain = AsyncMock()
+    client._read_line = AsyncMock(
+        return_value={"type": "oauth_submitted", "flow_id": "flow-1"}
+    )
+
+    await client.submit_oauth_flow_input("flow-1", "http://localhost:1455/auth/callback?code=abc")
+
+    written = client._writer.write.call_args[0][0].decode()
+    msg = json.loads(written.strip())
+    assert msg["type"] == "oauth_submit"
+    assert msg["flowId"] == "flow-1"
+    assert msg["authorizationInput"] == "http://localhost:1455/auth/callback?code=abc"

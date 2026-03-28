@@ -71,6 +71,28 @@ export interface ProviderConnection {
   expires_at: string | null;
 }
 
+export interface ProviderAuthStart {
+  flow_id: string;
+  provider: string;
+  auth_url: string;
+  instructions: string | null;
+  manual_input_required: boolean;
+  manual_input_prompt: string | null;
+  manual_input_submitted: boolean;
+}
+
+export interface ProviderAuthStatus {
+  status: string;
+  provider: string;
+  flow_id: string;
+  instructions?: string | null;
+  progress?: string[];
+  manual_input_required?: boolean;
+  manual_input_prompt?: string | null;
+  manual_input_submitted?: boolean;
+  error?: string | null;
+}
+
 export interface PiConfig {
   id: string;
   created_at: string;
@@ -237,10 +259,25 @@ export const api = {
   },
 };
 
-export async function pollAuthFlow(provider: string, flowId: string): Promise<{ status: string }> {
-  return request<{ status: string }>(
+export async function pollAuthFlow(provider: string, flowId: string): Promise<ProviderAuthStatus> {
+  return request<ProviderAuthStatus>(
     "GET",
     `/auth/providers/${provider}/callback?flow_id=${encodeURIComponent(flowId)}`,
+  );
+}
+
+export async function submitAuthFlowInput(
+  provider: string,
+  flowId: string,
+  authorizationInput: string,
+): Promise<ProviderAuthStatus> {
+  return request<ProviderAuthStatus>(
+    "POST",
+    `/auth/providers/${provider}/callback`,
+    {
+      flow_id: flowId,
+      authorization_input: authorizationInput,
+    },
   );
 }
 

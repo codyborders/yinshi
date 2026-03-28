@@ -202,6 +202,57 @@ class ProviderCatalogOut(BaseModel):
     models: list[ModelDescriptorOut]
 
 
+class ProviderAuthStartOut(BaseModel):
+    """Response returned when a provider OAuth flow starts."""
+
+    flow_id: str
+    provider: str
+    auth_url: str
+    instructions: str | None = None
+    manual_input_required: bool = False
+    manual_input_prompt: str | None = None
+    manual_input_submitted: bool = False
+
+
+class ProviderAuthStatusOut(BaseModel):
+    """Status payload for a provider OAuth flow."""
+
+    status: str
+    provider: str
+    flow_id: str
+    instructions: str | None = None
+    progress: list[str] = Field(default_factory=list)
+    manual_input_required: bool = False
+    manual_input_prompt: str | None = None
+    manual_input_submitted: bool = False
+    error: str | None = None
+
+
+class ProviderAuthInputIn(BaseModel):
+    """Manual OAuth input submitted from the browser UI."""
+
+    flow_id: str = Field(..., min_length=1, max_length=255)
+    authorization_input: str = Field(..., min_length=1, max_length=8192)
+
+    @field_validator("flow_id")
+    @classmethod
+    def validate_flow_id(cls, value: str) -> str:
+        """Reject blank OAuth flow identifiers."""
+        normalized_value = value.strip()
+        if not normalized_value:
+            raise ValueError("flow_id must not be empty")
+        return normalized_value
+
+    @field_validator("authorization_input")
+    @classmethod
+    def validate_authorization_input(cls, value: str) -> str:
+        """Reject blank pasted OAuth callback input."""
+        normalized_value = value.strip()
+        if not normalized_value:
+            raise ValueError("authorization_input must not be empty")
+        return normalized_value
+
+
 class ProviderConnectionCreate(BaseModel):
     """Request to create a provider connection."""
 

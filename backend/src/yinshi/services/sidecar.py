@@ -330,6 +330,43 @@ class SidecarClient:
             raise SidecarError(f"Unexpected response type: {msg.get('type')}")
         return msg
 
+    async def submit_oauth_flow_input(
+        self,
+        flow_id: str,
+        authorization_input: str,
+    ) -> dict[str, Any]:
+        """Submit a pasted OAuth callback URL or authorization code."""
+        if not isinstance(flow_id, str):
+            raise TypeError("flow_id must be a string")
+        normalized_flow_id = flow_id.strip()
+        if not normalized_flow_id:
+            raise ValueError("flow_id must not be empty")
+        if not isinstance(authorization_input, str):
+            raise TypeError("authorization_input must be a string")
+        normalized_authorization_input = authorization_input.strip()
+        if not normalized_authorization_input:
+            raise ValueError("authorization_input must not be empty")
+
+        request_id = f"oauth-submit-{normalized_flow_id}"
+        await self._send(
+            {
+                "type": "oauth_submit",
+                "id": request_id,
+                "flowId": normalized_flow_id,
+                "authorizationInput": normalized_authorization_input,
+            }
+        )
+        msg = await self._read_line()
+        if msg is None:
+            raise SidecarError("Sidecar connection lost during OAuth input submission")
+        if msg.get("type") == "error":
+            raise SidecarError(
+                f"OAuth input submission failed: {msg.get('error', 'unknown')}"
+            )
+        if msg.get("type") != "oauth_submitted":
+            raise SidecarError(f"Unexpected response type: {msg.get('type')}")
+        return msg
+
     async def clear_oauth_flow(self, flow_id: str) -> None:
         """Clear one completed or failed OAuth flow from the sidecar."""
         request_id = f"oauth-clear-{flow_id}"

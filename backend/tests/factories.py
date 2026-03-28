@@ -163,6 +163,7 @@ def make_mock_sidecar(query_fn: Callable[..., Any], **overrides: Any) -> AsyncMo
     )
     mock.start_oauth_flow = AsyncMock()
     mock.get_oauth_flow_status = AsyncMock()
+    mock.submit_oauth_flow_input = AsyncMock()
     mock.clear_oauth_flow = AsyncMock()
     mock.warmup = AsyncMock()
     mock.disconnect = AsyncMock()
