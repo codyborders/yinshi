@@ -8197,6 +8197,7 @@ datadogRum.init({
   trackResources: true,
   trackUserInteractions: true,
   trackLongTasks: true,
+  defaultPrivacyLevel: "allow",
   plugins: [reactPlugin({ router: false })],
 });
 
