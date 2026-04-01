@@ -9,21 +9,30 @@ import "./index.css";
 
 declare const __GIT_COMMIT_HASH__: string;
 
-datadogRum.init({
-  applicationId: "6ca07893-ea15-4577-88cb-ef72b856ad3e",
-  clientToken: "pubbe7e2760d9e429d5cda2d2eb49a408be",
-  site: "datadoghq.com",
-  service: "yinshi",
-  env: "prod",
-  version: __GIT_COMMIT_HASH__,
-  sessionSampleRate: 100,
-  sessionReplaySampleRate: 100,
-  trackResources: true,
-  trackUserInteractions: true,
-  trackLongTasks: true,
-  defaultPrivacyLevel: "allow",
-  plugins: [reactPlugin({ router: false })],
-});
+/* Defer Datadog RUM so it does not compete with first paint. */
+const initDatadogRum = () => {
+  datadogRum.init({
+    applicationId: "6ca07893-ea15-4577-88cb-ef72b856ad3e",
+    clientToken: "pubbe7e2760d9e429d5cda2d2eb49a408be",
+    site: "datadoghq.com",
+    service: "yinshi",
+    env: "prod",
+    version: __GIT_COMMIT_HASH__,
+    sessionSampleRate: 100,
+    sessionReplaySampleRate: 100,
+    trackResources: true,
+    trackUserInteractions: true,
+    trackLongTasks: true,
+    defaultPrivacyLevel: "allow",
+    plugins: [reactPlugin({ router: false })],
+  });
+};
+
+if ("requestIdleCallback" in window) {
+  window.requestIdleCallback(initDatadogRum);
+} else {
+  setTimeout(initDatadogRum, 0);
+}
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>

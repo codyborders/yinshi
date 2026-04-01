@@ -1,10 +1,13 @@
+import React, { Suspense } from "react";
 import { Route, Routes } from "react-router-dom";
 import Layout from "./components/Layout";
 import RequireAuth from "./components/RequireAuth";
-import EmptyState from "./pages/EmptyState";
 import Landing from "./pages/Landing";
-import Session from "./pages/Session";
-import Settings from "./pages/Settings";
+
+/* Code-split authenticated routes so landing page visitors download only what they need. */
+const EmptyState = React.lazy(() => import("./pages/EmptyState"));
+const Session = React.lazy(() => import("./pages/Session"));
+const Settings = React.lazy(() => import("./pages/Settings"));
 
 export default function App() {
   return (
@@ -12,9 +15,9 @@ export default function App() {
       <Route path="/" element={<Landing />} />
       <Route element={<RequireAuth />}>
         <Route element={<Layout />}>
-          <Route path="/app" element={<EmptyState />} />
-          <Route path="/app/session/:id" element={<Session />} />
-          <Route path="/app/settings" element={<Settings />} />
+          <Route path="/app" element={<Suspense><EmptyState /></Suspense>} />
+          <Route path="/app/session/:id" element={<Suspense><Session /></Suspense>} />
+          <Route path="/app/settings" element={<Suspense><Settings /></Suspense>} />
         </Route>
       </Route>
     </Routes>

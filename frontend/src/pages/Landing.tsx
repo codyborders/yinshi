@@ -1,6 +1,4 @@
 import { useSearchParams } from "react-router-dom";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
 
 const ERROR_MESSAGES: Record<string, string> = {
   oauth_error: "Sign-in was cancelled or failed. Please try again.",
@@ -111,16 +109,17 @@ export default function Landing() {
             src="/yinshi-scholar.jpg"
             alt="Yinshi Scholar -- classical ink painting"
             className="landing-mascot"
+            width={360}
+            height={360}
+            fetchPriority="high"
           />
         </div>
         <div className="landing-hero-text">
           <h1 className="landing-title">Yinshi</h1>
           <p className="landing-subtitle">Run coding agents in your browser</p>
-          <div className="landing-desc landing-markdown">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>
-              {`Yinshi makes it easy to manage coding agents across git repos and worktrees. `}
-            </ReactMarkdown>
-          </div>
+          <p className="landing-desc">
+            Yinshi makes it easy to manage coding agents across git repos and worktrees.
+          </p>
           <div className="landing-cta-group">
             <a href="/auth/login" className="landing-cta">
               Get Started
@@ -168,9 +167,7 @@ export default function Landing() {
             <div key={cap.title} className="landing-cap-card">
               <div className="landing-cap-icon">{cap.icon}</div>
               <h3 className="landing-cap-title">{cap.title}</h3>
-              <div className="landing-cap-desc landing-markdown">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>{cap.desc}</ReactMarkdown>
-              </div>
+              <p className="landing-cap-desc">{cap.desc}</p>
             </div>
           ))}
         </div>
@@ -178,11 +175,9 @@ export default function Landing() {
 
       {/* ---- Final CTA ---- */}
       <section className="landing-final">
-        <div className="landing-final-text landing-markdown">
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>
-            {`No IDE or app required. Fire up your browser, import your repos and pi configs, and get to work.`}
-          </ReactMarkdown>
-        </div>
+        <p className="landing-final-text">
+          No IDE or app required. Fire up your browser, import your repos and pi configs, and get to work.
+        </p>
         <a href="/auth/login" className="landing-cta">
           Get Started
         </a>
@@ -197,4 +192,3 @@ export default function Landing() {
     </div>
   );
 }
-

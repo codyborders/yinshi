@@ -11,6 +11,18 @@ export default defineConfig({
     __GIT_COMMIT_HASH__: JSON.stringify(gitCommitHash),
   },
   plugins: [react()],
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          react: ["react", "react-dom"],
+          router: ["react-router-dom"],
+          datadog: ["@datadog/browser-rum", "@datadog/browser-rum-react"],
+          markdown: ["react-markdown", "remark-gfm"],
+        },
+      },
+    },
+  },
   test: {
     environment: "jsdom",
     exclude: [...configDefaults.exclude, "e2e/**"],
