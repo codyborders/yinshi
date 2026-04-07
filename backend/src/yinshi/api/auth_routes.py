@@ -229,7 +229,9 @@ async def callback_google(request: Request) -> RedirectResponse:
     if not user_info:
         return RedirectResponse(url="/?error=no_user_info")
 
-    email = user_info["email"]
+    email = user_info.get("email")
+    if not email or not user_info.get("email_verified"):
+        return RedirectResponse(url="/?error=email_not_verified")
 
     try:
         tenant = resolve_or_create_user(
@@ -593,8 +595,11 @@ async def me(request: Request) -> dict[str, Any]:
 
 
 @router.post("/logout")
-async def logout() -> RedirectResponse:
-    """Clear session cookie."""
+async def logout(request: Request) -> RedirectResponse:
+    """Revoke the current auth session and clear the session cookie."""
+    user_id = _current_user_id(request)
+    if user_id is not None:
+        revoke_auth_sessions(user_id)
     response = RedirectResponse(url="/")
     _clear_session_cookie(response)
     return response

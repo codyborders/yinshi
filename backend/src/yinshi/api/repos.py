@@ -154,10 +154,18 @@ async def import_repo(body: RepoCreate, request: Request) -> dict[str, Any]:
             normalized_remote_url = clone_access.clone_url
             access_token = clone_access.access_token
 
+        # Sanitize name to prevent path traversal.
+        safe_name = Path(body.name).name
+        if not safe_name or safe_name != body.name or ".." in body.name:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid repository name (must be a simple directory name)",
+            )
+
         if tenant:
-            clone_dir = str(Path(tenant.data_dir) / "repos" / body.name)
+            clone_dir = str(Path(tenant.data_dir) / "repos" / safe_name)
         else:
-            clone_dir = str(Path.home() / ".yinshi" / "repos" / body.name)
+            clone_dir = str(Path.home() / ".yinshi" / "repos" / safe_name)
         try:
             root_path = await clone_repo(
                 normalized_remote_url or body.remote_url,

@@ -211,6 +211,10 @@ class AuthMiddleware(BaseHTTPMiddleware):
     ) -> Response:
         path = request.url.path
 
+        # Allow CORS preflight requests to pass through to CORSMiddleware.
+        if request.method == "OPTIONS":
+            return await call_next(request)
+
         # Skip auth if explicitly disabled
         if _auth_disabled():
             return await call_next(request)
