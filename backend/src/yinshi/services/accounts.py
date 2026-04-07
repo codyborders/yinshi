@@ -58,7 +58,7 @@ def _migrate_legacy_data(tenant: TenantContext) -> None:
 
     try:
         repos = source.execute(
-            "SELECT * FROM repos WHERE owner_email = ? OR owner_email IS NULL",
+            "SELECT * FROM repos WHERE owner_email = ?",
             (tenant.email,),
         ).fetchall()
 

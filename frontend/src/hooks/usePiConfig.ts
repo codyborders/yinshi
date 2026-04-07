@@ -164,7 +164,7 @@ export function usePiConfig(): UsePiConfigReturn {
     if (!config) {
       return false;
     }
-    if (updatingCategories) {
+    if (updatingCategories || syncing) {
       return false;
     }
     setError(null);

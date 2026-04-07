@@ -444,15 +444,19 @@ async def prompt_session(
         context.key_source,
     )
 
-    # Save user message + set status to running
+    # Atomically claim the session for this stream. The WHERE clause
+    # ensures only one concurrent request can transition idle -> running.
     with get_db_for_request(request) as db:
+        result = db.execute(
+            "UPDATE sessions SET status = 'running' WHERE id = ? AND status = 'idle'",
+            (session_id,),
+        )
+        if result.rowcount == 0:
+            raise HTTPException(status_code=409, detail="Session already has an active stream")
+
         db.execute(
             "INSERT INTO messages (session_id, role, content, turn_id) VALUES (?, 'user', ?, ?)",
             (session_id, prompt, turn_id),
-        )
-        db.execute(
-            "UPDATE sessions SET status = 'running' WHERE id = ?",
-            (session_id,),
         )
         # Update workspace name on first prompt (when name == branch)
         if session["workspace_name"] == session["workspace_branch"]:
@@ -542,13 +546,24 @@ async def prompt_session(
                     if data.get("type") == "result":
                         usage_data = data.get("usage", {})
                         result_provider = data.get("provider", result_provider)
-                        if assistant_msg_id:
-                            with get_db_for_request(request) as db:
+                        # Ensure an assistant message row exists even for
+                        # short responses (< batch size) or tool-only turns.
+                        with get_db_for_request(request) as db:
+                            if assistant_msg_id is None:
+                                assistant_msg_id = uuid.uuid4().hex
                                 db.execute(
-                                    "UPDATE messages SET full_message = ? WHERE id = ?",
-                                    (json.dumps(event), assistant_msg_id),
+                                    (
+                                        "INSERT INTO messages "
+                                        "(id, session_id, role, content, turn_id) "
+                                        "VALUES (?, ?, 'assistant', ?, ?)"
+                                    ),
+                                    (assistant_msg_id, session_id, accumulated, turn_id),
                                 )
-                                db.commit()
+                            db.execute(
+                                "UPDATE messages SET full_message = ? WHERE id = ?",
+                                (json.dumps(event), assistant_msg_id),
+                            )
+                            db.commit()
 
                     # Yield the SSE event with the inner data
                     yield f"data: {json.dumps(data)}\n\n"

@@ -24,8 +24,6 @@ const LEGACY_MODEL_ALIASES = new Map([
   ["minimax-m2.5-highspeed", "minimax/MiniMax-M2.5-highspeed"],
   ["minimax-m2.7", DEFAULT_MODEL_REF],
   ["minimax-m2.7-highspeed", "minimax/MiniMax-M2.7-highspeed"],
-  ["minimax-m2.7-highspeed", "minimax/MiniMax-M2.7-highspeed"],
-  ["minimax-m2.7", DEFAULT_MODEL_REF],
   ["opus", "anthropic/claude-opus-4-20250514"],
   ["sonnet", "anthropic/claude-sonnet-4-20250514"],
 ]);
@@ -454,6 +452,10 @@ export class YinshiSidecar {
   }
 
   handleRequest(request, socket) {
+    if (!request || typeof request !== "object") {
+      sendToSocket(socket, { id: "unknown", type: "error", error: "Invalid request format" });
+      return;
+    }
     const { type, id } = request;
     switch (type) {
       case "auth_resolve":

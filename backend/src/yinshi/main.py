@@ -75,19 +75,18 @@ _cors_origins = [app_settings.frontend_url]
 if app_settings.debug and "http://localhost:5173" not in _cors_origins:
     _cors_origins.append("http://localhost:5173")
 
+# Middleware order: last registered = outermost = runs first.
+# Auth must run before session, and CORS must be outermost
+# so preflight responses include the correct headers.
+app.add_middleware(SessionMiddleware, secret_key=app_settings.secret_key)
+app.add_middleware(AuthMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PATCH", "DELETE"],
+    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Content-Type", "X-Requested-With"],
 )
-
-# Session (authlib OAuth state storage)
-app.add_middleware(SessionMiddleware, secret_key=app_settings.secret_key)
-
-# Auth
-app.add_middleware(AuthMiddleware)
 
 # Routes
 app.include_router(auth_routes.router)

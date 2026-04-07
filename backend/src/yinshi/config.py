@@ -91,11 +91,16 @@ def _auth_is_enabled(settings: Settings) -> bool:
 
 def _validate_settings(settings: Settings) -> None:
     """Reject invalid security-critical configuration."""
-    if not _auth_is_enabled(settings):
-        return
-    if settings.secret_key:
-        return
-    raise RuntimeError("SECRET_KEY must be set when authentication is enabled")
+    if _auth_is_enabled(settings) and not settings.secret_key:
+        raise RuntimeError("SECRET_KEY must be set when authentication is enabled")
+
+    if settings.encryption_pepper:
+        try:
+            bytes.fromhex(settings.encryption_pepper)
+        except ValueError as exc:
+            raise RuntimeError(
+                f"ENCRYPTION_PEPPER must be a valid hex string: {exc}"
+            ) from exc
 
 
 @lru_cache()

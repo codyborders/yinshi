@@ -308,6 +308,7 @@ def test_callback_google_provisioning_error_redirects(auth_enabled_app):
         "userinfo": {
             "sub": "google-123",
             "email": "newuser@example.com",
+            "email_verified": True,
             "name": "New User",
             "picture": "https://example.com/photo.jpg",
         }

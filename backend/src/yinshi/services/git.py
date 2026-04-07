@@ -116,7 +116,18 @@ async def clone_repo(
     dest_path = Path(dest)
     if dest_path.exists():
         if await validate_local_repo(dest):
-            # Already cloned -- pull latest instead
+            # Verify the existing clone's remote matches the requested URL
+            # before reusing it to prevent cross-repo data leakage.
+            try:
+                existing_remote = await _run_git(
+                    ["remote", "get-url", "origin"], cwd=dest,
+                )
+            except GitError:
+                existing_remote = ""
+            if existing_remote.strip().rstrip("/") != url.strip().rstrip("/"):
+                raise GitError(
+                    f"Destination already contains a clone of a different repository"
+                )
             logger.info("Reusing existing clone at %s", dest)
             try:
                 with _git_askpass_env(access_token) as env:

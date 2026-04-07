@@ -634,8 +634,8 @@ async def sync_pi_config(
     row = _require_pi_config_row(normalized_user_id)
     if row["source_type"] != "github":
         raise PiConfigError("Only GitHub-backed Pi configs can be synced")
-    if row["status"] == "cloning":
-        raise PiConfigError("Pi config is still cloning")
+    if row["status"] in ("cloning", "syncing"):
+        raise PiConfigError(f"Pi config is currently {row['status']}")
 
     repo_url = row["repo_url"]
     if not isinstance(repo_url, str) or not repo_url:
@@ -646,7 +646,17 @@ async def sync_pi_config(
     disabled_categories = set(previous_available) - set(previous_enabled)
     config_root = _pi_config_root_path(data_dir)
 
-    _update_pi_config_row(normalized_user_id, status="syncing", error_message=None)
+    # Atomically transition to syncing. Only one caller can win this
+    # race -- the rest will see rowcount == 0 and raise.
+    with get_control_db() as db:
+        result = db.execute(
+            "UPDATE pi_configs SET status = 'syncing', error_message = NULL "
+            "WHERE user_id = ? AND status = 'ready'",
+            (normalized_user_id,),
+        )
+        if result.rowcount == 0:
+            raise PiConfigError("Pi config is not ready for sync")
+        db.commit()
     try:
         clone_url, resolved_access_token = await _resolve_clone_details(
             normalized_user_id, repo_url

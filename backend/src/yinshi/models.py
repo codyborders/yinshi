@@ -94,9 +94,13 @@ class SessionUpdate(BaseModel):
     @field_validator("model")
     @classmethod
     def validate_model(cls, value: str | None) -> str | None:
-        """Normalize optional session model values to canonical refs."""
+        """Normalize optional session model values to canonical refs.
+
+        Rejects explicit null so that PATCH cannot write NULL into the
+        database, which would break SessionOut deserialization.
+        """
         if value is None:
-            return None
+            raise ValueError("model cannot be set to null")
         return normalize_model_ref(value)
 
 

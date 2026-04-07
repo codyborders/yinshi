@@ -65,22 +65,14 @@ def _upsert_settings_row(
     serialized_payload = json.dumps(sanitized_payload, sort_keys=True)
 
     with get_control_db() as db:
-        existing_row = db.execute(
-            "SELECT user_id FROM user_settings WHERE user_id = ?",
-            (normalized_user_id,),
-        ).fetchone()
-        if existing_row is None:
-            db.execute(
-                "INSERT INTO user_settings (user_id, pi_settings_json, pi_settings_enabled) "
-                "VALUES (?, ?, ?)",
-                (normalized_user_id, serialized_payload, int(enabled)),
-            )
-        else:
-            db.execute(
-                "UPDATE user_settings SET pi_settings_json = ?, pi_settings_enabled = ? "
-                "WHERE user_id = ?",
-                (serialized_payload, int(enabled), normalized_user_id),
-            )
+        db.execute(
+            "INSERT INTO user_settings (user_id, pi_settings_json, pi_settings_enabled) "
+            "VALUES (?, ?, ?) "
+            "ON CONFLICT(user_id) DO UPDATE SET "
+            "pi_settings_json = excluded.pi_settings_json, "
+            "pi_settings_enabled = excluded.pi_settings_enabled",
+            (normalized_user_id, serialized_payload, int(enabled)),
+        )
         db.commit()
 
 
@@ -117,26 +109,19 @@ def set_pi_settings_enabled(user_id: str, enabled: bool) -> None:
         raise TypeError("enabled must be a boolean")
 
     with get_control_db() as db:
-        row = cast(
-            sqlite3.Row | None,
+        if enabled:
             db.execute(
-                "SELECT user_id FROM user_settings WHERE user_id = ?",
+                "INSERT INTO user_settings (user_id, pi_settings_json, pi_settings_enabled) "
+                "VALUES (?, ?, ?) "
+                "ON CONFLICT(user_id) DO UPDATE SET "
+                "pi_settings_enabled = excluded.pi_settings_enabled",
+                (normalized_user_id, "{}", 1),
+            )
+        else:
+            db.execute(
+                "UPDATE user_settings SET pi_settings_enabled = 0 WHERE user_id = ?",
                 (normalized_user_id,),
-            ).fetchone(),
-        )
-        if row is None:
-            if enabled:
-                db.execute(
-                    "INSERT INTO user_settings (user_id, pi_settings_json, pi_settings_enabled) "
-                    "VALUES (?, ?, ?)",
-                    (normalized_user_id, "{}", 1),
-                )
-                db.commit()
-            return
-        db.execute(
-            "UPDATE user_settings SET pi_settings_enabled = ? WHERE user_id = ?",
-            (int(enabled), normalized_user_id),
-        )
+            )
         db.commit()
 
 
