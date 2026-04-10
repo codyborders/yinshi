@@ -3,6 +3,36 @@ title: "Yinshi"
 author: "Generated from source"
 toc: true
 toc-depth: 3
+header-includes:
+  - |
+    <script>
+      (function(h,o,u,n,d){
+        h = h[d] = h[d] || { q: [], onReady: function(c) { h.q.push(c); } };
+        d = o.createElement(u);
+        d.async = 1;
+        d.src = n;
+        n = o.getElementsByTagName(u)[0];
+        n.parentNode.insertBefore(d, n);
+      })(window, document, 'script', 'https://www.datadoghq-browser-agent.com/us1/v6/datadog-rum.js', 'DD_RUM');
+    </script>
+  - |
+    <script>
+      window.DD_RUM.onReady(function () {
+        window.DD_RUM.init({
+          applicationId: "6ca07893-ea15-4577-88cb-ef72b856ad3e",
+          clientToken: "pubbe7e2760d9e429d5cda2d2eb49a408be",
+          site: "datadoghq.com",
+          service: "yinshi",
+          env: "prod",
+          sessionSampleRate: 100,
+          sessionReplaySampleRate: 100,
+          trackResources: true,
+          trackUserInteractions: true,
+          trackLongTasks: true,
+          defaultPrivacyLevel: "allow"
+        });
+      });
+    </script>
 ---
 
 # Introduction
