@@ -40,17 +40,20 @@ export function useAgentStream(sessionId: string | undefined) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [streaming, setStreaming] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
+  const queuedPromptRef = useRef<{ prompt: string; model?: string } | null>(null);
 
-  const sendPrompt = useCallback(
+  const startPrompt = useCallback(
     async (prompt: string, model?: string) => {
-      if (!sessionId || streaming) return;
+      if (!sessionId) return;
+      const normalizedPrompt = prompt.trim();
+      if (!normalizedPrompt) return;
 
       setMessages((prev) => [
         ...prev,
         {
           id: nextId(),
           role: "user",
-          content: prompt,
+          content: normalizedPrompt,
           blocks: [],
           timestamp: Date.now(),
         },
@@ -107,7 +110,7 @@ export function useAgentStream(sessionId: string | undefined) {
       try {
         for await (const event of streamPrompt(
           sessionId,
-          prompt,
+          normalizedPrompt,
           model,
           controller.signal,
         )) {
@@ -238,9 +241,14 @@ export function useAgentStream(sessionId: string | undefined) {
         if (rafId) cancelAnimationFrame(rafId);
         setStreaming(false);
         abortRef.current = null;
+        const queuedPrompt = queuedPromptRef.current;
+        if (queuedPrompt) {
+          queuedPromptRef.current = null;
+          void startPrompt(queuedPrompt.prompt, queuedPrompt.model);
+        }
       }
     },
-    [sessionId, streaming],
+    [sessionId],
   );
 
   const cancel = useCallback(async () => {
@@ -254,6 +262,23 @@ export function useAgentStream(sessionId: string | undefined) {
       }
     }
   }, [sessionId]);
+
+  const sendPrompt = useCallback(
+    async (prompt: string, model?: string) => {
+      if (!sessionId) return;
+      const normalizedPrompt = prompt.trim();
+      if (!normalizedPrompt) return;
+
+      if (streaming || abortRef.current !== null) {
+        queuedPromptRef.current = { prompt: normalizedPrompt, model };
+        await cancel();
+        return;
+      }
+
+      await startPrompt(normalizedPrompt, model);
+    },
+    [cancel, sessionId, startPrompt, streaming],
+  );
 
   return { messages, sendPrompt, cancel, streaming, setMessages };
 }

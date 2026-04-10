@@ -16,9 +16,9 @@ const SLASH_COMMANDS: SlashCommand[] = [
 interface ChatViewProps {
   messages: ChatMessage[];
   streaming: boolean;
-  onSend: (prompt: string) => void;
-  onCancel: () => void;
-  onCommand?: (name: string, args: string) => void;
+  onSend: (prompt: string) => void | Promise<void>;
+  onCancel: () => void | Promise<void>;
+  onCommand?: (name: string, args: string) => void | Promise<void>;
 }
 
 export default function ChatView({
@@ -78,7 +78,7 @@ export default function ChatView({
     (e?: React.FormEvent) => {
       e?.preventDefault();
       const text = input.trim();
-      if (!text || streaming) return;
+      if (!text) return;
 
       // Intercept slash commands
       if (text.startsWith("/")) {
@@ -96,7 +96,7 @@ export default function ChatView({
         }
       }
 
-      onSend(text);
+      void onSend(text);
       setInput("");
       setShowMenu(false);
       if (inputRef.current) {
@@ -105,6 +105,8 @@ export default function ChatView({
     },
     [input, streaming, onSend, onCommand],
   );
+
+  const hasInput = input.trim().length > 0;
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -233,10 +235,12 @@ export default function ChatView({
             className="flex-1 resize-none rounded-xl bg-gray-800 px-4 py-3 text-sm text-gray-100 placeholder-gray-500 outline-none focus:ring-2 focus:ring-blue-500"
             style={{ maxHeight: "120px" }}
           />
-          {streaming ? (
+          {streaming && !hasInput ? (
             <button
               type="button"
-              onClick={onCancel}
+              onClick={() => {
+                void onCancel();
+              }}
               className="flex h-11 w-11 items-center justify-center rounded-xl bg-red-500/20 text-red-400 active:bg-red-500/30"
               aria-label="Cancel"
             >
@@ -257,9 +261,9 @@ export default function ChatView({
           ) : (
             <button
               type="submit"
-              disabled={!input.trim()}
+              disabled={!hasInput}
               className="flex h-11 w-11 items-center justify-center rounded-xl bg-blue-500 text-white disabled:opacity-30 active:bg-blue-600"
-              aria-label="Send"
+              aria-label={streaming ? "Steer" : "Send"}
             >
               <svg
                 className="h-5 w-5"
