@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -108,6 +109,24 @@ def _podman_router(routes: dict[str, AsyncMock]) -> AsyncMock:
     return mock
 
 
+def _ready_socket_listener(expected_socket_path: str) -> AsyncMock:
+    """Return a mocked Unix socket listener that emits the sidecar init banner."""
+    reader = AsyncMock()
+    reader.readline = AsyncMock(
+        return_value=b'{"id":"init","type":"init_status","success":true}\n'
+    )
+    writer = AsyncMock()
+    writer.close = MagicMock()
+    writer.wait_closed = AsyncMock(return_value=None)
+
+    async def _open_socket(path: str, *args, **kwargs):
+        del args, kwargs
+        assert path == expected_socket_path
+        return reader, writer
+
+    return AsyncMock(side_effect=_open_socket)
+
+
 def _make_settings(**overrides):
     """Build a mock Settings object with container defaults."""
     defaults = {
@@ -161,7 +180,11 @@ class TestContainerManager:
                 return _make_mock_process(stdout="[]")
             return _make_mock_process()
 
-        with patch("asyncio.create_subprocess_exec", AsyncMock(side_effect=_run_side_effect)):
+        socket_path = os.path.join(socket_dir, "sidecar.sock")
+        with (
+            patch("asyncio.create_subprocess_exec", AsyncMock(side_effect=_run_side_effect)),
+            patch("asyncio.open_unix_connection", _ready_socket_listener(socket_path)),
+        ):
             mgr = ContainerManager(settings=settings)
             info = await mgr.ensure_container(user_id, data_dir)
 
@@ -238,9 +261,11 @@ class TestContainerManager:
                 return _make_mock_process(stdout="[]")
             return _make_mock_process()
 
-        with patch(
-            "asyncio.create_subprocess_exec", AsyncMock(side_effect=_side_effect)
-        ) as mock_exec:
+        socket_path = os.path.join(socket_dir, "sidecar.sock")
+        with (
+            patch("asyncio.create_subprocess_exec", AsyncMock(side_effect=_side_effect)) as mock_exec,
+            patch("asyncio.open_unix_connection", _ready_socket_listener(socket_path)),
+        ):
             mgr = ContainerManager(settings=settings)
 
             existing = ContainerInfo(
@@ -277,6 +302,69 @@ class TestContainerManager:
         mgr.touch(user_id)
 
         assert mgr._containers[user_id].last_activity > old_time
+
+    @pytest.mark.asyncio
+    async def test_begin_activity_prevents_reaping_busy_container(self, tmp_path):
+        """Busy containers must stay alive even when their idle timestamp is old."""
+        settings = _make_settings(
+            container_socket_base=str(tmp_path),
+            container_idle_timeout_s=60,
+        )
+        mgr = ContainerManager(settings=settings)
+
+        user_id = "abcdef12345678901234567890abcdef"
+        old_time = datetime.now(timezone.utc) - timedelta(minutes=5)
+        mgr._containers[user_id] = ContainerInfo(
+            container_id="busy1",
+            user_id=user_id,
+            socket_path="/tmp/busy.sock",
+            created_at=old_time,
+            last_activity=old_time,
+        )
+
+        mgr.begin_activity(user_id)
+        count = await mgr.reap_idle()
+
+        assert count == 0
+        assert user_id in mgr._containers
+        assert mgr._containers[user_id].active_request_count == 1
+
+    @pytest.mark.asyncio
+    async def test_protect_prevents_reaping_until_lease_expires(self, tmp_path):
+        """Protected containers should survive until their keepalive lease expires."""
+        settings = _make_settings(
+            container_socket_base=str(tmp_path),
+            container_idle_timeout_s=60,
+        )
+        mgr = ContainerManager(settings=settings)
+
+        user_id = "fedcba98765432100123456789abcdef"
+        old_time = datetime.now(timezone.utc) - timedelta(minutes=5)
+        mgr._containers[user_id] = ContainerInfo(
+            container_id="protected1",
+            user_id=user_id,
+            socket_path="/tmp/protected.sock",
+            created_at=old_time,
+            last_activity=old_time,
+        )
+
+        mgr.protect(user_id, "oauth:flow-1", 300)
+        count = await mgr.reap_idle()
+        assert count == 0
+        assert user_id in mgr._containers
+
+        mgr._containers[user_id].protected_operation_deadlines["oauth:flow-1"] = (
+            datetime.now(timezone.utc) - timedelta(seconds=1)
+        )
+        mgr._containers[user_id].last_activity = old_time
+        with patch(
+            "asyncio.create_subprocess_exec",
+            _podman_router({"rm": _make_mock_process(returncode=0)}),
+        ):
+            count = await mgr.reap_idle()
+
+        assert count == 1
+        assert user_id not in mgr._containers
 
     @pytest.mark.asyncio
     async def test_reap_idle_destroys_old_containers(self, tmp_path):
@@ -316,6 +404,40 @@ class TestContainerManager:
         assert count == 1
         assert idle_uid not in mgr._containers
         assert active_uid in mgr._containers
+
+    @pytest.mark.asyncio
+    async def test_wait_for_socket_requires_live_listener(self, tmp_path):
+        """Socket readiness should require a live sidecar listener, not any filesystem entry."""
+        settings = _make_settings(container_socket_base=str(tmp_path))
+        mgr = ContainerManager(settings=settings)
+        mgr._socket_poll_timeout_s = 0.2
+        mgr._socket_poll_interval_s = 0.01
+
+        socket_path = str(tmp_path / "sidecar.sock")
+        Path(socket_path).write_text("stale", encoding="utf-8")
+
+        reader = AsyncMock()
+        reader.readline = AsyncMock(
+            return_value=b'{"id":"init","type":"init_status","success":true}\n'
+        )
+        writer = AsyncMock()
+        writer.close = MagicMock()
+        writer.wait_closed = AsyncMock(return_value=None)
+
+        attempts = {"count": 0}
+
+        async def _open_socket(path: str, *args, **kwargs):
+            del args, kwargs
+            assert path == socket_path
+            attempts["count"] += 1
+            if attempts["count"] < 3:
+                raise ConnectionRefusedError("listener not ready")
+            return reader, writer
+
+        with patch("asyncio.open_unix_connection", AsyncMock(side_effect=_open_socket)):
+            await mgr._wait_for_socket(socket_path)
+
+        assert attempts["count"] == 3
 
     @pytest.mark.asyncio
     async def test_destroy_all(self, tmp_path):
@@ -506,7 +628,11 @@ class TestContainerManager:
                 return _make_mock_process(stdout="[]")
             return _make_mock_process()
 
-        with patch("asyncio.create_subprocess_exec", AsyncMock(side_effect=_side_effect)):
+        socket_path = os.path.join(socket_dir, "sidecar.sock")
+        with (
+            patch("asyncio.create_subprocess_exec", AsyncMock(side_effect=_side_effect)),
+            patch("asyncio.open_unix_connection", _ready_socket_listener(socket_path)),
+        ):
             mgr = ContainerManager(settings=settings)
             mgr._socket_poll_timeout_s = 0.2
             mgr._socket_poll_interval_s = 0.05
@@ -541,9 +667,11 @@ class TestContainerManager:
                 return _make_mock_process(stdout="[]")
             return _make_mock_process()
 
-        with patch(
-            "asyncio.create_subprocess_exec", AsyncMock(side_effect=_side_effect)
-        ) as mock_exec:
+        socket_path = os.path.join(socket_dir, "sidecar.sock")
+        with (
+            patch("asyncio.create_subprocess_exec", AsyncMock(side_effect=_side_effect)) as mock_exec,
+            patch("asyncio.open_unix_connection", _ready_socket_listener(socket_path)),
+        ):
             mgr = ContainerManager(settings=settings)
             await mgr.ensure_container(user_id, data_dir)
 

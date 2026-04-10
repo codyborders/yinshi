@@ -80,6 +80,35 @@ def test_catalog_filters_unsupported_providers(auth_client: TestClient) -> None:
     touch_container.assert_called_once()
 
 
+def test_catalog_returns_503_when_tenant_sidecar_is_unavailable(auth_client: TestClient) -> None:
+    """Catalog should fail closed when the tenant sidecar socket cannot be reached."""
+    from yinshi.exceptions import SidecarNotConnectedError
+    from yinshi.services.sidecar_runtime import TenantSidecarContext
+
+    tenant_sidecar_context = TenantSidecarContext(
+        socket_path="/tmp/tenant-sidecar.sock",
+        agent_dir=None,
+        settings_payload=None,
+    )
+
+    with (
+        patch(
+            "yinshi.api.catalog.create_sidecar_connection",
+            new=AsyncMock(side_effect=SidecarNotConnectedError("socket missing")),
+        ),
+        patch(
+            "yinshi.api.catalog.resolve_tenant_sidecar_context",
+            new=AsyncMock(return_value=tenant_sidecar_context),
+        ),
+        patch("yinshi.api.catalog.touch_tenant_container") as touch_container,
+    ):
+        response = auth_client.get("/api/catalog")
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Agent environment temporarily unavailable"
+    touch_container.assert_called_once()
+
+
 def test_prompt_rejects_unsupported_provider(
     auth_client: TestClient,
     git_repo: str,

@@ -38,6 +38,8 @@ from yinshi.services.provider_connections import (
 )
 from yinshi.services.sidecar import SidecarClient, create_sidecar_connection
 from yinshi.services.sidecar_runtime import (
+    begin_tenant_container_activity,
+    end_tenant_container_activity,
     remap_path_for_container,
     resolve_tenant_sidecar_context,
     touch_tenant_container,
@@ -318,8 +320,10 @@ async def _resolve_execution_context(
                 detail="Workspace path outside allowed directories",
             ) from exc
 
-    sidecar_tmp = await create_sidecar_connection(sidecar_socket)
+    sidecar_tmp = None
+    begin_tenant_container_activity(request, tenant)
     try:
+        sidecar_tmp = await create_sidecar_connection(sidecar_socket)
         resolved = await sidecar_tmp.resolve_model(model, agent_dir=agent_dir)
         provider: str | None = resolved["provider"]
         if not provider:
@@ -365,7 +369,9 @@ async def _resolve_execution_context(
     except KeyNotFoundError as exc:
         raise HTTPException(status_code=402, detail=str(exc)) from exc
     finally:
-        await sidecar_tmp.disconnect()
+        end_tenant_container_activity(request, tenant)
+        if sidecar_tmp is not None:
+            await sidecar_tmp.disconnect()
 
     return ExecutionContext(
         sidecar_socket=sidecar_socket,
@@ -458,6 +464,7 @@ async def prompt_session(
         usage_data: dict[str, Any] = {}
         result_provider = context.provider or ""
 
+        begin_tenant_container_activity(request, tenant)
         try:
             sidecar = await create_sidecar_connection(context.sidecar_socket)
             async with _active_sessions_lock:
@@ -610,6 +617,7 @@ async def prompt_session(
                     logger.exception("Failed to record usage: session=%s", session_id)
 
             # Keep container alive after activity
+            end_tenant_container_activity(request, tenant)
             touch_tenant_container(request, tenant)
 
             async with _active_sessions_lock:

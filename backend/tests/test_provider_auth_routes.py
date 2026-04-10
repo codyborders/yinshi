@@ -47,6 +47,7 @@ def test_start_provider_auth_exposes_manual_input_metadata(auth_client: TestClie
             "yinshi.api.auth_routes.resolve_tenant_sidecar_context",
             new=AsyncMock(return_value=_tenant_sidecar_context()),
         ),
+        patch("yinshi.api.auth_routes.protect_tenant_container") as protect_container,
         patch("yinshi.api.auth_routes.touch_tenant_container") as touch_container,
     ):
         response = auth_client.post("/auth/providers/openai-codex/start")
@@ -62,6 +63,7 @@ def test_start_provider_auth_exposes_manual_input_metadata(auth_client: TestClie
         "manual_input_submitted": False,
     }
     create_conn.assert_awaited_once_with("/tmp/tenant-oauth.sock")
+    protect_container.assert_called_once()
     touch_container.assert_called_once()
 
 
@@ -96,6 +98,7 @@ def test_submit_provider_auth_callback_feeds_manual_input(auth_client: TestClien
             "yinshi.api.auth_routes.resolve_tenant_sidecar_context",
             new=AsyncMock(return_value=_tenant_sidecar_context()),
         ),
+        patch("yinshi.api.auth_routes.protect_tenant_container") as protect_container,
         patch("yinshi.api.auth_routes.touch_tenant_container") as touch_container,
     ):
         response = auth_client.post(
@@ -123,6 +126,7 @@ def test_submit_provider_auth_callback_feeds_manual_input(auth_client: TestClien
         "http://localhost:1455/auth/callback?code=test-code&state=test-state",
     )
     create_conn.assert_awaited_once_with("/tmp/tenant-oauth.sock")
+    protect_container.assert_called_once()
     touch_container.assert_called_once()
 
 
@@ -165,6 +169,7 @@ def test_callback_provider_auth_persists_completed_oauth_connection(
             "yinshi.api.auth_routes.resolve_tenant_sidecar_context",
             new=AsyncMock(return_value=_tenant_sidecar_context()),
         ),
+        patch("yinshi.api.auth_routes.release_tenant_container") as release_container,
         patch("yinshi.api.auth_routes.touch_tenant_container") as touch_container,
     ):
         response = auth_client.get(
@@ -190,4 +195,62 @@ def test_callback_provider_auth_persists_completed_oauth_connection(
     assert "openai-codex" in providers
     mock_sidecar.clear_oauth_flow.assert_awaited_once_with("flow-openai-codex")
     create_conn.assert_awaited_once_with("/tmp/tenant-oauth.sock")
+    release_container.assert_called_once()
+    touch_container.assert_called_once()
+
+
+def test_start_provider_auth_returns_503_when_sidecar_is_unavailable(
+    auth_client: TestClient,
+) -> None:
+    """Provider auth start should hide transient tenant-sidecar failures behind 503."""
+    from yinshi.exceptions import SidecarNotConnectedError
+
+    with (
+        patch(
+            "yinshi.api.auth_routes.create_sidecar_connection",
+            new=AsyncMock(side_effect=SidecarNotConnectedError("socket missing")),
+        ),
+        patch(
+            "yinshi.api.auth_routes.resolve_tenant_sidecar_context",
+            new=AsyncMock(return_value=_tenant_sidecar_context()),
+        ),
+        patch("yinshi.api.auth_routes.touch_tenant_container") as touch_container,
+    ):
+        response = auth_client.post("/auth/providers/openai-codex/start")
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Agent environment temporarily unavailable"
+    touch_container.assert_called_once()
+
+
+def test_callback_provider_auth_returns_404_when_flow_is_missing(auth_client: TestClient) -> None:
+    """Polling a missing OAuth flow should return a stable not-found response."""
+    from yinshi.exceptions import SidecarError
+
+    async def unexpected_query(*args, **kwargs):
+        if False:
+            yield {}
+        raise AssertionError("query should not be called")
+
+    mock_sidecar = make_mock_sidecar(unexpected_query)
+    mock_sidecar.get_oauth_flow_status = AsyncMock(
+        side_effect=SidecarError("OAuth status failed: OAuth flow not found")
+    )
+
+    with (
+        patch(
+            "yinshi.api.auth_routes.create_sidecar_connection", return_value=mock_sidecar
+        ),
+        patch(
+            "yinshi.api.auth_routes.resolve_tenant_sidecar_context",
+            new=AsyncMock(return_value=_tenant_sidecar_context()),
+        ),
+        patch("yinshi.api.auth_routes.touch_tenant_container") as touch_container,
+    ):
+        response = auth_client.get(
+            "/auth/providers/openai-codex/callback?flow_id=flow-openai-codex"
+        )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "OAuth flow not found"
     touch_container.assert_called_once()

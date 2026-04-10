@@ -121,14 +121,78 @@ async def resolve_tenant_sidecar_context(
 
 def touch_tenant_container(request: Request, tenant: TenantContext | None) -> None:
     """Mark one tenant container as recently used when container mode is active."""
-    if tenant is None:
+    container_manager, user_id = _tenant_container_manager(request, tenant)
+    if container_manager is None or user_id is None:
         return
+    touch = getattr(container_manager, "touch", None)
+    if callable(touch):
+        touch(user_id)
+
+
+def begin_tenant_container_activity(request: Request, tenant: TenantContext | None) -> None:
+    """Mark one tenant container as busy for the duration of a request step."""
+    container_manager, user_id = _tenant_container_manager(request, tenant)
+    if container_manager is None or user_id is None:
+        return
+    begin_activity = getattr(container_manager, "begin_activity", None)
+    if callable(begin_activity):
+        begin_activity(user_id)
+
+
+def end_tenant_container_activity(request: Request, tenant: TenantContext | None) -> None:
+    """Release one in-flight request marker from a tenant container."""
+    container_manager, user_id = _tenant_container_manager(request, tenant)
+    if container_manager is None or user_id is None:
+        return
+    end_activity = getattr(container_manager, "end_activity", None)
+    if callable(end_activity):
+        end_activity(user_id)
+
+
+def protect_tenant_container(
+    request: Request,
+    tenant: TenantContext | None,
+    *,
+    lease_key: str,
+    timeout_s: int,
+) -> None:
+    """Keep one tenant container alive for a named long-lived operation."""
+    container_manager, user_id = _tenant_container_manager(request, tenant)
+    if container_manager is None or user_id is None:
+        return
+    protect = getattr(container_manager, "protect", None)
+    if callable(protect):
+        protect(user_id, lease_key, timeout_s)
+
+
+def release_tenant_container(
+    request: Request,
+    tenant: TenantContext | None,
+    *,
+    lease_key: str,
+) -> None:
+    """Remove one named long-lived keepalive lease from a tenant container."""
+    container_manager, user_id = _tenant_container_manager(request, tenant)
+    if container_manager is None or user_id is None:
+        return
+    unprotect = getattr(container_manager, "unprotect", None)
+    if callable(unprotect):
+        unprotect(user_id, lease_key)
+
+
+def _tenant_container_manager(
+    request: Request,
+    tenant: TenantContext | None,
+) -> tuple[object | None, str | None]:
+    """Return the container manager plus tenant user id when container mode is active."""
+    if tenant is None:
+        return None, None
 
     settings = get_settings()
     if not settings.container_enabled:
-        return
+        return None, None
 
     container_manager = getattr(request.app.state, "container_manager", None)
     if container_manager is None:
-        return
-    container_manager.touch(tenant.user_id)
+        return None, None
+    return container_manager, tenant.user_id

@@ -7,7 +7,7 @@ import os
 import re
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
 from yinshi.exceptions import ContainerNotReadyError, ContainerStartError
@@ -30,6 +30,8 @@ class ContainerInfo:
     socket_path: str
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     last_activity: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    active_request_count: int = 0
+    protected_operation_deadlines: dict[str, datetime] = field(default_factory=dict)
 
 
 class ContainerManager:
@@ -52,6 +54,11 @@ class ContainerManager:
         self._socket_poll_timeout_s: float = 10.0
         self._socket_poll_interval_s: float = 0.1
         self._initialized = False
+
+    @staticmethod
+    def _now() -> datetime:
+        """Return the current UTC timestamp."""
+        return datetime.now(timezone.utc)
 
     # -- Podman subprocess helper -------------------------------------------
 
@@ -254,7 +261,89 @@ class ContainerManager:
         """Update last activity timestamp for a user's container."""
         info = self._containers.get(user_id)
         if info:
-            info.last_activity = datetime.now(timezone.utc)
+            info.last_activity = self._now()
+
+    def begin_activity(self, user_id: str) -> None:
+        """Mark a container as busy for the lifetime of one request."""
+        if not isinstance(user_id, str):
+            raise TypeError("user_id must be a string")
+        normalized_user_id = user_id.strip()
+        if not normalized_user_id:
+            raise ValueError("user_id must not be empty")
+
+        info = self._containers.get(normalized_user_id)
+        if info is None:
+            logger.warning("Cannot mark activity for missing container: %s", normalized_user_id[:8])
+            return
+        info.active_request_count += 1
+        info.last_activity = self._now()
+
+    def end_activity(self, user_id: str) -> None:
+        """Release one active request marker for a user's container."""
+        if not isinstance(user_id, str):
+            raise TypeError("user_id must be a string")
+        normalized_user_id = user_id.strip()
+        if not normalized_user_id:
+            raise ValueError("user_id must not be empty")
+
+        info = self._containers.get(normalized_user_id)
+        if info is None:
+            logger.warning("Cannot end activity for missing container: %s", normalized_user_id[:8])
+            return
+        if info.active_request_count == 0:
+            logger.warning(
+                "Cannot end activity for container %s without a matching begin",
+                normalized_user_id[:8],
+            )
+            return
+        info.active_request_count -= 1
+        info.last_activity = self._now()
+
+    def protect(self, user_id: str, lease_key: str, timeout_s: int) -> None:
+        """Keep one container alive for a named long-lived operation."""
+        if not isinstance(user_id, str):
+            raise TypeError("user_id must be a string")
+        normalized_user_id = user_id.strip()
+        if not normalized_user_id:
+            raise ValueError("user_id must not be empty")
+        if not isinstance(lease_key, str):
+            raise TypeError("lease_key must be a string")
+        normalized_lease_key = lease_key.strip()
+        if not normalized_lease_key:
+            raise ValueError("lease_key must not be empty")
+        if not isinstance(timeout_s, int):
+            raise TypeError("timeout_s must be an integer")
+        if timeout_s <= 0:
+            raise ValueError("timeout_s must be positive")
+
+        info = self._containers.get(normalized_user_id)
+        if info is None:
+            logger.warning("Cannot protect missing container: %s", normalized_user_id[:8])
+            return
+        info.protected_operation_deadlines[normalized_lease_key] = self._now() + timedelta(
+            seconds=timeout_s
+        )
+        info.last_activity = self._now()
+
+    def unprotect(self, user_id: str, lease_key: str) -> None:
+        """Remove one named long-lived operation lease from a user's container."""
+        if not isinstance(user_id, str):
+            raise TypeError("user_id must be a string")
+        normalized_user_id = user_id.strip()
+        if not normalized_user_id:
+            raise ValueError("user_id must not be empty")
+        if not isinstance(lease_key, str):
+            raise TypeError("lease_key must be a string")
+        normalized_lease_key = lease_key.strip()
+        if not normalized_lease_key:
+            raise ValueError("lease_key must not be empty")
+
+        info = self._containers.get(normalized_user_id)
+        if info is None:
+            logger.warning("Cannot unprotect missing container: %s", normalized_user_id[:8])
+            return
+        info.protected_operation_deadlines.pop(normalized_lease_key, None)
+        info.last_activity = self._now()
 
     async def destroy_container(self, user_id: str) -> None:
         """Stop and remove a user's container."""
@@ -268,11 +357,11 @@ class ContainerManager:
     async def reap_idle(self) -> int:
         """Destroy containers that have been idle past the timeout."""
         timeout = self._settings.container_idle_timeout_s
-        cutoff = datetime.now(timezone.utc)
+        cutoff = self._now()
         idle_users = [
             uid
             for uid, info in self._containers.items()
-            if (cutoff - info.last_activity).total_seconds() > timeout
+            if self._container_is_reapable(info, cutoff, timeout)
         ]
         for uid in idle_users:
             await self.destroy_container(uid)
@@ -328,8 +417,8 @@ class ContainerManager:
         """Start a new sidecar container for a user."""
         s = self._settings
         socket_dir = os.path.join(s.container_socket_base, user_id)
-        os.makedirs(socket_dir, mode=0o700, exist_ok=True)
         socket_path = os.path.join(socket_dir, "sidecar.sock")
+        self._prepare_socket_dir(socket_dir, socket_path)
 
         real_data_dir = os.path.realpath(data_dir)
         cpus = str(s.container_cpu_quota / 100000)
@@ -380,14 +469,92 @@ class ContainerManager:
         return info
 
     async def _wait_for_socket(self, socket_path: str) -> None:
-        """Poll until the sidecar socket file appears."""
+        """Poll until the sidecar accepts a connection and sends its init message."""
         deadline = time.monotonic() + self._socket_poll_timeout_s
         while time.monotonic() < deadline:
-            exists = await asyncio.to_thread(os.path.exists, socket_path)
-            if exists:
-                return
-            await asyncio.sleep(self._socket_poll_interval_s)
+            reader: asyncio.StreamReader | None = None
+            writer: asyncio.StreamWriter | None = None
+            try:
+                reader, writer = await asyncio.open_unix_connection(socket_path)
+                init_line = await asyncio.wait_for(
+                    reader.readline(),
+                    timeout=self._socket_poll_interval_s,
+                )
+                if init_line:
+                    init_message = json.loads(init_line.decode())
+                    if init_message.get("type") == "init_status" and init_message.get("success"):
+                        return
+                await asyncio.sleep(self._socket_poll_interval_s)
+            except (
+                asyncio.TimeoutError,
+                ConnectionRefusedError,
+                FileNotFoundError,
+                OSError,
+                json.JSONDecodeError,
+            ):
+                await asyncio.sleep(self._socket_poll_interval_s)
+            finally:
+                if writer is not None:
+                    writer.close()
+                    try:
+                        await writer.wait_closed()
+                    except OSError:
+                        pass
 
         raise ContainerNotReadyError(
             f"Sidecar socket not ready after {self._socket_poll_timeout_s}s"
         )
+
+    def _prepare_socket_dir(self, socket_dir: str, socket_path: str) -> None:
+        """Create one user socket directory and remove any stale socket file."""
+        if not isinstance(socket_dir, str):
+            raise TypeError("socket_dir must be a string")
+        normalized_socket_dir = socket_dir.strip()
+        if not normalized_socket_dir:
+            raise ValueError("socket_dir must not be empty")
+        if not isinstance(socket_path, str):
+            raise TypeError("socket_path must be a string")
+        normalized_socket_path = socket_path.strip()
+        if not normalized_socket_path:
+            raise ValueError("socket_path must not be empty")
+
+        try:
+            os.makedirs(normalized_socket_dir, mode=0o700, exist_ok=True)
+            os.chmod(normalized_socket_dir, 0o700)
+            if os.path.lexists(normalized_socket_path):
+                if os.path.isdir(normalized_socket_path):
+                    raise ContainerStartError("container socket path must not be a directory")
+                os.unlink(normalized_socket_path)
+        except OSError as exc:
+            raise ContainerStartError(
+                f"Failed to prepare socket directory for user container: {normalized_socket_dir}"
+            ) from exc
+
+    def _container_is_reapable(
+        self,
+        info: ContainerInfo,
+        cutoff: datetime,
+        timeout_s: int,
+    ) -> bool:
+        """Return whether one container can be safely reaped."""
+        if not isinstance(timeout_s, int):
+            raise TypeError("timeout_s must be an integer")
+        if timeout_s < 0:
+            raise ValueError("timeout_s must not be negative")
+
+        self._prune_expired_protection(info, cutoff)
+        if info.active_request_count > 0:
+            return False
+        if info.protected_operation_deadlines:
+            return False
+        return (cutoff - info.last_activity).total_seconds() > timeout_s
+
+    def _prune_expired_protection(self, info: ContainerInfo, cutoff: datetime) -> None:
+        """Drop any expired protection lease from one container."""
+        expired_lease_keys = [
+            lease_key
+            for lease_key, deadline in info.protected_operation_deadlines.items()
+            if deadline <= cutoff
+        ]
+        for lease_key in expired_lease_keys:
+            del info.protected_operation_deadlines[lease_key]

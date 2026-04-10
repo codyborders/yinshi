@@ -26,6 +26,7 @@ from yinshi.exceptions import (
     ContainerStartError,
     GitHubAppError,
     GitHubInstallationUnusableError,
+    SidecarError,
 )
 from yinshi.models import ProviderAuthInputIn, ProviderAuthStartOut, ProviderAuthStatusOut
 from yinshi.rate_limit import limiter
@@ -34,6 +35,10 @@ from yinshi.services.github_app import get_installation_details
 from yinshi.services.provider_connections import create_provider_connection
 from yinshi.services.sidecar import create_sidecar_connection
 from yinshi.services.sidecar_runtime import (
+    begin_tenant_container_activity,
+    end_tenant_container_activity,
+    protect_tenant_container,
+    release_tenant_container,
     resolve_tenant_sidecar_context,
     touch_tenant_container,
 )
@@ -41,6 +46,7 @@ from yinshi.services.sidecar_runtime import (
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth", tags=["auth"])
 _GITHUB_INSTALL_STATE_MAX_AGE_S = 600
+_PROVIDER_OAUTH_CONTAINER_LEASE_TIMEOUT_S = 1800
 
 
 def _set_session_cookie(response: RedirectResponse, user_id: str) -> None:
@@ -133,6 +139,30 @@ def _normalize_provider_flow_status(status: object) -> str:
     return normalized_status
 
 
+def _provider_auth_lease_key(flow_id: str) -> str:
+    """Build the container lease key used to protect one OAuth flow."""
+    if not isinstance(flow_id, str):
+        raise TypeError("flow_id must be a string")
+    normalized_flow_id = flow_id.strip()
+    if not normalized_flow_id:
+        raise ValueError("flow_id must not be empty")
+    return f"oauth:{normalized_flow_id}"
+
+
+def _provider_auth_sidecar_http_error(error: Exception) -> HTTPException:
+    """Translate provider-auth sidecar errors into stable HTTP responses."""
+    message = str(error)
+    if "OAuth flow not found" in message:
+        return HTTPException(status_code=404, detail="OAuth flow not found")
+    if "OAuth provider is not available" in message:
+        detail = message.removeprefix("OAuth start failed: ")
+        return HTTPException(status_code=400, detail=detail)
+    return HTTPException(
+        status_code=503,
+        detail="Agent environment temporarily unavailable",
+    )
+
+
 def _build_provider_auth_start_payload(flow: dict[str, Any]) -> dict[str, Any]:
     """Validate and serialize one started provider OAuth flow."""
     if not isinstance(flow, dict):
@@ -220,6 +250,33 @@ def _require_provider_match(provider: str, flow: dict[str, Any]) -> None:
         raise HTTPException(status_code=500, detail="OAuth flow provider is invalid")
     if flow_provider != normalized_provider:
         raise HTTPException(status_code=400, detail="Provider mismatch")
+
+
+async def _persist_completed_provider_auth(
+    user_id: str,
+    provider: str,
+    flow: dict[str, Any],
+    sidecar: Any,
+) -> None:
+    """Persist completed provider credentials and clear the finished flow."""
+    flow_id = flow.get("flow_id")
+    if not isinstance(flow_id, str) or not flow_id:
+        raise HTTPException(status_code=500, detail="OAuth flow id is invalid")
+    credentials = flow.get("credentials")
+    if not isinstance(credentials, dict) or not credentials:
+        raise HTTPException(status_code=500, detail="OAuth flow did not return credentials")
+    create_provider_connection(
+        user_id,
+        provider,
+        "oauth",
+        credentials,
+        label="",
+    )
+    try:
+        await sidecar.clear_oauth_flow(flow_id)
+    except SidecarError as error:
+        if "OAuth flow not found" not in str(error):
+            raise _provider_auth_sidecar_http_error(error) from error
 
 
 # --- Google OAuth ---
@@ -466,13 +523,26 @@ async def start_provider_auth(provider: str, request: Request) -> dict[str, Any]
     if user_id is None:
         raise HTTPException(status_code=401, detail="Not authenticated")
     tenant, socket_path = await _resolve_provider_sidecar_socket(request, user_id)
-    sidecar = await create_sidecar_connection(socket_path)
+    sidecar = None
+    begin_tenant_container_activity(request, tenant)
     try:
+        sidecar = await create_sidecar_connection(socket_path)
         flow = await sidecar.start_oauth_flow(provider)
+    except (OSError, SidecarError) as error:
+        raise _provider_auth_sidecar_http_error(error) from error
     finally:
+        end_tenant_container_activity(request, tenant)
         touch_tenant_container(request, tenant)
-        await sidecar.disconnect()
-    return _build_provider_auth_start_payload(flow)
+        if sidecar is not None:
+            await sidecar.disconnect()
+    payload = _build_provider_auth_start_payload(flow)
+    protect_tenant_container(
+        request,
+        tenant,
+        lease_key=_provider_auth_lease_key(payload["flow_id"]),
+        timeout_s=_PROVIDER_OAUTH_CONTAINER_LEASE_TIMEOUT_S,
+    )
+    return payload
 
 
 @router.get("/providers/{provider}/callback")
@@ -482,17 +552,27 @@ async def callback_provider_auth(provider: str, flow_id: str, request: Request) 
     if user_id is None:
         raise HTTPException(status_code=401, detail="Not authenticated")
     tenant, socket_path = await _resolve_provider_sidecar_socket(request, user_id)
-    sidecar = await create_sidecar_connection(socket_path)
+    lease_key = _provider_auth_lease_key(flow_id)
+    sidecar = None
+    begin_tenant_container_activity(request, tenant)
     try:
+        sidecar = await create_sidecar_connection(socket_path)
         flow = await sidecar.get_oauth_flow_status(flow_id)
         _require_provider_match(provider, flow)
         status = _normalize_provider_flow_status(flow.get("status"))
         if status in {"pending", "starting"}:
+            protect_tenant_container(
+                request,
+                tenant,
+                lease_key=lease_key,
+                timeout_s=_PROVIDER_OAUTH_CONTAINER_LEASE_TIMEOUT_S,
+            )
             return JSONResponse(
                 status_code=202,
                 content=_build_provider_auth_status_payload(flow, status=status),
             )
         if status == "error":
+            release_tenant_container(request, tenant, lease_key=lease_key)
             error_message = flow.get("error")
             if not isinstance(error_message, str) or not error_message:
                 error_message = "OAuth flow failed"
@@ -507,21 +587,21 @@ async def callback_provider_auth(provider: str, flow_id: str, request: Request) 
         if status != "complete":
             raise HTTPException(status_code=500, detail=f"Unexpected OAuth status: {status}")
 
-        credentials = flow.get("credentials")
-        if not isinstance(credentials, dict) or not credentials:
-            raise HTTPException(status_code=500, detail="OAuth flow did not return credentials")
-        create_provider_connection(
+        await _persist_completed_provider_auth(
             user_id,
             provider,
-            "oauth",
-            credentials,
-            label="",
+            flow,
+            sidecar,
         )
-        await sidecar.clear_oauth_flow(flow_id)
+        release_tenant_container(request, tenant, lease_key=lease_key)
         return JSONResponse(_build_provider_auth_status_payload(flow, status="complete"))
+    except (OSError, SidecarError) as error:
+        raise _provider_auth_sidecar_http_error(error) from error
     finally:
+        end_tenant_container_activity(request, tenant)
         touch_tenant_container(request, tenant)
-        await sidecar.disconnect()
+        if sidecar is not None:
+            await sidecar.disconnect()
 
 
 @router.post("/providers/{provider}/callback", response_model=ProviderAuthStatusOut)
@@ -536,16 +616,27 @@ async def submit_provider_auth_callback(
         raise HTTPException(status_code=401, detail="Not authenticated")
 
     tenant, socket_path = await _resolve_provider_sidecar_socket(request, user_id)
-    sidecar = await create_sidecar_connection(socket_path)
+    lease_key = _provider_auth_lease_key(payload.flow_id)
+    sidecar = None
+    begin_tenant_container_activity(request, tenant)
     try:
+        sidecar = await create_sidecar_connection(socket_path)
         flow = await sidecar.get_oauth_flow_status(payload.flow_id)
         _require_provider_match(provider, flow)
         status = _normalize_provider_flow_status(flow.get("status"))
         if status == "complete":
+            await _persist_completed_provider_auth(
+                user_id,
+                provider,
+                flow,
+                sidecar,
+            )
+            release_tenant_container(request, tenant, lease_key=lease_key)
             return JSONResponse(
                 _build_provider_auth_status_payload(flow, status="complete"),
             )
         if status == "error":
+            release_tenant_container(request, tenant, lease_key=lease_key)
             error_message = flow.get("error")
             if not isinstance(error_message, str) or not error_message:
                 error_message = "OAuth flow failed"
@@ -562,6 +653,12 @@ async def submit_provider_auth_callback(
             payload.flow_id,
             payload.authorization_input,
         )
+        protect_tenant_container(
+            request,
+            tenant,
+            lease_key=lease_key,
+            timeout_s=_PROVIDER_OAUTH_CONTAINER_LEASE_TIMEOUT_S,
+        )
         return JSONResponse(
             status_code=202,
             content=_build_provider_auth_status_payload(
@@ -573,9 +670,13 @@ async def submit_provider_auth_callback(
                 status="pending",
             ),
         )
+    except (OSError, SidecarError) as error:
+        raise _provider_auth_sidecar_http_error(error) from error
     finally:
+        end_tenant_container_activity(request, tenant)
         touch_tenant_container(request, tenant)
-        await sidecar.disconnect()
+        if sidecar is not None:
+            await sidecar.disconnect()
 
 
 # --- Backward compatibility: /auth/login redirects to /auth/login/google ---
