@@ -190,21 +190,56 @@ class ContainerManager:
         await self._run_podman("--version")
 
     async def _ensure_network(self) -> None:
-        """Create the restricted Podman network if it doesn't exist."""
-        rc, _, _ = await self._run_podman(
+        """Create the tenant network and repair old internal-only variants."""
+        rc, stdout, _ = await self._run_podman(
             "network",
-            "exists",
+            "inspect",
             _SIDECAR_NET,
             check=False,
         )
         if rc != 0:
-            await self._run_podman(
-                "network",
-                "create",
-                "--internal",
-                _SIDECAR_NET,
-            )
-            logger.info("Created Podman network %s", _SIDECAR_NET)
+            await self._create_network()
+            return
+
+        if self._network_is_internal(stdout):
+            await self._run_podman("network", "rm", _SIDECAR_NET)
+            await self._create_network()
+            logger.info("Recreated Podman network %s without internal isolation", _SIDECAR_NET)
+
+    async def _create_network(self) -> None:
+        """Create one Podman network with outbound access for model providers."""
+        await self._run_podman(
+            "network",
+            "create",
+            _SIDECAR_NET,
+        )
+        logger.info("Created Podman network %s", _SIDECAR_NET)
+
+    def _network_is_internal(self, inspect_output: str) -> bool:
+        """Return whether one inspected Podman network blocks outbound traffic."""
+        if not isinstance(inspect_output, str):
+            raise TypeError("inspect_output must be a string")
+        normalized_inspect_output = inspect_output.strip()
+        if not normalized_inspect_output:
+            return False
+
+        try:
+            parsed_output = json.loads(normalized_inspect_output)
+        except json.JSONDecodeError as exc:
+            raise ContainerStartError("Podman network inspect returned invalid JSON") from exc
+        if not isinstance(parsed_output, list):
+            raise ContainerStartError("Podman network inspect returned an invalid payload")
+        if not parsed_output:
+            return False
+
+        network_info = parsed_output[0]
+        if not isinstance(network_info, dict):
+            raise ContainerStartError("Podman network inspect returned a non-object network")
+
+        internal_value = network_info.get("internal")
+        if isinstance(internal_value, bool):
+            return internal_value
+        return False
 
     async def _ensure_image(self) -> None:
         """Require the configured sidecar image to be present locally."""

@@ -752,6 +752,43 @@ class TestContainerManager:
                 await mgr.initialize()
 
     @pytest.mark.asyncio
+    async def test_initialize_recreates_internal_network(self, tmp_path):
+        """Startup should repair old internal-only networks so containers can reach providers."""
+        settings = _make_settings(container_socket_base=str(tmp_path))
+        internal_network_inspect = json.dumps([{"name": "yinshi-sidecar-net", "internal": True}])
+
+        def _side_effect(*args, **kwargs):
+            subcmd = args[1] if len(args) > 1 else ""
+            if subcmd == "--version":
+                return _make_mock_process(stdout="podman version 5.0.0")
+            if subcmd == "network":
+                if args[2] == "inspect":
+                    return _make_mock_process(returncode=0, stdout=internal_network_inspect)
+                if args[2] == "rm":
+                    return _make_mock_process(returncode=0)
+                if args[2] == "create":
+                    return _make_mock_process(returncode=0)
+            if subcmd == "image":
+                return _make_mock_process(returncode=0)
+            if subcmd == "ps":
+                return _make_mock_process(stdout="[]")
+            return _make_mock_process()
+
+        with patch(
+            "asyncio.create_subprocess_exec",
+            AsyncMock(side_effect=_side_effect),
+        ) as mock_exec:
+            mgr = ContainerManager(settings=settings)
+            await mgr.initialize()
+
+        network_calls = [
+            call.args[2]
+            for call in mock_exec.call_args_list
+            if len(call.args) > 2 and call.args[1] == "network"
+        ]
+        assert network_calls == ["inspect", "rm", "create"]
+
+    @pytest.mark.asyncio
     async def test_initialize_restricts_socket_base_permissions(self, tmp_path):
         """Startup preflight should enforce 0o700 on the shared socket base."""
         socket_base = tmp_path / "sockets"
