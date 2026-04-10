@@ -53,6 +53,7 @@ class ContainerManager:
         self._global_lock = asyncio.Lock()
         self._socket_poll_timeout_s: float = 10.0
         self._socket_poll_interval_s: float = 0.1
+        self._pipe_read_timeout_s: float = 1.0
         self._initialized = False
 
     @staticmethod
@@ -81,21 +82,22 @@ class ContainerManager:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            raw_out, raw_err = await asyncio.wait_for(
-                proc.communicate(),
-                timeout=timeout,
-            )
         except FileNotFoundError:
             raise ContainerStartError("podman binary not found") from None
+
+        assert proc is not None, "create_subprocess_exec must return a process"
+
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=timeout)
         except asyncio.TimeoutError:
-            if proc is not None:
-                proc.kill()
+            await self._stop_process(proc)
             raise ContainerStartError(
                 f"Podman command timed out: podman {' '.join(args)}"
             ) from None
 
-        stdout = raw_out.decode().strip()
-        stderr = raw_err.decode().strip()
+        stdout = await self._read_process_pipe(proc.stdout)
+        stderr = await self._read_process_pipe(proc.stderr)
+
         returncode = proc.returncode
         if returncode is None:
             raise ContainerStartError("Podman process exited without a return code")
@@ -104,6 +106,44 @@ class ContainerManager:
             raise ContainerStartError(f"podman {args[0]} failed: {stderr}")
 
         return returncode, stdout, stderr
+
+    async def _read_process_pipe(
+        self,
+        stream: asyncio.StreamReader | None,
+    ) -> str:
+        """Read one subprocess pipe without waiting forever for inherited descriptors."""
+        if stream is None:
+            return ""
+
+        try:
+            raw_data = await asyncio.wait_for(
+                stream.read(64 * 1024),
+                timeout=self._pipe_read_timeout_s,
+            )
+        except asyncio.TimeoutError:
+            return ""
+
+        if not raw_data:
+            return ""
+        return raw_data.decode().strip()
+
+    async def _stop_process(
+        self,
+        proc: asyncio.subprocess.Process,
+    ) -> None:
+        """Terminate one subprocess while tolerating races with an already-exited process."""
+        if proc.returncode is not None:
+            return
+
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            return
+
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=1.0)
+        except asyncio.TimeoutError:
+            logger.warning("Timed out waiting for Podman process shutdown")
 
     # -- Initialization -----------------------------------------------------
 

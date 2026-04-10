@@ -83,9 +83,11 @@ def _make_mock_process(
 ) -> AsyncMock:
     """Build a mock asyncio.subprocess.Process."""
     proc = AsyncMock()
-    proc.communicate = AsyncMock(
-        return_value=(stdout.encode(), stderr.encode()),
-    )
+    proc.wait = AsyncMock(return_value=returncode)
+    proc.stdout = AsyncMock()
+    proc.stdout.read = AsyncMock(return_value=stdout.encode())
+    proc.stderr = AsyncMock()
+    proc.stderr.read = AsyncMock(return_value=stderr.encode())
     proc.returncode = returncode
     proc.kill = MagicMock()
     return proc
@@ -690,6 +692,29 @@ class TestContainerManager:
         assert "--user" in run_args
         assert "0:0" in run_args
         assert "HOME=/tmp" in run_args
+
+    @pytest.mark.asyncio
+    async def test_run_podman_timeout_ignores_process_lookup_error(self, tmp_path):
+        """Timeout cleanup should still raise ContainerStartError when Podman already exited."""
+        settings = _make_settings(container_socket_base=str(tmp_path))
+
+        async def _wait_forever() -> int:
+            await asyncio.sleep(60)
+            return 0
+
+        proc = AsyncMock()
+        proc.wait = AsyncMock(side_effect=_wait_forever)
+        proc.stdout = AsyncMock()
+        proc.stdout.read = AsyncMock(return_value=b"")
+        proc.stderr = AsyncMock()
+        proc.stderr.read = AsyncMock(return_value=b"")
+        proc.returncode = None
+        proc.kill = MagicMock(side_effect=ProcessLookupError())
+
+        with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)):
+            mgr = ContainerManager(settings=settings)
+            with pytest.raises(ContainerStartError, match="Podman command timed out"):
+                await mgr._run_podman("run", timeout=0.01)
 
     @pytest.mark.asyncio
     async def test_podman_not_found_raises(self, tmp_path):

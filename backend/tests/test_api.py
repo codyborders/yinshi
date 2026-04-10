@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from tests.conftest import reset_rate_limiter
@@ -834,6 +835,34 @@ def test_prompt_saves_partial_on_sidecar_error(client: TestClient, session_id: s
     assistant_msgs = [m for m in msgs if m["role"] == "assistant"]
     assert len(assistant_msgs) == 1
     assert "partial" in assistant_msgs[0]["content"]
+
+
+def test_prompt_persists_user_message_when_runtime_setup_fails(
+    client: TestClient,
+    session_id: str,
+) -> None:
+    """Prompt submission should survive runtime setup failures so history stays consistent."""
+    with patch(
+        "yinshi.api.stream._resolve_execution_context",
+        side_effect=HTTPException(
+            status_code=503,
+            detail="Agent environment temporarily unavailable",
+        ),
+    ):
+        response = client.post(
+            f"/api/sessions/{session_id}/prompt",
+            json={"prompt": "persist this prompt"},
+        )
+
+    assert response.status_code == 503
+
+    messages = client.get(f"/api/sessions/{session_id}/messages").json()
+    assert len(messages) == 1
+    assert messages[0]["role"] == "user"
+    assert messages[0]["content"] == "persist this prompt"
+
+    session = client.get(f"/api/sessions/{session_id}").json()
+    assert session["status"] == "idle"
 
 
 def test_cancel_session_not_found(client: TestClient) -> None:

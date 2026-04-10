@@ -422,17 +422,6 @@ async def prompt_session(
     prompt = body.prompt
     turn_id = uuid.uuid4().hex
 
-    context = await _resolve_execution_context(request, tenant, workspace_path, model)
-
-    logger.info(
-        "Prompt received: session=%s prompt_len=%d model=%s provider=%s key_source=%s",
-        session_id,
-        len(prompt),
-        model,
-        context.provider,
-        context.key_source,
-    )
-
     # Atomically claim the session for this stream. The WHERE clause
     # ensures only one concurrent request can transition idle -> running.
     with get_db_for_request(request) as db:
@@ -455,6 +444,26 @@ async def prompt_session(
                 (display_name, session["workspace_id"]),
             )
         db.commit()
+
+    try:
+        context = await _resolve_execution_context(request, tenant, workspace_path, model)
+    except Exception:
+        with get_db_for_request(request) as db:
+            db.execute(
+                "UPDATE sessions SET status = 'idle' WHERE id = ?",
+                (session_id,),
+            )
+            db.commit()
+        raise
+
+    logger.info(
+        "Prompt received: session=%s prompt_len=%d model=%s provider=%s key_source=%s",
+        session_id,
+        len(prompt),
+        model,
+        context.provider,
+        context.key_source,
+    )
 
     async def event_stream() -> AsyncGenerator[str, None]:
         sidecar: SidecarClient | None = None
