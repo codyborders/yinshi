@@ -386,6 +386,62 @@ def test_create_workspace(client: TestClient, git_repo: str) -> None:
     assert data["state"] == "ready"
 
 
+def test_create_workspace_fetches_remote_base_for_remote_repo(
+    auth_client: TestClient,
+) -> None:
+    """Remote repos should create worktrees from the fetched remote branch tip."""
+    from yinshi.tenant import get_user_db
+
+    tenant = getattr(auth_client, "yinshi_tenant")
+    with get_user_db(tenant) as db:
+        cursor = db.execute(
+            """INSERT INTO repos (name, remote_url, root_path, installation_id)
+               VALUES (?, ?, ?, ?)""",
+            (
+                "remote-repo",
+                "https://github.com/acme/private-repo.git",
+                str(Path(tenant.data_dir) / "repos" / "remote-repo"),
+                12,
+            ),
+        )
+        repo_row = db.execute(
+            "SELECT id FROM repos WHERE rowid = ?",
+            (cursor.lastrowid,),
+        ).fetchone()
+        assert repo_row is not None
+        repo_id = repo_row["id"]
+        db.commit()
+
+    with (
+        patch(
+            "yinshi.services.workspace.resolve_remote_base_ref",
+            new=AsyncMock(return_value="origin/main"),
+        ) as mock_resolve_remote_base_ref,
+        patch(
+            "yinshi.services.workspace.create_worktree",
+            new=AsyncMock(return_value=str(Path(tenant.data_dir) / "repos" / "remote-repo" / ".worktrees" / "branch")),
+        ) as mock_create_worktree,
+        patch(
+            "yinshi.services.workspace._resolve_remote_checkout",
+            new=AsyncMock(
+                return_value=(
+                    "https://github.com/acme/private-repo.git",
+                    "token-123",
+                    12,
+                )
+            ),
+        ),
+    ):
+        response = auth_client.post(f"/api/repos/{repo_id}/workspaces", json={})
+
+    assert response.status_code == 201
+    mock_resolve_remote_base_ref.assert_awaited_once_with(
+        str(Path(tenant.data_dir) / "repos" / "remote-repo"),
+        access_token="token-123",
+    )
+    assert mock_create_worktree.await_args.kwargs["base_ref"] == "origin/main"
+
+
 def test_create_workspace_repairs_migrated_repo_paths(
     auth_client_factory,
     git_repo: str,

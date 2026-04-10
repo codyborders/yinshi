@@ -19,6 +19,7 @@ from yinshi.services.git import (
     create_worktree,
     delete_worktree,
     generate_branch_name,
+    resolve_remote_base_ref,
     restore_worktree,
     validate_local_repo,
 )
@@ -252,8 +253,24 @@ async def create_workspace_for_repo(
     repo_path = repo["root_path"]
     assert repo_path, "repo_path must not be empty"
     worktree_dir = _workspace_path(repo_path, branch)
+    base_ref: str | None = None
 
-    await create_worktree(repo_path, worktree_dir, branch)
+    remote_url = repo["remote_url"]
+    if remote_url:
+        access_token = None
+        try:
+            if tenant is not None:
+                _, access_token, _ = await _resolve_remote_checkout(tenant, remote_url)
+            base_ref = await resolve_remote_base_ref(repo_path, access_token=access_token)
+        except GitError as exc:
+            logger.warning(
+                "Creating worktree for repo %s from local HEAD because remote sync failed: %s",
+                repo_id,
+                exc,
+            )
+            base_ref = None
+
+    await create_worktree(repo_path, worktree_dir, branch, base_ref=base_ref)
 
     cursor = db.execute(
         """INSERT INTO workspaces (repo_id, name, branch, path, state)

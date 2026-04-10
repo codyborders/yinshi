@@ -129,3 +129,60 @@ async def test_create_worktree_has_files(git_repo, tmp_path):
     wt_path = str(tmp_path / "worktrees" / "file-test")
     await create_worktree(git_repo, wt_path, "file-test")
     assert os.path.isfile(os.path.join(wt_path, "README.md"))
+
+
+@pytest.mark.asyncio
+async def test_resolve_remote_base_ref_prefers_origin_head(git_repo, monkeypatch):
+    """Remote worktrees should branch from the fetched origin HEAD when available."""
+    from yinshi.services import git as git_service
+
+    calls: list[tuple[list[str], str | None, dict[str, str] | None]] = []
+
+    async def fake_run_git(args, cwd=None, env=None):
+        calls.append((args, cwd, env))
+        if args == ["fetch", "origin"]:
+            return ""
+        if args == ["symbolic-ref", "refs/remotes/origin/HEAD"]:
+            return "refs/remotes/origin/main"
+        raise AssertionError(f"Unexpected git args: {args}")
+
+    monkeypatch.setattr(git_service, "_run_git", fake_run_git)
+
+    result = await git_service.resolve_remote_base_ref(git_repo)
+
+    assert result == "origin/main"
+    assert calls[0][0] == ["fetch", "origin"]
+    assert calls[1][0] == ["symbolic-ref", "refs/remotes/origin/HEAD"]
+
+
+@pytest.mark.asyncio
+async def test_create_worktree_uses_explicit_base_ref(git_repo, tmp_path, monkeypatch):
+    """Remote worktree creation should pass the resolved base ref to git worktree add."""
+    from yinshi.services import git as git_service
+
+    recorded_args: list[str] = []
+
+    async def fake_run_git(args, cwd=None, env=None):
+        del env
+        assert cwd == git_repo
+        recorded_args[:] = args
+        return ""
+
+    monkeypatch.setattr(git_service, "_run_git", fake_run_git)
+
+    wt_path = str(tmp_path / "worktrees" / "remote-base")
+    await git_service.create_worktree(
+        git_repo,
+        wt_path,
+        "remote-base",
+        base_ref="origin/main",
+    )
+
+    assert recorded_args == [
+        "worktree",
+        "add",
+        "-b",
+        "remote-base",
+        wt_path,
+        "origin/main",
+    ]

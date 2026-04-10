@@ -171,10 +171,63 @@ async def clone_local_repo(
     return dest
 
 
-async def create_worktree(repo_path: str, worktree_path: str, branch: str) -> str:
+async def resolve_remote_base_ref(
+    repo_path: str,
+    access_token: str | None = None,
+) -> str:
+    """Fetch origin and return the tracked default remote branch reference."""
+    assert repo_path, "repo_path must not be empty"
+
+    with _git_askpass_env(access_token) as env:
+        await _run_git(["fetch", "origin"], cwd=repo_path, env=env)
+        try:
+            symbolic_ref = await _run_git(
+                ["symbolic-ref", "refs/remotes/origin/HEAD"],
+                cwd=repo_path,
+                env=env,
+            )
+        except GitError:
+            symbolic_ref = ""
+
+    normalized_symbolic_ref = symbolic_ref.strip()
+    if normalized_symbolic_ref.startswith("refs/remotes/origin/"):
+        remote_branch = normalized_symbolic_ref.removeprefix("refs/remotes/")
+        assert remote_branch, "remote_branch must not be empty"
+        return remote_branch
+
+    for fallback_remote_branch in ("origin/main", "origin/master"):
+        try:
+            await _run_git(
+                ["rev-parse", "--verify", fallback_remote_branch],
+                cwd=repo_path,
+            )
+        except GitError:
+            continue
+        return fallback_remote_branch
+
+    raise GitError("Could not determine the remote default branch")
+
+
+async def create_worktree(
+    repo_path: str,
+    worktree_path: str,
+    branch: str,
+    *,
+    base_ref: str | None = None,
+) -> str:
     """Create a git worktree with a new branch. Returns the worktree path."""
+    assert repo_path, "repo_path must not be empty"
+    assert worktree_path, "worktree_path must not be empty"
+    assert branch, "branch must not be empty"
+
     Path(worktree_path).parent.mkdir(parents=True, exist_ok=True)
-    await _run_git(["worktree", "add", "-b", branch, worktree_path], cwd=repo_path)
+    worktree_add_args = ["worktree", "add", "-b", branch, worktree_path]
+    if base_ref is not None:
+        normalized_base_ref = base_ref.strip()
+        if not normalized_base_ref:
+            raise ValueError("base_ref must not be empty when provided")
+        worktree_add_args.append(normalized_base_ref)
+    await _run_git(worktree_add_args, cwd=repo_path)
     logger.info("Created worktree %s (branch: %s)", worktree_path, branch)
     return worktree_path
 
