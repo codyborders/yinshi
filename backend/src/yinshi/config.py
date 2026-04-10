@@ -59,7 +59,7 @@ class Settings(BaseSettings):
     allowed_repo_base: str = ""
 
     # Per-user container isolation
-    container_enabled: bool = False
+    container_enabled: bool = True
     container_image: str = "yinshi-sidecar:latest"
     container_idle_timeout_s: int = 300
     container_memory_limit: str = "256m"
@@ -98,9 +98,7 @@ def _validate_settings(settings: Settings) -> None:
         try:
             bytes.fromhex(settings.encryption_pepper)
         except ValueError as exc:
-            raise RuntimeError(
-                f"ENCRYPTION_PEPPER must be a valid hex string: {exc}"
-            ) from exc
+            raise RuntimeError(f"ENCRYPTION_PEPPER must be a valid hex string: {exc}") from exc
 
 
 @lru_cache()

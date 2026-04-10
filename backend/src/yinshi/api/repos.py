@@ -2,6 +2,7 @@
 
 import logging
 import sqlite3
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -18,7 +19,7 @@ from yinshi.exceptions import (
 )
 from yinshi.models import RepoCreate, RepoOut, RepoUpdate
 from yinshi.rate_limit import limiter
-from yinshi.services.git import clone_repo, validate_local_repo
+from yinshi.services.git import clone_local_repo, clone_repo, validate_local_repo
 from yinshi.services.github_app import GitHubCloneAccess, resolve_github_clone_access
 from yinshi.services.workspace import delete_workspace
 from yinshi.utils.paths import is_path_inside
@@ -136,8 +137,10 @@ def list_repos(request: Request) -> list[dict[str, Any]]:
 async def import_repo(body: RepoCreate, request: Request) -> dict[str, Any]:
     """Import a repository (clone from URL or register local path)."""
     tenant = get_tenant(request)
+    settings = get_settings()
     normalized_remote_url = body.remote_url
     clone_access: GitHubCloneAccess | None = None
+    repo_id: str | None = None
 
     if body.local_path:
         resolved = _validate_local_path(body.local_path)
@@ -146,7 +149,15 @@ async def import_repo(body: RepoCreate, request: Request) -> dict[str, Any]:
         is_repo = await validate_local_repo(resolved)
         if not is_repo:
             raise HTTPException(status_code=400, detail="Not a valid git repository")
-        root_path = resolved
+        if tenant and settings.container_enabled:
+            repo_id = uuid.uuid4().hex
+            root_path = str(Path(tenant.data_dir) / "repos" / repo_id)
+            try:
+                await clone_local_repo(resolved, root_path)
+            except GitError as error:
+                raise HTTPException(status_code=400, detail=str(error)) from error
+        else:
+            root_path = resolved
     elif body.remote_url:
         clone_access = await _resolve_clone_access(request, body.remote_url)
         access_token = None
@@ -189,17 +200,31 @@ async def import_repo(body: RepoCreate, request: Request) -> dict[str, Any]:
         installation_id = clone_access.installation_id
     with get_db_for_request(request) as db:
         if tenant:
-            cursor = db.execute(
-                """INSERT INTO repos (name, remote_url, root_path, custom_prompt, installation_id)
-                   VALUES (?, ?, ?, ?, ?)""",
-                (
-                    body.name,
-                    normalized_remote_url,
-                    root_path,
-                    body.custom_prompt,
-                    installation_id,
-                ),
-            )
+            if repo_id is None:
+                cursor = db.execute(
+                    """INSERT INTO repos (name, remote_url, root_path, custom_prompt, installation_id)
+                       VALUES (?, ?, ?, ?, ?)""",
+                    (
+                        body.name,
+                        normalized_remote_url,
+                        root_path,
+                        body.custom_prompt,
+                        installation_id,
+                    ),
+                )
+            else:
+                cursor = db.execute(
+                    """INSERT INTO repos (id, name, remote_url, root_path, custom_prompt, installation_id)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    (
+                        repo_id,
+                        body.name,
+                        normalized_remote_url,
+                        root_path,
+                        body.custom_prompt,
+                        installation_id,
+                    ),
+                )
         else:
             email = get_user_email(request)
             cursor = db.execute(

@@ -7,7 +7,6 @@ from fastapi.testclient import TestClient
 
 from tests.factories import create_full_stack, parse_sse_events
 
-
 # --- Fixtures ---
 
 
@@ -20,6 +19,7 @@ def control_env(tmp_path, monkeypatch):
     monkeypatch.setenv("ENCRYPTION_PEPPER", "a" * 64)
     monkeypatch.setenv("GOOGLE_CLIENT_ID", "")
     monkeypatch.setenv("DISABLE_AUTH", "true")
+    monkeypatch.setenv("CONTAINER_ENABLED", "false")
 
     from yinshi.config import get_settings
 
@@ -103,8 +103,7 @@ def test_resolve_user_api_key_round_trip(test_user):
     encrypted = encrypt_api_key("sk-test-anthropic-key", dek)
     with get_control_db() as db:
         db.execute(
-            "INSERT INTO api_keys (user_id, provider, encrypted_key, label) "
-            "VALUES (?, ?, ?, ?)",
+            "INSERT INTO api_keys (user_id, provider, encrypted_key, label) " "VALUES (?, ?, ?, ?)",
             (user_id, "anthropic", encrypted, "test"),
         )
         db.commit()
@@ -169,9 +168,7 @@ def test_get_user_dek_lazy_generates_for_null_dek(control_env):
 
     # Verify DEK was persisted
     with get_control_db() as db:
-        row = db.execute(
-            "SELECT encrypted_dek FROM users WHERE id = ?", (user_id,)
-        ).fetchone()
+        row = db.execute("SELECT encrypted_dek FROM users WHERE id = ?", (user_id,)).fetchone()
     assert row["encrypted_dek"] is not None
 
     # Second call should return the same DEK
@@ -233,9 +230,7 @@ def _make_byok_mock_sidecar(
     """Build a mock SidecarClient for BYOK prompt tests."""
     mock = AsyncMock()
     model_ref = f"{resolve_provider}/{resolve_model_id}"
-    mock.resolve_model = AsyncMock(
-        return_value={"provider": resolve_provider, "model": model_ref}
-    )
+    mock.resolve_model = AsyncMock(return_value={"provider": resolve_provider, "model": model_ref})
     mock.resolve_provider_auth = AsyncMock(
         return_value={
             "provider": resolve_provider,
@@ -354,9 +349,7 @@ def test_prompt_402_for_non_minimax_without_byok(tenant_prompt_env):
     assert resp.status_code == 402
 
 
-def test_prompt_dev_mode_no_enforcement(
-    db_path, tmp_path, monkeypatch, git_repo
-):
+def test_prompt_dev_mode_no_enforcement(db_path, tmp_path, monkeypatch, git_repo):
     """Dev mode (DISABLE_AUTH=true) should not enforce BYOK."""
     monkeypatch.setenv("DB_PATH", db_path)
     monkeypatch.setenv("CONTROL_DB_PATH", str(tmp_path / "control.db"))
@@ -365,6 +358,7 @@ def test_prompt_dev_mode_no_enforcement(
     monkeypatch.setenv("GOOGLE_CLIENT_ID", "")
     monkeypatch.setenv("DISABLE_AUTH", "true")
     monkeypatch.setenv("ALLOWED_REPO_BASE", str(tmp_path))
+    monkeypatch.setenv("CONTAINER_ENABLED", "false")
 
     from yinshi.config import get_settings
 
@@ -377,13 +371,9 @@ def test_prompt_dev_mode_no_enforcement(
     from yinshi.main import app
 
     with TestClient(app) as client:
-        repo = client.post(
-            "/api/repos", json={"name": "test", "local_path": git_repo}
-        ).json()
+        repo = client.post("/api/repos", json={"name": "test", "local_path": git_repo}).json()
         ws = client.post(f"/api/repos/{repo['id']}/workspaces", json={}).json()
-        sess = client.post(
-            f"/api/workspaces/{ws['id']}/sessions", json={}
-        ).json()
+        sess = client.post(f"/api/workspaces/{ws['id']}/sessions", json={}).json()
 
         async def fake_query(
             sid,
@@ -402,9 +392,7 @@ def test_prompt_dev_mode_no_enforcement(
         mock.disconnect = AsyncMock()
         mock.query = fake_query
 
-        with patch(
-            "yinshi.api.stream.create_sidecar_connection", return_value=mock
-        ):
+        with patch("yinshi.api.stream.create_sidecar_connection", return_value=mock):
             resp = client.post(
                 f"/api/sessions/{sess['id']}/prompt",
                 json={"prompt": "hello"},

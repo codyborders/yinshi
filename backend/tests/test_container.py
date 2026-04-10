@@ -13,10 +13,10 @@ from yinshi.exceptions import ContainerNotReadyError, ContainerStartError
 from yinshi.services.container import ContainerInfo, ContainerManager
 from yinshi.utils.paths import is_path_inside
 
-
 # ---------------------------------------------------------------------------
 # Path utility tests
 # ---------------------------------------------------------------------------
+
 
 class TestIsPathInside:
     """Tests for the shared is_path_inside utility."""
@@ -38,6 +38,7 @@ class TestIsPathInside:
 # ---------------------------------------------------------------------------
 # Path remapping tests (pure function, no mocks needed)
 # ---------------------------------------------------------------------------
+
 
 class TestRemapPath:
     """Tests for _remap_path helper in stream.py."""
@@ -73,8 +74,11 @@ class TestRemapPath:
 # Podman subprocess mock helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_mock_process(
-    returncode: int = 0, stdout: str = "", stderr: str = "",
+    returncode: int = 0,
+    stdout: str = "",
+    stderr: str = "",
 ) -> AsyncMock:
     """Build a mock asyncio.subprocess.Process."""
     proc = AsyncMock()
@@ -126,6 +130,7 @@ def _make_settings(**overrides):
 # ---------------------------------------------------------------------------
 # ContainerManager tests (mock Podman subprocess)
 # ---------------------------------------------------------------------------
+
 
 class TestContainerManager:
     """Tests for ContainerManager lifecycle methods."""
@@ -233,7 +238,9 @@ class TestContainerManager:
                 return _make_mock_process(stdout="[]")
             return _make_mock_process()
 
-        with patch("asyncio.create_subprocess_exec", AsyncMock(side_effect=_side_effect)) as mock_exec:
+        with patch(
+            "asyncio.create_subprocess_exec", AsyncMock(side_effect=_side_effect)
+        ) as mock_exec:
             mgr = ContainerManager(settings=settings)
 
             existing = ContainerInfo(
@@ -322,12 +329,16 @@ class TestContainerManager:
             mgr = ContainerManager(settings=settings)
 
             mgr._containers["a" * 32] = ContainerInfo(
-                container_id="c1", user_id="a" * 32, socket_path="/tmp/s1",
+                container_id="c1",
+                user_id="a" * 32,
+                socket_path="/tmp/s1",
                 created_at=datetime.now(timezone.utc),
                 last_activity=datetime.now(timezone.utc),
             )
             mgr._containers["b" * 32] = ContainerInfo(
-                container_id="c2", user_id="b" * 32, socket_path="/tmp/s2",
+                container_id="c2",
+                user_id="b" * 32,
+                socket_path="/tmp/s2",
                 created_at=datetime.now(timezone.utc),
                 last_activity=datetime.now(timezone.utc),
             )
@@ -395,7 +406,9 @@ class TestContainerManager:
 
             user_id = "abcdef12345678901234567890abcdef"
             mgr._containers[user_id] = ContainerInfo(
-                container_id="c1", user_id=user_id, socket_path="/tmp/s1",
+                container_id="c1",
+                user_id=user_id,
+                socket_path="/tmp/s1",
                 created_at=datetime.now(timezone.utc),
                 last_activity=datetime.now(timezone.utc),
             )
@@ -422,12 +435,16 @@ class TestContainerManager:
         uid2 = "b" * 32
         uid3 = "c" * 32
         mgr._containers[uid1] = ContainerInfo(
-            container_id="c1", user_id=uid1, socket_path="/tmp/s1",
+            container_id="c1",
+            user_id=uid1,
+            socket_path="/tmp/s1",
             created_at=datetime.now(timezone.utc),
             last_activity=datetime.now(timezone.utc),
         )
         mgr._containers[uid2] = ContainerInfo(
-            container_id="c2", user_id=uid2, socket_path="/tmp/s2",
+            container_id="c2",
+            user_id=uid2,
+            socket_path="/tmp/s2",
             created_at=datetime.now(timezone.utc),
             last_activity=datetime.now(timezone.utc),
         )
@@ -452,7 +469,9 @@ class TestContainerManager:
                 return _make_mock_process(returncode=0)
             return _make_mock_process()
 
-        with patch("asyncio.create_subprocess_exec", AsyncMock(side_effect=_side_effect)) as mock_exec:
+        with patch(
+            "asyncio.create_subprocess_exec", AsyncMock(side_effect=_side_effect)
+        ) as mock_exec:
             mgr = ContainerManager(settings=settings)
             await mgr.initialize()
 
@@ -522,7 +541,9 @@ class TestContainerManager:
                 return _make_mock_process(stdout="[]")
             return _make_mock_process()
 
-        with patch("asyncio.create_subprocess_exec", AsyncMock(side_effect=_side_effect)) as mock_exec:
+        with patch(
+            "asyncio.create_subprocess_exec", AsyncMock(side_effect=_side_effect)
+        ) as mock_exec:
             mgr = ContainerManager(settings=settings)
             await mgr.ensure_container(user_id, data_dir)
 
@@ -550,3 +571,51 @@ class TestContainerManager:
             mgr = ContainerManager(settings=settings)
             with pytest.raises(ContainerStartError, match="podman binary not found"):
                 await mgr.initialize()
+
+    @pytest.mark.asyncio
+    async def test_missing_image_raises(self, tmp_path):
+        """Startup preflight should fail when the configured image is unavailable."""
+        settings = _make_settings(container_socket_base=str(tmp_path))
+
+        def _side_effect(*args, **kwargs):
+            subcmd = args[1] if len(args) > 1 else ""
+            if subcmd == "--version":
+                return _make_mock_process(stdout="podman version 5.0.0")
+            if subcmd == "network":
+                return _make_mock_process(returncode=0)
+            if subcmd == "image":
+                return _make_mock_process(returncode=1)
+            if subcmd == "ps":
+                return _make_mock_process(stdout="[]")
+            return _make_mock_process()
+
+        with patch("asyncio.create_subprocess_exec", AsyncMock(side_effect=_side_effect)):
+            mgr = ContainerManager(settings=settings)
+            with pytest.raises(ContainerStartError, match="Configured sidecar image"):
+                await mgr.initialize()
+
+    @pytest.mark.asyncio
+    async def test_initialize_restricts_socket_base_permissions(self, tmp_path):
+        """Startup preflight should enforce 0o700 on the shared socket base."""
+        socket_base = tmp_path / "sockets"
+        socket_base.mkdir(mode=0o755)
+        settings = _make_settings(container_socket_base=str(socket_base))
+
+        def _side_effect(*args, **kwargs):
+            subcmd = args[1] if len(args) > 1 else ""
+            if subcmd == "--version":
+                return _make_mock_process(stdout="podman version 5.0.0")
+            if subcmd == "network":
+                return _make_mock_process(returncode=0)
+            if subcmd == "image":
+                return _make_mock_process(returncode=0)
+            if subcmd == "ps":
+                return _make_mock_process(stdout="[]")
+            return _make_mock_process()
+
+        with patch("asyncio.create_subprocess_exec", AsyncMock(side_effect=_side_effect)):
+            mgr = ContainerManager(settings=settings)
+            await mgr.initialize()
+
+        stat = os.stat(socket_base)
+        assert oct(stat.st_mode & 0o777) == oct(0o700)

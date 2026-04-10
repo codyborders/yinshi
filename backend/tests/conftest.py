@@ -29,6 +29,7 @@ def _configure_test_env(
     monkeypatch.setenv("ENCRYPTION_PEPPER", DEFAULT_TEST_PEPPER)
     monkeypatch.setenv("SECRET_KEY", DEFAULT_TEST_SECRET)
     monkeypatch.setenv("ALLOWED_REPO_BASE", str(tmp_path))
+    monkeypatch.setenv("CONTAINER_ENABLED", "false")
     if auth_enabled:
         monkeypatch.setenv("GOOGLE_CLIENT_ID", "fake-client-id")
         monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "fake-secret")

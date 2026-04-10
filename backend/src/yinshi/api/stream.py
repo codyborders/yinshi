@@ -8,7 +8,6 @@ Tests: test_prompt_session_not_found, test_prompt_streams_sidecar_events,
 import asyncio
 import json
 import logging
-import os
 import sqlite3
 import uuid
 from collections.abc import AsyncGenerator
@@ -38,6 +37,11 @@ from yinshi.services.provider_connections import (
     update_provider_connection_secret,
 )
 from yinshi.services.sidecar import SidecarClient, create_sidecar_connection
+from yinshi.services.sidecar_runtime import (
+    remap_path_for_container,
+    resolve_tenant_sidecar_context,
+    touch_tenant_container,
+)
 from yinshi.services.workspace import ensure_workspace_checkout_for_tenant
 from yinshi.utils.paths import is_path_inside
 
@@ -208,16 +212,16 @@ def _summarize_prompt(prompt: str, max_words: int = 3) -> str:
 
 
 def _workspace_path_is_trusted(tenant: Any, workspace_path: str) -> bool:
-    """Return whether a workspace path is inside the trusted execution roots."""
+    """Return whether a workspace path is inside tenant-managed storage."""
     assert workspace_path, "workspace_path must not be empty"
-
     if is_path_inside(workspace_path, tenant.data_dir):
         return True
 
     settings = get_settings()
+    if settings.container_enabled:
+        return False
     if settings.allowed_repo_base and is_path_inside(workspace_path, settings.allowed_repo_base):
         return True
-
     return False
 
 
@@ -238,14 +242,7 @@ def _remap_path(
     mount: str = "/data",
 ) -> str:
     """Translate a host workspace path to the container's mount namespace."""
-    resolved = os.path.realpath(host_path)
-    base = os.path.realpath(data_dir)
-    if not is_path_inside(host_path, data_dir):
-        raise ValueError("Path outside user data directory")
-    if resolved == base:
-        return mount
-    relative = os.path.relpath(resolved, base)
-    return os.path.join(mount, relative)
+    return remap_path_for_container(host_path, data_dir, mount_path=mount)
 
 
 def _lookup_session(
@@ -299,39 +296,27 @@ async def _resolve_execution_context(
 
     _validate_workspace_path(tenant, workspace_path)
 
-    from yinshi.services.pi_config import resolve_pi_runtime
-
-    container_mgr = getattr(request.app.state, "container_manager", None)
-    sidecar_socket: str | None = None
+    try:
+        tenant_sidecar_context = await resolve_tenant_sidecar_context(request, tenant)
+    except (ContainerStartError, ContainerNotReadyError):
+        logger.exception("Container start failed for user %s", tenant.user_id[:8])
+        raise HTTPException(
+            status_code=503,
+            detail="Agent environment temporarily unavailable",
+        ) from None
+    sidecar_socket = tenant_sidecar_context.socket_path
     effective_cwd = workspace_path
-    agent_dir: str | None = None
+    agent_dir = tenant_sidecar_context.agent_dir
+    settings_payload = tenant_sidecar_context.settings_payload
 
-    if container_mgr and is_path_inside(workspace_path, tenant.data_dir):
+    if sidecar_socket is not None:
         try:
-            container_info = await container_mgr.ensure_container(
-                tenant.user_id,
-                tenant.data_dir,
-            )
-            sidecar_socket = container_info.socket_path
             effective_cwd = _remap_path(workspace_path, tenant.data_dir)
-        except (ContainerStartError, ContainerNotReadyError):
-            logger.exception("Container start failed for user %s", tenant.user_id[:8])
+        except ValueError as exc:
             raise HTTPException(
-                status_code=503,
-                detail="Agent environment temporarily unavailable",
-            )
-    elif container_mgr:
-        logger.warning(
-            "Container isolation bypassed: workspace %s is outside data_dir",
-            workspace_path,
-        )
-
-    host_agent_dir, settings_payload = resolve_pi_runtime(tenant.user_id, tenant.data_dir)
-    if host_agent_dir:
-        if container_mgr and is_path_inside(host_agent_dir, tenant.data_dir):
-            agent_dir = _remap_path(host_agent_dir, tenant.data_dir)
-        else:
-            agent_dir = host_agent_dir
+                status_code=403,
+                detail="Workspace path outside allowed directories",
+            ) from exc
 
     sidecar_tmp = await create_sidecar_connection(sidecar_socket)
     try:
@@ -432,8 +417,6 @@ async def prompt_session(
     turn_id = uuid.uuid4().hex
 
     context = await _resolve_execution_context(request, tenant, workspace_path, model)
-
-    container_mgr = getattr(request.app.state, "container_manager", None)
 
     logger.info(
         "Prompt received: session=%s prompt_len=%d model=%s provider=%s key_source=%s",
@@ -627,8 +610,7 @@ async def prompt_session(
                     logger.exception("Failed to record usage: session=%s", session_id)
 
             # Keep container alive after activity
-            if container_mgr and tenant:
-                container_mgr.touch(tenant.user_id)
+            touch_tenant_container(request, tenant)
 
             async with _active_sessions_lock:
                 _active_sessions.pop(session_id, None)

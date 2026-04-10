@@ -48,7 +48,7 @@ class SidecarClient:
         Args:
             socket_path: Explicit path to the Unix socket.  When *None*,
                 falls back to the global ``sidecar_socket_path`` setting
-                (backward-compatible for non-container mode).
+                used by host-side execution.
         """
         if socket_path is None:
             settings = get_settings()
@@ -105,9 +105,7 @@ class SidecarClient:
         except ValueError as exc:
             message_text = str(exc)
             if "longer than limit" in message_text:
-                raise SidecarError(
-                    "Sidecar message exceeded the configured read limit"
-                ) from exc
+                raise SidecarError("Sidecar message exceeded the configured read limit") from exc
             raise
         if not line:
             return None
@@ -150,18 +148,20 @@ class SidecarClient:
         settings_payload: dict[str, Any] | None = None,
     ) -> None:
         """Pre-create a pi session on the sidecar."""
-        await self._send({
-            "type": "warmup",
-            "id": session_id,
-            "options": self._build_options(
-                model,
-                cwd,
-                provider_auth,
-                provider_config,
-                agent_dir=agent_dir,
-                settings_payload=settings_payload,
-            ),
-        })
+        await self._send(
+            {
+                "type": "warmup",
+                "id": session_id,
+                "options": self._build_options(
+                    model,
+                    cwd,
+                    provider_auth,
+                    provider_config,
+                    agent_dir=agent_dir,
+                    settings_payload=settings_payload,
+                ),
+            }
+        )
 
     async def query(
         self,
@@ -175,19 +175,21 @@ class SidecarClient:
         settings_payload: dict[str, Any] | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Send a prompt and yield streaming events from the sidecar."""
-        await self._send({
-            "type": "query",
-            "id": session_id,
-            "prompt": prompt,
-            "options": self._build_options(
-                model,
-                cwd,
-                provider_auth,
-                provider_config,
-                agent_dir=agent_dir,
-                settings_payload=settings_payload,
-            ),
-        })
+        await self._send(
+            {
+                "type": "query",
+                "id": session_id,
+                "prompt": prompt,
+                "options": self._build_options(
+                    model,
+                    cwd,
+                    provider_auth,
+                    provider_config,
+                    agent_dir=agent_dir,
+                    settings_payload=settings_payload,
+                ),
+            }
+        )
 
         while True:
             msg = await self._read_line()
@@ -360,9 +362,7 @@ class SidecarClient:
         if msg is None:
             raise SidecarError("Sidecar connection lost during OAuth input submission")
         if msg.get("type") == "error":
-            raise SidecarError(
-                f"OAuth input submission failed: {msg.get('error', 'unknown')}"
-            )
+            raise SidecarError(f"OAuth input submission failed: {msg.get('error', 'unknown')}")
         if msg.get("type") != "oauth_submitted":
             raise SidecarError(f"Unexpected response type: {msg.get('type')}")
         return msg
@@ -400,7 +400,7 @@ async def create_sidecar_connection(
 
     Args:
         socket_path: Explicit Unix socket path.  *None* uses the global
-            setting (non-container mode).
+            host-sidecar setting.
     """
     client = SidecarClient()
     await client.connect(socket_path)

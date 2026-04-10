@@ -13,7 +13,6 @@ from yinshi.exceptions import (
     RepoNotFoundError,
     WorkspaceNotFoundError,
 )
-from yinshi.services.github_app import resolve_github_clone_access
 from yinshi.services.git import (
     clone_local_repo,
     clone_repo,
@@ -23,6 +22,7 @@ from yinshi.services.git import (
     restore_worktree,
     validate_local_repo,
 )
+from yinshi.services.github_app import resolve_github_clone_access
 from yinshi.tenant import TenantContext
 from yinshi.utils.paths import is_path_inside
 
@@ -51,17 +51,17 @@ def _fetch_workspace(db: sqlite3.Connection, workspace_id: str) -> sqlite3.Row:
 
 
 def _tenant_path_is_trusted(tenant: TenantContext, path: str) -> bool:
-    """Return whether a tenant path is inside an allowed execution root."""
+    """Return whether a tenant path is inside tenant-managed storage."""
     assert tenant.data_dir, "tenant.data_dir must not be empty"
     assert path, "path must not be empty"
-
     if is_path_inside(path, tenant.data_dir):
         return True
 
     settings = get_settings()
+    if settings.container_enabled:
+        return False
     if settings.allowed_repo_base and is_path_inside(path, settings.allowed_repo_base):
         return True
-
     return False
 
 
@@ -198,9 +198,7 @@ async def ensure_repo_checkout_for_tenant(
     for workspace in workspaces:
         branch = workspace["branch"]
         if not branch:
-            raise WorkspaceNotFoundError(
-                f"Workspace {workspace['id']} is missing its branch name"
-            )
+            raise WorkspaceNotFoundError(f"Workspace {workspace['id']} is missing its branch name")
         target_workspace_path = _workspace_path(target_repo_path, branch)
         await restore_worktree(target_repo_path, target_workspace_path, branch)
         db.execute(
@@ -264,9 +262,7 @@ async def create_workspace_for_repo(
     )
     db.commit()
 
-    row = db.execute(
-        "SELECT * FROM workspaces WHERE rowid = ?", (cursor.lastrowid,)
-    ).fetchone()
+    row = db.execute("SELECT * FROM workspaces WHERE rowid = ?", (cursor.lastrowid,)).fetchone()
     return dict(row)
 
 

@@ -11,6 +11,7 @@ def test_default_settings():
     assert settings.app_name == "Yinshi"
     assert settings.debug is False
     assert settings.db_path == "yinshi.db"
+    assert settings.container_enabled is True
     assert settings.port == 8000
 
 

@@ -13,6 +13,7 @@ import io
 import json
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
@@ -24,9 +25,25 @@ from tests.conftest import reset_rate_limiter
 def _activate_container_runtime() -> None:
     """Mutate cached settings so Pi runtime is active for runtime-path tests."""
     from yinshi.config import get_settings
+    from yinshi.main import app
 
     settings = get_settings()
     settings.container_enabled = True
+
+    class _TestContainerManager:
+        """Provide the minimal container interface needed by runtime tests."""
+
+        async def ensure_container(self, user_id: str, data_dir: str) -> SimpleNamespace:
+            del user_id, data_dir
+            return SimpleNamespace(socket_path="/tmp/test-tenant-sidecar.sock")
+
+        def touch(self, user_id: str) -> None:
+            del user_id
+
+        async def destroy_all(self) -> None:
+            return None
+
+    app.state.container_manager = _TestContainerManager()
 
 
 def _build_pi_archive() -> bytes:
@@ -227,9 +244,7 @@ def test_prompt_forwards_agent_dir_and_settings_payload(
         )
 
     assert response.status_code == 200
-    assert mock_sidecar.warmup.call_args.kwargs["agent_dir"] == str(
-        Path(tenant.data_dir) / "pi-config" / "agent"
-    )
+    assert mock_sidecar.warmup.call_args.kwargs["agent_dir"] == "/data/pi-config/agent"
     assert mock_sidecar.warmup.call_args.kwargs["settings_payload"] == {
         "retry": {"enabled": False},
     }

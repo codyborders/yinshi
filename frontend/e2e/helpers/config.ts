@@ -27,6 +27,7 @@ export const backendEnv = {
   GOOGLE_CLIENT_SECRET: "fake-secret",
   DISABLE_AUTH: "false",
   ALLOWED_REPO_BASE: repoBaseDir,
+  CONTAINER_ENABLED: "false",
   SIDECAR_SOCKET_PATH: socketPath,
   FRONTEND_URL: frontendBaseUrl,
   DEBUG: "true",

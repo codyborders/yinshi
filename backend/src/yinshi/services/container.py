@@ -69,12 +69,14 @@ class ContainerManager:
         proc: asyncio.subprocess.Process | None = None
         try:
             proc = await asyncio.create_subprocess_exec(
-                self._podman_bin, *args,
+                self._podman_bin,
+                *args,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
             raw_out, raw_err = await asyncio.wait_for(
-                proc.communicate(), timeout=timeout,
+                proc.communicate(),
+                timeout=timeout,
             )
         except FileNotFoundError:
             raise ContainerStartError("podman binary not found") from None
@@ -92,9 +94,7 @@ class ContainerManager:
             raise ContainerStartError("Podman process exited without a return code")
 
         if check and returncode != 0:
-            raise ContainerStartError(
-                f"podman {args[0]} failed: {stderr}"
-            )
+            raise ContainerStartError(f"podman {args[0]} failed: {stderr}")
 
         return returncode, stdout, stderr
 
@@ -108,22 +108,76 @@ class ContainerManager:
         """
         if self._initialized:
             return
+        self._ensure_socket_base_dir()
+        await self._verify_podman_available()
         await self._ensure_network()
+        await self._ensure_image()
         await self._cleanup_orphaned_containers()
         self._initialized = True
 
     # -- Podman network -----------------------------------------------------
 
+    def _ensure_socket_base_dir(self) -> None:
+        """Create the shared socket base directory with restricted permissions."""
+        socket_base_dir = self._settings.container_socket_base
+        if not isinstance(socket_base_dir, str):
+            raise TypeError("container_socket_base must be a string")
+        normalized_socket_base_dir = socket_base_dir.strip()
+        if not normalized_socket_base_dir:
+            raise ValueError("container_socket_base must not be empty")
+
+        try:
+            if os.path.exists(normalized_socket_base_dir):
+                if not os.path.isdir(normalized_socket_base_dir):
+                    raise ContainerStartError("container socket base path must be a directory")
+            else:
+                os.makedirs(normalized_socket_base_dir, mode=0o700, exist_ok=True)
+            os.chmod(normalized_socket_base_dir, 0o700)
+        except OSError as exc:
+            raise ContainerStartError(
+                f"Failed to prepare container socket base: {normalized_socket_base_dir}"
+            ) from exc
+
+    async def _verify_podman_available(self) -> None:
+        """Fail fast when the Podman CLI is missing or unhealthy."""
+        await self._run_podman("--version")
+
     async def _ensure_network(self) -> None:
         """Create the restricted Podman network if it doesn't exist."""
         rc, _, _ = await self._run_podman(
-            "network", "exists", _SIDECAR_NET, check=False,
+            "network",
+            "exists",
+            _SIDECAR_NET,
+            check=False,
         )
         if rc != 0:
             await self._run_podman(
-                "network", "create", "--internal", _SIDECAR_NET,
+                "network",
+                "create",
+                "--internal",
+                _SIDECAR_NET,
             )
             logger.info("Created Podman network %s", _SIDECAR_NET)
+
+    async def _ensure_image(self) -> None:
+        """Require the configured sidecar image to be present locally."""
+        image_name = self._settings.container_image
+        if not isinstance(image_name, str):
+            raise TypeError("container_image must be a string")
+        normalized_image_name = image_name.strip()
+        if not normalized_image_name:
+            raise ValueError("container_image must not be empty")
+
+        rc, _, _ = await self._run_podman(
+            "image",
+            "exists",
+            normalized_image_name,
+            check=False,
+        )
+        if rc != 0:
+            raise ContainerStartError(
+                f"Configured sidecar image is not available locally: {normalized_image_name}"
+            )
 
     # -- Orphan cleanup -----------------------------------------------------
 
@@ -131,9 +185,12 @@ class ContainerManager:
         """Remove containers left over from a previous process crash."""
         try:
             rc, stdout, _ = await self._run_podman(
-                "ps", "-a",
-                "--filter", "label=yinshi.user_id",
-                "--format", "json",
+                "ps",
+                "-a",
+                "--filter",
+                "label=yinshi.user_id",
+                "--format",
+                "json",
                 check=False,
             )
             if rc != 0 or not stdout:
@@ -159,7 +216,9 @@ class ContainerManager:
     # -- Public API ---------------------------------------------------------
 
     async def ensure_container(
-        self, user_id: str, data_dir: str,
+        self,
+        user_id: str,
+        data_dir: str,
     ) -> ContainerInfo:
         """Get or create a sidecar container for a user.
 
@@ -242,7 +301,10 @@ class ContainerManager:
     async def _is_running(self, container_id: str) -> bool:
         """Check if a container is still running."""
         rc, stdout, _ = await self._run_podman(
-            "inspect", "--format", "{{.State.Status}}", container_id,
+            "inspect",
+            "--format",
+            "{{.State.Status}}",
+            container_id,
             check=False,
         )
         return rc == 0 and stdout == "running"
@@ -250,13 +312,18 @@ class ContainerManager:
     async def _remove_container(self, container_id: str) -> None:
         """Force-remove a container."""
         rc, _, _ = await self._run_podman(
-            "rm", "-f", container_id, check=False,
+            "rm",
+            "-f",
+            container_id,
+            check=False,
         )
         if rc == 0:
             logger.info("Removed container %s", container_id[:12])
 
     async def _create_container(
-        self, user_id: str, data_dir: str,
+        self,
+        user_id: str,
+        data_dir: str,
     ) -> ContainerInfo:
         """Start a new sidecar container for a user."""
         s = self._settings
@@ -268,19 +335,32 @@ class ContainerManager:
         cpus = str(s.container_cpu_quota / 100000)
 
         _, container_id, _ = await self._run_podman(
-            "run", "-d",
-            "--name", f"yinshi-sidecar-{user_id}",
-            "--env", "SIDECAR_SOCKET_PATH=/run/sidecar/sidecar.sock",
-            "-v", f"{socket_dir}:/run/sidecar:rw",
-            "-v", f"{real_data_dir}:/data:rw",
-            "--network", _SIDECAR_NET,
-            "--memory", s.container_memory_limit,
-            "--memory-swap", s.container_memory_limit,
-            "--cpus", cpus,
-            "--pids-limit", str(s.container_pids_limit),
-            "--security-opt", "no-new-privileges",
-            "--cap-drop", "ALL",
-            "--label", f"yinshi.user_id={user_id}",
+            "run",
+            "-d",
+            "--name",
+            f"yinshi-sidecar-{user_id}",
+            "--env",
+            "SIDECAR_SOCKET_PATH=/run/sidecar/sidecar.sock",
+            "-v",
+            f"{socket_dir}:/run/sidecar:rw",
+            "-v",
+            f"{real_data_dir}:/data:rw",
+            "--network",
+            _SIDECAR_NET,
+            "--memory",
+            s.container_memory_limit,
+            "--memory-swap",
+            s.container_memory_limit,
+            "--cpus",
+            cpus,
+            "--pids-limit",
+            str(s.container_pids_limit),
+            "--security-opt",
+            "no-new-privileges",
+            "--cap-drop",
+            "ALL",
+            "--label",
+            f"yinshi.user_id={user_id}",
             s.container_image,
         )
 

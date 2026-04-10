@@ -4,14 +4,18 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 
 from yinshi.api.deps import require_tenant
+from yinshi.exceptions import ContainerNotReadyError, ContainerStartError
 from yinshi.model_catalog import get_provider_metadata
 from yinshi.models import ProviderCatalogOut
-from yinshi.services.pi_config import resolve_pi_runtime
 from yinshi.services.provider_connections import list_provider_connections
 from yinshi.services.sidecar import create_sidecar_connection
+from yinshi.services.sidecar_runtime import (
+    resolve_tenant_sidecar_context,
+    touch_tenant_container,
+)
 
 router = APIRouter(tags=["catalog"])
 
@@ -46,15 +50,22 @@ def _build_provider_entry(
 async def get_catalog(request: Request) -> dict[str, Any]:
     """Return the current user's provider/model catalog."""
     tenant = require_tenant(request)
-    agent_dir, _settings_payload = resolve_pi_runtime(tenant.user_id, tenant.data_dir)
+    try:
+        tenant_sidecar_context = await resolve_tenant_sidecar_context(request, tenant)
+    except (ContainerStartError, ContainerNotReadyError) as error:
+        raise HTTPException(
+            status_code=503,
+            detail="Agent environment temporarily unavailable",
+        ) from error
     connections = list_provider_connections(tenant.user_id)
     connected_provider_ids = {connection["provider"] for connection in connections}
 
-    sidecar = await create_sidecar_connection()
+    sidecar = await create_sidecar_connection(tenant_sidecar_context.socket_path)
     try:
-        catalog = await sidecar.get_catalog(agent_dir=agent_dir)
+        catalog = await sidecar.get_catalog(agent_dir=tenant_sidecar_context.agent_dir)
     finally:
         await sidecar.disconnect()
+    touch_tenant_container(request, tenant)
 
     supported_provider_ids = {
         provider_row["id"]

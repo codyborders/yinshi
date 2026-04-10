@@ -46,26 +46,19 @@ Yinshi is a browser-based coding environment that uses [pi](https://pi.dev) agen
 
 ### Sidecar
 
-- [pi coding agent SDK](https://pi.dev) - Node.js sidecar that bridges the backend to the pi agent over a Unix domain socket. Optionally runs inside a per-user Podman container for isolation.
+- [pi coding agent SDK](https://pi.dev) - Node.js sidecar that bridges the backend to the pi agent over a Unix domain socket. In tenant mode it runs inside a dedicated per-user Podman container by default.
 
 ## Development
 
+Backend development uses per-user containers by default. Set `CONTAINER_ENABLED=false` only for explicit no-auth/dev/test host-side execution.
+
 ```bash
-# Backend
 cd backend
-python -m venv venv && source venv/bin/activate
+python -m venv .venv
+source .venv/bin/activate
 pip install -r requirements/base.txt
-cp .env.example .env  # configure secrets
+cp .env.example .env
 uvicorn yinshi.main:app --reload
-
-# Frontend
-cd frontend
-npm install
-npm run dev
-
-# Tests
-cd backend && pytest
-cd frontend && npx vitest run
 ```
 
 ## Project Structure

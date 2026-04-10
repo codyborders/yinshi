@@ -749,7 +749,7 @@ def update_enabled_categories(
 
 
 def resolve_pi_runtime(user_id: str, data_dir: str) -> tuple[str | None, dict[str, object] | None]:
-    """Return the active Pi runtime inputs for the current request, if any."""
+    """Return the active Pi runtime inputs when container mode is enabled."""
     settings = get_settings()
     if not settings.container_enabled:
         return None, None

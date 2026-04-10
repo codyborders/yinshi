@@ -104,6 +104,33 @@ def test_import_local_repo(client: TestClient, git_repo: str) -> None:
     assert data["id"]
 
 
+def test_tenant_local_import_clones_into_tenant_storage(
+    auth_client: TestClient,
+    git_repo: str,
+) -> None:
+    """Tenant local imports should be copied into tenant storage when containers are on."""
+    from yinshi.config import get_settings
+
+    tenant = getattr(auth_client, "yinshi_tenant")
+    settings = get_settings()
+    original_container_enabled = settings.container_enabled
+    settings.container_enabled = True
+
+    try:
+        response = auth_client.post(
+            "/api/repos",
+            json={"name": "tenant-repo", "local_path": git_repo},
+        )
+    finally:
+        settings.container_enabled = original_container_enabled
+
+    assert response.status_code == 201
+    payload = response.json()
+    assert payload["root_path"] == str(Path(tenant.data_dir) / "repos" / payload["id"])
+    assert payload["root_path"] != git_repo
+    assert Path(payload["root_path"]).is_dir()
+
+
 def test_repo_response_excludes_owner_email(client: TestClient, git_repo: str) -> None:
     """Repo API responses should not leak owner_email."""
     resp = client.post(
@@ -135,6 +162,7 @@ def test_list_repos_includes_null_owner(
     monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "fake-secret")
     monkeypatch.setenv("DISABLE_AUTH", "false")
     monkeypatch.setenv("SECRET_KEY", "test-secret-key")
+    monkeypatch.setenv("CONTAINER_ENABLED", "false")
     from yinshi.config import get_settings
 
     get_settings.cache_clear()
@@ -926,6 +954,7 @@ def test_turn_id_index_exists(db_path: str, tmp_path, monkeypatch: pytest.Monkey
     monkeypatch.setenv("ENCRYPTION_PEPPER", "a" * 64)
     monkeypatch.setenv("GOOGLE_CLIENT_ID", "")
     monkeypatch.setenv("DISABLE_AUTH", "true")
+    monkeypatch.setenv("CONTAINER_ENABLED", "false")
     from yinshi.config import get_settings
 
     get_settings.cache_clear()

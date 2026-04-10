@@ -15,6 +15,7 @@ def test_websocket_header_does_not_bypass_auth(tmp_path, monkeypatch):
     monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "fake-secret")
     monkeypatch.setenv("DISABLE_AUTH", "false")
     monkeypatch.setenv("SECRET_KEY", "test-secret-key")
+    monkeypatch.setenv("CONTAINER_ENABLED", "false")
 
     from yinshi.config import get_settings
 
@@ -128,6 +129,7 @@ def test_legacy_callback_no_open_redirect(tmp_path, monkeypatch):
     monkeypatch.setenv("ENCRYPTION_PEPPER", "a" * 64)
     monkeypatch.setenv("GOOGLE_CLIENT_ID", "")
     monkeypatch.setenv("DISABLE_AUTH", "true")
+    monkeypatch.setenv("CONTAINER_ENABLED", "false")
 
     from yinshi.config import get_settings
 
@@ -163,6 +165,7 @@ def test_session_cookie_has_path(tmp_path, monkeypatch):
     monkeypatch.setenv("ENCRYPTION_PEPPER", "a" * 64)
     monkeypatch.setenv("GOOGLE_CLIENT_ID", "")
     monkeypatch.setenv("DISABLE_AUTH", "true")
+    monkeypatch.setenv("CONTAINER_ENABLED", "false")
 
     from yinshi.config import get_settings
 
@@ -208,6 +211,7 @@ def test_cors_no_localhost_in_production(tmp_path, monkeypatch):
     monkeypatch.setenv("DISABLE_AUTH", "true")
     monkeypatch.setenv("DEBUG", "false")
     monkeypatch.setenv("FRONTEND_URL", "https://yinshi.io")
+    monkeypatch.setenv("CONTAINER_ENABLED", "false")
 
     from yinshi.config import get_settings
 
@@ -240,6 +244,7 @@ def test_usage_log_session_id_index(tmp_path, monkeypatch):
     monkeypatch.setenv("ENCRYPTION_PEPPER", "a" * 64)
     monkeypatch.setenv("GOOGLE_CLIENT_ID", "")
     monkeypatch.setenv("DISABLE_AUTH", "true")
+    monkeypatch.setenv("CONTAINER_ENABLED", "false")
 
     from yinshi.config import get_settings
 

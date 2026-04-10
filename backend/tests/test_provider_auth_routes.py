@@ -7,6 +7,17 @@ from fastapi.testclient import TestClient
 from tests.factories import make_mock_sidecar
 
 
+def _tenant_sidecar_context() -> object:
+    """Build a fixed tenant sidecar context for route tests."""
+    from yinshi.services.sidecar_runtime import TenantSidecarContext
+
+    return TenantSidecarContext(
+        socket_path="/tmp/tenant-oauth.sock",
+        agent_dir=None,
+        settings_payload=None,
+    )
+
+
 def test_start_provider_auth_exposes_manual_input_metadata(auth_client: TestClient) -> None:
     """Start should expose whether the UI must accept pasted localhost callback URLs."""
 
@@ -28,7 +39,16 @@ def test_start_provider_auth_exposes_manual_input_metadata(auth_client: TestClie
         }
     )
 
-    with patch("yinshi.api.auth_routes.create_sidecar_connection", return_value=mock_sidecar):
+    with (
+        patch(
+            "yinshi.api.auth_routes.create_sidecar_connection", return_value=mock_sidecar
+        ) as create_conn,
+        patch(
+            "yinshi.api.auth_routes.resolve_tenant_sidecar_context",
+            new=AsyncMock(return_value=_tenant_sidecar_context()),
+        ),
+        patch("yinshi.api.auth_routes.touch_tenant_container") as touch_container,
+    ):
         response = auth_client.post("/auth/providers/openai-codex/start")
 
     assert response.status_code == 200
@@ -41,6 +61,8 @@ def test_start_provider_auth_exposes_manual_input_metadata(auth_client: TestClie
         "manual_input_prompt": "Paste the final redirect URL or authorization code here.",
         "manual_input_submitted": False,
     }
+    create_conn.assert_awaited_once_with("/tmp/tenant-oauth.sock")
+    touch_container.assert_called_once()
 
 
 def test_submit_provider_auth_callback_feeds_manual_input(auth_client: TestClient) -> None:
@@ -64,11 +86,18 @@ def test_submit_provider_auth_callback_feeds_manual_input(auth_client: TestClien
             "manual_input_submitted": False,
         }
     )
-    mock_sidecar.submit_oauth_flow_input = AsyncMock(
-        return_value={"type": "oauth_submitted"}
-    )
+    mock_sidecar.submit_oauth_flow_input = AsyncMock(return_value={"type": "oauth_submitted"})
 
-    with patch("yinshi.api.auth_routes.create_sidecar_connection", return_value=mock_sidecar):
+    with (
+        patch(
+            "yinshi.api.auth_routes.create_sidecar_connection", return_value=mock_sidecar
+        ) as create_conn,
+        patch(
+            "yinshi.api.auth_routes.resolve_tenant_sidecar_context",
+            new=AsyncMock(return_value=_tenant_sidecar_context()),
+        ),
+        patch("yinshi.api.auth_routes.touch_tenant_container") as touch_container,
+    ):
         response = auth_client.post(
             "/auth/providers/openai-codex/callback",
             json={
@@ -93,6 +122,8 @@ def test_submit_provider_auth_callback_feeds_manual_input(auth_client: TestClien
         "flow-openai-codex",
         "http://localhost:1455/auth/callback?code=test-code&state=test-state",
     )
+    create_conn.assert_awaited_once_with("/tmp/tenant-oauth.sock")
+    touch_container.assert_called_once()
 
 
 def test_callback_provider_auth_persists_completed_oauth_connection(
@@ -126,7 +157,16 @@ def test_callback_provider_auth_persists_completed_oauth_connection(
     )
     mock_sidecar.clear_oauth_flow = AsyncMock()
 
-    with patch("yinshi.api.auth_routes.create_sidecar_connection", return_value=mock_sidecar):
+    with (
+        patch(
+            "yinshi.api.auth_routes.create_sidecar_connection", return_value=mock_sidecar
+        ) as create_conn,
+        patch(
+            "yinshi.api.auth_routes.resolve_tenant_sidecar_context",
+            new=AsyncMock(return_value=_tenant_sidecar_context()),
+        ),
+        patch("yinshi.api.auth_routes.touch_tenant_container") as touch_container,
+    ):
         response = auth_client.get(
             "/auth/providers/openai-codex/callback?flow_id=flow-openai-codex"
         )
@@ -149,3 +189,5 @@ def test_callback_provider_auth_persists_completed_oauth_connection(
     providers = [row["provider"] for row in connections_response.json()]
     assert "openai-codex" in providers
     mock_sidecar.clear_oauth_flow.assert_awaited_once_with("flow-openai-codex")
+    create_conn.assert_awaited_once_with("/tmp/tenant-oauth.sock")
+    touch_container.assert_called_once()

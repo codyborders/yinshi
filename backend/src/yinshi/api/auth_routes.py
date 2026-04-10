@@ -21,13 +21,22 @@ from yinshi.auth import (
 )
 from yinshi.config import get_settings
 from yinshi.db import get_control_db
-from yinshi.exceptions import GitHubAppError, GitHubInstallationUnusableError
+from yinshi.exceptions import (
+    ContainerNotReadyError,
+    ContainerStartError,
+    GitHubAppError,
+    GitHubInstallationUnusableError,
+)
 from yinshi.models import ProviderAuthInputIn, ProviderAuthStartOut, ProviderAuthStatusOut
 from yinshi.rate_limit import limiter
 from yinshi.services.accounts import resolve_or_create_user
 from yinshi.services.github_app import get_installation_details
 from yinshi.services.provider_connections import create_provider_connection
 from yinshi.services.sidecar import create_sidecar_connection
+from yinshi.services.sidecar_runtime import (
+    resolve_tenant_sidecar_context,
+    touch_tenant_container,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -90,6 +99,28 @@ def _current_user_id(request: Request) -> str | None:
     if not token:
         return None
     return verify_session_token(token)
+
+
+async def _resolve_provider_sidecar_socket(
+    request: Request,
+    user_id: str,
+) -> tuple[object | None, str | None]:
+    """Resolve the tenant record plus socket path for provider-auth sidecar calls."""
+    if not isinstance(user_id, str):
+        raise TypeError("user_id must be a string")
+    normalized_user_id = user_id.strip()
+    if not normalized_user_id:
+        raise ValueError("user_id must not be empty")
+
+    tenant = _resolve_tenant_from_user_id(normalized_user_id)
+    try:
+        tenant_sidecar_context = await resolve_tenant_sidecar_context(request, tenant)
+    except (ContainerStartError, ContainerNotReadyError) as error:
+        raise HTTPException(
+            status_code=503,
+            detail="Agent environment temporarily unavailable",
+        ) from error
+    return tenant, tenant_sidecar_context.socket_path
 
 
 def _normalize_provider_flow_status(status: object) -> str:
@@ -434,10 +465,12 @@ async def start_provider_auth(provider: str, request: Request) -> dict[str, Any]
     user_id = _current_user_id(request)
     if user_id is None:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    sidecar = await create_sidecar_connection()
+    tenant, socket_path = await _resolve_provider_sidecar_socket(request, user_id)
+    sidecar = await create_sidecar_connection(socket_path)
     try:
         flow = await sidecar.start_oauth_flow(provider)
     finally:
+        touch_tenant_container(request, tenant)
         await sidecar.disconnect()
     return _build_provider_auth_start_payload(flow)
 
@@ -448,7 +481,8 @@ async def callback_provider_auth(provider: str, flow_id: str, request: Request) 
     user_id = _current_user_id(request)
     if user_id is None:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    sidecar = await create_sidecar_connection()
+    tenant, socket_path = await _resolve_provider_sidecar_socket(request, user_id)
+    sidecar = await create_sidecar_connection(socket_path)
     try:
         flow = await sidecar.get_oauth_flow_status(flow_id)
         _require_provider_match(provider, flow)
@@ -484,10 +518,9 @@ async def callback_provider_auth(provider: str, flow_id: str, request: Request) 
             label="",
         )
         await sidecar.clear_oauth_flow(flow_id)
-        return JSONResponse(
-            _build_provider_auth_status_payload(flow, status="complete")
-        )
+        return JSONResponse(_build_provider_auth_status_payload(flow, status="complete"))
     finally:
+        touch_tenant_container(request, tenant)
         await sidecar.disconnect()
 
 
@@ -498,10 +531,12 @@ async def submit_provider_auth_callback(
     request: Request,
 ) -> JSONResponse:
     """Submit pasted OAuth callback data into an active provider auth flow."""
-    if _current_user_id(request) is None:
+    user_id = _current_user_id(request)
+    if user_id is None:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
-    sidecar = await create_sidecar_connection()
+    tenant, socket_path = await _resolve_provider_sidecar_socket(request, user_id)
+    sidecar = await create_sidecar_connection(socket_path)
     try:
         flow = await sidecar.get_oauth_flow_status(payload.flow_id)
         _require_provider_match(provider, flow)
@@ -539,6 +574,7 @@ async def submit_provider_auth_callback(
             ),
         )
     finally:
+        touch_tenant_container(request, tenant)
         await sidecar.disconnect()
 
 
