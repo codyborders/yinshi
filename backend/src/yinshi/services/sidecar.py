@@ -122,6 +122,7 @@ class SidecarClient:
         cwd: str,
         provider_auth: dict[str, Any] | None = None,
         provider_config: dict[str, Any] | None = None,
+        git_auth: dict[str, Any] | None = None,
         agent_dir: str | None = None,
         settings_payload: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
@@ -131,6 +132,8 @@ class SidecarClient:
             options["providerAuth"] = provider_auth
         if provider_config:
             options["providerConfig"] = provider_config
+        if git_auth:
+            options["gitAuth"] = git_auth
         if agent_dir:
             options["agentDir"] = agent_dir
         if settings_payload:
@@ -144,6 +147,7 @@ class SidecarClient:
         cwd: str = ".",
         provider_auth: dict[str, Any] | None = None,
         provider_config: dict[str, Any] | None = None,
+        git_auth: dict[str, Any] | None = None,
         agent_dir: str | None = None,
         settings_payload: dict[str, Any] | None = None,
     ) -> None:
@@ -157,6 +161,7 @@ class SidecarClient:
                     cwd,
                     provider_auth,
                     provider_config,
+                    git_auth,
                     agent_dir=agent_dir,
                     settings_payload=settings_payload,
                 ),
@@ -171,6 +176,7 @@ class SidecarClient:
         cwd: str = ".",
         provider_auth: dict[str, Any] | None = None,
         provider_config: dict[str, Any] | None = None,
+        git_auth: dict[str, Any] | None = None,
         agent_dir: str | None = None,
         settings_payload: dict[str, Any] | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
@@ -185,6 +191,7 @@ class SidecarClient:
                     cwd,
                     provider_auth,
                     provider_config,
+                    git_auth,
                     agent_dir=agent_dir,
                     settings_payload=settings_payload,
                 ),

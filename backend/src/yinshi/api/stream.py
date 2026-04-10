@@ -31,6 +31,7 @@ from yinshi.exceptions import (
 )
 from yinshi.model_catalog import get_provider_metadata, normalize_model_ref
 from yinshi.rate_limit import limiter
+from yinshi.services.git_runtime import resolve_git_runtime_auth
 from yinshi.services.keys import record_usage
 from yinshi.services.provider_connections import (
     resolve_provider_connection,
@@ -68,6 +69,7 @@ class ExecutionContext:
     provider: str
     provider_auth: dict[str, object] | None
     provider_config: dict[str, object] | None
+    git_auth: dict[str, object] | None = None
     agent_dir: str | None = None
     settings_payload: dict[str, object] | None = None
     model_ref: str = ""
@@ -257,9 +259,11 @@ def _lookup_session(
     if tenant:
         row = db.execute(
             "SELECT s.*, w.path as workspace_path, w.id as workspace_id, "
-            "w.name as workspace_name, w.branch as workspace_branch "
+            "w.name as workspace_name, w.branch as workspace_branch, "
+            "r.remote_url, r.installation_id "
             "FROM sessions s "
             "JOIN workspaces w ON s.workspace_id = w.id "
+            "JOIN repos r ON w.repo_id = r.id "
             "WHERE s.id = ?",
             (session_id,),
         ).fetchone()
@@ -268,7 +272,7 @@ def _lookup_session(
     row = db.execute(
         "SELECT s.*, w.path as workspace_path, w.id as workspace_id, "
         "w.name as workspace_name, w.branch as workspace_branch, "
-        "r.owner_email "
+        "r.owner_email, r.remote_url, r.installation_id "
         "FROM sessions s "
         "JOIN workspaces w ON s.workspace_id = w.id "
         "JOIN repos r ON w.repo_id = r.id "
@@ -283,6 +287,8 @@ async def _resolve_execution_context(
     tenant: Any,
     workspace_path: str,
     model: str,
+    remote_url: str | None = None,
+    installation_id: int | None = None,
 ) -> ExecutionContext:
     """Resolve all sidecar execution inputs for the current request."""
     if not tenant:
@@ -293,6 +299,7 @@ async def _resolve_execution_context(
             provider="",
             provider_auth=None,
             provider_config=None,
+            git_auth=None,
             model_ref=model,
         )
 
@@ -366,6 +373,11 @@ async def _resolve_execution_context(
             dict[str, object] | None,
             auth_resolved.get("model_config"),
         )
+        git_runtime_auth = await resolve_git_runtime_auth(
+            tenant.user_id,
+            remote_url,
+            installation_id,
+        )
     except KeyNotFoundError as exc:
         raise HTTPException(status_code=402, detail=str(exc)) from exc
     finally:
@@ -380,6 +392,7 @@ async def _resolve_execution_context(
         provider=provider,
         provider_auth=provider_auth,
         provider_config=resolved_provider_config or provider_config,
+        git_auth=None if git_runtime_auth is None else git_runtime_auth.as_sidecar_payload(),
         agent_dir=agent_dir,
         settings_payload=settings_payload,
         model_ref=resolved_model_ref,
@@ -418,6 +431,8 @@ async def prompt_session(
         raise HTTPException(status_code=409, detail="Session already has an active stream")
 
     workspace_path = session["workspace_path"]
+    remote_url = session["remote_url"] if "remote_url" in session.keys() else None
+    installation_id = session["installation_id"] if "installation_id" in session.keys() else None
     model = normalize_model_ref(body.model or session["model"])
     prompt = body.prompt
     turn_id = uuid.uuid4().hex
@@ -446,7 +461,14 @@ async def prompt_session(
         db.commit()
 
     try:
-        context = await _resolve_execution_context(request, tenant, workspace_path, model)
+        context = await _resolve_execution_context(
+            request,
+            tenant,
+            workspace_path,
+            model,
+            remote_url=remote_url,
+            installation_id=installation_id,
+        )
     except Exception:
         with get_db_for_request(request) as db:
             db.execute(
@@ -484,6 +506,7 @@ async def prompt_session(
                 cwd=context.effective_cwd,
                 provider_auth=cast(dict[str, Any] | None, context.provider_auth),
                 provider_config=cast(dict[str, Any] | None, context.provider_config),
+                git_auth=cast(dict[str, Any] | None, context.git_auth),
                 agent_dir=context.agent_dir,
                 settings_payload=context.settings_payload,
             )
@@ -497,6 +520,7 @@ async def prompt_session(
                 cwd=context.effective_cwd,
                 provider_auth=cast(dict[str, Any] | None, context.provider_auth),
                 provider_config=cast(dict[str, Any] | None, context.provider_config),
+                git_auth=cast(dict[str, Any] | None, context.git_auth),
                 agent_dir=context.agent_dir,
                 settings_payload=context.settings_payload,
             ):

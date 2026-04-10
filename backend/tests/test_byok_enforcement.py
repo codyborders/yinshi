@@ -250,6 +250,7 @@ def _make_byok_mock_sidecar(
         cwd=None,
         provider_auth=None,
         provider_config=None,
+        git_auth=None,
         agent_dir=None,
         settings_payload=None,
     ):
@@ -382,6 +383,7 @@ def test_prompt_dev_mode_no_enforcement(db_path, tmp_path, monkeypatch, git_repo
             cwd=None,
             provider_auth=None,
             provider_config=None,
+            git_auth=None,
             agent_dir=None,
             settings_payload=None,
         ):

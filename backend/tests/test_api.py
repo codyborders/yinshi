@@ -801,6 +801,83 @@ def test_prompt_repairs_migrated_workspace_paths(
     assert workspace_row == (repaired_workspace_path,)
 
 
+def test_prompt_forwards_github_runtime_git_auth(
+    auth_client: TestClient,
+    git_repo: str,
+) -> None:
+    """Prompt execution should forward ephemeral GitHub git auth for app-backed repos."""
+    from yinshi.db import get_control_db
+    from yinshi.services.crypto import encrypt_api_key
+    from yinshi.services.git_runtime import GitRuntimeAuth
+    from yinshi.services.keys import get_user_dek
+
+    tenant = getattr(auth_client, "yinshi_tenant")
+    stack = create_full_stack(auth_client, git_repo, name="github-runtime-auth")
+    session_id = stack["session"]["id"]
+    repo_id = stack["repo"]["id"]
+
+    dek = get_user_dek(tenant.user_id)
+    encrypted_key = encrypt_api_key("sk-user-minimax-key", dek)
+    with get_control_db() as db:
+        db.execute(
+            "INSERT INTO api_keys (user_id, provider, encrypted_key) VALUES (?, ?, ?)",
+            (tenant.user_id, "minimax", encrypted_key),
+        )
+        db.commit()
+
+    with sqlite3.connect(tenant.db_path) as user_db:
+        user_db.execute(
+            "UPDATE repos SET remote_url = ?, installation_id = ? WHERE id = ?",
+            ("https://github.com/acme/private-repo.git", 321, repo_id),
+        )
+        user_db.commit()
+
+    async def fake_query(
+        sid,
+        prompt,
+        model=None,
+        cwd=None,
+        provider_auth=None,
+        provider_config=None,
+        git_auth=None,
+        agent_dir=None,
+        settings_payload=None,
+    ):
+        yield {
+            "type": "message",
+            "data": {"type": "result", "usage": {}},
+        }
+
+    mock_sidecar = make_mock_sidecar(fake_query)
+    with (
+        patch(
+            "yinshi.api.stream.create_sidecar_connection",
+            return_value=mock_sidecar,
+        ),
+        patch(
+            "yinshi.api.stream.resolve_git_runtime_auth",
+            new=AsyncMock(
+                return_value=GitRuntimeAuth(
+                    strategy="github_app_https",
+                    host="github.com",
+                    access_token="runtime-installation-token",
+                )
+            ),
+        ),
+    ):
+        resp = auth_client.post(
+            f"/api/sessions/{session_id}/prompt",
+            json={"prompt": "push the branch to github"},
+        )
+
+    assert resp.status_code == 200
+    assert mock_sidecar.warmup.call_args.kwargs["git_auth"] == {
+        "strategy": "github_app_https",
+        "host": "github.com",
+        "accessToken": "runtime-installation-token",
+    }
+
+
 def test_prompt_streams_sidecar_events(client: TestClient, session_id: str) -> None:
     """POST /api/sessions/:id/prompt should stream SSE events and persist messages."""
 

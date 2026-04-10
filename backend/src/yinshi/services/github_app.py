@@ -448,3 +448,51 @@ async def resolve_github_clone_access(
         access_token=access_token,
         manage_url=installation.html_url,
     )
+
+
+async def resolve_github_runtime_access_token(
+    user_id: str,
+    remote_url: str,
+    installation_id: int | None,
+) -> str | None:
+    """Resolve a short-lived GitHub App token for runtime git operations.
+
+    This helper returns ``None`` when token refresh is unavailable so prompt
+    execution can continue even if git push/fetch credentials are temporarily
+    missing.
+    """
+    assert user_id, "user_id must not be empty"
+    assert remote_url, "remote_url must not be empty"
+
+    github_remote = normalize_github_remote(remote_url)
+    if github_remote is None:
+        return None
+    if not _github_app_is_configured():
+        return None
+
+    if installation_id is not None:
+        installation = _find_user_installation(user_id, installation_id)
+        if installation is None:
+            return None
+        try:
+            return await get_installation_token(installation_id)
+        except (GitHubAppError, GitHubInstallationUnusableError):
+            logger.warning(
+                "Failed to mint runtime GitHub token for installation %s",
+                installation_id,
+                exc_info=True,
+            )
+            return None
+
+    try:
+        clone_access = await resolve_github_clone_access(user_id, remote_url)
+    except (GitHubAppError, GitHubInstallationUnusableError):
+        logger.warning(
+            "Failed to resolve runtime GitHub clone access for %s",
+            remote_url,
+            exc_info=True,
+        )
+        return None
+    if clone_access is None:
+        return None
+    return clone_access.access_token

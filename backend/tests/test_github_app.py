@@ -239,6 +239,65 @@ async def test_resolve_github_clone_access_preserves_manage_url_for_revoked_inst
 
 
 @pytest.mark.asyncio
+async def test_resolve_github_runtime_access_token_uses_stored_installation(
+    github_app_env,
+) -> None:
+    """Runtime git auth should mint a token from the stored installation id."""
+    from yinshi.db import get_control_db
+    from yinshi.services import github_app
+
+    _insert_user("user-4")
+    with get_control_db() as db:
+        db.execute(
+            """
+            INSERT INTO github_installations (
+                user_id, installation_id, account_login, account_type, html_url
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                "user-4",
+                321,
+                "acme",
+                "Organization",
+                "https://github.com/organizations/acme/settings/installations/321",
+            ),
+        )
+        db.commit()
+
+    with patch.object(
+        github_app,
+        "get_installation_token",
+        new=AsyncMock(return_value="runtime-installation-token"),
+    ) as token_mock:
+        token = await github_app.resolve_github_runtime_access_token(
+            "user-4",
+            "https://github.com/acme/private-repo",
+            321,
+        )
+
+    assert token == "runtime-installation-token"
+    token_mock.assert_awaited_once_with(321)
+
+
+@pytest.mark.asyncio
+async def test_resolve_github_runtime_access_token_returns_none_for_missing_installation(
+    github_app_env,
+) -> None:
+    """Runtime git auth should fail open when the user lacks the stored installation."""
+    from yinshi.services.github_app import resolve_github_runtime_access_token
+
+    _insert_user("user-5")
+
+    token = await resolve_github_runtime_access_token(
+        "user-5",
+        "https://github.com/acme/private-repo",
+        654,
+    )
+
+    assert token is None
+
+
+@pytest.mark.asyncio
 async def test_resolve_github_clone_access_falls_back_to_anonymous_when_unconfigured(
     tmp_path,
     monkeypatch,

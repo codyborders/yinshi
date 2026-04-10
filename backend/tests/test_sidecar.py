@@ -68,6 +68,36 @@ async def test_sidecar_client_warmup_with_agent_dir_and_settings():
 
 
 @pytest.mark.asyncio
+async def test_sidecar_client_warmup_with_git_auth() -> None:
+    """warmup should include runtime git auth when present."""
+    from yinshi.services.sidecar import SidecarClient
+
+    client = SidecarClient()
+    client._connected = True
+    client._writer = MagicMock()
+    client._writer.drain = AsyncMock()
+
+    await client.warmup(
+        "sess-3",
+        model="opus",
+        cwd="/tmp/repo",
+        git_auth={
+            "strategy": "github_app_https",
+            "host": "github.com",
+            "accessToken": "installation-token",
+        },
+    )
+
+    written = client._writer.write.call_args[0][0].decode()
+    msg = json.loads(written.strip())
+    assert msg["options"]["gitAuth"] == {
+        "strategy": "github_app_https",
+        "host": "github.com",
+        "accessToken": "installation-token",
+    }
+
+
+@pytest.mark.asyncio
 async def test_sidecar_client_cancel():
     """cancel should send cancel message."""
     from yinshi.services.sidecar import SidecarClient

@@ -10,7 +10,10 @@ import {
   ModelRegistry,
   SessionManager,
   SettingsManager,
-  createCodingTools,
+  createBashTool,
+  createEditTool,
+  createReadTool,
+  createWriteTool,
 } from "@mariozechner/pi-coding-agent";
 import { getOAuthProvider } from "@mariozechner/pi-ai/oauth";
 
@@ -18,6 +21,7 @@ import { HEALTH_CHECK_INTERVAL } from "./constants.js";
 
 const __sidecarDir = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_MODEL_REF = "minimax/MiniMax-M2.7";
+const GIT_ASKPASS_PATH = "/tmp/yinshi-git-askpass.sh";
 const LEGACY_MODEL_ALIASES = new Map([
   ["haiku", "anthropic/claude-haiku-4-5-20251001"],
   ["minimax", DEFAULT_MODEL_REF],
@@ -69,6 +73,103 @@ function buildModelsJsonPath(agentDir) {
     return null;
   }
   return modelsJsonPath;
+}
+
+function normalizeGitAuth(gitAuth) {
+  if (gitAuth === null || gitAuth === undefined) {
+    return null;
+  }
+  if (typeof gitAuth !== "object" || Array.isArray(gitAuth)) {
+    throw new Error("gitAuth must be an object");
+  }
+  if (gitAuth.strategy !== "github_app_https") {
+    throw new Error(`Unsupported git auth strategy: ${gitAuth.strategy}`);
+  }
+  if (typeof gitAuth.host !== "string" || gitAuth.host.trim() !== "github.com") {
+    throw new Error("gitAuth.host must be github.com");
+  }
+  if (typeof gitAuth.accessToken !== "string" || !gitAuth.accessToken.trim()) {
+    throw new Error("gitAuth.accessToken must be a non-empty string");
+  }
+  return {
+    strategy: gitAuth.strategy,
+    host: gitAuth.host.trim(),
+    accessToken: gitAuth.accessToken.trim(),
+  };
+}
+
+function ensureGitAskpassScript() {
+  const askpassScript = "#!/bin/sh\n"
+    + "case \"$1\" in\n"
+    + "  *Username*) printf '%s\\n' 'x-access-token' ;;\n"
+    + "  *) printf '%s\\n' \"$YINSHI_GIT_TOKEN\" ;;\n"
+    + "esac\n";
+  if (fs.existsSync(GIT_ASKPASS_PATH)) {
+    const currentContent = fs.readFileSync(GIT_ASKPASS_PATH, "utf-8");
+    if (currentContent === askpassScript) {
+      fs.chmodSync(GIT_ASKPASS_PATH, 0o700);
+      return;
+    }
+  }
+  fs.writeFileSync(GIT_ASKPASS_PATH, askpassScript, { encoding: "utf-8", mode: 0o700 });
+  fs.chmodSync(GIT_ASKPASS_PATH, 0o700);
+}
+
+function commandMayUseGit(command) {
+  if (typeof command !== "string") {
+    return false;
+  }
+  return /\bgit\b/.test(command);
+}
+
+function commandOverridesGitAuth(command) {
+  if (typeof command !== "string") {
+    return false;
+  }
+  if (/\bGIT_ASKPASS=/.test(command)) {
+    return true;
+  }
+  if (/\bGIT_SSH_COMMAND=/.test(command)) {
+    return true;
+  }
+  if (/\bYINSHI_GIT_TOKEN=/.test(command)) {
+    return true;
+  }
+  return false;
+}
+
+function createYinshiCodingTools(cwd, gitAuth) {
+  const normalizedGitAuth = normalizeGitAuth(gitAuth);
+  const bashTool = createBashTool(cwd, {
+    spawnHook: ({ command, cwd: hookCwd, env }) => {
+      if (normalizedGitAuth === null) {
+        return { command, cwd: hookCwd, env };
+      }
+      if (!commandMayUseGit(command)) {
+        return { command, cwd: hookCwd, env };
+      }
+      if (commandOverridesGitAuth(command)) {
+        return { command, cwd: hookCwd, env };
+      }
+      return {
+        command,
+        cwd: hookCwd,
+        env: {
+          ...env,
+          GCM_INTERACTIVE: "Never",
+          GIT_ASKPASS: GIT_ASKPASS_PATH,
+          GIT_TERMINAL_PROMPT: "0",
+          YINSHI_GIT_TOKEN: normalizedGitAuth.accessToken,
+        },
+      };
+    },
+  });
+  return [
+    createReadTool(cwd),
+    bashTool,
+    createEditTool(cwd),
+    createWriteTool(cwd),
+  ];
 }
 
 function normalizeApiKeyWithConfigSecret(secret) {
@@ -371,6 +472,7 @@ export class YinshiSidecar {
     if (process.env.SIDECAR_LOAD_DOTENV === "1") {
       this._loadDotEnv();
     }
+    ensureGitAskpassScript();
     console.log("[sidecar] Initialized with pi SDK");
   }
 
@@ -731,7 +833,7 @@ export class YinshiSidecar {
     });
   }
 
-  async _createPiSession(sessionId, modelRef, cwd, providerAuth, providerConfig, agentDir, importedSettings) {
+  async _createPiSession(sessionId, modelRef, cwd, providerAuth, providerConfig, gitAuth, agentDir, importedSettings) {
     const { authStorage: sessionAuth } = createModelRegistry(providerAuth, agentDir);
     const sessionRegistry = new ModelRegistry(sessionAuth, buildModelsJsonPath(agentDir));
     const model = resolveModel(modelRef, providerAuth, agentDir, providerConfig);
@@ -749,7 +851,7 @@ export class YinshiSidecar {
       cwd,
       model,
       thinkingLevel: "off",
-      tools: createCodingTools(cwd),
+      tools: createYinshiCodingTools(cwd, gitAuth),
       sessionManager: SessionManager.inMemory(),
       settingsManager,
       authStorage: sessionAuth,
@@ -777,6 +879,7 @@ export class YinshiSidecar {
     const cwd = options.cwd || process.cwd();
     const providerAuth = options.providerAuth || null;
     const providerConfig = options.providerConfig || null;
+    const gitAuth = options.gitAuth || null;
     const agentDir = options.agentDir || null;
     const importedSettings = options.settings || null;
 
@@ -787,6 +890,7 @@ export class YinshiSidecar {
         cwd,
         providerAuth,
         providerConfig,
+        gitAuth,
         agentDir,
         importedSettings,
       );
@@ -797,6 +901,7 @@ export class YinshiSidecar {
         cwd,
         providerAuth,
         providerConfig,
+        gitAuth,
         unsubscribe: null,
       });
       console.log(`[sidecar] Warmed up session ${sessionId}`);
@@ -811,6 +916,7 @@ export class YinshiSidecar {
     const cwd = options.cwd || process.cwd();
     const providerAuth = options.providerAuth || null;
     const providerConfig = options.providerConfig || null;
+    const gitAuth = options.gitAuth || null;
     const agentDir = options.agentDir || null;
     const importedSettings = options.settings || null;
 
@@ -818,7 +924,8 @@ export class YinshiSidecar {
       let entry = this.activeSessions.get(sessionId);
       const authChanged = JSON.stringify(entry?.providerAuth || null) !== JSON.stringify(providerAuth);
       const configChanged = JSON.stringify(entry?.providerConfig || null) !== JSON.stringify(providerConfig);
-      if (!entry || entry.modelRef !== modelRef || authChanged || configChanged) {
+      const gitAuthChanged = JSON.stringify(entry?.gitAuth || null) !== JSON.stringify(gitAuth);
+      if (!entry || entry.modelRef !== modelRef || authChanged || configChanged || gitAuthChanged) {
         if (entry) {
           if (entry.unsubscribe) {
             entry.unsubscribe();
@@ -831,6 +938,7 @@ export class YinshiSidecar {
           cwd,
           providerAuth,
           providerConfig,
+          gitAuth,
           agentDir,
           importedSettings,
         );
@@ -841,6 +949,7 @@ export class YinshiSidecar {
           cwd,
           providerAuth,
           providerConfig,
+          gitAuth,
           unsubscribe: null,
         };
         this.activeSessions.set(sessionId, entry);
