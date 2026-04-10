@@ -10,7 +10,6 @@ import {
   ModelRegistry,
   SessionManager,
   SettingsManager,
-  createBashTool,
   createEditTool,
   createReadTool,
   createWriteTool,
@@ -18,10 +17,10 @@ import {
 import { getOAuthProvider } from "@mariozechner/pi-ai/oauth";
 
 import { HEALTH_CHECK_INTERVAL } from "./constants.js";
+import { createGitAwareBashTool } from "./git_auth.js";
 
 const __sidecarDir = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_MODEL_REF = "minimax/MiniMax-M2.7";
-const GIT_ASKPASS_PATH = "/tmp/yinshi-git-askpass.sh";
 const LEGACY_MODEL_ALIASES = new Map([
   ["haiku", "anthropic/claude-haiku-4-5-20251001"],
   ["minimax", DEFAULT_MODEL_REF],
@@ -75,98 +74,10 @@ function buildModelsJsonPath(agentDir) {
   return modelsJsonPath;
 }
 
-function normalizeGitAuth(gitAuth) {
-  if (gitAuth === null || gitAuth === undefined) {
-    return null;
-  }
-  if (typeof gitAuth !== "object" || Array.isArray(gitAuth)) {
-    throw new Error("gitAuth must be an object");
-  }
-  if (gitAuth.strategy !== "github_app_https") {
-    throw new Error(`Unsupported git auth strategy: ${gitAuth.strategy}`);
-  }
-  if (typeof gitAuth.host !== "string" || gitAuth.host.trim() !== "github.com") {
-    throw new Error("gitAuth.host must be github.com");
-  }
-  if (typeof gitAuth.accessToken !== "string" || !gitAuth.accessToken.trim()) {
-    throw new Error("gitAuth.accessToken must be a non-empty string");
-  }
-  return {
-    strategy: gitAuth.strategy,
-    host: gitAuth.host.trim(),
-    accessToken: gitAuth.accessToken.trim(),
-  };
-}
-
-function ensureGitAskpassScript() {
-  const askpassScript = "#!/bin/sh\n"
-    + "case \"$1\" in\n"
-    + "  *Username*) printf '%s\\n' 'x-access-token' ;;\n"
-    + "  *) printf '%s\\n' \"$YINSHI_GIT_TOKEN\" ;;\n"
-    + "esac\n";
-  if (fs.existsSync(GIT_ASKPASS_PATH)) {
-    const currentContent = fs.readFileSync(GIT_ASKPASS_PATH, "utf-8");
-    if (currentContent === askpassScript) {
-      fs.chmodSync(GIT_ASKPASS_PATH, 0o700);
-      return;
-    }
-  }
-  fs.writeFileSync(GIT_ASKPASS_PATH, askpassScript, { encoding: "utf-8", mode: 0o700 });
-  fs.chmodSync(GIT_ASKPASS_PATH, 0o700);
-}
-
-function commandMayUseGit(command) {
-  if (typeof command !== "string") {
-    return false;
-  }
-  return /\bgit\b/.test(command);
-}
-
-function commandOverridesGitAuth(command) {
-  if (typeof command !== "string") {
-    return false;
-  }
-  if (/\bGIT_ASKPASS=/.test(command)) {
-    return true;
-  }
-  if (/\bGIT_SSH_COMMAND=/.test(command)) {
-    return true;
-  }
-  if (/\bYINSHI_GIT_TOKEN=/.test(command)) {
-    return true;
-  }
-  return false;
-}
-
 function createYinshiCodingTools(cwd, gitAuth) {
-  const normalizedGitAuth = normalizeGitAuth(gitAuth);
-  const bashTool = createBashTool(cwd, {
-    spawnHook: ({ command, cwd: hookCwd, env }) => {
-      if (normalizedGitAuth === null) {
-        return { command, cwd: hookCwd, env };
-      }
-      if (!commandMayUseGit(command)) {
-        return { command, cwd: hookCwd, env };
-      }
-      if (commandOverridesGitAuth(command)) {
-        return { command, cwd: hookCwd, env };
-      }
-      return {
-        command,
-        cwd: hookCwd,
-        env: {
-          ...env,
-          GCM_INTERACTIVE: "Never",
-          GIT_ASKPASS: GIT_ASKPASS_PATH,
-          GIT_TERMINAL_PROMPT: "0",
-          YINSHI_GIT_TOKEN: normalizedGitAuth.accessToken,
-        },
-      };
-    },
-  });
   return [
     createReadTool(cwd),
-    bashTool,
+    createGitAwareBashTool(cwd, gitAuth),
     createEditTool(cwd),
     createWriteTool(cwd),
   ];
@@ -472,7 +383,6 @@ export class YinshiSidecar {
     if (process.env.SIDECAR_LOAD_DOTENV === "1") {
       this._loadDotEnv();
     }
-    ensureGitAskpassScript();
     console.log("[sidecar] Initialized with pi SDK");
   }
 
