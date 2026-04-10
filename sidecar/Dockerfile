@@ -1,7 +1,9 @@
 FROM node:20-slim
 
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends git && \
+    # Git remote operations run through an SSH wrapper inside the sidecar.
+    # Keep the SSH client in the image so push and fetch work against remotes.
+    apt-get install -y --no-install-recommends git openssh-client && \
     rm -rf /var/lib/apt/lists/*
 
 RUN useradd -m -s /bin/bash agent

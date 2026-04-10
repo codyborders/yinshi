@@ -1,8 +1,10 @@
-"""Tests for sidecar client."""
+"""Tests for sidecar client and runtime packaging."""
 
 import json
-import pytest
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 
 @pytest.mark.asyncio
@@ -166,3 +168,17 @@ async def test_sidecar_client_submit_oauth_flow_input() -> None:
     assert msg["type"] == "oauth_submit"
     assert msg["flowId"] == "flow-1"
     assert msg["authorizationInput"] == "http://localhost:1455/auth/callback?code=abc"
+
+
+def test_sidecar_dockerfile_installs_ssh_client() -> None:
+    """The sidecar image must include SSH for git remote operations.
+
+    The coding tools invoke git with ``GIT_SSH_COMMAND`` for SSH remotes. If
+    the image only includes git, those remote operations fail inside the
+    per-user container even though local git commands still work.
+    """
+    dockerfile_path = Path(__file__).resolve().parents[2] / "sidecar" / "Dockerfile"
+    dockerfile_content = dockerfile_path.read_text(encoding="utf-8")
+
+    assert "apt-get install -y --no-install-recommends" in dockerfile_content
+    assert "git openssh-client" in dockerfile_content
