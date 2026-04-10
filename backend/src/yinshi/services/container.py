@@ -422,8 +422,6 @@ class ContainerManager:
 
         real_data_dir = os.path.realpath(data_dir)
         cpus = str(s.container_cpu_quota / 100000)
-        runtime_uid = str(os.getuid())
-        runtime_gid = str(os.getgid())
 
         _, container_id, _ = await self._run_podman(
             "run",
@@ -431,10 +429,8 @@ class ContainerManager:
             "--replace",
             "--name",
             f"yinshi-sidecar-{user_id}",
-            "--userns",
-            "keep-id",
             "--user",
-            f"{runtime_uid}:{runtime_gid}",
+            "0:0",
             "--env",
             "SIDECAR_SOCKET_PATH=/run/sidecar/sidecar.sock",
             "--env",
