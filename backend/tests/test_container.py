@@ -686,6 +686,12 @@ class TestContainerManager:
         assert "--memory" in run_args
         assert "--pids-limit" in run_args
         assert "--network" in run_args
+        assert "--replace" in run_args
+        assert "--userns" in run_args
+        assert "keep-id" in run_args
+        assert "--user" in run_args
+        assert f"{os.getuid()}:{os.getgid()}" in run_args
+        assert "HOME=/tmp" in run_args
 
     @pytest.mark.asyncio
     async def test_podman_not_found_raises(self, tmp_path):
