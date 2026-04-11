@@ -1184,6 +1184,146 @@ def test_prompt_streams_sidecar_events(client: TestClient, session_id: str) -> N
     assert "assistant" in roles
 
 
+def test_prompt_forwards_explicit_thinking_override_for_reasoning_model(
+    client: TestClient,
+    session_id: str,
+) -> None:
+    """Explicit thinking overrides should reach the sidecar for reasoning models."""
+    from yinshi.api.stream import ExecutionContext
+
+    async def fake_query(
+        sid,
+        prompt,
+        model=None,
+        cwd=None,
+        provider_auth=None,
+        provider_config=None,
+        agent_dir=None,
+        settings_payload=None,
+    ):
+        del sid, prompt, model, cwd, provider_auth, provider_config, agent_dir
+        assert settings_payload == {"mode": "quiet", "thinking": False}
+        yield {
+            "type": "message",
+            "data": {"type": "result", "usage": {}},
+        }
+
+    mock_sidecar = make_mock_sidecar(fake_query)
+    mock_sidecar.get_catalog = AsyncMock(
+        return_value={
+            "models": [
+                {
+                    "ref": "minimax/MiniMax-M2.7",
+                    "reasoning": True,
+                }
+            ]
+        }
+    )
+
+    with (
+        patch(
+            "yinshi.api.stream.create_sidecar_connection",
+            return_value=mock_sidecar,
+        ),
+        patch(
+            "yinshi.api.stream._resolve_execution_context",
+            new=AsyncMock(
+                return_value=ExecutionContext(
+                    sidecar_socket=None,
+                    effective_cwd="/tmp",
+                    key_source="platform",
+                    provider="test-provider",
+                    provider_auth=None,
+                    provider_config=None,
+                    settings_payload={"mode": "quiet"},
+                    model_ref="minimax/MiniMax-M2.7",
+                )
+            ),
+        ),
+    ):
+        response = client.post(
+            f"/api/sessions/{session_id}/prompt",
+            json={"prompt": "say hello", "thinking": False},
+        )
+
+    assert response.status_code == 200
+    assert mock_sidecar.warmup.call_args.kwargs["settings_payload"] == {
+        "mode": "quiet",
+        "thinking": False,
+    }
+    mock_sidecar.get_catalog.assert_awaited_once()
+
+
+def test_prompt_ignores_thinking_override_for_non_reasoning_model(
+    client: TestClient,
+    session_id: str,
+) -> None:
+    """Non-reasoning models should keep their existing settings payload."""
+    from yinshi.api.stream import ExecutionContext
+
+    async def fake_query(
+        sid,
+        prompt,
+        model=None,
+        cwd=None,
+        provider_auth=None,
+        provider_config=None,
+        agent_dir=None,
+        settings_payload=None,
+    ):
+        del sid, prompt, model, cwd, provider_auth, provider_config, agent_dir
+        assert settings_payload == {"mode": "quiet", "thinking": False}
+        yield {
+            "type": "message",
+            "data": {"type": "result", "usage": {}},
+        }
+
+    mock_sidecar = make_mock_sidecar(fake_query)
+    mock_sidecar.get_catalog = AsyncMock(
+        return_value={
+            "models": [
+                {
+                    "ref": "minimax/MiniMax-M2.7",
+                    "reasoning": False,
+                }
+            ]
+        }
+    )
+
+    with (
+        patch(
+            "yinshi.api.stream.create_sidecar_connection",
+            return_value=mock_sidecar,
+        ),
+        patch(
+            "yinshi.api.stream._resolve_execution_context",
+            new=AsyncMock(
+                return_value=ExecutionContext(
+                    sidecar_socket=None,
+                    effective_cwd="/tmp",
+                    key_source="platform",
+                    provider="test-provider",
+                    provider_auth=None,
+                    provider_config=None,
+                    settings_payload={"mode": "quiet", "thinking": False},
+                    model_ref="minimax/MiniMax-M2.7",
+                )
+            ),
+        ),
+    ):
+        response = client.post(
+            f"/api/sessions/{session_id}/prompt",
+            json={"prompt": "say hello", "thinking": True},
+        )
+
+    assert response.status_code == 200
+    assert mock_sidecar.warmup.call_args.kwargs["settings_payload"] == {
+        "mode": "quiet",
+        "thinking": False,
+    }
+    mock_sidecar.get_catalog.assert_awaited_once()
+
+
 def test_prompt_saves_partial_on_sidecar_error(client: TestClient, session_id: str) -> None:
     """If the sidecar errors mid-stream, partial content is still saved."""
 

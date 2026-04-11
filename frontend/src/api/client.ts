@@ -321,13 +321,14 @@ export async function* streamPrompt(
   sessionId: string,
   prompt: string,
   model?: string,
+  thinking?: boolean,
   signal?: AbortSignal,
 ): AsyncGenerator<SSEEvent> {
   const res = await fetch(`/api/sessions/${sessionId}/prompt`, {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-Requested-With": "XMLHttpRequest" },
     credentials: "include",
-    body: JSON.stringify({ prompt, model }),
+    body: JSON.stringify({ prompt, model, thinking }),
     signal,
   });
 

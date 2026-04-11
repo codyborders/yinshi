@@ -43,12 +43,12 @@ export function useAgentStream(sessionId: string | undefined) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [runState, setRunState] = useState<RunState>("idle");
   const abortRef = useRef<AbortController | null>(null);
-  const queuedPromptRef = useRef<{ prompt: string; model?: string } | null>(null);
+  const queuedPromptRef = useRef<{ prompt: string; model?: string; thinking?: boolean } | null>(null);
   // Track if the current run was cancelled by user (not an error)
   const wasCancelledRef = useRef(false);
 
   const startPrompt = useCallback(
-    async (prompt: string, model?: string) => {
+    async (prompt: string, model?: string, thinking?: boolean) => {
       if (!sessionId) return;
       const normalizedPrompt = prompt.trim();
       if (!normalizedPrompt) return;
@@ -120,6 +120,7 @@ export function useAgentStream(sessionId: string | undefined) {
           sessionId,
           normalizedPrompt,
           model,
+          thinking,
           controller.signal,
         )) {
           if (event.type === "error") {
@@ -265,7 +266,7 @@ export function useAgentStream(sessionId: string | undefined) {
 
         // Always replay a queued steering prompt once the active run finishes.
         if (queuedPrompt) {
-          void startPrompt(queuedPrompt.prompt, queuedPrompt.model);
+          void startPrompt(queuedPrompt.prompt, queuedPrompt.model, queuedPrompt.thinking);
         }
       }
     },
@@ -285,26 +286,26 @@ export function useAgentStream(sessionId: string | undefined) {
   }, [sessionId, runState]);
 
   const sendPrompt = useCallback(
-    async (prompt: string, model?: string) => {
+    async (prompt: string, model?: string, thinking?: boolean) => {
       if (!sessionId) return;
       const normalizedPrompt = prompt.trim();
       if (!normalizedPrompt) return;
 
       if (runState === "running") {
         // Queue steering prompt and request stop
-        queuedPromptRef.current = { prompt: normalizedPrompt, model };
+        queuedPromptRef.current = { prompt: normalizedPrompt, model, thinking };
         await cancel();
         return;
       }
 
       if (runState === "stopping") {
         // Replace queued steering prompt
-        queuedPromptRef.current = { prompt: normalizedPrompt, model };
+        queuedPromptRef.current = { prompt: normalizedPrompt, model, thinking };
         return;
       }
 
       // runState === "idle", start normally
-      await startPrompt(normalizedPrompt, model);
+      await startPrompt(normalizedPrompt, model, thinking);
     },
     [cancel, runState, startPrompt],
   );
