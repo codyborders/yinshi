@@ -419,7 +419,11 @@ def test_create_workspace_fetches_remote_base_for_remote_repo(
         ) as mock_resolve_remote_base_ref,
         patch(
             "yinshi.services.workspace.create_worktree",
-            new=AsyncMock(return_value=str(Path(tenant.data_dir) / "repos" / "remote-repo" / ".worktrees" / "branch")),
+            new=AsyncMock(
+                return_value=str(
+                    Path(tenant.data_dir) / "repos" / "remote-repo" / ".worktrees" / "branch"
+                )
+            ),
         ) as mock_create_worktree,
         patch(
             "yinshi.services.workspace._resolve_remote_checkout",
@@ -544,7 +548,13 @@ def test_create_workspace_repairs_trusted_repo_remote_metadata(
         capture_output=True,
     )
     subprocess.run(
-        ["git", "remote", "set-url", "origin", "https://github.com/your-username/devtoolscrape.git"],
+        [
+            "git",
+            "remote",
+            "set-url",
+            "origin",
+            "https://github.com/your-username/devtoolscrape.git",
+        ],
         cwd=trusted_repo_path,
         check=True,
         capture_output=True,
@@ -1215,6 +1225,126 @@ def test_prompt_saves_partial_on_sidecar_error(client: TestClient, session_id: s
     assistant_msgs = [m for m in msgs if m["role"] == "assistant"]
     assert len(assistant_msgs) == 1
     assert "partial" in assistant_msgs[0]["content"]
+
+
+def test_prompt_marks_explicit_sidecar_error_as_failed(
+    client: TestClient,
+    session_id: str,
+) -> None:
+    """Explicit sidecar error events should mark the assistant turn as failed."""
+
+    async def failing_query(
+        sid,
+        prompt,
+        model=None,
+        cwd=None,
+        provider_auth=None,
+        provider_config=None,
+        agent_dir=None,
+        settings_payload=None,
+    ):
+        yield {
+            "type": "message",
+            "data": {
+                "type": "assistant",
+                "message": {"content": [{"type": "text", "text": "partial reply"}]},
+            },
+        }
+        yield {
+            "type": "error",
+            "error": "model backend failed",
+        }
+
+    with patch(
+        "yinshi.api.stream.create_sidecar_connection",
+        return_value=make_mock_sidecar(failing_query),
+    ):
+        response = client.post(
+            f"/api/sessions/{session_id}/prompt",
+            json={"prompt": "trigger explicit sidecar error"},
+        )
+
+    assert response.status_code == 200
+    events = parse_sse_events(response.text)
+    assert [event["type"] for event in events] == ["assistant", "error"]
+
+    messages = client.get(f"/api/sessions/{session_id}/messages").json()
+    assistant_messages = [message for message in messages if message["role"] == "assistant"]
+    assert len(assistant_messages) == 1
+    assert assistant_messages[0]["turn_status"] == "failed"
+
+
+def test_tenant_prompt_persists_turn_status(
+    auth_client: TestClient,
+    git_repo: str,
+) -> None:
+    """Tenant-mode prompts should write turn status into the per-user database."""
+    from yinshi.api.stream import ExecutionContext
+    from yinshi.tenant import get_user_db
+
+    tenant = getattr(auth_client, "yinshi_tenant")
+    stack = create_full_stack(auth_client, git_repo, name="tenant-turn-status")
+    session_id = stack["session"]["id"]
+
+    async def fake_query(
+        sid,
+        prompt,
+        model=None,
+        cwd=None,
+        provider_auth=None,
+        provider_config=None,
+        agent_dir=None,
+        settings_payload=None,
+    ):
+        yield {
+            "type": "message",
+            "data": {
+                "type": "assistant",
+                "message": {"content": [{"type": "text", "text": "tenant reply"}]},
+            },
+        }
+        yield {
+            "type": "message",
+            "data": {"type": "result", "usage": {}},
+        }
+
+    with (
+        patch(
+            "yinshi.api.stream._resolve_execution_context",
+            new=AsyncMock(
+                return_value=ExecutionContext(
+                    sidecar_socket=None,
+                    effective_cwd=stack["workspace"]["path"],
+                    key_source="platform",
+                    provider="test-provider",
+                    provider_auth=None,
+                    provider_config=None,
+                    model_ref="minimax/MiniMax-M2.7",
+                )
+            ),
+        ),
+        patch(
+            "yinshi.api.stream.create_sidecar_connection",
+            return_value=make_mock_sidecar(fake_query),
+        ),
+    ):
+        response = auth_client.post(
+            f"/api/sessions/{session_id}/prompt",
+            json={"prompt": "persist tenant status"},
+        )
+
+    assert response.status_code == 200
+
+    messages = auth_client.get(f"/api/sessions/{session_id}/messages").json()
+    assistant_messages = [message for message in messages if message["role"] == "assistant"]
+    assert len(assistant_messages) == 1
+    assert assistant_messages[0]["turn_status"] == "completed"
+
+    with get_user_db(tenant) as user_db:
+        message_columns = [
+            row[1] for row in user_db.execute("PRAGMA table_info(messages)").fetchall()
+        ]
+    assert "turn_status" in message_columns
 
 
 def test_prompt_persists_user_message_when_runtime_setup_fails(

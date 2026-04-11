@@ -493,15 +493,11 @@ async def prompt_session(
         usage_data: dict[str, Any] = {}
         result_provider = context.provider or ""
         turn_status = "completed"
-        cancelled_by_user = False
 
         begin_tenant_container_activity(request, tenant)
         try:
             sidecar = await create_sidecar_connection(context.sidecar_socket)
-            run_record = await coordinator.register(session_id, sidecar, turn_id)
-            run_record.assistant_msg_id = assistant_msg_id
-            run_record.accumulated = accumulated
-            run_record.chunk_count = chunk_count
+            await coordinator.register(session_id, sidecar)
 
             await sidecar.warmup(
                 session_id,
@@ -535,7 +531,6 @@ async def prompt_session(
                 )
 
                 if event_type == "cancelled":
-                    cancelled_by_user = True
                     turn_status = "cancelled"
                     yield f"data: {json.dumps({'type': 'cancelled', 'reason': 'user_stop'})}\n\n"
                     break
@@ -559,7 +554,6 @@ async def prompt_session(
                             with get_db_for_request(request) as db:
                                 if assistant_msg_id is None:
                                     assistant_msg_id = uuid.uuid4().hex
-                                    run_record.assistant_msg_id = assistant_msg_id
                                     db.execute(
                                         (
                                             "INSERT INTO messages "
@@ -584,7 +578,6 @@ async def prompt_session(
                         with get_db_for_request(request) as db:
                             if assistant_msg_id is None:
                                 assistant_msg_id = uuid.uuid4().hex
-                                run_record.assistant_msg_id = assistant_msg_id
                                 db.execute(
                                     (
                                         "INSERT INTO messages "
@@ -603,6 +596,7 @@ async def prompt_session(
                     yield f"data: {json.dumps(data)}\n\n"
 
                 elif event_type == "error":
+                    turn_status = "failed"
                     error_msg = event.get("error", "Unknown sidecar error")
                     yield f"data: {json.dumps({'type': 'error', 'error': error_msg})}\n\n"
 

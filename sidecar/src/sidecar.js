@@ -830,9 +830,9 @@ export class YinshiSidecar {
     const gitAuth = options.gitAuth || null;
     const agentDir = options.agentDir || null;
     const importedSettings = options.settings || null;
+    let entry = this.activeSessions.get(sessionId);
 
     try {
-      let entry = this.activeSessions.get(sessionId);
       const authChanged = JSON.stringify(entry?.providerAuth || null) !== JSON.stringify(providerAuth);
       const configChanged = JSON.stringify(entry?.providerConfig || null) !== JSON.stringify(providerConfig);
       const gitAuthChanged = JSON.stringify(entry?.gitAuth || null) !== JSON.stringify(gitAuth);
@@ -943,7 +943,8 @@ export class YinshiSidecar {
       // Clear cancelRequested after normal completion
       entry.cancelRequested = false;
     } catch (err) {
-      if (entry.cancelRequested) {
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      if (entry?.cancelRequested) {
         console.log(`[sidecar] Session ${sessionId} cancelled by user`);
         sendToSocket(socket, {
           id: sessionId,
@@ -952,11 +953,11 @@ export class YinshiSidecar {
         // Clear cancelRequested after handling cancellation
         entry.cancelRequested = false;
       } else {
-        console.error(`[sidecar] Error in session ${sessionId}:`, err.message);
+        console.error(`[sidecar] Error in session ${sessionId}:`, errorMessage);
         sendToSocket(socket, {
           id: sessionId,
           type: "error",
-          error: err.message,
+          error: errorMessage,
         });
       }
     }

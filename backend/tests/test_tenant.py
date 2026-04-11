@@ -18,6 +18,7 @@ def tenant_env(tmp_path, monkeypatch):
     monkeypatch.setenv("DB_PATH", str(tmp_path / "legacy.db"))
     monkeypatch.setenv("DISABLE_AUTH", "true")
     from yinshi.config import get_settings
+
     get_settings.cache_clear()
     yield {
         "control_db": control_db,
@@ -119,9 +120,7 @@ def test_get_user_db_creates_and_returns_connection(tenant_env):
     init_user_db(db_path)
 
     with get_user_db(ctx) as conn:
-        tables = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'"
-        ).fetchall()
+        tables = conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
         table_names = [t[0] for t in tables]
         assert "repos" in table_names
         assert "workspaces" in table_names
@@ -130,7 +129,7 @@ def test_get_user_db_creates_and_returns_connection(tenant_env):
 
 
 def test_init_user_db_schema_no_owner_email(tenant_env):
-    """User DB schema should NOT have owner_email column."""
+    """User DB schema should hide owner metadata and include turn status tracking."""
     from yinshi.tenant import init_user_db
 
     data_dir = os.path.join(tenant_env["user_data_dir"], "ab", "abc123")
@@ -140,9 +139,11 @@ def test_init_user_db_schema_no_owner_email(tenant_env):
     init_user_db(db_path)
 
     conn = sqlite3.connect(db_path)
-    columns = [r[1] for r in conn.execute("PRAGMA table_info(repos)").fetchall()]
+    repo_columns = [r[1] for r in conn.execute("PRAGMA table_info(repos)").fetchall()]
+    message_columns = [r[1] for r in conn.execute("PRAGMA table_info(messages)").fetchall()]
     conn.close()
-    assert "owner_email" not in columns
+    assert "owner_email" not in repo_columns
+    assert "turn_status" in message_columns
 
 
 def test_get_user_db_migrates_existing_user_db(tenant_env):
@@ -154,8 +155,7 @@ def test_get_user_db_migrates_existing_user_db(tenant_env):
     os.makedirs(data_dir, exist_ok=True)
 
     conn = sqlite3.connect(db_path)
-    conn.execute(
-        """CREATE TABLE repos (
+    conn.execute("""CREATE TABLE repos (
             id TEXT PRIMARY KEY,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
@@ -163,8 +163,16 @@ def test_get_user_db_migrates_existing_user_db(tenant_env):
             remote_url TEXT,
             root_path TEXT NOT NULL,
             custom_prompt TEXT
-        )"""
-    )
+        )""")
+    conn.execute("""CREATE TABLE messages (
+            id TEXT PRIMARY KEY,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+            session_id TEXT NOT NULL,
+            role TEXT NOT NULL,
+            content TEXT,
+            full_message TEXT,
+            turn_id TEXT
+        )""")
     conn.commit()
     conn.close()
 
@@ -176,6 +184,10 @@ def test_get_user_db_migrates_existing_user_db(tenant_env):
     )
 
     with get_user_db(ctx) as user_db:
-        columns = [row[1] for row in user_db.execute("PRAGMA table_info(repos)").fetchall()]
+        repo_columns = [row[1] for row in user_db.execute("PRAGMA table_info(repos)").fetchall()]
+        message_columns = [
+            row[1] for row in user_db.execute("PRAGMA table_info(messages)").fetchall()
+        ]
 
-    assert "installation_id" in columns
+    assert "installation_id" in repo_columns
+    assert "turn_status" in message_columns

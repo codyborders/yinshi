@@ -259,20 +259,14 @@ export function useAgentStream(sessionId: string | undefined) {
         if (rafId) cancelAnimationFrame(rafId);
         abortRef.current = null;
 
-        // Check for queued steering prompt
         const queuedPrompt = queuedPromptRef.current;
         queuedPromptRef.current = null;
-
-        if (queuedPrompt) {
-          // If cancelled, start the steering prompt immediately
-          if (wasCancelledRef.current) {
-            setRunState("idle");
-            void startPrompt(queuedPrompt.prompt, queuedPrompt.model);
-            return;
-          }
-        }
-
         setRunState("idle");
+
+        // Always replay a queued steering prompt once the active run finishes.
+        if (queuedPrompt) {
+          void startPrompt(queuedPrompt.prompt, queuedPrompt.model);
+        }
       }
     },
     [sessionId],

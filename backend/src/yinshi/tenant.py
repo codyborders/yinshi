@@ -79,7 +79,8 @@ CREATE TABLE IF NOT EXISTS messages (
     role TEXT NOT NULL,
     content TEXT,
     full_message TEXT,
-    turn_id TEXT
+    turn_id TEXT,
+    turn_status TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, created_at);
@@ -100,10 +101,15 @@ BEGIN UPDATE sessions SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id; END;
 
 def _migrate_user_db(conn: sqlite3.Connection) -> None:
     """Apply forward-only schema fixes for existing per-user databases."""
-    columns = [row[1] for row in conn.execute("PRAGMA table_info(repos)").fetchall()]
-    if "installation_id" not in columns:
+    repo_columns = [row[1] for row in conn.execute("PRAGMA table_info(repos)").fetchall()]
+    if "installation_id" not in repo_columns:
         conn.execute("ALTER TABLE repos ADD COLUMN installation_id INTEGER")
-        conn.commit()
+
+    message_columns = [row[1] for row in conn.execute("PRAGMA table_info(messages)").fetchall()]
+    if "turn_status" not in message_columns:
+        conn.execute("ALTER TABLE messages ADD COLUMN turn_status TEXT")
+
+    conn.commit()
 
 
 def _ensure_user_db_schema(conn: sqlite3.Connection) -> None:

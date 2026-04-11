@@ -136,8 +136,8 @@ def _migrate_legacy_data(tenant: TenantContext) -> None:
                                 (
                                     "INSERT OR IGNORE INTO messages "
                                     "(id, created_at, session_id, role, "
-                                    "content, full_message, turn_id) "
-                                    "VALUES (?, ?, ?, ?, ?, ?, ?)"
+                                    "content, full_message, turn_id, turn_status) "
+                                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
                                 ),
                                 (
                                     m["id"],
@@ -147,6 +147,7 @@ def _migrate_legacy_data(tenant: TenantContext) -> None:
                                     m["content"],
                                     m.get("full_message"),
                                     m.get("turn_id"),
+                                    m.get("turn_status"),
                                 ),
                             )
 
@@ -197,9 +198,7 @@ def resolve_or_create_user(
             return make_tenant(row["user_id"], row["email"])
 
         # 2. Check existing user by email
-        user_row = db.execute(
-            "SELECT id, email FROM users WHERE email = ?", (email,)
-        ).fetchone()
+        user_row = db.execute("SELECT id, email FROM users WHERE email = ?", (email,)).fetchone()
 
         if user_row:
             user_id = user_row["id"]
