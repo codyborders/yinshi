@@ -28,6 +28,7 @@ class RepoCreate(BaseModel):
     remote_url: str | None = Field(None, max_length=2048)
     local_path: str | None = Field(None, max_length=4096)
     custom_prompt: str | None = Field(None, max_length=10_000)
+    agents_md: str | None = Field(None, max_length=50_000)
 
 
 class RepoOut(BaseModel):
@@ -40,6 +41,7 @@ class RepoOut(BaseModel):
     remote_url: str | None = None
     root_path: str
     custom_prompt: str | None = None
+    agents_md: str | None = None
 
 
 class RepoUpdate(BaseModel):
@@ -47,6 +49,7 @@ class RepoUpdate(BaseModel):
 
     name: str | None = Field(None, max_length=255)
     custom_prompt: str | None = Field(None, max_length=10_000)
+    agents_md: str | None = Field(None, max_length=50_000)
 
 
 class WorkspaceCreate(BaseModel):

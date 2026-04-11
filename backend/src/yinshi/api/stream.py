@@ -307,7 +307,7 @@ def _lookup_session(
         row = db.execute(
             "SELECT s.*, w.path as workspace_path, w.id as workspace_id, "
             "w.name as workspace_name, w.branch as workspace_branch, "
-            "r.remote_url, r.installation_id "
+            "r.remote_url, r.installation_id, r.agents_md "
             "FROM sessions s "
             "JOIN workspaces w ON s.workspace_id = w.id "
             "JOIN repos r ON w.repo_id = r.id "
@@ -319,7 +319,7 @@ def _lookup_session(
     row = db.execute(
         "SELECT s.*, w.path as workspace_path, w.id as workspace_id, "
         "w.name as workspace_name, w.branch as workspace_branch, "
-        "r.owner_email, r.remote_url, r.installation_id "
+        "r.owner_email, r.remote_url, r.installation_id, r.agents_md "
         "FROM sessions s "
         "JOIN workspaces w ON s.workspace_id = w.id "
         "JOIN repos r ON w.repo_id = r.id "
@@ -336,6 +336,7 @@ async def _resolve_execution_context(
     model: str,
     remote_url: str | None = None,
     installation_id: int | None = None,
+    agents_md: str | None = None,
 ) -> ExecutionContext:
     """Resolve all sidecar execution inputs for the current request."""
     if not tenant:
@@ -353,7 +354,11 @@ async def _resolve_execution_context(
     _validate_workspace_path(tenant, workspace_path)
 
     try:
-        tenant_sidecar_context = await resolve_tenant_sidecar_context(request, tenant)
+        tenant_sidecar_context = await resolve_tenant_sidecar_context(
+            request,
+            tenant,
+            repo_agents_md=agents_md,
+        )
     except (ContainerStartError, ContainerNotReadyError):
         logger.exception("Container start failed for user %s", tenant.user_id[:8])
         raise HTTPException(
@@ -515,6 +520,7 @@ async def prompt_session(
             model,
             remote_url=remote_url,
             installation_id=installation_id,
+            agents_md=session["agents_md"] if "agents_md" in session.keys() else None,
         )
     except Exception:
         with get_db_for_request(request) as db:

@@ -772,3 +772,37 @@ def resolve_agent_dir(user_id: str, data_dir: str) -> str | None:
     """Return the agentDir path when a ready Pi config should be active."""
     agent_dir, _settings_payload = resolve_pi_runtime(user_id, data_dir)
     return agent_dir
+
+
+def resolve_effective_agent_dir(
+    user_id: str,
+    data_dir: str,
+    repo_agents_md: str | None,
+) -> str | None:
+    """Return the agentDir path, using repo-level AGENTS.md if provided.
+
+    If repo_agents_md is set, creates a shadow directory with the repo's AGENTS.md
+    that shadows the global one. Otherwise returns the global pi-config agent dir.
+    """
+    global_agent_dir = resolve_agent_dir(user_id, data_dir)
+
+    if repo_agents_md is None:
+        return global_agent_dir
+
+    if global_agent_dir is None:
+        return None
+
+    # Create a shadow directory for this specific repo's AGENTS.md
+    # This preserves the global AGENTS.md while allowing per-repo overrides
+    global_agent_path = Path(global_agent_dir)
+    shadow_dir = global_agent_path.parent / f"{global_agent_path.name}.shadow"
+
+    # Create the shadow agent directory
+    shadow_agent_dir = shadow_dir / "agent"
+    shadow_agent_dir.mkdir(parents=True, exist_ok=True)
+
+    # Write repo-level AGENTS.md to the shadow location
+    shadow_agents_md = shadow_agent_dir / "AGENTS.md"
+    shadow_agents_md.write_text(repo_agents_md, encoding="utf-8")
+
+    return str(shadow_agent_dir)

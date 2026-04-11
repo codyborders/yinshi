@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/repos", tags=["repos"])
 
 # Only these columns can be updated via PATCH
-_UPDATABLE_COLUMNS = {"name", "custom_prompt"}
+_UPDATABLE_COLUMNS = {"name", "custom_prompt", "agents_md"}
 
 
 def _validate_local_path(path_str: str) -> str:
@@ -202,39 +202,42 @@ async def import_repo(body: RepoCreate, request: Request) -> dict[str, Any]:
         if tenant:
             if repo_id is None:
                 cursor = db.execute(
-                    """INSERT INTO repos (name, remote_url, root_path, custom_prompt, installation_id)
-                       VALUES (?, ?, ?, ?, ?)""",
+                    """INSERT INTO repos (name, remote_url, root_path, custom_prompt, agents_md, installation_id)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
                     (
                         body.name,
                         normalized_remote_url,
                         root_path,
                         body.custom_prompt,
+                        body.agents_md,
                         installation_id,
                     ),
                 )
             else:
                 cursor = db.execute(
-                    """INSERT INTO repos (id, name, remote_url, root_path, custom_prompt, installation_id)
-                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    """INSERT INTO repos (id, name, remote_url, root_path, custom_prompt, agents_md, installation_id)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
                     (
                         repo_id,
                         body.name,
                         normalized_remote_url,
                         root_path,
                         body.custom_prompt,
+                        body.agents_md,
                         installation_id,
                     ),
                 )
         else:
             email = get_user_email(request)
             cursor = db.execute(
-                """INSERT INTO repos (name, remote_url, root_path, custom_prompt, owner_email, installation_id)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
+                """INSERT INTO repos (name, remote_url, root_path, custom_prompt, agents_md, owner_email, installation_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
                 (
                     body.name,
                     normalized_remote_url,
                     root_path,
                     body.custom_prompt,
+                    body.agents_md,
                     email,
                     installation_id,
                 ),

@@ -109,6 +109,11 @@ def _migrate_user_db(conn: sqlite3.Connection) -> None:
     if "turn_status" not in message_columns:
         conn.execute("ALTER TABLE messages ADD COLUMN turn_status TEXT")
 
+    # agents_md column for repo-level AGENTS.md override
+    repo_columns = [row[1] for row in conn.execute("PRAGMA table_info(repos)").fetchall()]
+    if "agents_md" not in repo_columns:
+        conn.execute("ALTER TABLE repos ADD COLUMN agents_md TEXT")
+
     conn.commit()
 
 

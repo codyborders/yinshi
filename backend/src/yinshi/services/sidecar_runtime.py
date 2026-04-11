@@ -9,7 +9,7 @@ from fastapi import Request
 
 from yinshi.config import get_settings
 from yinshi.exceptions import ContainerStartError
-from yinshi.services.pi_config import resolve_pi_runtime
+from yinshi.services.pi_config import resolve_effective_agent_dir, resolve_pi_runtime
 from yinshi.tenant import TenantContext
 from yinshi.utils.paths import is_path_inside
 
@@ -83,6 +83,7 @@ def _resolve_agent_dir_for_runtime(
 async def resolve_tenant_sidecar_context(
     request: Request,
     tenant: TenantContext | None,
+    repo_agents_md: str | None = None,
 ) -> TenantSidecarContext:
     """Resolve the socket path and Pi runtime inputs for one request."""
     if tenant is None:
@@ -93,7 +94,11 @@ async def resolve_tenant_sidecar_context(
         )
 
     settings = get_settings()
-    host_agent_dir, settings_payload = resolve_pi_runtime(tenant.user_id, tenant.data_dir)
+    if repo_agents_md is not None:
+        host_agent_dir = resolve_effective_agent_dir(tenant.user_id, tenant.data_dir, repo_agents_md)
+        settings_payload = None
+    else:
+        host_agent_dir, settings_payload = resolve_pi_runtime(tenant.user_id, tenant.data_dir)
     runtime_agent_dir = _resolve_agent_dir_for_runtime(
         host_agent_dir,
         tenant.data_dir,
