@@ -86,6 +86,55 @@ class PromptRequest(BaseModel):
         return normalize_model_ref(value)
 
 
+def _catalog_reasoning_support(
+    catalog_payload: dict[str, Any],
+    model_ref: str,
+) -> bool | None:
+    """Return whether one catalog model supports reasoning."""
+    if not isinstance(catalog_payload, dict):
+        raise TypeError("catalog_payload must be a dictionary")
+    if not isinstance(model_ref, str):
+        raise TypeError("model_ref must be a string")
+    normalized_model_ref = model_ref.strip()
+    if not normalized_model_ref:
+        raise ValueError("model_ref must not be empty")
+
+    models_payload = catalog_payload.get("models")
+    if not isinstance(models_payload, list):
+        return None
+
+    for model_payload in models_payload:
+        if not isinstance(model_payload, dict):
+            continue
+        if model_payload.get("ref") != normalized_model_ref:
+            continue
+
+        reasoning_value = model_payload.get("reasoning")
+        if isinstance(reasoning_value, bool):
+            return reasoning_value
+        logger.warning("Catalog reasoning flag missing for model %s", normalized_model_ref)
+        return None
+
+    logger.warning("Catalog entry missing for model %s", normalized_model_ref)
+    return None
+
+
+def _build_effective_settings(
+    settings_payload: dict[str, object] | None,
+    thinking_override: bool | None,
+    reasoning_supported: bool | None,
+) -> dict[str, object] | None:
+    """Merge one prompt-scoped thinking override into the sidecar settings."""
+    if thinking_override is None:
+        return settings_payload
+    if reasoning_supported is False:
+        return settings_payload
+
+    effective_settings = dict(settings_payload or {})
+    effective_settings["thinking"] = thinking_override
+    return effective_settings
+
+
 _FILLER_PREFIXES = [
     "please ",
     "can you ",
@@ -497,15 +546,30 @@ async def prompt_session(
 
         begin_tenant_container_activity(request, tenant)
 
-        effective_settings = (
-            {**(context.settings_payload or {}), "thinking": body.thinking}
-            if body.thinking is not None
-            else context.settings_payload
-        )
-
         try:
             sidecar = await create_sidecar_connection(context.sidecar_socket)
             await coordinator.register(session_id, sidecar)
+
+            reasoning_supported: bool | None = None
+            if body.thinking is not None:
+                catalog_payload = await sidecar.get_catalog(agent_dir=context.agent_dir)
+                reasoning_supported = _catalog_reasoning_support(
+                    catalog_payload,
+                    context.model_ref or model,
+                )
+                if reasoning_supported is False:
+                    logger.info(
+                        "Ignoring thinking override for non-reasoning model: "
+                        "session=%s model=%s",
+                        session_id,
+                        context.model_ref or model,
+                    )
+
+            effective_settings = _build_effective_settings(
+                context.settings_payload,
+                body.thinking,
+                reasoning_supported,
+            )
 
             await sidecar.warmup(
                 session_id,

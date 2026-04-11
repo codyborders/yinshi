@@ -28,14 +28,7 @@ export default function Session() {
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [updatingModel, setUpdatingModel] = useState(false);
   const [thinkingEnabled, setThinkingEnabled] = useState(true);
-
-  // Wrapper to pass session model and thinking state to sendPrompt
-  const handleSend = useCallback(
-    async (prompt: string) => {
-      await sendPrompt(prompt, sessionModel, thinkingEnabled);
-    },
-    [sendPrompt, sessionModel, thinkingEnabled] as const,
-  );
+  const [hasThinkingOverride, setHasThinkingOverride] = useState(false);
 
   // Load existing message history
   useEffect(() => {
@@ -91,6 +84,11 @@ export default function Session() {
     return () => {
       cancelled = true;
     };
+  }, [id]);
+
+  useEffect(() => {
+    setThinkingEnabled(true);
+    setHasThinkingOverride(false);
   }, [id]);
 
   const addSystemMessage = useCallback(
@@ -309,6 +307,19 @@ export default function Session() {
   const selectedModelRequiresConnection = selectedModelOption
     ? !connectedProviderIds.has(selectedModelOption.provider)
     : false;
+  const canOverrideThinking = selectedModelOption?.reasoning === true;
+  const thinkingOverride = canOverrideThinking && hasThinkingOverride
+    ? thinkingEnabled
+    : undefined;
+
+  const handleSend = useCallback(
+    async (prompt: string) => {
+      // The model selector persists directly to the session, so prompt
+      // submission should keep using the backend's session model.
+      await sendPrompt(prompt, undefined, thinkingOverride);
+    },
+    [sendPrompt, thinkingOverride],
+  );
 
   return (
     <>
@@ -356,18 +367,23 @@ export default function Session() {
           <div className="flex items-center gap-1">
             <button
               type="button"
-              disabled={streaming || !selectedModelOption?.reasoning}
-              onClick={() => setThinkingEnabled(!thinkingEnabled)}
+              disabled={streaming || !canOverrideThinking}
+              onClick={() => {
+                setHasThinkingOverride(true);
+                setThinkingEnabled((currentThinkingEnabled) => !currentThinkingEnabled);
+              }}
               className={`flex items-center gap-1 rounded px-2 py-1 text-xs transition-colors ${
-                streaming || !selectedModelOption?.reasoning
+                streaming || !canOverrideThinking
                   ? "cursor-not-allowed opacity-40"
                   : thinkingEnabled
                     ? "bg-purple-900/50 text-purple-300 hover:bg-purple-900/70"
                     : "bg-gray-800 text-gray-500 hover:bg-gray-700"
               }`}
               title={
-                !selectedModelOption?.reasoning
+                !canOverrideThinking
                   ? "This model does not support thinking"
+                  : !hasThinkingOverride
+                    ? "Using the model default thinking setting - click to set an explicit override"
                   : thinkingEnabled
                     ? "Thinking enabled - click to disable"
                     : "Thinking disabled - click to enable"
