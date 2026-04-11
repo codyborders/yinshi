@@ -18,12 +18,14 @@ from yinshi.services.git import (
     clone_repo,
     create_worktree,
     delete_worktree,
+    ensure_remote_url,
     generate_branch_name,
+    get_remote_url,
     resolve_remote_base_ref,
     restore_worktree,
     validate_local_repo,
 )
-from yinshi.services.github_app import resolve_github_clone_access
+from yinshi.services.github_app import normalize_github_remote, resolve_github_clone_access
 from yinshi.tenant import TenantContext
 from yinshi.utils.paths import is_path_inside
 
@@ -103,6 +105,18 @@ async def _materialize_repo_checkout(
     raise RepoNotFoundError("Repo checkout is missing and cannot be repaired")
 
 
+async def _sync_repo_checkout_remote(
+    repo_path: str,
+    remote_url: str | None,
+) -> bool:
+    """Ensure one valid checkout points at the canonical remote URL."""
+    if not await validate_local_repo(repo_path):
+        return False
+    if remote_url is None:
+        return False
+    return await ensure_remote_url(repo_path, remote_url)
+
+
 async def _resolve_remote_checkout(
     tenant: TenantContext,
     remote_url: str | None,
@@ -128,6 +142,63 @@ async def _resolve_remote_checkout(
     )
 
 
+async def _refresh_repo_remote_metadata(
+    tenant: TenantContext,
+    repo_path: str,
+    remote_url: str | None,
+    installation_id: int | None,
+) -> tuple[str | None, str | None, int | None]:
+    """Refresh canonical remote metadata without breaking local-only recovery."""
+    source_repo_is_available = await validate_local_repo(repo_path)
+    access_token = None
+    refreshed_remote_url = remote_url
+    refreshed_installation_id = installation_id
+
+    if remote_url:
+        try:
+            (
+                refreshed_remote_url,
+                access_token,
+                resolved_installation_id,
+            ) = await _resolve_remote_checkout(tenant, remote_url)
+        except GitError as exc:
+            if not source_repo_is_available:
+                raise
+            logger.warning(
+                "Refreshing repo %s from local checkout because remote auth failed: %s",
+                repo_path,
+                exc,
+            )
+        else:
+            if resolved_installation_id is not None:
+                refreshed_installation_id = resolved_installation_id
+
+    return refreshed_remote_url, access_token, refreshed_installation_id
+
+
+async def _trusted_repo_needs_refresh(
+    repo_path: str,
+    remote_url: str | None,
+    installation_id: int | None,
+) -> bool:
+    """Return whether a trusted repo should refresh remote metadata."""
+    if not await validate_local_repo(repo_path):
+        return True
+    if remote_url is None:
+        return False
+    if installation_id is None:
+        return True
+
+    normalized_remote = normalize_github_remote(remote_url)
+    if normalized_remote is None:
+        return False
+
+    current_remote_url = await get_remote_url(repo_path)
+    if current_remote_url is None:
+        return True
+    return current_remote_url.rstrip("/") != normalized_remote.clone_url.rstrip("/")
+
+
 async def ensure_repo_checkout_for_tenant(
     db: sqlite3.Connection,
     tenant: TenantContext,
@@ -142,49 +213,46 @@ async def ensure_repo_checkout_for_tenant(
     repo = _fetch_repo(db, repo_id)
     repo_path = repo["root_path"]
     assert repo_path, "repo root_path must not be empty"
-
-    if _tenant_path_is_trusted(tenant, repo_path):
-        return dict(repo)
-
-    target_repo_path = _tenant_repo_path(tenant, repo_id)
     remote_url = repo["remote_url"]
-    access_token = None
     installation_id = repo["installation_id"] if "installation_id" in repo.keys() else None
     source_repo_is_available = await validate_local_repo(repo_path)
-    if remote_url:
-        if source_repo_is_available:
-            # Preserve existing local work even if the remote can no longer be
-            # reached or re-authenticated.
-            try:
-                (
-                    remote_url,
-                    access_token,
-                    resolved_installation_id,
-                ) = await _resolve_remote_checkout(
-                    tenant,
-                    remote_url,
-                )
-            except GitError as exc:
-                logger.warning(
-                    "Repairing repo %s from local checkout because remote auth failed: %s",
-                    repo_id,
-                    exc,
-                )
-                access_token = None
-            else:
-                if resolved_installation_id is not None:
-                    installation_id = resolved_installation_id
-        else:
-            (
-                remote_url,
-                access_token,
-                resolved_installation_id,
-            ) = await _resolve_remote_checkout(
-                tenant,
-                remote_url,
-            )
-            if resolved_installation_id is not None:
-                installation_id = resolved_installation_id
+
+    if _tenant_path_is_trusted(tenant, repo_path):
+        if source_repo_is_available and not await _trusted_repo_needs_refresh(
+            repo_path,
+            remote_url,
+            installation_id,
+        ):
+            return dict(repo)
+
+        refreshed_remote_url, _, refreshed_installation_id = await _refresh_repo_remote_metadata(
+            tenant,
+            repo_path,
+            remote_url,
+            installation_id,
+        )
+        remote_was_updated = await _sync_repo_checkout_remote(repo_path, refreshed_remote_url)
+        metadata_changed = (
+            refreshed_remote_url != remote_url
+            or refreshed_installation_id != installation_id
+        )
+        if not remote_was_updated and not metadata_changed:
+            return dict(repo)
+
+        db.execute(
+            "UPDATE repos SET remote_url = ?, installation_id = ? WHERE id = ?",
+            (refreshed_remote_url, refreshed_installation_id, repo_id),
+        )
+        db.commit()
+        return dict(_fetch_repo(db, repo_id))
+
+    target_repo_path = _tenant_repo_path(tenant, repo_id)
+    remote_url, access_token, installation_id = await _refresh_repo_remote_metadata(
+        tenant,
+        repo_path,
+        remote_url,
+        installation_id,
+    )
     await _materialize_repo_checkout(
         repo_path,
         target_repo_path,
@@ -216,6 +284,40 @@ async def ensure_repo_checkout_for_tenant(
 
     updated_repo = _fetch_repo(db, repo_id)
     return dict(updated_repo)
+
+
+async def relink_github_repos_for_tenant(
+    db: sqlite3.Connection,
+    tenant: TenantContext,
+    owner_login: str,
+) -> int:
+    """Refresh existing tenant repos after one GitHub App installation is connected."""
+    if not owner_login:
+        raise ValueError("owner_login must not be empty")
+    refreshed_repo_count = 0
+    repos = db.execute(
+        "SELECT id FROM repos WHERE remote_url IS NOT NULL ORDER BY created_at ASC"
+    ).fetchall()
+
+    for repo_row in repos:
+        repo = _fetch_repo(db, repo_row["id"])
+        remote_url = repo["remote_url"]
+        if not isinstance(remote_url, str) or not remote_url:
+            continue
+        github_remote = normalize_github_remote(remote_url)
+        if github_remote is None:
+            continue
+        if github_remote.owner.lower() != owner_login.lower():
+            continue
+
+        refreshed_repo = await ensure_repo_checkout_for_tenant(db, tenant, repo["id"])
+        if refreshed_repo["remote_url"] != repo["remote_url"]:
+            refreshed_repo_count += 1
+            continue
+        if refreshed_repo["installation_id"] != repo["installation_id"]:
+            refreshed_repo_count += 1
+
+    return refreshed_repo_count
 
 
 async def ensure_workspace_checkout_for_tenant(

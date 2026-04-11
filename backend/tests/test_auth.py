@@ -489,6 +489,102 @@ def test_github_install_callback_stores_installation(
     assert row["account_type"] == "Organization"
 
 
+def test_github_install_callback_relinks_existing_user_repos(
+    auth_enabled_app,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """GitHub connect should backfill existing tenant repos for that owner.
+
+    Repos imported before the GitHub App was connected can already have the
+    correct canonical URL stored in the user DB while still missing their
+    installation id. The callback should refresh those rows immediately so the
+    next prompt session can mint runtime git auth without manual re-import.
+    """
+    from fastapi.testclient import TestClient
+
+    _configure_github_app_settings(tmp_path, monkeypatch)
+
+    from yinshi.api.auth_routes import _create_github_install_state
+    from yinshi.db import get_control_db
+    from yinshi.main import app
+    from yinshi.services.accounts import resolve_or_create_user
+    from yinshi.services.github_app import GitHubCloneAccess
+    from yinshi.tenant import get_user_db
+
+    tenant = resolve_or_create_user(
+        provider="google",
+        provider_user_id="github-install-user-relink",
+        email="relink@example.com",
+        display_name="Relink User",
+    )
+    with get_user_db(tenant) as db:
+        db.execute(
+            """
+            INSERT INTO repos (name, remote_url, root_path, installation_id)
+            VALUES (?, ?, ?, ?)
+            """,
+            (
+                "devtoolscrape",
+                "https://github.com/acme/devtoolscrape",
+                str(tmp_path / "users" / "repo-placeholder"),
+                None,
+            ),
+        )
+        db.commit()
+
+    state = _create_github_install_state(tenant.user_id)
+
+    with (
+        TestClient(app) as client,
+        patch(
+            "yinshi.api.auth_routes.get_installation_details",
+            new=AsyncMock(
+                return_value={
+                    "account": {"login": "acme", "type": "Organization"},
+                    "html_url": "https://github.com/organizations/acme/settings/installations/42",
+                    "suspended_at": None,
+                }
+            ),
+        ),
+        patch(
+            "yinshi.services.workspace.resolve_github_clone_access",
+            new=AsyncMock(
+                return_value=GitHubCloneAccess(
+                    clone_url="https://github.com/acme/devtoolscrape.git",
+                    repository_installation_id=42,
+                    installation_id=42,
+                    access_token="runtime-token",
+                    manage_url="https://github.com/organizations/acme/settings/installations/42",
+                )
+            ),
+        ),
+    ):
+        resp = client.get(
+            f"/auth/github/install/callback?state={state}&installation_id=42&setup_action=install",
+            follow_redirects=False,
+        )
+
+    assert resp.status_code == 307
+    assert resp.headers["location"] == "/app?github_connected=1"
+    with get_control_db() as db:
+        installation_row = db.execute(
+            "SELECT installation_id FROM github_installations WHERE user_id = ?",
+            (tenant.user_id,),
+        ).fetchone()
+    assert installation_row is not None
+    assert installation_row["installation_id"] == 42
+
+    with get_user_db(tenant) as db:
+        repo_row = db.execute(
+            "SELECT remote_url, installation_id FROM repos WHERE name = ?",
+            ("devtoolscrape",),
+        ).fetchone()
+    assert repo_row is not None
+    assert repo_row["remote_url"] == "https://github.com/acme/devtoolscrape.git"
+    assert repo_row["installation_id"] == 42
+
+
 def test_list_github_installations_returns_current_user_rows(
     auth_client,
 ) -> None:

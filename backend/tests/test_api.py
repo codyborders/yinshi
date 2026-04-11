@@ -522,6 +522,95 @@ def test_create_workspace_repairs_from_local_checkout_when_github_auth_fails(
     assert Path(repaired_repo_path).is_dir()
 
 
+def test_create_workspace_repairs_trusted_repo_remote_metadata(
+    auth_client: TestClient,
+    git_repo: str,
+) -> None:
+    """Trusted tenant repos should still reconcile stale origin URLs and install ids.
+
+    This regression covers repos imported before GitHub was connected. Those
+    repos already live inside tenant storage, so the old repair path returned
+    early and never corrected a placeholder origin or refreshed the stored
+    installation id.
+    """
+    from yinshi.tenant import get_user_db
+
+    tenant = getattr(auth_client, "yinshi_tenant")
+    trusted_repo_path = Path(tenant.data_dir) / "repos" / "trusted-repo"
+    trusted_repo_path.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["git", "clone", git_repo, str(trusted_repo_path)],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "remote", "set-url", "origin", "https://github.com/your-username/devtoolscrape.git"],
+        cwd=trusted_repo_path,
+        check=True,
+        capture_output=True,
+    )
+
+    with get_user_db(tenant) as db:
+        cursor = db.execute(
+            """INSERT INTO repos (name, remote_url, root_path, installation_id)
+               VALUES (?, ?, ?, ?)""",
+            (
+                "devtoolscrape",
+                "https://github.com/codyborders/devtoolscrape",
+                str(trusted_repo_path),
+                None,
+            ),
+        )
+        repo_row = db.execute(
+            "SELECT id FROM repos WHERE rowid = ?",
+            (cursor.lastrowid,),
+        ).fetchone()
+        assert repo_row is not None
+        repo_id = repo_row["id"]
+        db.commit()
+
+    with (
+        patch(
+            "yinshi.services.workspace._resolve_remote_checkout",
+            new=AsyncMock(
+                return_value=(
+                    "https://github.com/codyborders/devtoolscrape.git",
+                    None,
+                    117632573,
+                )
+            ),
+        ),
+        patch(
+            "yinshi.services.workspace.resolve_remote_base_ref",
+            new=AsyncMock(return_value="origin/main"),
+        ),
+        patch(
+            "yinshi.services.workspace.create_worktree",
+            new=AsyncMock(return_value=str(trusted_repo_path / ".worktrees" / "branch")),
+        ),
+    ):
+        response = auth_client.post(f"/api/repos/{repo_id}/workspaces", json={})
+
+    assert response.status_code == 201
+    repaired_remote = subprocess.run(
+        ["git", "remote", "get-url", "origin"],
+        cwd=trusted_repo_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert repaired_remote == "https://github.com/codyborders/devtoolscrape.git"
+
+    with get_user_db(tenant) as db:
+        refreshed_repo = db.execute(
+            "SELECT remote_url, installation_id FROM repos WHERE id = ?",
+            (repo_id,),
+        ).fetchone()
+    assert refreshed_repo is not None
+    assert refreshed_repo["remote_url"] == "https://github.com/codyborders/devtoolscrape.git"
+    assert refreshed_repo["installation_id"] == 117632573
+
+
 def test_list_workspaces(client: TestClient, git_repo: str) -> None:
     """GET /api/repos/:id/workspaces should list workspaces."""
     create_resp = client.post(

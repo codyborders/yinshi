@@ -102,6 +102,75 @@ async def _run_git(
     return stdout.decode().strip()
 
 
+def _normalize_remote_url_for_compare(url: str) -> str:
+    """Normalize a remote URL enough to compare logical equality."""
+    if not url:
+        raise ValueError("url must not be empty")
+    normalized_url = url.strip()
+    if not normalized_url:
+        raise ValueError("url must not be blank")
+    if normalized_url.endswith(".git"):
+        normalized_url = normalized_url[:-4]
+    return normalized_url.rstrip("/")
+
+
+async def get_remote_url(
+    repo_path: str,
+    remote_name: str = "origin",
+) -> str | None:
+    """Return one configured remote URL, or None when it is missing."""
+    if not repo_path:
+        raise ValueError("repo_path must not be empty")
+    if not remote_name:
+        raise ValueError("remote_name must not be empty")
+
+    try:
+        remote_url = await _run_git(
+            ["remote", "get-url", remote_name],
+            cwd=repo_path,
+        )
+    except GitError:
+        return None
+
+    normalized_remote_url = remote_url.strip()
+    if not normalized_remote_url:
+        return None
+    return normalized_remote_url
+
+
+async def ensure_remote_url(
+    repo_path: str,
+    remote_url: str,
+    remote_name: str = "origin",
+) -> bool:
+    """Ensure a checkout points one named remote at the expected URL."""
+    if not repo_path:
+        raise ValueError("repo_path must not be empty")
+    if not remote_name:
+        raise ValueError("remote_name must not be empty")
+    if not remote_url:
+        raise ValueError("remote_url must not be empty")
+
+    current_remote_url = await get_remote_url(repo_path, remote_name=remote_name)
+    if current_remote_url is not None:
+        if (
+            _normalize_remote_url_for_compare(current_remote_url)
+            == _normalize_remote_url_for_compare(remote_url)
+        ):
+            return False
+        await _run_git(
+            ["remote", "set-url", remote_name, remote_url],
+            cwd=repo_path,
+        )
+        return True
+
+    await _run_git(
+        ["remote", "add", remote_name, remote_url],
+        cwd=repo_path,
+    )
+    return True
+
+
 async def clone_repo(
     url: str,
     dest: str,

@@ -24,6 +24,7 @@ from yinshi.db import get_control_db
 from yinshi.exceptions import (
     ContainerNotReadyError,
     ContainerStartError,
+    GitError,
     GitHubAppError,
     GitHubInstallationUnusableError,
     SidecarError,
@@ -42,6 +43,8 @@ from yinshi.services.sidecar_runtime import (
     resolve_tenant_sidecar_context,
     touch_tenant_container,
 )
+from yinshi.services.workspace import relink_github_repos_for_tenant
+from yinshi.tenant import get_user_db
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -105,6 +108,36 @@ def _current_user_id(request: Request) -> str | None:
     if not token:
         return None
     return verify_session_token(token)
+
+
+async def _refresh_connected_github_repos(
+    user_id: str,
+    account_login: str,
+) -> None:
+    """Backfill repo installation links after a GitHub App connect completes."""
+    if not user_id:
+        raise ValueError("user_id must not be empty")
+    if not account_login:
+        raise ValueError("account_login must not be empty")
+
+    tenant = _resolve_tenant_from_user_id(user_id)
+    if tenant is None:
+        return
+
+    try:
+        with get_user_db(tenant) as db:
+            await relink_github_repos_for_tenant(
+                db,
+                tenant,
+                account_login,
+            )
+    except (GitError, GitHubAppError) as exc:
+        logger.warning(
+            "Failed to refresh GitHub repo links for user %s and owner %s: %s",
+            user_id,
+            account_login,
+            exc,
+        )
 
 
 async def _resolve_provider_sidecar_socket(
@@ -512,6 +545,8 @@ async def github_install_callback(request: Request) -> RedirectResponse:
             (user_id, installation_id, account_login, account_type, html_url),
         )
         db.commit()
+
+    await _refresh_connected_github_repos(user_id, account_login)
 
     return RedirectResponse(url="/app?github_connected=1")
 
