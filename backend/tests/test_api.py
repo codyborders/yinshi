@@ -890,6 +890,164 @@ def test_prompt_repairs_migrated_workspace_paths(
     assert workspace_row == (repaired_workspace_path,)
 
 
+def test_prompt_repairs_trusted_workspace_remote_metadata(
+    auth_client: TestClient,
+    git_repo: str,
+) -> None:
+    """Prompting should reconcile a trusted repo remote before sidecar execution.
+
+    An earlier agent turn can rewrite ``origin`` to an SSH URL inside a valid
+    tenant checkout. The next prompt must repair that remote back to the
+    canonical HTTPS GitHub URL and refresh the stored installation id before
+    resolving runtime git auth.
+    """
+    from yinshi.api.stream import ExecutionContext
+    from yinshi.tenant import get_user_db
+
+    tenant = getattr(auth_client, "yinshi_tenant")
+    repaired_repo_path = Path(tenant.data_dir) / "repos" / "repo-prompt-repair"
+    repaired_repo_path.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["git", "clone", git_repo, str(repaired_repo_path)],
+        check=True,
+        capture_output=True,
+    )
+    branch = "feature-trusted-repair"
+    repaired_worktree_path = repaired_repo_path / ".worktrees" / branch
+    subprocess.run(
+        ["git", "worktree", "add", "-b", branch, str(repaired_worktree_path)],
+        cwd=repaired_repo_path,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "remote", "set-url", "origin", "git@github.com:codyborders/devtoolscrape.git"],
+        cwd=repaired_repo_path,
+        check=True,
+        capture_output=True,
+    )
+
+    with get_user_db(tenant) as db:
+        repo_cursor = db.execute(
+            """
+            INSERT INTO repos (name, remote_url, root_path, installation_id)
+            VALUES (?, ?, ?, ?)
+            """,
+            (
+                "devtoolscrape",
+                "https://github.com/codyborders/devtoolscrape",
+                str(repaired_repo_path),
+                None,
+            ),
+        )
+        repo_row = db.execute(
+            "SELECT id FROM repos WHERE rowid = ?",
+            (repo_cursor.lastrowid,),
+        ).fetchone()
+        assert repo_row is not None
+        workspace_cursor = db.execute(
+            """
+            INSERT INTO workspaces (repo_id, name, branch, path, state)
+            VALUES (?, ?, ?, ?, 'ready')
+            """,
+            (
+                repo_row["id"],
+                branch,
+                branch,
+                str(repaired_worktree_path),
+            ),
+        )
+        workspace_row = db.execute(
+            "SELECT id FROM workspaces WHERE rowid = ?",
+            (workspace_cursor.lastrowid,),
+        ).fetchone()
+        assert workspace_row is not None
+        session_cursor = db.execute(
+            """
+            INSERT INTO sessions (workspace_id, status, model)
+            VALUES (?, 'idle', 'minimax')
+            """,
+            (workspace_row["id"],),
+        )
+        session_row = db.execute(
+            "SELECT id FROM sessions WHERE rowid = ?",
+            (session_cursor.lastrowid,),
+        ).fetchone()
+        assert session_row is not None
+        db.commit()
+
+    async def fake_query(
+        sid,
+        prompt,
+        model=None,
+        cwd=None,
+        provider_auth=None,
+        provider_config=None,
+        agent_dir=None,
+        settings_payload=None,
+    ):
+        del sid, prompt, model, cwd, provider_auth, provider_config, agent_dir, settings_payload
+        yield {
+            "type": "message",
+            "data": {"type": "result", "usage": {}},
+        }
+
+    mock_sidecar = make_mock_sidecar(fake_query)
+    with (
+        patch(
+            "yinshi.services.workspace._resolve_remote_checkout",
+            new=AsyncMock(
+                return_value=(
+                    "https://github.com/codyborders/devtoolscrape.git",
+                    None,
+                    117632573,
+                )
+            ),
+        ),
+        patch(
+            "yinshi.api.stream._resolve_execution_context",
+            new=AsyncMock(
+                return_value=ExecutionContext(
+                    sidecar_socket=None,
+                    effective_cwd=str(repaired_worktree_path),
+                    key_source="platform",
+                    provider="test-provider",
+                    provider_auth=None,
+                    provider_config=None,
+                    model_ref="minimax/MiniMax-M2.7",
+                )
+            ),
+        ),
+        patch(
+            "yinshi.api.stream.create_sidecar_connection",
+            return_value=mock_sidecar,
+        ),
+    ):
+        response = auth_client.post(
+            f"/api/sessions/{session_row['id']}/prompt",
+            json={"prompt": "repair trusted origin before push"},
+        )
+
+    assert response.status_code == 200
+    repaired_remote = subprocess.run(
+        ["git", "remote", "get-url", "origin"],
+        cwd=repaired_repo_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert repaired_remote == "https://github.com/codyborders/devtoolscrape.git"
+
+    with get_user_db(tenant) as db:
+        repo_state = db.execute(
+            "SELECT remote_url, installation_id FROM repos WHERE id = ?",
+            (repo_row["id"],),
+        ).fetchone()
+    assert repo_state is not None
+    assert repo_state["remote_url"] == "https://github.com/codyborders/devtoolscrape.git"
+    assert repo_state["installation_id"] == 117632573
+
+
 def test_prompt_forwards_github_runtime_git_auth(
     auth_client: TestClient,
     git_repo: str,

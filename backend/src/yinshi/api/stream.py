@@ -410,7 +410,7 @@ async def prompt_session(
     tenant = get_tenant(request)
     with get_db_for_request(request) as db:
         session = _lookup_session(db, session_id, request)
-        if session and tenant and not _workspace_path_is_trusted(tenant, session["workspace_path"]):
+        if session and tenant:
             try:
                 await ensure_workspace_checkout_for_tenant(
                     db,
