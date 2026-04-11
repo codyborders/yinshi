@@ -36,9 +36,31 @@ describe("Landing", () => {
     expect(links[0]).toHaveAttribute("href", "/auth/login");
   });
 
-  it("renders capability sections", () => {
+  it("renders the updated capabilities with architecture links", () => {
     renderLanding();
-    expect(screen.getByText(/Git Workspaces/)).toBeInTheDocument();
+
     expect(screen.getByText(/AI Agent Sessions/)).toBeInTheDocument();
+    expect(screen.getByText(/Mobile-First Interface/)).toBeInTheDocument();
+    expect(screen.getByText(/Tenant Isolation/)).toBeInTheDocument();
+    expect(screen.getByText(/Encrypted Secrets/)).toBeInTheDocument();
+
+    expect(screen.queryByText(/Git Workspaces/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Branching by Default/)).not.toBeInTheDocument();
+
+    expect(screen.getByRole("link", { name: /Container isolation/i })).toHaveAttribute(
+      "href",
+      "/architecture.html#container-isolation",
+    );
+    expect(screen.getByRole("link", { name: /GitHub App integration/i })).toHaveAttribute(
+      "href",
+      "/architecture.html#github-app-integration",
+    );
+    expect(screen.getByRole("link", { name: /Encryption and key management/i })).toHaveAttribute(
+      "href",
+      "/architecture.html#encryption-key-management",
+    );
+
+    const capabilityTitles = screen.getAllByRole("heading", { level: 3 });
+    expect(capabilityTitles).toHaveLength(4);
   });
 });

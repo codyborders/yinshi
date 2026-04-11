@@ -13,15 +13,35 @@ const ERROR_MESSAGES: Record<string, string> = {
 /*  Ink-wash painting palette: parchment, ink black, vermillion seal   */
 /* ------------------------------------------------------------------ */
 
-const CAPABILITIES = [
+type CapabilityCard = {
+  title: string;
+  desc: string;
+  icon: JSX.Element;
+  links?: Array<{
+    href: string;
+    label: string;
+  }>;
+};
+
+const CAPABILITIES: CapabilityCard[] = [
   {
-    title: "Git Workspaces",
-    desc: "Import any GitHub repo or local path. Yinshi clones it, creates isolated worktrees with random branch names, and lets your agent operate freely without touching main.",
+    title: "Tenant Isolation",
+    desc: "Each account runs in its own tenant boundary. Yinshi keeps per-user data separate and runs the sidecar in a dedicated container with dropped Linux capabilities, no-new-privileges, and resource limits. Private repos are supported through a GitHub App integration.",
     icon: (
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} className="h-6 w-6">
-        <path strokeLinecap="round" strokeLinejoin="round" d="M13.19 8.688a4.5 4.5 0 0 1 1.242 7.244l-4.5 4.5a4.5 4.5 0 0 1-6.364-6.364l1.757-1.757m9.553-4.07a4.5 4.5 0 0 0-1.242-7.244l4.5-4.5a4.5 4.5 0 0 1 6.364 6.364l-1.757 1.757" />
+        <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75 11.25 15 15 9.75m6 2.25c0 4.97-4.03 9-9 9s-9-4.03-9-9 4.03-9 9-9 9 4.03 9 9Z" />
       </svg>
     ),
+    links: [
+      {
+        href: "/architecture.html#container-isolation",
+        label: "Container isolation",
+      },
+      {
+        href: "/architecture.html#github-app-integration",
+        label: "GitHub App integration",
+      },
+    ],
   },
   {
     title: "AI Agent Sessions",
@@ -42,13 +62,19 @@ const CAPABILITIES = [
     ),
   },
   {
-    title: "Branching by Default",
-    desc: "Every workspace runs on a disposable git branch. Your main branch stays untouched. Review the agent's work through standard git diffs and merges.",
+    title: "Encrypted Secrets",
+    desc: "Provider keys and connection secrets are encrypted at rest with AES-256-GCM. Per-user encryption keys are wrapped using HKDF-derived key encryption keys, so stored secrets are not kept as plaintext.",
     icon: (
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} className="h-6 w-6">
-        <path strokeLinecap="round" strokeLinejoin="round" d="M3 7.5 7.5 3m0 0L12 7.5M7.5 3v13.5m13.5-6L16.5 15m0 0L12 10.5m4.5 4.5V6" />
+        <path strokeLinecap="round" strokeLinejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 1 0-9 0v3.75m-1.5 0h12A1.5 1.5 0 0 1 19.5 12v7.5A1.5 1.5 0 0 1 18 21H6A1.5 1.5 0 0 1 4.5 19.5V12A1.5 1.5 0 0 1 6 10.5Z" />
       </svg>
     ),
+    links: [
+      {
+        href: "/architecture.html#encryption-key-management",
+        label: "Encryption and key management",
+      },
+    ],
   },
 ];
 
@@ -168,6 +194,15 @@ export default function Landing() {
               <div className="landing-cap-icon">{cap.icon}</div>
               <h3 className="landing-cap-title">{cap.title}</h3>
               <p className="landing-cap-desc">{cap.desc}</p>
+              {cap.links ? (
+                <div className="landing-cap-links">
+                  {cap.links.map((link) => (
+                    <a key={link.href} href={link.href} className="landing-cap-link">
+                      {link.label}
+                    </a>
+                  ))}
+                </div>
+              ) : null}
             </div>
           ))}
         </div>
