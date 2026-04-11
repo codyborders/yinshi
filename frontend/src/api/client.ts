@@ -134,6 +134,7 @@ export interface Message {
   content: string | null;
   full_message: string | null;
   turn_id: string | null;
+  turn_status: string | null;
 }
 
 interface StructuredApiErrorPayload {
@@ -292,6 +293,7 @@ export type SSEEvent =
   | { type: "message_delta"; delta?: unknown }
   | { type: "message_stop" }
   | { type: "result"; [key: string]: unknown }
+  | { type: "cancelled"; reason?: string }
   | { type: "error"; error: string };
 
 export interface ContentBlock {

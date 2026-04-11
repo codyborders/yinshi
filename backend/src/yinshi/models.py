@@ -125,6 +125,7 @@ class MessageOut(BaseModel):
     content: str | None = None
     full_message: str | None = None
     turn_id: str | None = None
+    turn_status: str | None = None
 
 
 class WSPrompt(BaseModel):

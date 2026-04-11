@@ -813,6 +813,7 @@ export class YinshiSidecar {
         providerConfig,
         gitAuth,
         unsubscribe: null,
+        cancelRequested: false,
       });
       console.log(`[sidecar] Warmed up session ${sessionId}`);
     } catch (err) {
@@ -861,6 +862,7 @@ export class YinshiSidecar {
           providerConfig,
           gitAuth,
           unsubscribe: null,
+          cancelRequested: false,
         };
         this.activeSessions.set(sessionId, entry);
       }
@@ -938,13 +940,25 @@ export class YinshiSidecar {
       });
 
       await piSession.prompt(prompt);
+      // Clear cancelRequested after normal completion
+      entry.cancelRequested = false;
     } catch (err) {
-      console.error(`[sidecar] Error in session ${sessionId}:`, err.message);
-      sendToSocket(socket, {
-        id: sessionId,
-        type: "error",
-        error: err.message,
-      });
+      if (entry.cancelRequested) {
+        console.log(`[sidecar] Session ${sessionId} cancelled by user`);
+        sendToSocket(socket, {
+          id: sessionId,
+          type: "cancelled",
+        });
+        // Clear cancelRequested after handling cancellation
+        entry.cancelRequested = false;
+      } else {
+        console.error(`[sidecar] Error in session ${sessionId}:`, err.message);
+        sendToSocket(socket, {
+          id: sessionId,
+          type: "error",
+          error: err.message,
+        });
+      }
     }
   }
 
@@ -955,6 +969,7 @@ export class YinshiSidecar {
       return;
     }
     console.log(`[sidecar] Cancelling session ${sessionId}`);
+    entry.cancelRequested = true;
     await entry.piSession.abort();
   }
 

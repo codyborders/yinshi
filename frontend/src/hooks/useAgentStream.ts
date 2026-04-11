@@ -18,6 +18,7 @@ export interface ChatMessage {
   content: string;
   blocks: TurnBlock[];
   streaming?: boolean;
+  turnStatus?: "completed" | "cancelled" | "failed";
   timestamp: number;
 }
 
@@ -36,11 +37,15 @@ function appendOrCreate(blocks: TurnBlock[], type: "text" | "thinking", text: st
   }
 }
 
+export type RunState = "idle" | "running" | "stopping";
+
 export function useAgentStream(sessionId: string | undefined) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [streaming, setStreaming] = useState(false);
+  const [runState, setRunState] = useState<RunState>("idle");
   const abortRef = useRef<AbortController | null>(null);
   const queuedPromptRef = useRef<{ prompt: string; model?: string } | null>(null);
+  // Track if the current run was cancelled by user (not an error)
+  const wasCancelledRef = useRef(false);
 
   const startPrompt = useCallback(
     async (prompt: string, model?: string) => {
@@ -59,13 +64,15 @@ export function useAgentStream(sessionId: string | undefined) {
         },
       ]);
 
-      setStreaming(true);
+      setRunState("running");
       const controller = new AbortController();
       abortRef.current = controller;
+      wasCancelledRef.current = false;
 
       const turnId = nextId();
       const blocks: TurnBlock[] = [];
       let rafId: number | null = null;
+      let turnStatus: "completed" | "cancelled" | "failed" = "completed";
 
       function upsertTurn(done = false) {
         const allText = blocks
@@ -81,6 +88,7 @@ export function useAgentStream(sessionId: string | undefined) {
             content: allText,
             blocks: snapshot,
             streaming: !done,
+            turnStatus: done ? turnStatus : undefined,
             timestamp: Date.now(),
           };
           const idx = prev.findIndex((m) => m.id === turnId);
@@ -116,6 +124,14 @@ export function useAgentStream(sessionId: string | undefined) {
         )) {
           if (event.type === "error") {
             blocks.push({ id: nextId(), type: "error", text: event.error });
+            turnStatus = "failed";
+            scheduleUpsert(true);
+            break;
+          }
+
+          if (event.type === "cancelled") {
+            turnStatus = "cancelled";
+            wasCancelledRef.current = true;
             scheduleUpsert(true);
             break;
           }
@@ -225,6 +241,7 @@ export function useAgentStream(sessionId: string | undefined) {
             event.type === "result" ||
             (event as Record<string, unknown>).type === "message_stop"
           ) {
+            turnStatus = wasCancelledRef.current ? "cancelled" : "completed";
             scheduleUpsert(true);
           }
         }
@@ -235,25 +252,35 @@ export function useAgentStream(sessionId: string | undefined) {
             type: "error",
             text: e instanceof Error ? e.message : "Stream failed",
           });
+          turnStatus = "failed";
           scheduleUpsert(true);
         }
       } finally {
         if (rafId) cancelAnimationFrame(rafId);
-        setStreaming(false);
         abortRef.current = null;
+
+        // Check for queued steering prompt
         const queuedPrompt = queuedPromptRef.current;
+        queuedPromptRef.current = null;
+
         if (queuedPrompt) {
-          queuedPromptRef.current = null;
-          void startPrompt(queuedPrompt.prompt, queuedPrompt.model);
+          // If cancelled, start the steering prompt immediately
+          if (wasCancelledRef.current) {
+            setRunState("idle");
+            void startPrompt(queuedPrompt.prompt, queuedPrompt.model);
+            return;
+          }
         }
+
+        setRunState("idle");
       }
     },
     [sessionId],
   );
 
   const cancel = useCallback(async () => {
-    abortRef.current?.abort();
-    setStreaming(false);
+    if (runState !== "running") return;
+    setRunState("stopping");
     if (sessionId) {
       try {
         await cancelSession(sessionId);
@@ -261,7 +288,7 @@ export function useAgentStream(sessionId: string | undefined) {
         /* best-effort */
       }
     }
-  }, [sessionId]);
+  }, [sessionId, runState]);
 
   const sendPrompt = useCallback(
     async (prompt: string, model?: string) => {
@@ -269,16 +296,31 @@ export function useAgentStream(sessionId: string | undefined) {
       const normalizedPrompt = prompt.trim();
       if (!normalizedPrompt) return;
 
-      if (streaming || abortRef.current !== null) {
+      if (runState === "running") {
+        // Queue steering prompt and request stop
         queuedPromptRef.current = { prompt: normalizedPrompt, model };
         await cancel();
         return;
       }
 
+      if (runState === "stopping") {
+        // Replace queued steering prompt
+        queuedPromptRef.current = { prompt: normalizedPrompt, model };
+        return;
+      }
+
+      // runState === "idle", start normally
       await startPrompt(normalizedPrompt, model);
     },
-    [cancel, sessionId, startPrompt, streaming],
+    [cancel, runState, startPrompt],
   );
 
-  return { messages, sendPrompt, cancel, streaming, setMessages };
+  return {
+    messages,
+    sendPrompt,
+    cancel,
+    runState,
+    setMessages,
+    streaming: runState === "running" || runState === "stopping",
+  };
 }

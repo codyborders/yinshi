@@ -11,7 +11,7 @@ from yinshi.model_catalog import DEFAULT_SESSION_MODEL
 
 logger = logging.getLogger(__name__)
 
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
 
 SCHEMA_SQL = f"""
 PRAGMA journal_mode = WAL;
@@ -55,7 +55,8 @@ CREATE TABLE IF NOT EXISTS messages (
     role TEXT NOT NULL,
     content TEXT,
     full_message TEXT,
-    turn_id TEXT
+    turn_id TEXT,
+    turn_status TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, created_at);
@@ -111,6 +112,12 @@ def _migrate(conn: sqlite3.Connection) -> None:
         if "installation_id" not in columns:
             logger.info("Migration v2: adding installation_id column to repos")
             conn.execute("ALTER TABLE repos ADD COLUMN installation_id INTEGER")
+
+    if current < 3:
+        columns = [r[1] for r in conn.execute("PRAGMA table_info(messages)").fetchall()]
+        if "turn_status" not in columns:
+            logger.info("Migration v3: adding turn_status column to messages")
+            conn.execute("ALTER TABLE messages ADD COLUMN turn_status TEXT")
 
     if current != _SCHEMA_VERSION:
         conn.execute("DELETE FROM schema_version")

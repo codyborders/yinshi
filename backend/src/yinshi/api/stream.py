@@ -37,6 +37,7 @@ from yinshi.services.provider_connections import (
     resolve_provider_connection,
     update_provider_connection_secret,
 )
+from yinshi.services.run_coordinator import get_run_coordinator
 from yinshi.services.sidecar import SidecarClient, create_sidecar_connection
 from yinshi.services.sidecar_runtime import (
     begin_tenant_container_activity,
@@ -50,10 +51,6 @@ from yinshi.utils.paths import is_path_inside
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
-
-# Active sessions: maps session_id -> SidecarClient for cancel support
-_active_sessions: dict[str, SidecarClient] = {}
-_active_sessions_lock = asyncio.Lock()
 
 # Batch DB writes every N chunks to reduce I/O
 _PERSIST_BATCH_SIZE = 10
@@ -489,17 +486,23 @@ async def prompt_session(
 
     async def event_stream() -> AsyncGenerator[str, None]:
         sidecar: SidecarClient | None = None
+        coordinator = get_run_coordinator()
         accumulated = ""
         assistant_msg_id: str | None = None
         chunk_count = 0
         usage_data: dict[str, Any] = {}
         result_provider = context.provider or ""
+        turn_status = "completed"
+        cancelled_by_user = False
 
         begin_tenant_container_activity(request, tenant)
         try:
             sidecar = await create_sidecar_connection(context.sidecar_socket)
-            async with _active_sessions_lock:
-                _active_sessions[session_id] = sidecar
+            run_record = await coordinator.register(session_id, sidecar, turn_id)
+            run_record.assistant_msg_id = assistant_msg_id
+            run_record.accumulated = accumulated
+            run_record.chunk_count = chunk_count
+
             await sidecar.warmup(
                 session_id,
                 model=context.model_ref or model,
@@ -531,6 +534,12 @@ async def prompt_session(
                     list(event.keys()),
                 )
 
+                if event_type == "cancelled":
+                    cancelled_by_user = True
+                    turn_status = "cancelled"
+                    yield f"data: {json.dumps({'type': 'cancelled', 'reason': 'user_stop'})}\n\n"
+                    break
+
                 if event_type == "message":
                     data = event.get("data", {})
                     logger.debug("SSE data: type=%s keys=%s", data.get("type"), list(data.keys()))
@@ -550,6 +559,7 @@ async def prompt_session(
                             with get_db_for_request(request) as db:
                                 if assistant_msg_id is None:
                                     assistant_msg_id = uuid.uuid4().hex
+                                    run_record.assistant_msg_id = assistant_msg_id
                                     db.execute(
                                         (
                                             "INSERT INTO messages "
@@ -574,6 +584,7 @@ async def prompt_session(
                         with get_db_for_request(request) as db:
                             if assistant_msg_id is None:
                                 assistant_msg_id = uuid.uuid4().hex
+                                run_record.assistant_msg_id = assistant_msg_id
                                 db.execute(
                                     (
                                         "INSERT INTO messages "
@@ -583,8 +594,8 @@ async def prompt_session(
                                     (assistant_msg_id, session_id, accumulated, turn_id),
                                 )
                             db.execute(
-                                "UPDATE messages SET full_message = ? WHERE id = ?",
-                                (json.dumps(event), assistant_msg_id),
+                                "UPDATE messages SET full_message = ?, turn_status = ? WHERE id = ?",
+                                (json.dumps(event), turn_status, assistant_msg_id),
                             )
                             db.commit()
 
@@ -612,21 +623,22 @@ async def prompt_session(
                 "error": "An internal error occurred",
             }
             yield f"data: {json.dumps(error_event)}\n\n"
+            turn_status = "failed"
 
         finally:
             with get_db_for_request(request) as db:
                 # Save any unsaved partial content
                 if accumulated and assistant_msg_id is None:
                     db.execute(
-                        "INSERT INTO messages (session_id, role, content, turn_id) "
-                        "VALUES (?, 'assistant', ?, ?)",
-                        (session_id, accumulated, turn_id),
+                        "INSERT INTO messages (session_id, role, content, turn_id, turn_status) "
+                        "VALUES (?, 'assistant', ?, ?, ?)",
+                        (session_id, accumulated, turn_id, turn_status),
                     )
                 elif accumulated and assistant_msg_id:
                     # Final flush of accumulated content
                     db.execute(
-                        "UPDATE messages SET content = ? WHERE id = ?",
-                        (accumulated, assistant_msg_id),
+                        "UPDATE messages SET content = ?, turn_status = ? WHERE id = ?",
+                        (accumulated, turn_status, assistant_msg_id),
                     )
                 # Reset session status
                 db.execute(
@@ -653,17 +665,17 @@ async def prompt_session(
             end_tenant_container_activity(request, tenant)
             touch_tenant_container(request, tenant)
 
-            async with _active_sessions_lock:
-                _active_sessions.pop(session_id, None)
+            await coordinator.release(session_id)
             if sidecar:
                 await sidecar.disconnect()
 
             logger.info(
-                "Turn complete: session=%s turn_id=%s chunks=%d content_len=%d",
+                "Turn complete: session=%s turn_id=%s chunks=%d content_len=%d turn_status=%s",
                 session_id,
                 turn_id,
                 chunk_count,
                 len(accumulated),
+                turn_status,
             )
 
     return StreamingResponse(
@@ -685,10 +697,10 @@ async def cancel_session(session_id: str, request: Request) -> dict[str, str]:
     if not get_tenant(request):
         check_owner(session["owner_email"], get_user_email(request))
 
-    sidecar = _active_sessions.get(session_id)
-    if not sidecar:
+    coordinator = get_run_coordinator()
+    found = await coordinator.request_cancel(session_id)
+    if not found:
         raise HTTPException(status_code=409, detail="No active stream for this session")
 
-    await sidecar.cancel(session_id)
     logger.info("Cancel requested: session=%s", session_id)
-    return {"status": "cancelled"}
+    return {"status": "stopping"}
