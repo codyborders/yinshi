@@ -27,6 +27,15 @@ export default function Session() {
   const [loadingHistory, setLoadingHistory] = useState(true);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [updatingModel, setUpdatingModel] = useState(false);
+  const [thinkingEnabled, setThinkingEnabled] = useState(true);
+
+  // Wrapper to pass session model and thinking state to sendPrompt
+  const handleSend = useCallback(
+    async (prompt: string) => {
+      await sendPrompt(prompt, sessionModel, thinkingEnabled);
+    },
+    [sendPrompt, sessionModel, thinkingEnabled] as const,
+  );
 
   // Load existing message history
   useEffect(() => {
@@ -343,6 +352,43 @@ export default function Session() {
               </option>
             ))}
           </select>
+          {/* Thinking toggle */}
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              disabled={streaming || !selectedModelOption?.reasoning}
+              onClick={() => setThinkingEnabled(!thinkingEnabled)}
+              className={`flex items-center gap-1 rounded px-2 py-1 text-xs transition-colors ${
+                streaming || !selectedModelOption?.reasoning
+                  ? "cursor-not-allowed opacity-40"
+                  : thinkingEnabled
+                    ? "bg-purple-900/50 text-purple-300 hover:bg-purple-900/70"
+                    : "bg-gray-800 text-gray-500 hover:bg-gray-700"
+              }`}
+              title={
+                !selectedModelOption?.reasoning
+                  ? "This model does not support thinking"
+                  : thinkingEnabled
+                    ? "Thinking enabled - click to disable"
+                    : "Thinking disabled - click to enable"
+              }
+            >
+              <svg
+                className="h-3 w-3"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={2}
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"
+                />
+              </svg>
+              <span>Thinking</span>
+            </button>
+          </div>
         </div>
         {streaming && (
           <div className="flex items-center gap-2">
@@ -374,7 +420,7 @@ export default function Session() {
               <ChatView
                 messages={messages}
                 streaming={streaming}
-                onSend={sendPrompt}
+                onSend={handleSend}
                 onCancel={cancel}
                 onCommand={handleCommand}
               />

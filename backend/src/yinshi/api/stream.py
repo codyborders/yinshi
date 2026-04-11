@@ -75,6 +75,7 @@ class ExecutionContext:
 class PromptRequest(BaseModel):
     prompt: str = Field(..., max_length=100_000)
     model: str | None = None
+    thinking: bool | None = None
 
     @field_validator("model")
     @classmethod
@@ -495,6 +496,13 @@ async def prompt_session(
         turn_status = "completed"
 
         begin_tenant_container_activity(request, tenant)
+
+        effective_settings = (
+            {**(context.settings_payload or {}), "thinking": body.thinking}
+            if body.thinking is not None
+            else context.settings_payload
+        )
+
         try:
             sidecar = await create_sidecar_connection(context.sidecar_socket)
             await coordinator.register(session_id, sidecar)
@@ -507,7 +515,7 @@ async def prompt_session(
                 provider_config=cast(dict[str, Any] | None, context.provider_config),
                 git_auth=cast(dict[str, Any] | None, context.git_auth),
                 agent_dir=context.agent_dir,
-                settings_payload=context.settings_payload,
+                settings_payload=effective_settings,
             )
 
             logger.info("Streaming started: session=%s turn_id=%s", session_id, turn_id)
@@ -521,7 +529,7 @@ async def prompt_session(
                 provider_config=cast(dict[str, Any] | None, context.provider_config),
                 git_auth=cast(dict[str, Any] | None, context.git_auth),
                 agent_dir=context.agent_dir,
-                settings_payload=context.settings_payload,
+                settings_payload=effective_settings,
             ):
                 event_type = event.get("type")
                 logger.debug(
