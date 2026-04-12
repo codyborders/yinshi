@@ -6,6 +6,7 @@ export interface Repo {
   remote_url: string | null;
   root_path: string;
   custom_prompt: string | null;
+  agents_md: string | null;
 }
 
 export interface GitHubInstallation {

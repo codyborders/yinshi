@@ -188,6 +188,12 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
     setShowImport(false);
   }
 
+  function handleRepoUpdated(updatedRepo: Repo) {
+    setRepos((prev) =>
+      prev.map((repo) => (repo.id === updatedRepo.id ? updatedRepo : repo)),
+    );
+  }
+
   return (
     <aside className="flex h-full w-72 flex-col border-r border-gray-800 bg-gray-900">
       <div className="flex items-center justify-between px-4 py-3 border-b border-gray-800">
@@ -254,6 +260,7 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
             key={repo.id}
             repo={repo}
             activeSessionId={activeSessionId}
+            onRepoUpdated={handleRepoUpdated}
             onNavigate={onNavigate}
           />
         ))}
@@ -316,10 +323,12 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
 function RepoSection({
   repo,
   activeSessionId,
+  onRepoUpdated,
   onNavigate,
 }: {
   repo: Repo;
   activeSessionId: string | undefined;
+  onRepoUpdated: (repo: Repo) => void;
   onNavigate?: () => void;
 }) {
   const navigate = useNavigate();
@@ -329,6 +338,15 @@ function RepoSection({
   const [creating, setCreating] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
+  const [showSettings, setShowSettings] = useState(false);
+  const [agentsMdDraft, setAgentsMdDraft] = useState(repo.agents_md ?? "");
+  const [settingsSaving, setSettingsSaving] = useState(false);
+  const [settingsError, setSettingsError] = useState<string | null>(null);
+  const [settingsNotice, setSettingsNotice] = useState<string | null>(null);
+
+  useEffect(() => {
+    setAgentsMdDraft(repo.agents_md ?? "");
+  }, [repo.agents_md]);
 
   useEffect(() => {
     if (expanded && !loaded) {
@@ -389,6 +407,47 @@ function RepoSection({
     }
   }
 
+  async function saveRepoSettings() {
+    setSettingsSaving(true);
+    setSettingsError(null);
+    setSettingsNotice(null);
+    try {
+      const updatedRepo = await api.patch<Repo>(`/api/repos/${repo.id}`, {
+        agents_md: agentsMdDraft.trim() ? agentsMdDraft : null,
+      });
+      onRepoUpdated(updatedRepo);
+      setAgentsMdDraft(updatedRepo.agents_md ?? "");
+      setSettingsNotice("Repo instructions saved.");
+    } catch (error) {
+      console.error(`Failed to update repo ${repo.id} settings`, error);
+      setSettingsError(
+        error instanceof Error ? error.message : "Failed to save repo instructions.",
+      );
+    } finally {
+      setSettingsSaving(false);
+    }
+  }
+
+  function cancelRepoSettings() {
+    setAgentsMdDraft(repo.agents_md ?? "");
+    setSettingsError(null);
+    setSettingsNotice(null);
+    setShowSettings(false);
+  }
+
+  function toggleRepoSettings(event: React.MouseEvent<HTMLButtonElement>) {
+    event.stopPropagation();
+    setSettingsError(null);
+    setSettingsNotice(null);
+
+    if (showSettings) {
+      setShowSettings(false);
+    } else {
+      setExpanded(true);
+      setShowSettings(true);
+    }
+  }
+
   const activeWorkspaces = workspaces.filter((ws) => ws.state !== "archived");
   const archivedWorkspaces = workspaces.filter((ws) => ws.state === "archived");
   const initial = repo.name.charAt(0).toUpperCase();
@@ -423,10 +482,81 @@ function RepoSection({
             </svg>
           )}
         </button>
+        <button
+          onClick={toggleRepoSettings}
+          className="shrink-0 px-3 py-2 text-gray-600 opacity-0 group-hover:opacity-100 hover:text-gray-300 transition-opacity"
+          title="Repo settings"
+        >
+          <svg
+            className="h-3.5 w-3.5"
+            fill="none"
+            viewBox="0 0 24 24"
+            strokeWidth={1.5}
+            stroke="currentColor"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              d="M4.5 12a7.5 7.5 0 1 1 15 0 7.5 7.5 0 0 1-15 0Zm7.5-3.75v3.75l2.25 2.25"
+            />
+          </svg>
+        </button>
       </div>
 
       {expanded && (
         <>
+          {showSettings && (
+            <div className="space-y-2 border-b border-gray-800/80 bg-gray-950/50 px-4 py-3">
+              <div className="pl-9">
+                <label
+                  htmlFor={`repo-agents-md-${repo.id}`}
+                  className="text-[11px] font-semibold uppercase tracking-wide text-gray-500"
+                >
+                  AGENTS.md override
+                </label>
+                <p className="mt-1 text-xs text-gray-400">
+                  Used as the repo-level runtime instructions for new sessions from this repo.
+                </p>
+                <textarea
+                  id={`repo-agents-md-${repo.id}`}
+                  value={agentsMdDraft}
+                  onChange={(event) => setAgentsMdDraft(event.target.value)}
+                  rows={10}
+                  spellCheck={false}
+                  className="mt-2 w-full rounded-md border border-gray-800 bg-gray-900 px-3 py-2 text-sm text-gray-100 outline-none focus:border-blue-500"
+                  placeholder="Leave blank to disable the repo-level override."
+                />
+                {settingsError && (
+                  <div className="mt-2 rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-300">
+                    {settingsError}
+                  </div>
+                )}
+                {settingsNotice && !settingsError && (
+                  <div className="mt-2 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-200">
+                    {settingsNotice}
+                  </div>
+                )}
+                <div className="mt-3 flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void saveRepoSettings()}
+                    disabled={settingsSaving}
+                    className="rounded-md bg-blue-500 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-40"
+                  >
+                    {settingsSaving ? "Saving..." : "Save AGENTS.md"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={cancelRepoSettings}
+                    disabled={settingsSaving}
+                    className="rounded-md bg-gray-800 px-3 py-1.5 text-xs text-gray-400 disabled:opacity-40"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
           {workspaceError && (
             <div className="px-11 py-2 text-xs text-red-400">
               {workspaceError}
