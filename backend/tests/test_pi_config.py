@@ -53,6 +53,8 @@ def _build_pi_archive() -> bytes:
         archive.writestr("AGENTS.md", "Global instructions")
         archive.writestr("PYTHON.md", "Ignored custom instructions")
         archive.writestr("auth.json", '{"secret": true}')
+        archive.writestr("agent/.env", "OPENAI_API_KEY=sk-upload-secret\n")
+        archive.writestr("agent/credentials.json", '{"apiKey": "sk-upload-credentials"}')
         archive.writestr(".git/HEAD", "ref: refs/heads/main\n")
         archive.writestr("agent/extensions/hook.js", "export default {};\n")
         archive.writestr(
@@ -61,6 +63,12 @@ def _build_pi_archive() -> bytes:
                 {
                     "retry": {"enabled": False},
                     "packages": ["pi-skills"],
+                    "provider": {
+                        "apiKey": "sk-upload-provider",
+                        "accessToken": "upload-access-token",
+                        "nested": {"clientSecret": "nested-secret"},
+                        "baseUrl": "https://api.example.com",
+                    },
                 }
             ),
         )
@@ -86,8 +94,22 @@ def _create_fake_pi_clone(dest: str, *, instruction_name: str = "CLAUDE.md") -> 
     """Write a fake cloned Pi config tree at the destination path."""
     dest_path = Path(dest)
     (dest_path / "agent" / "prompts").mkdir(parents=True, exist_ok=True)
+    (dest_path / ".env.production").write_text("ANTHROPIC_API_KEY=sk-github-secret\n", encoding="utf-8")
     (dest_path / "agent" / "settings.json").write_text(
-        json.dumps({"retry": {"enabled": False}}),
+        json.dumps(
+            {
+                "retry": {"enabled": False},
+                "provider": {
+                    "apiKey": "sk-github-provider",
+                    "refreshToken": "github-refresh-token",
+                    "region": "us",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (dest_path / "agent" / "oauth.json").write_text(
+        json.dumps({"accessToken": "oauth-secret"}),
         encoding="utf-8",
     )
     (dest_path / instruction_name).write_text("Imported instructions", encoding="utf-8")
@@ -134,16 +156,26 @@ def test_upload_pi_config_scrubs_and_stores_metadata(auth_client: TestClient) ->
 
     config_root = Path(tenant.data_dir) / "pi-config"
     assert not (config_root / "auth.json").exists()
+    assert not (config_root / "agent" / ".env").exists()
+    assert not (config_root / "agent" / "credentials.json").exists()
     assert not (config_root / ".git").exists()
     assert (config_root / "AGENTS.md").is_file()
     assert (config_root / "agent" / "AGENTS.md").is_file()
     assert not (config_root / "agent" / "PYTHON.md").exists()
+    scrubbed_settings = json.loads((config_root / "agent" / "settings.json").read_text(encoding="utf-8"))
+    assert scrubbed_settings == {
+        "provider": {"baseUrl": "https://api.example.com", "nested": {}},
+        "retry": {"enabled": False},
+    }
 
     user_settings_row = _get_user_settings_row(tenant.user_id)
     assert user_settings_row is not None
     assert user_settings_row["pi_settings_enabled"] == 1
     stored_settings = json.loads(user_settings_row["pi_settings_json"])
-    assert stored_settings == {"retry": {"enabled": False}}
+    assert stored_settings == {
+        "provider": {"baseUrl": "https://api.example.com", "nested": {}},
+        "retry": {"enabled": False},
+    }
 
 
 def test_update_pi_config_categories_renames_paths_and_disables_settings(
@@ -205,6 +237,13 @@ def test_github_import_clones_in_background_and_keeps_git_metadata(
     config_root = Path(tenant.data_dir) / "pi-config"
     assert (config_root / ".git").is_dir()
     assert (config_root / "agent" / "CLAUDE.md").is_file()
+    assert not (config_root / ".env.production").exists()
+    assert not (config_root / "agent" / "oauth.json").exists()
+    scrubbed_settings = json.loads((config_root / "agent" / "settings.json").read_text(encoding="utf-8"))
+    assert scrubbed_settings == {
+        "provider": {"region": "us"},
+        "retry": {"enabled": False},
+    }
 
 
 def test_prompt_forwards_agent_dir_and_settings_payload(
@@ -251,6 +290,7 @@ def test_prompt_forwards_agent_dir_and_settings_payload(
     assert response.status_code == 200
     assert mock_sidecar.warmup.call_args.kwargs["agent_dir"] == "/data/pi-config/agent"
     assert mock_sidecar.warmup.call_args.kwargs["settings_payload"] == {
+        "provider": {"baseUrl": "https://api.example.com", "nested": {}},
         "retry": {"enabled": False},
     }
 
@@ -306,6 +346,7 @@ def test_repo_agents_override_preserves_imported_runtime_state(
         f"/data/pi-runtime/sessions/{session_id}/agent"
     )
     assert mock_sidecar.warmup.call_args.kwargs["settings_payload"] == {
+        "provider": {"baseUrl": "https://api.example.com", "nested": {}},
         "retry": {"enabled": False},
     }
 

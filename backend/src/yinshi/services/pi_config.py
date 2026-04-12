@@ -24,6 +24,7 @@ from yinshi.models import PI_CONFIG_CATEGORIES, PI_CONFIG_CATEGORY_ORDER
 from yinshi.services.git import _git_askpass_env, _run_git, _validate_clone_url, clone_repo
 from yinshi.services.github_app import resolve_github_clone_access
 from yinshi.services.user_settings import (
+    _sanitize_pi_settings,
     clear_pi_settings,
     get_sidecar_settings_payload,
     set_pi_settings_enabled,
@@ -40,6 +41,13 @@ _MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 _MAX_EXTRACTED_BYTES = 200 * 1024 * 1024
 _EXTRACT_CHUNK_BYTES = 64 * 1024
 _INSTRUCTION_FILENAMES = ("AGENTS.md", "CLAUDE.md")
+_SENSITIVE_JSON_FILENAMES = frozenset({
+    "auth.json",
+    "credentials.json",
+    "oauth.json",
+    "tokens.json",
+    "secrets.json",
+})
 _DIRECTORY_CATEGORIES = frozenset(
     {"skills", "extensions", "prompts", "agents", "themes", "sessions"}
 )
@@ -138,6 +146,149 @@ def _load_categories_json(encoded_categories: str) -> list[str]:
             raise ValueError(f"Unsupported stored category: {category}")
         normalized_categories.add(category)
     return _ordered_categories(normalized_categories)
+
+
+def _is_sensitive_filename(path: Path) -> bool:
+    """Return whether one path name is a known secret-bearing config file."""
+    file_name = path.name
+    assert file_name, "path.name must not be empty"
+
+    if file_name in _SENSITIVE_JSON_FILENAMES:
+        return True
+    if file_name == ".env":
+        return True
+    if file_name.startswith(".env."):
+        return True
+    return False
+
+
+def _normalize_secret_key_name(key: str) -> str:
+    """Collapse a JSON key into a token-comparable secret marker string."""
+    if not isinstance(key, str):
+        raise TypeError("key must be a string")
+    return "".join(character for character in key.lower() if character.isalnum())
+
+
+def _looks_like_secret_key(key: str) -> bool:
+    """Return whether one JSON key name is likely to hold a credential."""
+    normalized_key = _normalize_secret_key_name(key)
+    if not normalized_key:
+        return False
+    if "secret" in normalized_key:
+        return True
+    if normalized_key.endswith("apikey"):
+        return True
+    if normalized_key.endswith("token"):
+        return True
+    if normalized_key.endswith("privatekey"):
+        return True
+    if normalized_key.endswith("clientkey"):
+        return True
+    if normalized_key in {
+        "apikey",
+        "accesskey",
+        "accesstoken",
+        "refreshtoken",
+        "authtoken",
+        "bearertoken",
+        "clientsecret",
+        "privatekey",
+    }:
+        return True
+    return False
+
+
+def _scrub_json_payload_secrets(payload: object) -> tuple[object, bool]:
+    """Drop secret-bearing keys from one decoded JSON payload."""
+    if isinstance(payload, dict):
+        scrubbed_payload: dict[str, object] = {}
+        did_remove_secret = False
+        for key, value in payload.items():
+            if not isinstance(key, str):
+                raise TypeError("JSON object keys must be strings")
+            if _looks_like_secret_key(key):
+                did_remove_secret = True
+                continue
+            scrubbed_value, value_removed_secret = _scrub_json_payload_secrets(value)
+            if value_removed_secret:
+                did_remove_secret = True
+            scrubbed_payload[key] = scrubbed_value
+        return scrubbed_payload, did_remove_secret
+
+    if isinstance(payload, list):
+        scrubbed_items: list[object] = []
+        did_remove_secret = False
+        for item in payload:
+            scrubbed_item, item_removed_secret = _scrub_json_payload_secrets(item)
+            if item_removed_secret:
+                did_remove_secret = True
+            scrubbed_items.append(scrubbed_item)
+        return scrubbed_items, did_remove_secret
+
+    return payload, False
+
+
+def _scrub_json_file_secrets(json_path: Path) -> None:
+    """Rewrite one JSON file after removing secret-bearing keys."""
+    if not json_path.is_file():
+        raise ValueError("json_path must point to an existing file")
+    if json_path.suffix.lower() != ".json":
+        raise ValueError("json_path must be a JSON file")
+
+    try:
+        payload = json.loads(json_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return
+
+    scrubbed_payload, did_remove_secret = _scrub_json_payload_secrets(payload)
+    if not did_remove_secret:
+        return
+
+    json_path.write_text(
+        json.dumps(scrubbed_payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _scrub_secret_files(config_root: Path) -> None:
+    """Delete imported files that are primarily used to store credentials."""
+    if not config_root.is_dir():
+        raise ValueError("config_root must point to a directory")
+
+    for candidate_path in config_root.rglob("*"):
+        if not candidate_path.is_file():
+            continue
+        if not _is_sensitive_filename(candidate_path):
+            continue
+        _remove_path(candidate_path)
+
+
+def _scrub_json_secrets(config_root: Path) -> None:
+    """Rewrite imported JSON files after removing nested credential fields."""
+    if not config_root.is_dir():
+        raise ValueError("config_root must point to a directory")
+
+    for json_path in config_root.rglob("*.json"):
+        if not json_path.is_file():
+            continue
+        _scrub_json_file_secrets(json_path)
+
+
+def _scrub_settings_payload(config_root: Path) -> None:
+    """Rewrite settings.json so on-disk runtime config matches stored sanitized settings."""
+    if not config_root.is_dir():
+        raise ValueError("config_root must point to a directory")
+
+    settings_path = config_root / _CATEGORY_PATHS["settings"]
+    if not settings_path.is_file():
+        return
+
+    settings_payload = _read_settings_json(settings_path)
+    sanitized_settings = _sanitize_pi_settings(settings_payload)
+    settings_path.write_text(
+        json.dumps(sanitized_settings, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
 
 
 def _dump_categories_json(categories: list[str]) -> str:
@@ -515,8 +666,11 @@ def _apply_enabled_categories(
 
 def _scrub_pi_config(config_root: Path, *, keep_git: bool) -> None:
     """Remove sensitive or host-specific files from an imported config."""
-    _remove_path(config_root / "auth.json")
-    _remove_path(config_root / _AGENT_DIRECTORY_NAME / "auth.json")
+    if not config_root.is_dir():
+        raise ValueError("config_root must point to a directory")
+    _scrub_secret_files(config_root)
+    _scrub_json_secrets(config_root)
+    _scrub_settings_payload(config_root)
     _remove_path(config_root / "bin")
     _remove_path(config_root / _AGENT_DIRECTORY_NAME / "bin")
     if not keep_git:
