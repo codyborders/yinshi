@@ -95,6 +95,22 @@ def _create_fake_pi_clone(dest: str, *, instruction_name: str = "CLAUDE.md") -> 
     return dest
 
 
+def _store_minimax_api_key(user_id: str) -> None:
+    """Store one test API key so prompt execution can resolve provider auth."""
+    from yinshi.db import get_control_db
+    from yinshi.services.crypto import encrypt_api_key
+    from yinshi.services.keys import get_user_dek
+
+    dek = get_user_dek(user_id)
+    encrypted_key = encrypt_api_key("sk-user-minimax-key", dek)
+    with get_control_db() as db:
+        db.execute(
+            "INSERT INTO api_keys (user_id, provider, encrypted_key) VALUES (?, ?, ?)",
+            (user_id, "minimax", encrypted_key),
+        )
+        db.commit()
+
+
 def test_get_pi_config_returns_404_when_missing(auth_client: TestClient) -> None:
     """GET /api/settings/pi-config should return 404 before any import."""
     response = auth_client.get("/api/settings/pi-config")
@@ -209,18 +225,7 @@ def test_prompt_forwards_agent_dir_and_settings_payload(
     stack = create_full_stack(auth_client, git_repo, name="prompt-test")
     session_id = stack["session"]["id"]
 
-    from yinshi.db import get_control_db
-    from yinshi.services.crypto import encrypt_api_key
-    from yinshi.services.keys import get_user_dek
-
-    dek = get_user_dek(tenant.user_id)
-    encrypted_key = encrypt_api_key("sk-user-minimax-key", dek)
-    with get_control_db() as db:
-        db.execute(
-            "INSERT INTO api_keys (user_id, provider, encrypted_key) VALUES (?, ?, ?)",
-            (tenant.user_id, "minimax", encrypted_key),
-        )
-        db.commit()
+    _store_minimax_api_key(tenant.user_id)
 
     async def fake_query(
         sid: str,
@@ -248,6 +253,202 @@ def test_prompt_forwards_agent_dir_and_settings_payload(
     assert mock_sidecar.warmup.call_args.kwargs["settings_payload"] == {
         "retry": {"enabled": False},
     }
+
+
+def test_repo_agents_override_preserves_imported_runtime_state(
+    auth_client: TestClient,
+    git_repo: str,
+) -> None:
+    """Repo-level AGENTS should overlay on top of the imported Pi runtime."""
+    from tests.factories import create_full_stack, make_mock_sidecar
+
+    _activate_container_runtime()
+    tenant = getattr(auth_client, "yinshi_tenant")
+    upload_response = auth_client.post(
+        "/api/settings/pi-config/upload",
+        files={"file": ("pi-config.zip", _build_pi_archive(), "application/zip")},
+    )
+    assert upload_response.status_code == 201
+
+    stack = create_full_stack(
+        auth_client,
+        git_repo,
+        name="repo-override",
+        agents_md="Repo instructions",
+    )
+    session_id = stack["session"]["id"]
+    _store_minimax_api_key(tenant.user_id)
+
+    async def fake_query(
+        sid: str,
+        prompt: str,
+        model: str | None = None,
+        cwd: str | None = None,
+        api_key: str | None = None,
+        agent_dir: str | None = None,
+        settings_payload: dict[str, object] | None = None,
+    ):
+        del sid, prompt, model, cwd, api_key, agent_dir, settings_payload
+        yield {"type": "message", "data": {"type": "result", "usage": {}}}
+
+    mock_sidecar = make_mock_sidecar(fake_query)
+    with patch(
+        "yinshi.api.stream.create_sidecar_connection",
+        return_value=mock_sidecar,
+    ):
+        response = auth_client.post(
+            f"/api/sessions/{session_id}/prompt",
+            json={"prompt": "run the repo override"},
+        )
+
+    assert response.status_code == 200
+    assert mock_sidecar.warmup.call_args.kwargs["agent_dir"] == (
+        f"/data/pi-runtime/sessions/{session_id}/agent"
+    )
+    assert mock_sidecar.warmup.call_args.kwargs["settings_payload"] == {
+        "retry": {"enabled": False},
+    }
+
+    runtime_agent_dir = Path(tenant.data_dir) / "pi-runtime" / "sessions" / session_id / "agent"
+    assert runtime_agent_dir.is_dir()
+    assert (runtime_agent_dir / "AGENTS.md").read_text(encoding="utf-8") == "Repo instructions"
+    assert (runtime_agent_dir / "extensions").is_symlink()
+    assert (runtime_agent_dir / "models.json").is_symlink()
+
+    imported_agent_dir = Path(tenant.data_dir) / "pi-config" / "agent"
+    assert (imported_agent_dir / "AGENTS.md").read_text(encoding="utf-8") == "Global instructions"
+
+
+def test_repo_agents_override_without_pi_config_creates_minimal_runtime(
+    auth_client: TestClient,
+    git_repo: str,
+) -> None:
+    """Repo-level AGENTS should still reach the sidecar without a global Pi config."""
+    from tests.factories import create_full_stack, make_mock_sidecar
+
+    _activate_container_runtime()
+    tenant = getattr(auth_client, "yinshi_tenant")
+    stack = create_full_stack(
+        auth_client,
+        git_repo,
+        name="repo-only-override",
+        agents_md="Repo only instructions",
+    )
+    session_id = stack["session"]["id"]
+    _store_minimax_api_key(tenant.user_id)
+
+    async def fake_query(
+        sid: str,
+        prompt: str,
+        model: str | None = None,
+        cwd: str | None = None,
+        api_key: str | None = None,
+        agent_dir: str | None = None,
+        settings_payload: dict[str, object] | None = None,
+    ):
+        del sid, prompt, model, cwd, api_key, agent_dir, settings_payload
+        yield {"type": "message", "data": {"type": "result", "usage": {}}}
+
+    mock_sidecar = make_mock_sidecar(fake_query)
+    with patch(
+        "yinshi.api.stream.create_sidecar_connection",
+        return_value=mock_sidecar,
+    ):
+        response = auth_client.post(
+            f"/api/sessions/{session_id}/prompt",
+            json={"prompt": "run the repo instructions only"},
+        )
+
+    assert response.status_code == 200
+    assert mock_sidecar.warmup.call_args.kwargs["agent_dir"] == (
+        f"/data/pi-runtime/sessions/{session_id}/agent"
+    )
+    assert mock_sidecar.warmup.call_args.kwargs["settings_payload"] is None
+
+    runtime_agent_dir = Path(tenant.data_dir) / "pi-runtime" / "sessions" / session_id / "agent"
+    assert runtime_agent_dir.is_dir()
+    assert [path.name for path in runtime_agent_dir.iterdir()] == ["AGENTS.md"]
+    assert (runtime_agent_dir / "AGENTS.md").read_text(encoding="utf-8") == (
+        "Repo only instructions"
+    )
+
+
+def test_repo_agents_override_uses_distinct_session_runtime_dirs(
+    auth_client: TestClient,
+    git_repo: str,
+) -> None:
+    """Each session should get a distinct runtime overlay directory."""
+    from tests.factories import create_full_stack, make_mock_sidecar
+
+    _activate_container_runtime()
+    tenant = getattr(auth_client, "yinshi_tenant")
+    _store_minimax_api_key(tenant.user_id)
+
+    first_stack = create_full_stack(
+        auth_client,
+        git_repo,
+        name="first-override",
+        agents_md="First repo instructions",
+    )
+    second_stack = create_full_stack(
+        auth_client,
+        git_repo,
+        name="second-override",
+        agents_md="Second repo instructions",
+    )
+
+    async def fake_query(
+        sid: str,
+        prompt: str,
+        model: str | None = None,
+        cwd: str | None = None,
+        api_key: str | None = None,
+        agent_dir: str | None = None,
+        settings_payload: dict[str, object] | None = None,
+    ):
+        del sid, prompt, model, cwd, api_key, agent_dir, settings_payload
+        yield {"type": "message", "data": {"type": "result", "usage": {}}}
+
+    first_sidecar = make_mock_sidecar(fake_query)
+    second_sidecar = make_mock_sidecar(fake_query)
+
+    with patch(
+        "yinshi.api.stream.create_sidecar_connection",
+        return_value=first_sidecar,
+    ):
+        first_response = auth_client.post(
+            f"/api/sessions/{first_stack['session']['id']}/prompt",
+            json={"prompt": "first prompt"},
+        )
+    with patch(
+        "yinshi.api.stream.create_sidecar_connection",
+        return_value=second_sidecar,
+    ):
+        second_response = auth_client.post(
+            f"/api/sessions/{second_stack['session']['id']}/prompt",
+            json={"prompt": "second prompt"},
+        )
+
+    assert first_response.status_code == 200
+    assert second_response.status_code == 200
+    assert first_sidecar.warmup.call_args.kwargs["agent_dir"] != (
+        second_sidecar.warmup.call_args.kwargs["agent_dir"]
+    )
+
+    first_agent_dir = (
+        Path(tenant.data_dir) / "pi-runtime" / "sessions" / first_stack["session"]["id"] / "agent"
+    )
+    second_agent_dir = (
+        Path(tenant.data_dir) / "pi-runtime" / "sessions" / second_stack["session"]["id"] / "agent"
+    )
+
+    assert first_agent_dir != second_agent_dir
+    assert (first_agent_dir / "AGENTS.md").read_text(encoding="utf-8") == (
+        "First repo instructions"
+    )
+    assert (second_agent_dir / "AGENTS.md").read_text(encoding="utf-8") == (
+        "Second repo instructions"
+    )
 
 
 def test_sync_pi_config_refreshes_categories_and_instruction_mirror(

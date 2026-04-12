@@ -5,11 +5,13 @@ from __future__ import annotations
 import io
 import json
 import logging
+import os
 import shutil
 import sqlite3
 import stat
 import tempfile
 import zipfile
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, cast
 
@@ -31,7 +33,9 @@ from yinshi.services.user_settings import (
 logger = logging.getLogger(__name__)
 
 _PI_CONFIG_DIRECTORY_NAME = "pi-config"
+_PI_RUNTIME_DIRECTORY_NAME = "pi-runtime"
 _AGENT_DIRECTORY_NAME = "agent"
+_SESSION_RUNTIME_DIRECTORY_NAME = "sessions"
 _MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 _MAX_EXTRACTED_BYTES = 200 * 1024 * 1024
 _EXTRACT_CHUNK_BYTES = 64 * 1024
@@ -50,6 +54,14 @@ _CATEGORY_PATHS = {
     "models": Path("agent/models.json"),
     "sessions": Path("agent/sessions"),
 }
+
+
+@dataclass(frozen=True, slots=True)
+class PiRuntimeInputs:
+    """One resolved Pi runtime configuration for sidecar execution."""
+
+    agent_dir: str | None
+    settings_payload: dict[str, object] | None
 
 
 def _validate_user_id(user_id: str) -> str:
@@ -72,15 +84,37 @@ def _validate_data_dir(data_dir: str) -> Path:
     return Path(normalized_data_dir)
 
 
+def _validate_runtime_session_id(runtime_session_id: str) -> str:
+    """Require a non-empty session identifier for runtime override paths."""
+    if not isinstance(runtime_session_id, str):
+        raise TypeError("runtime_session_id must be a string")
+    normalized_session_id = runtime_session_id.strip()
+    if not normalized_session_id:
+        raise ValueError("runtime_session_id must not be empty")
+    return normalized_session_id
+
+
 def _pi_config_root_path(data_dir: str) -> Path:
     """Return the root directory that stores a user's imported Pi config."""
     data_root = _validate_data_dir(data_dir)
     return data_root / _PI_CONFIG_DIRECTORY_NAME
 
 
+def _pi_runtime_root_path(data_dir: str) -> Path:
+    """Return the root directory that stores derived runtime-only Pi data."""
+    data_root = _validate_data_dir(data_dir)
+    return data_root / _PI_RUNTIME_DIRECTORY_NAME
+
+
 def _pi_agent_dir_path(data_dir: str) -> Path:
     """Return the agentDir path for a user's imported Pi config."""
     return _pi_config_root_path(data_dir) / _AGENT_DIRECTORY_NAME
+
+
+def _session_runtime_root_path(data_dir: str, runtime_session_id: str) -> Path:
+    """Return the per-session runtime directory for repo instruction overlays."""
+    normalized_session_id = _validate_runtime_session_id(runtime_session_id)
+    return _pi_runtime_root_path(data_dir) / _SESSION_RUNTIME_DIRECTORY_NAME / normalized_session_id
 
 
 def _ordered_categories(categories: set[str]) -> list[str]:
@@ -320,6 +354,12 @@ def _prepare_destination(config_root: Path) -> None:
     config_root.parent.mkdir(parents=True, exist_ok=True)
 
 
+def _recreate_directory_root(root_path: Path) -> None:
+    """Replace one directory tree with a new empty directory."""
+    _remove_path(root_path)
+    root_path.mkdir(parents=True, exist_ok=True)
+
+
 def _mirror_instruction_files(config_root: Path) -> None:
     """Copy supported root instruction files into agent/ for SDK discovery."""
     agent_dir = config_root / _AGENT_DIRECTORY_NAME
@@ -359,6 +399,54 @@ def _instruction_runtime_paths(config_root: Path) -> list[Path]:
     """Return the mirrored instruction file paths inside agent/."""
     agent_dir = config_root / _AGENT_DIRECTORY_NAME
     return [agent_dir / filename for filename in _INSTRUCTION_FILENAMES]
+
+
+def _link_runtime_agent_children(source_agent_dir: Path, target_agent_dir: Path) -> None:
+    """Link all base agent assets into a runtime override directory except AGENTS.md."""
+    if not source_agent_dir.exists():
+        raise PiConfigError(f"Base agent directory does not exist: {source_agent_dir}")
+    if not source_agent_dir.is_dir():
+        raise PiConfigError(f"Base agent directory is not a directory: {source_agent_dir}")
+    if not target_agent_dir.exists():
+        raise PiConfigError(f"Target agent directory does not exist: {target_agent_dir}")
+    if not target_agent_dir.is_dir():
+        raise PiConfigError(f"Target agent directory is not a directory: {target_agent_dir}")
+
+    for source_path in sorted(source_agent_dir.iterdir(), key=lambda path: path.name):
+        if source_path.name == "AGENTS.md":
+            continue
+        target_path = target_agent_dir / source_path.name
+        relative_source_path = os.path.relpath(source_path, target_agent_dir)
+        target_path.symlink_to(
+            relative_source_path,
+            target_is_directory=source_path.is_dir(),
+        )
+
+
+def _materialize_repo_agent_override(
+    data_dir: str,
+    runtime_session_id: str,
+    repo_agents_md: str,
+    base_agent_dir: str | None,
+) -> str:
+    """Build one per-session agentDir that overlays repo instructions onto the base config."""
+    if not isinstance(repo_agents_md, str):
+        raise TypeError("repo_agents_md must be a string")
+
+    runtime_root = _session_runtime_root_path(data_dir, runtime_session_id)
+    _recreate_directory_root(runtime_root)
+
+    runtime_agent_dir = runtime_root / _AGENT_DIRECTORY_NAME
+    runtime_agent_dir.mkdir(parents=True, exist_ok=True)
+
+    if base_agent_dir is not None:
+        base_agent_path = Path(base_agent_dir)
+        _link_runtime_agent_children(base_agent_path, runtime_agent_dir)
+
+    # The runtime directory overlays only AGENTS.md so all other Pi assets stay shared.
+    runtime_agents_md_path = runtime_agent_dir / "AGENTS.md"
+    runtime_agents_md_path.write_text(repo_agents_md, encoding="utf-8")
+    return str(runtime_agent_dir)
 
 
 def _scan_categories(config_root: Path) -> list[str]:
@@ -748,61 +836,58 @@ def update_enabled_categories(
     return cast(dict[str, Any], get_pi_config(normalized_user_id))
 
 
-def resolve_pi_runtime(user_id: str, data_dir: str) -> tuple[str | None, dict[str, object] | None]:
+def resolve_pi_runtime(user_id: str, data_dir: str) -> PiRuntimeInputs:
     """Return the active Pi runtime inputs when container mode is enabled."""
     settings = get_settings()
     if not settings.container_enabled:
-        return None, None
+        return PiRuntimeInputs(agent_dir=None, settings_payload=None)
 
     config = get_pi_config(user_id)
     if config is None:
-        return None, None
+        return PiRuntimeInputs(agent_dir=None, settings_payload=None)
     if config["status"] != "ready":
-        return None, None
+        return PiRuntimeInputs(agent_dir=None, settings_payload=None)
 
     agent_dir = _pi_agent_dir_path(data_dir)
     if not agent_dir.is_dir():
-        return None, None
+        return PiRuntimeInputs(agent_dir=None, settings_payload=None)
 
     settings_payload = get_sidecar_settings_payload(user_id)
-    return str(agent_dir), settings_payload
+    return PiRuntimeInputs(
+        agent_dir=str(agent_dir),
+        settings_payload=settings_payload,
+    )
 
 
 def resolve_agent_dir(user_id: str, data_dir: str) -> str | None:
     """Return the agentDir path when a ready Pi config should be active."""
-    agent_dir, _settings_payload = resolve_pi_runtime(user_id, data_dir)
-    return agent_dir
+    runtime_inputs = resolve_pi_runtime(user_id, data_dir)
+    return runtime_inputs.agent_dir
 
 
-def resolve_effective_agent_dir(
+def resolve_effective_pi_runtime(
     user_id: str,
     data_dir: str,
-    repo_agents_md: str | None,
-) -> str | None:
-    """Return the agentDir path, using repo-level AGENTS.md if provided.
-
-    If repo_agents_md is set, creates a shadow directory with the repo's AGENTS.md
-    that shadows the global one. Otherwise returns the global pi-config agent dir.
-    """
-    global_agent_dir = resolve_agent_dir(user_id, data_dir)
+    *,
+    runtime_session_id: str | None = None,
+    repo_agents_md: str | None = None,
+) -> PiRuntimeInputs:
+    """Return runtime inputs with an optional repo-level AGENTS.md overlay applied."""
+    runtime_inputs = resolve_pi_runtime(user_id, data_dir)
 
     if repo_agents_md is None:
-        return global_agent_dir
+        return runtime_inputs
 
-    if global_agent_dir is None:
-        return None
+    if runtime_session_id is None:
+        raise ValueError("runtime_session_id must be provided when repo_agents_md is set")
 
-    # Create a shadow directory for this specific repo's AGENTS.md
-    # This preserves the global AGENTS.md while allowing per-repo overrides
-    global_agent_path = Path(global_agent_dir)
-    shadow_dir = global_agent_path.parent / f"{global_agent_path.name}.shadow"
-
-    # Create the shadow agent directory
-    shadow_agent_dir = shadow_dir / "agent"
-    shadow_agent_dir.mkdir(parents=True, exist_ok=True)
-
-    # Write repo-level AGENTS.md to the shadow location
-    shadow_agents_md = shadow_agent_dir / "AGENTS.md"
-    shadow_agents_md.write_text(repo_agents_md, encoding="utf-8")
-
-    return str(shadow_agent_dir)
+    override_agent_dir = _materialize_repo_agent_override(
+        data_dir,
+        runtime_session_id,
+        repo_agents_md,
+        runtime_inputs.agent_dir,
+    )
+    return PiRuntimeInputs(
+        agent_dir=override_agent_dir,
+        settings_payload=runtime_inputs.settings_payload,
+    )

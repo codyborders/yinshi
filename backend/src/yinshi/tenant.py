@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS repos (
     remote_url TEXT,
     root_path TEXT NOT NULL,
     custom_prompt TEXT,
+    agents_md TEXT,
     installation_id INTEGER
 );
 

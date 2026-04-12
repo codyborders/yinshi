@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS repos (
     remote_url TEXT,
     root_path TEXT NOT NULL,
     custom_prompt TEXT,
+    agents_md TEXT,
     owner_email TEXT,
     installation_id INTEGER
 );
@@ -320,8 +321,7 @@ def _migrate_control(conn: sqlite3.Connection) -> None:
     ]
     if not provider_connection_columns:
         logger.info("Control migration: creating provider_connections table")
-        conn.executescript(
-            """
+        conn.executescript("""
             CREATE TABLE IF NOT EXISTS provider_connections (
                 id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
@@ -343,8 +343,7 @@ def _migrate_control(conn: sqlite3.Connection) -> None:
             BEGIN
                 UPDATE provider_connections SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id;
             END;
-            """
-        )
+            """)
         conn.commit()
 
     migrated_row = conn.execute(
@@ -355,8 +354,7 @@ def _migrate_control(conn: sqlite3.Connection) -> None:
     assert api_key_count is not None, "api key count must be queryable"
     if api_key_count[0] > 0 and migrated_row[0] < api_key_count[0]:
         logger.info("Control migration: backfilling api_keys into provider_connections")
-        conn.execute(
-            """
+        conn.execute("""
             INSERT INTO provider_connections
             (id, created_at, updated_at, user_id, provider, auth_strategy,
              encrypted_secret, label, config_json, status, last_used_at, expires_at)
@@ -364,8 +362,7 @@ def _migrate_control(conn: sqlite3.Connection) -> None:
                    encrypted_key, label, '{}', 'connected', last_used_at, NULL
             FROM api_keys
             WHERE id NOT IN (SELECT id FROM provider_connections)
-            """
-        )
+            """)
         conn.commit()
 
 

@@ -250,7 +250,8 @@ def _summarize_prompt(prompt: str, max_words: int = 3) -> str:
     significant = [w for w in words if w.lower() not in _STOP_WORDS]
 
     if not significant:
-        significant = words[:max_words] if words else [text[:30]]
+        collapsed_text = "-".join(text.split())
+        significant = words[:max_words] if words else [collapsed_text[:30]]
 
     result = significant[:max_words]
     summary = "-".join(w.lower() for w in result)
@@ -332,6 +333,7 @@ def _lookup_session(
 async def _resolve_execution_context(
     request: Request,
     tenant: Any,
+    runtime_session_id: str,
     workspace_path: str,
     model: str,
     remote_url: str | None = None,
@@ -357,6 +359,7 @@ async def _resolve_execution_context(
         tenant_sidecar_context = await resolve_tenant_sidecar_context(
             request,
             tenant,
+            runtime_session_id=runtime_session_id,
             repo_agents_md=agents_md,
         )
     except (ContainerStartError, ContainerNotReadyError):
@@ -516,6 +519,7 @@ async def prompt_session(
         context = await _resolve_execution_context(
             request,
             tenant,
+            session_id,
             workspace_path,
             model,
             remote_url=remote_url,

@@ -63,7 +63,7 @@ def test_init_db_creates_schema_version(db):
 
 
 def test_init_db_migrates_owner_email_column(db_path, monkeypatch):
-    """init_db should add owner_email column to existing repos table that lacks it."""
+    """init_db should add missing repo metadata columns to an older repos table."""
     monkeypatch.setenv("DB_PATH", db_path)
     from yinshi.config import get_settings
 
@@ -93,10 +93,14 @@ def test_init_db_migrates_owner_email_column(db_path, monkeypatch):
         with get_db() as db:
             columns = [row[1] for row in db.execute("PRAGMA table_info(repos)").fetchall()]
             assert "owner_email" in columns
+            assert "installation_id" in columns
+            assert "agents_md" in columns
             # Existing data should be preserved
             row = db.execute("SELECT * FROM repos WHERE id = 'test1'").fetchone()
             assert row["name"] == "myrepo"
             assert row["owner_email"] is None
+            assert row["installation_id"] is None
+            assert row["agents_md"] is None
 
             # schema_version should be set
             version = db.execute("SELECT version FROM schema_version").fetchone()
@@ -164,11 +168,12 @@ def test_migrate_updates_existing_version(db_path, monkeypatch):
 
 
 def test_repos_table_has_owner_email_column(db):
-    """Repos table should have owner_email and installation_id columns."""
+    """Repos table should have all current metadata columns."""
     cursor = db.execute("PRAGMA table_info(repos)")
     columns = [row[1] for row in cursor.fetchall()]
     assert "owner_email" in columns
     assert "installation_id" in columns
+    assert "agents_md" in columns
 
 
 def test_init_control_db_creates_pi_config_tables(tmp_path, monkeypatch):

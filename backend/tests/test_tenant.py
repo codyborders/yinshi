@@ -129,7 +129,7 @@ def test_get_user_db_creates_and_returns_connection(tenant_env):
 
 
 def test_init_user_db_schema_no_owner_email(tenant_env):
-    """User DB schema should hide owner metadata and include turn status tracking."""
+    """User DB schema should hide owner metadata and include current repo/runtime fields."""
     from yinshi.tenant import init_user_db
 
     data_dir = os.path.join(tenant_env["user_data_dir"], "ab", "abc123")
@@ -143,6 +143,7 @@ def test_init_user_db_schema_no_owner_email(tenant_env):
     message_columns = [r[1] for r in conn.execute("PRAGMA table_info(messages)").fetchall()]
     conn.close()
     assert "owner_email" not in repo_columns
+    assert "agents_md" in repo_columns
     assert "turn_status" in message_columns
 
 
@@ -190,4 +191,5 @@ def test_get_user_db_migrates_existing_user_db(tenant_env):
         ]
 
     assert "installation_id" in repo_columns
+    assert "agents_md" in repo_columns
     assert "turn_status" in message_columns
