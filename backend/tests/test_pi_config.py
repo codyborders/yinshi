@@ -190,7 +190,7 @@ def test_upload_pi_config_rejects_oversized_files_before_import(
     from yinshi.api import settings as settings_api
 
     import_mock = AsyncMock()
-    monkeypatch.setattr(settings_api, "_MAX_UPLOAD_BYTES", 8)
+    monkeypatch.setattr(settings_api, "MAX_UPLOAD_BYTES", 8)
     monkeypatch.setattr(settings_api, "import_from_upload", import_mock)
 
     response = auth_client.post(

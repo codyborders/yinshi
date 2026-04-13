@@ -24,7 +24,7 @@ from yinshi.models import (
 )
 from yinshi.rate_limit import limiter
 from yinshi.services.pi_config import (
-    _MAX_UPLOAD_BYTES,
+    MAX_UPLOAD_BYTES,
     get_pi_config,
     import_from_github,
     import_from_upload,
@@ -41,6 +41,7 @@ from yinshi.services.provider_connections import (
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 _UPLOAD_READ_CHUNK_BYTES = 1024 * 1024
+_UPLOAD_TOO_LARGE_DETAIL = "Uploaded archive exceeds the 50MB size limit"
 
 
 def _github_http_exception(error: GitHubAccessError) -> HTTPException:
@@ -72,6 +73,11 @@ def _connection_http_exception(error: Exception) -> HTTPException:
     return HTTPException(status_code=400, detail=str(error))
 
 
+def _upload_too_large_http_exception() -> HTTPException:
+    """Return the stable 413 used for oversized Pi config uploads."""
+    return HTTPException(status_code=413, detail=_UPLOAD_TOO_LARGE_DETAIL)
+
+
 async def _read_upload_bytes(
     file: UploadFile,
     *,
@@ -86,12 +92,9 @@ async def _read_upload_bytes(
     reported_size = getattr(file, "size", None)
     if isinstance(reported_size, int):
         if reported_size > max_bytes:
-            raise HTTPException(
-                status_code=413,
-                detail="Uploaded archive exceeds the 50MB size limit",
-            )
+            raise _upload_too_large_http_exception()
 
-    chunks: list[bytes] = []
+    upload_bytes = bytearray()
     total_bytes_read = 0
     while True:
         chunk = await file.read(_UPLOAD_READ_CHUNK_BYTES)
@@ -99,14 +102,11 @@ async def _read_upload_bytes(
             break
         total_bytes_read += len(chunk)
         if total_bytes_read > max_bytes:
-            raise HTTPException(
-                status_code=413,
-                detail="Uploaded archive exceeds the 50MB size limit",
-            )
-        chunks.append(chunk)
+            raise _upload_too_large_http_exception()
+        upload_bytes.extend(chunk)
 
-    assert total_bytes_read >= 0
-    return b"".join(chunks)
+    assert total_bytes_read == len(upload_bytes)
+    return bytes(upload_bytes)
 
 
 @router.get("/keys", response_model=list[ApiKeyOut])
@@ -235,7 +235,7 @@ async def upload_pi_config(file: UploadFile, request: Request) -> dict[str, Any]
     tenant = require_tenant(request)
     filename = file.filename or "pi-config.zip"
     try:
-        zip_data = await _read_upload_bytes(file, max_bytes=_MAX_UPLOAD_BYTES)
+        zip_data = await _read_upload_bytes(file, max_bytes=MAX_UPLOAD_BYTES)
         return await import_from_upload(
             user_id=tenant.user_id,
             data_dir=tenant.data_dir,

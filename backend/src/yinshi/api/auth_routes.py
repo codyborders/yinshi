@@ -104,20 +104,20 @@ def _verify_github_install_state(state: str) -> str | None:
     return None
 
 
-def _current_user_id(request: Request) -> str | None:
-    """Return the authenticated user id from the session cookie."""
-    token = request.cookies.get("yinshi_session")
-    if not token:
-        return None
-    return verify_session_token(token)
-
-
 def _current_session_identity(request: Request) -> tuple[str, str] | None:
     """Return the authenticated user and auth session ids from the session cookie."""
     token = request.cookies.get("yinshi_session")
     if not token:
         return None
     return get_session_identity(token)
+
+
+def _current_user_id(request: Request) -> str | None:
+    """Return the authenticated user id from the session cookie."""
+    session_identity = _current_session_identity(request)
+    if session_identity is None:
+        return None
+    return session_identity[0]
 
 
 async def _refresh_connected_github_repos(

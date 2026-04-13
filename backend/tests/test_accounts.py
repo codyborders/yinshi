@@ -145,38 +145,53 @@ def test_resolve_or_create_user_handles_concurrent_provider_logins(
     from yinshi.db import get_control_db
     from yinshi.services import accounts as accounts_service
 
-    creation_barrier = threading.Barrier(2)
+    login_barrier = threading.Barrier(2)
+    call_log: list[str] = []
+    call_log_lock = threading.Lock()
 
     def fake_generate_dek() -> bytes:
-        creation_barrier.wait(timeout=5)
+        with call_log_lock:
+            call_log.append("generate_dek")
         return b"k" * 32
 
-    monkeypatch.setattr(accounts_service, "generate_dek", fake_generate_dek)
-    monkeypatch.setattr(
-        accounts_service,
-        "wrap_dek",
-        lambda dek, user_id, pepper: b"wrapped-dek",
-    )
+    def fake_wrap_dek(dek: bytes, user_id: str, pepper: bytes) -> bytes:
+        assert dek == b"k" * 32
+        assert user_id
+        assert pepper == bytes.fromhex("a" * 64)
+        with call_log_lock:
+            call_log.append("wrap_dek")
+        return b"wrapped-dek"
 
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        google_future = executor.submit(
-            accounts_service.resolve_or_create_user,
+    def resolve_google() -> object:
+        login_barrier.wait(timeout=5)
+        return accounts_service.resolve_or_create_user(
             provider="google",
             provider_user_id="google-race",
             email="race@example.com",
             display_name="Race User",
         )
-        github_future = executor.submit(
-            accounts_service.resolve_or_create_user,
+
+    def resolve_github() -> object:
+        login_barrier.wait(timeout=5)
+        return accounts_service.resolve_or_create_user(
             provider="github",
             provider_user_id="github-race",
             email="race@example.com",
             display_name="Race User",
         )
+
+    monkeypatch.setattr(accounts_service, "generate_dek", fake_generate_dek)
+    monkeypatch.setattr(accounts_service, "wrap_dek", fake_wrap_dek)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        google_future = executor.submit(resolve_google)
+        github_future = executor.submit(resolve_github)
         google_tenant = google_future.result(timeout=10)
         github_tenant = github_future.result(timeout=10)
 
     assert google_tenant.user_id == github_tenant.user_id
+    assert call_log.count("generate_dek") == 1
+    assert call_log.count("wrap_dek") == 1
 
     with get_control_db() as db:
         users = db.execute("SELECT id FROM users WHERE email = ?", ("race@example.com",)).fetchall()

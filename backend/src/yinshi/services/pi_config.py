@@ -37,17 +37,19 @@ _PI_CONFIG_DIRECTORY_NAME = "pi-config"
 _PI_RUNTIME_DIRECTORY_NAME = "pi-runtime"
 _AGENT_DIRECTORY_NAME = "agent"
 _SESSION_RUNTIME_DIRECTORY_NAME = "sessions"
-_MAX_UPLOAD_BYTES = 50 * 1024 * 1024
+MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 _MAX_EXTRACTED_BYTES = 200 * 1024 * 1024
 _EXTRACT_CHUNK_BYTES = 64 * 1024
 _INSTRUCTION_FILENAMES = ("AGENTS.md", "CLAUDE.md")
-_SENSITIVE_JSON_FILENAMES = frozenset({
-    "auth.json",
-    "credentials.json",
-    "oauth.json",
-    "tokens.json",
-    "secrets.json",
-})
+_SENSITIVE_JSON_FILENAMES = frozenset(
+    {
+        "auth.json",
+        "credentials.json",
+        "oauth.json",
+        "tokens.json",
+        "secrets.json",
+    }
+)
 _DIRECTORY_CATEGORIES = frozenset(
     {"skills", "extensions", "prompts", "agents", "themes", "sessions"}
 )
@@ -439,7 +441,7 @@ def _safe_zip_target(root_path: Path, archive_name: str) -> Path:
 
 def _extract_archive(zip_data: bytes, temp_root: Path) -> None:
     """Extract a validated zip archive into a temporary directory."""
-    if len(zip_data) > _MAX_UPLOAD_BYTES:
+    if len(zip_data) > MAX_UPLOAD_BYTES:
         raise PiConfigError("Uploaded archive exceeds the 50MB size limit")
     if not zip_data.startswith(b"PK"):
         raise PiConfigError("Uploaded file is not a zip archive")

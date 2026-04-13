@@ -226,6 +226,44 @@ def _insert_oauth_identity(
             raise RuntimeError("OAuth identity already belongs to a different user") from error
 
 
+def _generate_encrypted_dek(user_id: str) -> bytes | None:
+    """Return a wrapped DEK for one user when encryption is configured."""
+    if not isinstance(user_id, str):
+        raise TypeError("user_id must be a string")
+    normalized_user_id = user_id.strip()
+    if not normalized_user_id:
+        raise ValueError("user_id must not be empty")
+
+    settings = get_settings()
+    pepper = settings.encryption_pepper_bytes
+    if not pepper:
+        return None
+
+    dek = generate_dek()
+    encrypted_dek = wrap_dek(dek, normalized_user_id, pepper)
+    if not encrypted_dek:
+        raise RuntimeError("Wrapped DEK must not be empty")
+    return encrypted_dek
+
+
+def _store_user_encrypted_dek(
+    db: sqlite3.Connection,
+    *,
+    user_id: str,
+) -> None:
+    """Populate encrypted_dek for one newly inserted user row."""
+    encrypted_dek = _generate_encrypted_dek(user_id)
+    if encrypted_dek is None:
+        return
+
+    cursor = db.execute(
+        "UPDATE users SET encrypted_dek = ? WHERE id = ? AND encrypted_dek IS NULL",
+        (encrypted_dek, user_id),
+    )
+    if cursor.rowcount != 1:
+        raise RuntimeError("Newly created user row must exist before storing encrypted DEK")
+
+
 def _create_user_record(
     db: sqlite3.Connection,
     *,
@@ -235,16 +273,12 @@ def _create_user_record(
 ) -> tuple[str, bool]:
     """Insert one user row or load the concurrently created row by email."""
     candidate_user_id = secrets.token_hex(16)
-    dek = generate_dek()
-    settings = get_settings()
-    pepper = settings.encryption_pepper_bytes
-    encrypted_dek = wrap_dek(dek, candidate_user_id, pepper) if pepper else None
 
     try:
         db.execute(
             "INSERT INTO users (id, email, display_name, avatar_url, encrypted_dek, last_login_at) "
             "VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
-            (candidate_user_id, email, display_name, avatar_url, encrypted_dek),
+            (candidate_user_id, email, display_name, avatar_url, None),
         )
     except sqlite3.IntegrityError:
         existing_user_row = _find_user_by_email(db, email)
@@ -252,6 +286,7 @@ def _create_user_record(
             raise
         return existing_user_row["id"], False
 
+    _store_user_encrypted_dek(db, user_id=candidate_user_id)
     return candidate_user_id, True
 
 
