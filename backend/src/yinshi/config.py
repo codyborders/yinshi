@@ -96,9 +96,11 @@ def _validate_settings(settings: Settings) -> None:
 
     if settings.encryption_pepper:
         try:
-            bytes.fromhex(settings.encryption_pepper)
+            pepper_bytes = bytes.fromhex(settings.encryption_pepper)
         except ValueError as exc:
             raise RuntimeError(f"ENCRYPTION_PEPPER must be a valid hex string: {exc}") from exc
+        if len(pepper_bytes) < 32:
+            raise RuntimeError("ENCRYPTION_PEPPER must be at least 32 bytes (64 hex characters)")
 
 
 @lru_cache()

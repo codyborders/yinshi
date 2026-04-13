@@ -24,6 +24,7 @@ from yinshi.models import (
 )
 from yinshi.rate_limit import limiter
 from yinshi.services.pi_config import (
+    _MAX_UPLOAD_BYTES,
     get_pi_config,
     import_from_github,
     import_from_upload,
@@ -39,6 +40,7 @@ from yinshi.services.provider_connections import (
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/settings", tags=["settings"])
+_UPLOAD_READ_CHUNK_BYTES = 1024 * 1024
 
 
 def _github_http_exception(error: GitHubAccessError) -> HTTPException:
@@ -68,6 +70,43 @@ def _pi_config_http_exception(error: PiConfigError) -> HTTPException:
 def _connection_http_exception(error: Exception) -> HTTPException:
     """Convert provider connection validation errors into user-facing 400s."""
     return HTTPException(status_code=400, detail=str(error))
+
+
+async def _read_upload_bytes(
+    file: UploadFile,
+    *,
+    max_bytes: int,
+) -> bytes:
+    """Read one uploaded file while enforcing a hard byte limit."""
+    if not isinstance(max_bytes, int):
+        raise TypeError("max_bytes must be an integer")
+    if max_bytes <= 0:
+        raise ValueError("max_bytes must be positive")
+
+    reported_size = getattr(file, "size", None)
+    if isinstance(reported_size, int):
+        if reported_size > max_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail="Uploaded archive exceeds the 50MB size limit",
+            )
+
+    chunks: list[bytes] = []
+    total_bytes_read = 0
+    while True:
+        chunk = await file.read(_UPLOAD_READ_CHUNK_BYTES)
+        if not chunk:
+            break
+        total_bytes_read += len(chunk)
+        if total_bytes_read > max_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail="Uploaded archive exceeds the 50MB size limit",
+            )
+        chunks.append(chunk)
+
+    assert total_bytes_read >= 0
+    return b"".join(chunks)
 
 
 @router.get("/keys", response_model=list[ApiKeyOut])
@@ -195,8 +234,8 @@ async def upload_pi_config(file: UploadFile, request: Request) -> dict[str, Any]
     """Import a Pi config from an uploaded zip archive."""
     tenant = require_tenant(request)
     filename = file.filename or "pi-config.zip"
-    zip_data = await file.read()
     try:
+        zip_data = await _read_upload_bytes(file, max_bytes=_MAX_UPLOAD_BYTES)
         return await import_from_upload(
             user_id=tenant.user_id,
             data_dir=tenant.data_dir,
@@ -205,6 +244,8 @@ async def upload_pi_config(file: UploadFile, request: Request) -> dict[str, Any]
         )
     except PiConfigError as error:
         raise _pi_config_http_exception(error) from error
+    finally:
+        await file.close()
 
 
 @router.patch("/pi-config/categories", response_model=PiConfigOut)

@@ -26,6 +26,19 @@ export function isChunkLoadError(error: unknown): boolean {
   return CHUNK_ERROR_PATTERNS.some((pattern) => errorSignature.includes(pattern));
 }
 
+function isStorageAccessError(error: unknown): boolean {
+  if (!(error instanceof DOMException)) {
+    return false;
+  }
+  if (error.name === "QuotaExceededError") {
+    return true;
+  }
+  if (error.name === "SecurityError") {
+    return true;
+  }
+  return false;
+}
+
 function readEntryScriptSignature(): string {
   if (typeof document === "undefined") {
     return "server";
@@ -85,13 +98,21 @@ export default class ChunkErrorBoundary extends React.Component<
     if (!isChunkLoadError(error)) {
       return;
     }
-    if (
-      shouldReloadForChunkError(
+    let shouldReload = false;
+    try {
+      shouldReload = shouldReloadForChunkError(
         window.sessionStorage,
         window.location.pathname,
         readEntryScriptSignature(),
-      )
-    ) {
+      );
+    } catch (storageError: unknown) {
+      if (!isStorageAccessError(storageError)) {
+        throw storageError;
+      }
+      this.setState({ reloadRecommended: true });
+      return;
+    }
+    if (shouldReload) {
       window.location.reload();
       return;
     }

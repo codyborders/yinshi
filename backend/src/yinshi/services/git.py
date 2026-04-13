@@ -15,14 +15,64 @@ from yinshi.exceptions import GitError
 logger = logging.getLogger(__name__)
 
 _ADJECTIVES = [
-    "swift", "bold", "calm", "dark", "keen", "warm", "cool", "pure", "wise", "fast",
-    "bright", "quiet", "sharp", "smooth", "steady", "gentle", "vivid", "grand", "noble",
-    "fresh", "prime", "lunar", "solar", "amber", "coral", "ivory", "olive", "azure",
+    "swift",
+    "bold",
+    "calm",
+    "dark",
+    "keen",
+    "warm",
+    "cool",
+    "pure",
+    "wise",
+    "fast",
+    "bright",
+    "quiet",
+    "sharp",
+    "smooth",
+    "steady",
+    "gentle",
+    "vivid",
+    "grand",
+    "noble",
+    "fresh",
+    "prime",
+    "lunar",
+    "solar",
+    "amber",
+    "coral",
+    "ivory",
+    "olive",
+    "azure",
 ]
 _NOUNS = [
-    "fox", "owl", "elk", "wolf", "hawk", "bear", "lynx", "crane", "drake", "finch",
-    "heron", "raven", "otter", "tiger", "eagle", "falcon", "panda", "bison", "cedar",
-    "maple", "river", "stone", "flame", "frost", "storm", "ridge", "grove", "brook",
+    "fox",
+    "owl",
+    "elk",
+    "wolf",
+    "hawk",
+    "bear",
+    "lynx",
+    "crane",
+    "drake",
+    "finch",
+    "heron",
+    "raven",
+    "otter",
+    "tiger",
+    "eagle",
+    "falcon",
+    "panda",
+    "bison",
+    "cedar",
+    "maple",
+    "river",
+    "stone",
+    "flame",
+    "frost",
+    "storm",
+    "ridge",
+    "grove",
+    "brook",
 ]
 
 _ALLOWED_URL_SCHEMES = ("https://", "ssh://", "git@")
@@ -63,7 +113,7 @@ def _git_askpass_env(access_token: str | None) -> Iterator[dict[str, str] | None
         askpass_path = Path(temp_dir) / "askpass.sh"
         askpass_path.write_text(
             "#!/bin/sh\n"
-            "case \"$1\" in\n"
+            'case "$1" in\n'
             "  *Username*) printf '%s\\n' 'x-access-token' ;;\n"
             "  *) printf '%s\\n' \"$YINSHI_GIT_TOKEN\" ;;\n"
             "esac\n",
@@ -114,6 +164,52 @@ def _normalize_remote_url_for_compare(url: str) -> str:
     return normalized_url.rstrip("/")
 
 
+def _remote_urls_match(existing_remote_url: str, expected_remote_url: str) -> bool:
+    """Return whether two remote URLs refer to the same repository."""
+    if not isinstance(existing_remote_url, str):
+        raise TypeError("existing_remote_url must be a string")
+    if not isinstance(expected_remote_url, str):
+        raise TypeError("expected_remote_url must be a string")
+    if not existing_remote_url.strip():
+        return False
+    if not expected_remote_url.strip():
+        raise ValueError("expected_remote_url must not be blank")
+    return _normalize_remote_url_for_compare(
+        existing_remote_url
+    ) == _normalize_remote_url_for_compare(expected_remote_url)
+
+
+async def _has_remote_refs(repo_path: str, remote_name: str = "origin") -> bool:
+    """Return whether one local checkout has fetched refs for one remote."""
+    if not isinstance(repo_path, str):
+        raise TypeError("repo_path must be a string")
+    if not isinstance(remote_name, str):
+        raise TypeError("remote_name must be a string")
+    normalized_repo_path = repo_path.strip()
+    normalized_remote_name = remote_name.strip()
+    if not normalized_repo_path:
+        raise ValueError("repo_path must not be empty")
+    if not normalized_remote_name:
+        raise ValueError("remote_name must not be empty")
+
+    refs_output = await _run_git(
+        [
+            "for-each-ref",
+            "--format=%(refname)",
+            f"refs/remotes/{normalized_remote_name}",
+        ],
+        cwd=normalized_repo_path,
+    )
+    for ref_name in refs_output.splitlines():
+        normalized_ref_name = ref_name.strip()
+        if not normalized_ref_name:
+            continue
+        if normalized_ref_name == f"refs/remotes/{normalized_remote_name}/HEAD":
+            continue
+        return True
+    return False
+
+
 async def get_remote_url(
     repo_path: str,
     remote_name: str = "origin",
@@ -153,10 +249,9 @@ async def ensure_remote_url(
 
     current_remote_url = await get_remote_url(repo_path, remote_name=remote_name)
     if current_remote_url is not None:
-        if (
-            _normalize_remote_url_for_compare(current_remote_url)
-            == _normalize_remote_url_for_compare(remote_url)
-        ):
+        if _normalize_remote_url_for_compare(
+            current_remote_url
+        ) == _normalize_remote_url_for_compare(remote_url):
             return False
         await _run_git(
             ["remote", "set-url", remote_name, remote_url],
@@ -189,20 +284,30 @@ async def clone_repo(
             # before reusing it to prevent cross-repo data leakage.
             try:
                 existing_remote = await _run_git(
-                    ["remote", "get-url", "origin"], cwd=dest,
+                    ["remote", "get-url", "origin"],
+                    cwd=dest,
                 )
             except GitError:
                 existing_remote = ""
-            if existing_remote.strip().rstrip("/") != url.strip().rstrip("/"):
-                raise GitError(
-                    f"Destination already contains a clone of a different repository"
-                )
+            if not _remote_urls_match(existing_remote, url):
+                raise GitError(f"Destination already contains a clone of a different repository")
+            had_remote_refs_before_fetch = await _has_remote_refs(dest)
             logger.info("Reusing existing clone at %s", dest)
             try:
                 with _git_askpass_env(access_token) as env:
                     await _run_git(["fetch", "--all"], cwd=dest, env=env)
-            except GitError:
-                pass
+            except GitError as error:
+                if not had_remote_refs_before_fetch:
+                    raise GitError(
+                        "Existing clone is incomplete and could not be refreshed"
+                    ) from error
+                logger.warning(
+                    "Fetch failed for existing clone at %s; reusing existing refs",
+                    dest,
+                )
+                return dest
+            if not had_remote_refs_before_fetch and not await _has_remote_refs(dest):
+                raise GitError("Existing clone is incomplete and missing remote refs")
             return dest
         raise GitError("Destination already exists but is not a git repository")
     dest_path.parent.mkdir(parents=True, exist_ok=True)

@@ -94,7 +94,9 @@ def _create_fake_pi_clone(dest: str, *, instruction_name: str = "CLAUDE.md") -> 
     """Write a fake cloned Pi config tree at the destination path."""
     dest_path = Path(dest)
     (dest_path / "agent" / "prompts").mkdir(parents=True, exist_ok=True)
-    (dest_path / ".env.production").write_text("ANTHROPIC_API_KEY=sk-github-secret\n", encoding="utf-8")
+    (dest_path / ".env.production").write_text(
+        "ANTHROPIC_API_KEY=sk-github-secret\n", encoding="utf-8"
+    )
     (dest_path / "agent" / "settings.json").write_text(
         json.dumps(
             {
@@ -162,7 +164,9 @@ def test_upload_pi_config_scrubs_and_stores_metadata(auth_client: TestClient) ->
     assert (config_root / "AGENTS.md").is_file()
     assert (config_root / "agent" / "AGENTS.md").is_file()
     assert not (config_root / "agent" / "PYTHON.md").exists()
-    scrubbed_settings = json.loads((config_root / "agent" / "settings.json").read_text(encoding="utf-8"))
+    scrubbed_settings = json.loads(
+        (config_root / "agent" / "settings.json").read_text(encoding="utf-8")
+    )
     assert scrubbed_settings == {
         "provider": {"baseUrl": "https://api.example.com", "nested": {}},
         "retry": {"enabled": False},
@@ -176,6 +180,26 @@ def test_upload_pi_config_scrubs_and_stores_metadata(auth_client: TestClient) ->
         "provider": {"baseUrl": "https://api.example.com", "nested": {}},
         "retry": {"enabled": False},
     }
+
+
+def test_upload_pi_config_rejects_oversized_files_before_import(
+    auth_client: TestClient,
+    monkeypatch,
+) -> None:
+    """Upload should reject oversized archives before calling the import service."""
+    from yinshi.api import settings as settings_api
+
+    import_mock = AsyncMock()
+    monkeypatch.setattr(settings_api, "_MAX_UPLOAD_BYTES", 8)
+    monkeypatch.setattr(settings_api, "import_from_upload", import_mock)
+
+    response = auth_client.post(
+        "/api/settings/pi-config/upload",
+        files={"file": ("pi-config.zip", b"123456789", "application/zip")},
+    )
+
+    assert response.status_code == 413
+    import_mock.assert_not_called()
 
 
 def test_update_pi_config_categories_renames_paths_and_disables_settings(
@@ -239,7 +263,9 @@ def test_github_import_clones_in_background_and_keeps_git_metadata(
     assert (config_root / "agent" / "CLAUDE.md").is_file()
     assert not (config_root / ".env.production").exists()
     assert not (config_root / "agent" / "oauth.json").exists()
-    scrubbed_settings = json.loads((config_root / "agent" / "settings.json").read_text(encoding="utf-8"))
+    scrubbed_settings = json.loads(
+        (config_root / "agent" / "settings.json").read_text(encoding="utf-8")
+    )
     assert scrubbed_settings == {
         "provider": {"region": "us"},
         "retry": {"enabled": False},

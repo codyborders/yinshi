@@ -4,12 +4,14 @@ import {
   authenticateContext,
   createLocalRepo,
   seedFullStack,
+  storeApiKey,
   uniqueEmail,
 } from "./helpers/testApp";
 
 test("slash commands render the expected session responses", async ({ page }) => {
   const email = uniqueEmail("slash");
   const authSession = await authenticateContext(page.context(), email);
+  await storeApiKey(authSession, "anthropic", "sk-ant-playwright", "Anthropic");
   const repoPath = createLocalRepo("slash");
   const seeded = await seedFullStack(authSession, repoPath);
   const composer = page.getByPlaceholder("Describe what to build...");

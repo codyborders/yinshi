@@ -445,6 +445,7 @@ def test_github_install_callback_stores_installation(
     _configure_github_app_settings(tmp_path, monkeypatch)
 
     from yinshi.api.auth_routes import _create_github_install_state
+    from yinshi.auth import create_session_token
     from yinshi.db import get_control_db
     from yinshi.main import app
     from yinshi.services.accounts import resolve_or_create_user
@@ -470,6 +471,7 @@ def test_github_install_callback_stores_installation(
             ),
         ),
     ):
+        client.cookies.set("yinshi_session", create_session_token(tenant.user_id))
         resp = client.get(
             f"/auth/github/install/callback?state={state}&installation_id=42&setup_action=install",
             follow_redirects=False,
@@ -489,6 +491,50 @@ def test_github_install_callback_stores_installation(
     assert row["account_type"] == "Organization"
 
 
+def test_github_install_callback_rejects_state_user_mismatch(
+    auth_enabled_app,
+    tmp_path,
+    monkeypatch,
+):
+    """GitHub install callback should reject state tokens from a different user session."""
+    from fastapi.testclient import TestClient
+
+    _configure_github_app_settings(tmp_path, monkeypatch)
+
+    from yinshi.api.auth_routes import _create_github_install_state
+    from yinshi.auth import create_session_token
+    from yinshi.db import get_control_db
+    from yinshi.main import app
+    from yinshi.services.accounts import resolve_or_create_user
+
+    attacker = resolve_or_create_user(
+        provider="google",
+        provider_user_id="github-install-attacker",
+        email="attacker@example.com",
+        display_name="Attacker",
+    )
+    victim = resolve_or_create_user(
+        provider="google",
+        provider_user_id="github-install-victim",
+        email="victim@example.com",
+        display_name="Victim",
+    )
+    attacker_state = _create_github_install_state(attacker.user_id)
+
+    with TestClient(app) as client:
+        client.cookies.set("yinshi_session", create_session_token(victim.user_id))
+        response = client.get(
+            f"/auth/github/install/callback?state={attacker_state}&installation_id=42&setup_action=install",
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 307
+    assert response.headers["location"] == "/app?github_connect_error=invalid_state"
+    with get_control_db() as db:
+        rows = db.execute("SELECT * FROM github_installations").fetchall()
+    assert rows == []
+
+
 def test_github_install_callback_relinks_existing_user_repos(
     auth_enabled_app,
     tmp_path,
@@ -506,6 +552,7 @@ def test_github_install_callback_relinks_existing_user_repos(
     _configure_github_app_settings(tmp_path, monkeypatch)
 
     from yinshi.api.auth_routes import _create_github_install_state
+    from yinshi.auth import create_session_token
     from yinshi.db import get_control_db
     from yinshi.main import app
     from yinshi.services.accounts import resolve_or_create_user
@@ -560,6 +607,7 @@ def test_github_install_callback_relinks_existing_user_repos(
             ),
         ),
     ):
+        client.cookies.set("yinshi_session", create_session_token(tenant.user_id))
         resp = client.get(
             f"/auth/github/install/callback?state={state}&installation_id=42&setup_action=install",
             follow_redirects=False,
@@ -652,6 +700,44 @@ def test_logout_all_revokes_all_sessions_and_clears_cookie(auth_enabled_app) -> 
         ).fetchall()
     assert len(rows) == 2
     assert all(row["revoked_at"] is not None for row in rows)
+
+
+def test_logout_revokes_only_current_session_and_clears_cookie(auth_enabled_app) -> None:
+    """POST /auth/logout should revoke only the current auth session."""
+    from fastapi.testclient import TestClient
+
+    from yinshi.auth import create_session_token, verify_session_token
+    from yinshi.db import get_control_db
+    from yinshi.main import app
+
+    tenant = _create_test_user()
+    current_token = create_session_token(tenant.user_id)
+    second_token = create_session_token(tenant.user_id)
+
+    with TestClient(app) as client:
+        client.cookies.set("yinshi_session", current_token)
+        response = client.post(
+            "/auth/logout",
+            headers={"X-Requested-With": "XMLHttpRequest"},
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 307
+    assert response.headers["location"] == "/"
+    assert verify_session_token(current_token) is None
+    assert verify_session_token(second_token) == tenant.user_id
+
+    with get_control_db() as db:
+        rows = db.execute(
+            "SELECT id, revoked_at FROM auth_sessions WHERE user_id = ? ORDER BY created_at",
+            (tenant.user_id,),
+        ).fetchall()
+
+    assert len(rows) == 2
+    revoked_rows = [row for row in rows if row["revoked_at"] is not None]
+    active_rows = [row for row in rows if row["revoked_at"] is None]
+    assert len(revoked_rows) == 1
+    assert len(active_rows) == 1
 
 
 def test_google_callback_rate_limit_returns_429(auth_enabled_app) -> None:

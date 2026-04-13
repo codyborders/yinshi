@@ -15,7 +15,9 @@ from yinshi.auth import (
     SESSION_MAX_AGE,
     _resolve_tenant_from_user_id,
     create_session_token,
+    get_session_identity,
     oauth,
+    revoke_auth_session,
     revoke_auth_sessions,
     verify_session_token,
 )
@@ -108,6 +110,14 @@ def _current_user_id(request: Request) -> str | None:
     if not token:
         return None
     return verify_session_token(token)
+
+
+def _current_session_identity(request: Request) -> tuple[str, str] | None:
+    """Return the authenticated user and auth session ids from the session cookie."""
+    token = request.cookies.get("yinshi_session")
+    if not token:
+        return None
+    return get_session_identity(token)
 
 
 async def _refresh_connected_github_repos(
@@ -487,9 +497,13 @@ async def github_install_callback(request: Request) -> RedirectResponse:
     if not state:
         return RedirectResponse(url="/app?github_connect_error=invalid_state")
 
-    user_id = _verify_github_install_state(state)
-    if not user_id:
+    state_user_id = _verify_github_install_state(state)
+    if not state_user_id:
         return RedirectResponse(url="/app?github_connect_error=invalid_state")
+    current_user_id = _current_user_id(request)
+    if current_user_id != state_user_id:
+        return RedirectResponse(url="/app?github_connect_error=invalid_state")
+    user_id = state_user_id
 
     installation_id_text = request.query_params.get("installation_id")
     if not installation_id_text:
@@ -769,9 +783,10 @@ async def me(request: Request) -> dict[str, Any]:
 @router.post("/logout")
 async def logout(request: Request) -> RedirectResponse:
     """Revoke the current auth session and clear the session cookie."""
-    user_id = _current_user_id(request)
-    if user_id is not None:
-        revoke_auth_sessions(user_id)
+    session_identity = _current_session_identity(request)
+    if session_identity is not None:
+        user_id, auth_session_id = session_identity
+        revoke_auth_session(user_id, auth_session_id)
     response = RedirectResponse(url="/")
     _clear_session_cookie(response)
     return response

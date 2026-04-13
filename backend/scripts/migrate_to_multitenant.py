@@ -28,9 +28,9 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from yinshi.config import get_settings
-from yinshi.db import init_control_db, get_control_db
+from yinshi.db import get_control_db, init_control_db
 from yinshi.services.accounts import provision_user, resolve_or_create_user
-from yinshi.tenant import get_user_db, TenantContext, user_data_dir
+from yinshi.tenant import TenantContext, get_user_db, user_data_dir
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -55,9 +55,7 @@ def migrate(dry_run: bool = False) -> None:
     source.row_factory = sqlite3.Row
 
     # Get all distinct owners
-    owners = source.execute(
-        "SELECT DISTINCT owner_email FROM repos"
-    ).fetchall()
+    owners = source.execute("SELECT DISTINCT owner_email FROM repos").fetchall()
     emails = [r["owner_email"] for r in owners]
 
     # If there's only NULL owners, create an admin user
@@ -111,8 +109,9 @@ def migrate(dry_run: bool = False) -> None:
 
                 # Insert repo (without owner_email)
                 user_db.execute(
-                    "INSERT INTO repos (id, created_at, updated_at, name, remote_url, root_path, custom_prompt) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO repos "
+                    "(id, created_at, updated_at, name, remote_url, root_path, custom_prompt, agents_md, installation_id) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         repo_dict["id"],
                         repo_dict["created_at"],
@@ -121,6 +120,8 @@ def migrate(dry_run: bool = False) -> None:
                         repo_dict["remote_url"],
                         new_root,
                         repo_dict["custom_prompt"],
+                        repo_dict.get("agents_md"),
+                        repo_dict.get("installation_id"),
                     ),
                 )
 

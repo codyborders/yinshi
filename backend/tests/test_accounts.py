@@ -2,6 +2,8 @@
 
 import os
 import sqlite3
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -17,9 +19,11 @@ def account_env(tmp_path, monkeypatch):
     monkeypatch.setenv("DB_PATH", str(tmp_path / "legacy.db"))
     monkeypatch.setenv("DISABLE_AUTH", "true")
     from yinshi.config import get_settings
+
     get_settings.cache_clear()
 
     from yinshi.db import init_control_db
+
     init_control_db()
 
     yield {
@@ -49,9 +53,9 @@ def test_provision_user_db_has_tables(account_env):
     tenant = provision_user("user456", "user@example.com")
 
     conn = sqlite3.connect(tenant.db_path)
-    tables = [r[0] for r in conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table'"
-    ).fetchall()]
+    tables = [
+        r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+    ]
     conn.close()
 
     assert "repos" in tables
@@ -101,8 +105,8 @@ def test_resolve_or_create_existing_user(account_env):
 
 def test_resolve_links_new_provider_same_email(account_env):
     """resolve_or_create_user should link new provider to existing account by email."""
-    from yinshi.services.accounts import resolve_or_create_user
     from yinshi.db import get_control_db
+    from yinshi.services.accounts import resolve_or_create_user
 
     # First login via Google
     tenant1 = resolve_or_create_user(
@@ -133,14 +137,67 @@ def test_resolve_links_new_provider_same_email(account_env):
         assert providers == {"google", "github"}
 
 
+def test_resolve_or_create_user_handles_concurrent_provider_logins(
+    account_env,
+    monkeypatch,
+):
+    """Concurrent provider callbacks for one email should converge on one user."""
+    from yinshi.db import get_control_db
+    from yinshi.services import accounts as accounts_service
+
+    creation_barrier = threading.Barrier(2)
+
+    def fake_generate_dek() -> bytes:
+        creation_barrier.wait(timeout=5)
+        return b"k" * 32
+
+    monkeypatch.setattr(accounts_service, "generate_dek", fake_generate_dek)
+    monkeypatch.setattr(
+        accounts_service,
+        "wrap_dek",
+        lambda dek, user_id, pepper: b"wrapped-dek",
+    )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        google_future = executor.submit(
+            accounts_service.resolve_or_create_user,
+            provider="google",
+            provider_user_id="google-race",
+            email="race@example.com",
+            display_name="Race User",
+        )
+        github_future = executor.submit(
+            accounts_service.resolve_or_create_user,
+            provider="github",
+            provider_user_id="github-race",
+            email="race@example.com",
+            display_name="Race User",
+        )
+        google_tenant = google_future.result(timeout=10)
+        github_tenant = github_future.result(timeout=10)
+
+    assert google_tenant.user_id == github_tenant.user_id
+
+    with get_control_db() as db:
+        users = db.execute("SELECT id FROM users WHERE email = ?", ("race@example.com",)).fetchall()
+        identities = db.execute(
+            "SELECT provider FROM oauth_identities WHERE user_id = ? ORDER BY provider",
+            (google_tenant.user_id,),
+        ).fetchall()
+
+    assert len(users) == 1
+    assert [row["provider"] for row in identities] == ["github", "google"]
+
+
 def test_control_db_has_users_table(account_env):
     """Control DB should have users, OAuth identities, keys, and GitHub installs."""
     from yinshi.db import get_control_db
 
     with get_control_db() as db:
-        tables = [r["name"] for r in db.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'"
-        ).fetchall()]
+        tables = [
+            r["name"]
+            for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+        ]
 
     assert "users" in tables
     assert "oauth_identities" in tables
@@ -170,8 +227,7 @@ def test_legacy_data_migrated_on_first_login(account_env):
         "VALUES ('ws1', 'repo1', 'main-ws', 'main', '/tmp/repo/.worktrees/main', 'ready')"
     )
     legacy.execute(
-        "INSERT INTO sessions (id, workspace_id, status) "
-        "VALUES ('sess1', 'ws1', 'idle')"
+        "INSERT INTO sessions (id, workspace_id, status) " "VALUES ('sess1', 'ws1', 'idle')"
     )
     legacy.execute(
         "INSERT INTO messages (id, session_id, role, content) "
@@ -204,6 +260,51 @@ def test_legacy_data_migrated_on_first_login(account_env):
         messages = db.execute("SELECT * FROM messages").fetchall()
         assert len(messages) == 1
         assert messages[0]["content"] == "hello world"
+
+
+def test_legacy_migration_preserves_agents_md(account_env):
+    """Legacy repo migration should preserve repo-level AGENTS.md instructions."""
+    from yinshi.config import get_settings
+    from yinshi.db import init_db
+    from yinshi.services.accounts import resolve_or_create_user
+    from yinshi.tenant import get_user_db
+
+    settings = get_settings()
+    init_db()
+    legacy = sqlite3.connect(settings.db_path)
+    legacy.execute("PRAGMA foreign_keys = ON")
+    legacy.execute(
+        "INSERT INTO repos (id, name, remote_url, root_path, owner_email, agents_md, installation_id) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (
+            "repo-agents",
+            "agents-project",
+            "https://github.com/x/agents",
+            "/tmp/repo-agents",
+            "agents@example.com",
+            "Custom agent instructions",
+            42,
+        ),
+    )
+    legacy.commit()
+    legacy.close()
+
+    tenant = resolve_or_create_user(
+        provider="google",
+        provider_user_id="google-agents",
+        email="agents@example.com",
+        display_name="Agents User",
+    )
+
+    with get_user_db(tenant) as db:
+        repo_row = db.execute(
+            "SELECT agents_md, installation_id FROM repos WHERE id = ?",
+            ("repo-agents",),
+        ).fetchone()
+
+    assert repo_row is not None
+    assert repo_row["agents_md"] == "Custom agent instructions"
+    assert repo_row["installation_id"] == 42
 
 
 def test_legacy_migration_skipped_when_no_legacy_data(account_env):

@@ -1,6 +1,9 @@
-import { describe, expect, it } from "vitest";
+import React from "react";
+import { render, screen, waitFor } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  default as ChunkErrorBoundary,
   isChunkLoadError,
   shouldReloadForChunkError,
 } from "../ChunkErrorBoundary";
@@ -47,5 +50,50 @@ describe("ChunkErrorBoundary helpers", () => {
     expect(
       shouldReloadForChunkError(storage, "/app/session/abc123", "/assets/index-new.js"),
     ).toBe(true);
+  });
+});
+
+describe("ChunkErrorBoundary", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("shows reload UI when sessionStorage is unavailable during chunk recovery", async () => {
+    const ThrowChunkError = () => {
+      throw new TypeError("Failed to fetch dynamically imported module");
+    };
+
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const originalSessionStorage = window.sessionStorage;
+    Object.defineProperty(window, "sessionStorage", {
+      configurable: true,
+      value: {
+        getItem(): string | null {
+          return null;
+        },
+        setItem(): void {
+          throw new DOMException("storage unavailable", "QuotaExceededError");
+        },
+      },
+    });
+    try {
+      render(
+        <ChunkErrorBoundary>
+          <ThrowChunkError />
+        </ChunkErrorBoundary>,
+      );
+
+      await waitFor(() => {
+        expect(
+          screen.getByText("This page needs a refresh after the latest deploy."),
+        ).toBeTruthy();
+      });
+      expect(screen.getByRole("button", { name: "Reload page" })).toBeTruthy();
+    } finally {
+      Object.defineProperty(window, "sessionStorage", {
+        configurable: true,
+        value: originalSessionStorage,
+      });
+    }
   });
 });

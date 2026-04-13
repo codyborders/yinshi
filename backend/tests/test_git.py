@@ -108,6 +108,79 @@ async def test_validate_local_repo_invalid(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_clone_repo_reuses_existing_clone_when_git_suffix_differs(
+    tmp_path,
+    monkeypatch,
+):
+    """Existing clones should be reused when URLs differ only by an optional .git suffix."""
+    from yinshi.services import git as git_service
+
+    dest_path = tmp_path / "existing-clone"
+    dest_path.mkdir()
+
+    async def fake_validate_local_repo(path: str) -> bool:
+        assert path == str(dest_path)
+        return True
+
+    async def fake_run_git(args, cwd=None, env=None):
+        del env
+        assert cwd == str(dest_path)
+        if args == ["remote", "get-url", "origin"]:
+            return "https://example.com/acme/yinshi.git"
+        if args == ["for-each-ref", "--format=%(refname)", "refs/remotes/origin"]:
+            return "refs/remotes/origin/main\n"
+        if args == ["fetch", "--all"]:
+            return ""
+        raise AssertionError(f"Unexpected git args: {args}")
+
+    monkeypatch.setattr(git_service, "validate_local_repo", fake_validate_local_repo)
+    monkeypatch.setattr(git_service, "_run_git", fake_run_git)
+
+    result = await git_service.clone_repo(
+        "https://example.com/acme/yinshi",
+        str(dest_path),
+    )
+
+    assert result == str(dest_path)
+
+
+@pytest.mark.asyncio
+async def test_clone_repo_rejects_incomplete_existing_clone_when_refresh_fails(
+    tmp_path,
+    monkeypatch,
+):
+    """Incomplete existing clones should not be silently reused after a failed refresh."""
+    from yinshi.services import git as git_service
+
+    dest_path = tmp_path / "partial-clone"
+    dest_path.mkdir()
+
+    async def fake_validate_local_repo(path: str) -> bool:
+        assert path == str(dest_path)
+        return True
+
+    async def fake_run_git(args, cwd=None, env=None):
+        del env
+        assert cwd == str(dest_path)
+        if args == ["remote", "get-url", "origin"]:
+            return "https://example.com/acme/yinshi.git"
+        if args == ["for-each-ref", "--format=%(refname)", "refs/remotes/origin"]:
+            return ""
+        if args == ["fetch", "--all"]:
+            raise GitError("git fetch failed")
+        raise AssertionError(f"Unexpected git args: {args}")
+
+    monkeypatch.setattr(git_service, "validate_local_repo", fake_validate_local_repo)
+    monkeypatch.setattr(git_service, "_run_git", fake_run_git)
+
+    with pytest.raises(GitError, match="incomplete"):
+        await git_service.clone_repo(
+            "https://example.com/acme/yinshi",
+            str(dest_path),
+        )
+
+
+@pytest.mark.asyncio
 async def test_create_and_delete_worktree(git_repo, tmp_path):
     """Should create and delete a worktree."""
     from yinshi.services.git import create_worktree, delete_worktree

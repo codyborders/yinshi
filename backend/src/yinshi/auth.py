@@ -105,42 +105,8 @@ def _serialize_session_token(user_id: str, auth_session_id: str) -> str:
     )
 
 
-def _load_auth_session_row(user_id: str, auth_session_id: str) -> sqlite3.Row | None:
-    """Return the auth session row for a signed cookie payload."""
-    normalized_user_id = _normalize_user_id(user_id)
-    normalized_auth_session_id = _normalize_auth_session_id(auth_session_id)
-    with get_control_db() as db:
-        row = db.execute(
-            "SELECT id, revoked_at FROM auth_sessions WHERE id = ? AND user_id = ?",
-            (normalized_auth_session_id, normalized_user_id),
-        ).fetchone()
-    return row
-
-
-def revoke_auth_sessions(user_id: str) -> None:
-    """Revoke every auth session that belongs to a user."""
-    normalized_user_id = _normalize_user_id(user_id)
-    with get_control_db() as db:
-        db.execute(
-            """
-            UPDATE auth_sessions
-            SET revoked_at = CURRENT_TIMESTAMP
-            WHERE user_id = ? AND revoked_at IS NULL
-            """,
-            (normalized_user_id,),
-        )
-        db.commit()
-
-
-def create_session_token(user_id: str) -> str:
-    """Create a signed session token encoding user and auth session ids."""
-    normalized_user_id = _normalize_user_id(user_id)
-    auth_session_id = _create_auth_session(normalized_user_id)
-    return _serialize_session_token(normalized_user_id, auth_session_id)
-
-
-def verify_session_token(token: str) -> str | None:
-    """Verify and decode a session token. Returns user_id or None."""
+def get_session_identity(token: str) -> tuple[str, str] | None:
+    """Verify and decode a session token into user and auth session ids."""
     if not isinstance(token, str):
         return None
     normalized_token = token.strip()
@@ -179,7 +145,65 @@ def verify_session_token(token: str) -> str | None:
         return None
     if session_row["revoked_at"] is not None:
         return None
-    return normalized_user_id
+    return normalized_user_id, normalized_auth_session_id
+
+
+def _load_auth_session_row(user_id: str, auth_session_id: str) -> sqlite3.Row | None:
+    """Return the auth session row for a signed cookie payload."""
+    normalized_user_id = _normalize_user_id(user_id)
+    normalized_auth_session_id = _normalize_auth_session_id(auth_session_id)
+    with get_control_db() as db:
+        row = db.execute(
+            "SELECT id, revoked_at FROM auth_sessions WHERE id = ? AND user_id = ?",
+            (normalized_auth_session_id, normalized_user_id),
+        ).fetchone()
+    return row
+
+
+def revoke_auth_session(user_id: str, auth_session_id: str) -> None:
+    """Revoke one auth session that belongs to one user."""
+    normalized_user_id = _normalize_user_id(user_id)
+    normalized_auth_session_id = _normalize_auth_session_id(auth_session_id)
+    with get_control_db() as db:
+        db.execute(
+            """
+            UPDATE auth_sessions
+            SET revoked_at = CURRENT_TIMESTAMP
+            WHERE id = ? AND user_id = ? AND revoked_at IS NULL
+            """,
+            (normalized_auth_session_id, normalized_user_id),
+        )
+        db.commit()
+
+
+def revoke_auth_sessions(user_id: str) -> None:
+    """Revoke every auth session that belongs to a user."""
+    normalized_user_id = _normalize_user_id(user_id)
+    with get_control_db() as db:
+        db.execute(
+            """
+            UPDATE auth_sessions
+            SET revoked_at = CURRENT_TIMESTAMP
+            WHERE user_id = ? AND revoked_at IS NULL
+            """,
+            (normalized_user_id,),
+        )
+        db.commit()
+
+
+def create_session_token(user_id: str) -> str:
+    """Create a signed session token encoding user and auth session ids."""
+    normalized_user_id = _normalize_user_id(user_id)
+    auth_session_id = _create_auth_session(normalized_user_id)
+    return _serialize_session_token(normalized_user_id, auth_session_id)
+
+
+def verify_session_token(token: str) -> str | None:
+    """Verify and decode a session token. Returns user_id or None."""
+    session_identity = get_session_identity(token)
+    if session_identity is None:
+        return None
+    return session_identity[0]
 
 
 def _auth_disabled() -> bool:

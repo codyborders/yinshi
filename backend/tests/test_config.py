@@ -53,3 +53,16 @@ def test_auth_enabled_requires_explicit_secret_key(monkeypatch):
     with pytest.raises(RuntimeError, match="SECRET_KEY"):
         get_settings()
     get_settings.cache_clear()
+
+
+def test_short_encryption_pepper_is_rejected(monkeypatch):
+    """ENCRYPTION_PEPPER should fail fast when it is shorter than 32 bytes."""
+    monkeypatch.setenv("DISABLE_AUTH", "true")
+    monkeypatch.setenv("ENCRYPTION_PEPPER", "aa")
+
+    from yinshi.config import get_settings
+
+    get_settings.cache_clear()
+    with pytest.raises(RuntimeError, match="at least 32 bytes"):
+        get_settings()
+    get_settings.cache_clear()
