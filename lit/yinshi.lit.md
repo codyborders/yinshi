@@ -154,7 +154,7 @@ class Settings(BaseSettings):
     allowed_repo_base: str = ""
 
     # Per-user container isolation
-    container_enabled: bool = False
+    container_enabled: bool = True
     container_image: str = "yinshi-sidecar:latest"
     container_idle_timeout_s: int = 300
     container_memory_limit: str = "256m"
@@ -186,11 +186,16 @@ def _auth_is_enabled(settings: Settings) -> bool:
 
 def _validate_settings(settings: Settings) -> None:
     """Reject invalid security-critical configuration."""
-    if not _auth_is_enabled(settings):
-        return
-    if settings.secret_key:
-        return
-    raise RuntimeError("SECRET_KEY must be set when authentication is enabled")
+    if _auth_is_enabled(settings) and not settings.secret_key:
+        raise RuntimeError("SECRET_KEY must be set when authentication is enabled")
+
+    if settings.encryption_pepper:
+        try:
+            pepper_bytes = bytes.fromhex(settings.encryption_pepper)
+        except ValueError as exc:
+            raise RuntimeError(f"ENCRYPTION_PEPPER must be a valid hex string: {exc}") from exc
+        if len(pepper_bytes) < 32:
+            raise RuntimeError("ENCRYPTION_PEPPER must be at least 32 bytes (64 hex characters)")
 
 
 @lru_cache()
@@ -650,7 +655,7 @@ from yinshi.model_catalog import DEFAULT_SESSION_MODEL
 
 logger = logging.getLogger(__name__)
 
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 4
 
 SCHEMA_SQL = f"""
 PRAGMA journal_mode = WAL;
@@ -663,6 +668,7 @@ CREATE TABLE IF NOT EXISTS repos (
     remote_url TEXT,
     root_path TEXT NOT NULL,
     custom_prompt TEXT,
+    agents_md TEXT,
     owner_email TEXT,
     installation_id INTEGER
 );
@@ -694,7 +700,8 @@ CREATE TABLE IF NOT EXISTS messages (
     role TEXT NOT NULL,
     content TEXT,
     full_message TEXT,
-    turn_id TEXT
+    turn_id TEXT,
+    turn_status TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, created_at);
@@ -750,6 +757,18 @@ def _migrate(conn: sqlite3.Connection) -> None:
         if "installation_id" not in columns:
             logger.info("Migration v2: adding installation_id column to repos")
             conn.execute("ALTER TABLE repos ADD COLUMN installation_id INTEGER")
+
+    if current < 3:
+        columns = [r[1] for r in conn.execute("PRAGMA table_info(messages)").fetchall()]
+        if "turn_status" not in columns:
+            logger.info("Migration v3: adding turn_status column to messages")
+            conn.execute("ALTER TABLE messages ADD COLUMN turn_status TEXT")
+
+    if current < 4:
+        columns = [r[1] for r in conn.execute("PRAGMA table_info(repos)").fetchall()]
+        if "agents_md" not in columns:
+            logger.info("Migration v4: adding agents_md column to repos")
+            conn.execute("ALTER TABLE repos ADD COLUMN agents_md TEXT")
 
     if current != _SCHEMA_VERSION:
         conn.execute("DELETE FROM schema_version")
@@ -946,8 +965,7 @@ def _migrate_control(conn: sqlite3.Connection) -> None:
     ]
     if not provider_connection_columns:
         logger.info("Control migration: creating provider_connections table")
-        conn.executescript(
-            """
+        conn.executescript("""
             CREATE TABLE IF NOT EXISTS provider_connections (
                 id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
@@ -969,8 +987,7 @@ def _migrate_control(conn: sqlite3.Connection) -> None:
             BEGIN
                 UPDATE provider_connections SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id;
             END;
-            """
-        )
+            """)
         conn.commit()
 
     migrated_row = conn.execute(
@@ -981,8 +998,7 @@ def _migrate_control(conn: sqlite3.Connection) -> None:
     assert api_key_count is not None, "api key count must be queryable"
     if api_key_count[0] > 0 and migrated_row[0] < api_key_count[0]:
         logger.info("Control migration: backfilling api_keys into provider_connections")
-        conn.execute(
-            """
+        conn.execute("""
             INSERT INTO provider_connections
             (id, created_at, updated_at, user_id, provider, auth_strategy,
              encrypted_secret, label, config_json, status, last_used_at, expires_at)
@@ -990,8 +1006,7 @@ def _migrate_control(conn: sqlite3.Connection) -> None:
                    encrypted_key, label, '{}', 'connected', last_used_at, NULL
             FROM api_keys
             WHERE id NOT IN (SELECT id FROM provider_connections)
-            """
-        )
+            """)
         conn.commit()
 
 
@@ -1051,6 +1066,7 @@ class RepoCreate(BaseModel):
     remote_url: str | None = Field(None, max_length=2048)
     local_path: str | None = Field(None, max_length=4096)
     custom_prompt: str | None = Field(None, max_length=10_000)
+    agents_md: str | None = Field(None, max_length=50_000)
 
 
 class RepoOut(BaseModel):
@@ -1063,6 +1079,7 @@ class RepoOut(BaseModel):
     remote_url: str | None = None
     root_path: str
     custom_prompt: str | None = None
+    agents_md: str | None = None
 
 
 class RepoUpdate(BaseModel):
@@ -1070,6 +1087,7 @@ class RepoUpdate(BaseModel):
 
     name: str | None = Field(None, max_length=255)
     custom_prompt: str | None = Field(None, max_length=10_000)
+    agents_md: str | None = Field(None, max_length=50_000)
 
 
 class WorkspaceCreate(BaseModel):
@@ -1117,9 +1135,13 @@ class SessionUpdate(BaseModel):
     @field_validator("model")
     @classmethod
     def validate_model(cls, value: str | None) -> str | None:
-        """Normalize optional session model values to canonical refs."""
+        """Normalize optional session model values to canonical refs.
+
+        Rejects explicit null so that PATCH cannot write NULL into the
+        database, which would break SessionOut deserialization.
+        """
         if value is None:
-            return None
+            raise ValueError("model cannot be set to null")
         return normalize_model_ref(value)
 
 
@@ -1144,6 +1166,7 @@ class MessageOut(BaseModel):
     content: str | None = None
     full_message: str | None = None
     turn_id: str | None = None
+    turn_status: str | None = None
 
 
 class WSPrompt(BaseModel):
@@ -1489,6 +1512,7 @@ CREATE TABLE IF NOT EXISTS repos (
     remote_url TEXT,
     root_path TEXT NOT NULL,
     custom_prompt TEXT,
+    agents_md TEXT,
     installation_id INTEGER
 );
 
@@ -1519,7 +1543,8 @@ CREATE TABLE IF NOT EXISTS messages (
     role TEXT NOT NULL,
     content TEXT,
     full_message TEXT,
-    turn_id TEXT
+    turn_id TEXT,
+    turn_status TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, created_at);
@@ -1540,10 +1565,20 @@ BEGIN UPDATE sessions SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id; END;
 
 def _migrate_user_db(conn: sqlite3.Connection) -> None:
     """Apply forward-only schema fixes for existing per-user databases."""
-    columns = [row[1] for row in conn.execute("PRAGMA table_info(repos)").fetchall()]
-    if "installation_id" not in columns:
+    repo_columns = [row[1] for row in conn.execute("PRAGMA table_info(repos)").fetchall()]
+    if "installation_id" not in repo_columns:
         conn.execute("ALTER TABLE repos ADD COLUMN installation_id INTEGER")
-        conn.commit()
+
+    message_columns = [row[1] for row in conn.execute("PRAGMA table_info(messages)").fetchall()]
+    if "turn_status" not in message_columns:
+        conn.execute("ALTER TABLE messages ADD COLUMN turn_status TEXT")
+
+    # agents_md column for repo-level AGENTS.md override
+    repo_columns = [row[1] for row in conn.execute("PRAGMA table_info(repos)").fetchall()]
+    if "agents_md" not in repo_columns:
+        conn.execute("ALTER TABLE repos ADD COLUMN agents_md TEXT")
+
+    conn.commit()
 
 
 def _ensure_user_db_schema(conn: sqlite3.Connection) -> None:
@@ -1716,42 +1751,8 @@ def _serialize_session_token(user_id: str, auth_session_id: str) -> str:
     )
 
 
-def _load_auth_session_row(user_id: str, auth_session_id: str) -> sqlite3.Row | None:
-    """Return the auth session row for a signed cookie payload."""
-    normalized_user_id = _normalize_user_id(user_id)
-    normalized_auth_session_id = _normalize_auth_session_id(auth_session_id)
-    with get_control_db() as db:
-        row = db.execute(
-            "SELECT id, revoked_at FROM auth_sessions WHERE id = ? AND user_id = ?",
-            (normalized_auth_session_id, normalized_user_id),
-        ).fetchone()
-    return row
-
-
-def revoke_auth_sessions(user_id: str) -> None:
-    """Revoke every auth session that belongs to a user."""
-    normalized_user_id = _normalize_user_id(user_id)
-    with get_control_db() as db:
-        db.execute(
-            """
-            UPDATE auth_sessions
-            SET revoked_at = CURRENT_TIMESTAMP
-            WHERE user_id = ? AND revoked_at IS NULL
-            """,
-            (normalized_user_id,),
-        )
-        db.commit()
-
-
-def create_session_token(user_id: str) -> str:
-    """Create a signed session token encoding user and auth session ids."""
-    normalized_user_id = _normalize_user_id(user_id)
-    auth_session_id = _create_auth_session(normalized_user_id)
-    return _serialize_session_token(normalized_user_id, auth_session_id)
-
-
-def verify_session_token(token: str) -> str | None:
-    """Verify and decode a session token. Returns user_id or None."""
+def get_session_identity(token: str) -> tuple[str, str] | None:
+    """Verify and decode a session token into user and auth session ids."""
     if not isinstance(token, str):
         return None
     normalized_token = token.strip()
@@ -1790,7 +1791,65 @@ def verify_session_token(token: str) -> str | None:
         return None
     if session_row["revoked_at"] is not None:
         return None
-    return normalized_user_id
+    return normalized_user_id, normalized_auth_session_id
+
+
+def _load_auth_session_row(user_id: str, auth_session_id: str) -> sqlite3.Row | None:
+    """Return the auth session row for a signed cookie payload."""
+    normalized_user_id = _normalize_user_id(user_id)
+    normalized_auth_session_id = _normalize_auth_session_id(auth_session_id)
+    with get_control_db() as db:
+        row = db.execute(
+            "SELECT id, revoked_at FROM auth_sessions WHERE id = ? AND user_id = ?",
+            (normalized_auth_session_id, normalized_user_id),
+        ).fetchone()
+    return row
+
+
+def revoke_auth_session(user_id: str, auth_session_id: str) -> None:
+    """Revoke one auth session that belongs to one user."""
+    normalized_user_id = _normalize_user_id(user_id)
+    normalized_auth_session_id = _normalize_auth_session_id(auth_session_id)
+    with get_control_db() as db:
+        db.execute(
+            """
+            UPDATE auth_sessions
+            SET revoked_at = CURRENT_TIMESTAMP
+            WHERE id = ? AND user_id = ? AND revoked_at IS NULL
+            """,
+            (normalized_auth_session_id, normalized_user_id),
+        )
+        db.commit()
+
+
+def revoke_auth_sessions(user_id: str) -> None:
+    """Revoke every auth session that belongs to a user."""
+    normalized_user_id = _normalize_user_id(user_id)
+    with get_control_db() as db:
+        db.execute(
+            """
+            UPDATE auth_sessions
+            SET revoked_at = CURRENT_TIMESTAMP
+            WHERE user_id = ? AND revoked_at IS NULL
+            """,
+            (normalized_user_id,),
+        )
+        db.commit()
+
+
+def create_session_token(user_id: str) -> str:
+    """Create a signed session token encoding user and auth session ids."""
+    normalized_user_id = _normalize_user_id(user_id)
+    auth_session_id = _create_auth_session(normalized_user_id)
+    return _serialize_session_token(normalized_user_id, auth_session_id)
+
+
+def verify_session_token(token: str) -> str | None:
+    """Verify and decode a session token. Returns user_id or None."""
+    session_identity = get_session_identity(token)
+    if session_identity is None:
+        return None
+    return session_identity[0]
 
 
 def _auth_disabled() -> bool:
@@ -1821,6 +1880,10 @@ class AuthMiddleware(BaseHTTPMiddleware):
         call_next: RequestResponseEndpoint,
     ) -> Response:
         path = request.url.path
+
+        # Allow CORS preflight requests to pass through to CORSMiddleware.
+        if request.method == "OPTIONS":
+            return await call_next(request)
 
         # Skip auth if explicitly disabled
         if _auth_disabled():
@@ -2633,6 +2696,14 @@ def provision_user(user_id: str, email: str) -> TenantContext:
     return tenant
 
 
+def _ensure_tenant_provisioned(user_id: str, email: str) -> TenantContext:
+    """Return one tenant context backed by an initialized user database."""
+    tenant = make_tenant(user_id, email)
+    if os.path.isfile(tenant.db_path):
+        return tenant
+    return provision_user(user_id, email)
+
+
 def _migrate_legacy_data(tenant: TenantContext) -> None:
     """Copy repos/workspaces/sessions/messages from the legacy DB to the user's DB.
 
@@ -2653,7 +2724,7 @@ def _migrate_legacy_data(tenant: TenantContext) -> None:
 
     try:
         repos = source.execute(
-            "SELECT * FROM repos WHERE owner_email = ? OR owner_email IS NULL",
+            "SELECT * FROM repos WHERE owner_email = ?",
             (tenant.email,),
         ).fetchall()
 
@@ -2666,8 +2737,8 @@ def _migrate_legacy_data(tenant: TenantContext) -> None:
                 dest.execute(
                     (
                         "INSERT OR IGNORE INTO repos "
-                        "(id, created_at, updated_at, name, remote_url, root_path, custom_prompt, installation_id) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+                        "(id, created_at, updated_at, name, remote_url, root_path, custom_prompt, agents_md, installation_id) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
                     ),
                     (
                         r["id"],
@@ -2677,6 +2748,7 @@ def _migrate_legacy_data(tenant: TenantContext) -> None:
                         r["remote_url"],
                         r["root_path"],
                         r.get("custom_prompt"),
+                        r.get("agents_md"),
                         r.get("installation_id"),
                     ),
                 )
@@ -2731,8 +2803,8 @@ def _migrate_legacy_data(tenant: TenantContext) -> None:
                                 (
                                     "INSERT OR IGNORE INTO messages "
                                     "(id, created_at, session_id, role, "
-                                    "content, full_message, turn_id) "
-                                    "VALUES (?, ?, ?, ?, ?, ?, ?)"
+                                    "content, full_message, turn_id, turn_status) "
+                                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
                                 ),
                                 (
                                     m["id"],
@@ -2742,6 +2814,7 @@ def _migrate_legacy_data(tenant: TenantContext) -> None:
                                     m["content"],
                                     m.get("full_message"),
                                     m.get("turn_id"),
+                                    m.get("turn_status"),
                                 ),
                             )
 
@@ -2759,6 +2832,120 @@ def _touch_last_login(db: sqlite3.Connection, user_id: str) -> None:
         "UPDATE users SET last_login_at = CURRENT_TIMESTAMP WHERE id = ?",
         (user_id,),
     )
+
+
+def _find_user_by_identity(
+    db: sqlite3.Connection,
+    provider: str,
+    provider_user_id: str,
+) -> sqlite3.Row | None:
+    """Return one user row for one OAuth identity, or None when missing."""
+    return db.execute(
+        "SELECT oi.user_id, u.email FROM oauth_identities oi "
+        "JOIN users u ON oi.user_id = u.id "
+        "WHERE oi.provider = ? AND oi.provider_user_id = ?",
+        (provider, provider_user_id),
+    ).fetchone()
+
+
+def _find_user_by_email(
+    db: sqlite3.Connection,
+    email: str,
+) -> sqlite3.Row | None:
+    """Return one user row for one email, or None when missing."""
+    return db.execute(
+        "SELECT id, email FROM users WHERE email = ?",
+        (email,),
+    ).fetchone()
+
+
+def _insert_oauth_identity(
+    db: sqlite3.Connection,
+    *,
+    user_id: str,
+    provider: str,
+    provider_user_id: str,
+    email: str,
+    provider_data_json: str | None,
+) -> None:
+    """Insert one OAuth identity, tolerating concurrent duplicate inserts."""
+    try:
+        db.execute(
+            "INSERT INTO oauth_identities "
+            "(user_id, provider, provider_user_id, provider_email, provider_data) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (user_id, provider, provider_user_id, email, provider_data_json),
+        )
+    except sqlite3.IntegrityError as error:
+        existing_identity_row = _find_user_by_identity(db, provider, provider_user_id)
+        if existing_identity_row is None:
+            raise
+        if existing_identity_row["user_id"] != user_id:
+            raise RuntimeError("OAuth identity already belongs to a different user") from error
+
+
+def _generate_encrypted_dek(user_id: str) -> bytes | None:
+    """Return a wrapped DEK for one user when encryption is configured."""
+    if not isinstance(user_id, str):
+        raise TypeError("user_id must be a string")
+    normalized_user_id = user_id.strip()
+    if not normalized_user_id:
+        raise ValueError("user_id must not be empty")
+
+    settings = get_settings()
+    pepper = settings.encryption_pepper_bytes
+    if not pepper:
+        return None
+
+    dek = generate_dek()
+    encrypted_dek = wrap_dek(dek, normalized_user_id, pepper)
+    if not encrypted_dek:
+        raise RuntimeError("Wrapped DEK must not be empty")
+    return encrypted_dek
+
+
+def _store_user_encrypted_dek(
+    db: sqlite3.Connection,
+    *,
+    user_id: str,
+) -> None:
+    """Populate encrypted_dek for one newly inserted user row."""
+    encrypted_dek = _generate_encrypted_dek(user_id)
+    if encrypted_dek is None:
+        return
+
+    cursor = db.execute(
+        "UPDATE users SET encrypted_dek = ? WHERE id = ? AND encrypted_dek IS NULL",
+        (encrypted_dek, user_id),
+    )
+    if cursor.rowcount != 1:
+        raise RuntimeError("Newly created user row must exist before storing encrypted DEK")
+
+
+def _create_user_record(
+    db: sqlite3.Connection,
+    *,
+    email: str,
+    display_name: str | None,
+    avatar_url: str | None,
+) -> tuple[str, bool]:
+    """Insert one user row or load the concurrently created row by email."""
+    candidate_user_id = secrets.token_hex(16)
+
+    try:
+        db.execute(
+            "INSERT INTO users (id, email, display_name, avatar_url, encrypted_dek, last_login_at) "
+            "VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
+            (candidate_user_id, email, display_name, avatar_url, None),
+        )
+    except sqlite3.IntegrityError:
+        existing_user_row = _find_user_by_email(db, email)
+        if existing_user_row is None:
+            raise
+        return existing_user_row["id"], False
+
+    _store_user_encrypted_dek(db, user_id=candidate_user_id)
+    return candidate_user_id, True
 
 
 def resolve_or_create_user(
@@ -2779,59 +2966,54 @@ def resolve_or_create_user(
 
     with get_control_db() as db:
         # 1. Check existing identity
-        row = db.execute(
-            "SELECT oi.user_id, u.email FROM oauth_identities oi "
-            "JOIN users u ON oi.user_id = u.id "
-            "WHERE oi.provider = ? AND oi.provider_user_id = ?",
-            (provider, provider_user_id),
-        ).fetchone()
+        row = _find_user_by_identity(db, provider, provider_user_id)
 
         if row:
             _touch_last_login(db, row["user_id"])
             db.commit()
-            return make_tenant(row["user_id"], row["email"])
+            return _ensure_tenant_provisioned(row["user_id"], row["email"])
 
         # 2. Check existing user by email
-        user_row = db.execute(
-            "SELECT id, email FROM users WHERE email = ?", (email,)
-        ).fetchone()
+        user_row = _find_user_by_email(db, email)
 
         if user_row:
             user_id = user_row["id"]
-            db.execute(
-                "INSERT INTO oauth_identities "
-                "(user_id, provider, provider_user_id, provider_email, provider_data) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (user_id, provider, provider_user_id, email, provider_data_json),
+            _insert_oauth_identity(
+                db,
+                user_id=user_id,
+                provider=provider,
+                provider_user_id=provider_user_id,
+                email=email,
+                provider_data_json=provider_data_json,
             )
             _touch_last_login(db, user_id)
             db.commit()
-            return make_tenant(user_id, email)
+            return _ensure_tenant_provisioned(user_id, email)
 
         # 3. Create new user
-        user_id = secrets.token_hex(16)
-
-        # Generate and wrap DEK
-        dek = generate_dek()
-        settings = get_settings()
-        pepper = settings.encryption_pepper_bytes
-        encrypted_dek = wrap_dek(dek, user_id, pepper) if pepper else None
-
-        db.execute(
-            "INSERT INTO users (id, email, display_name, avatar_url, encrypted_dek, last_login_at) "
-            "VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
-            (user_id, email, display_name, avatar_url, encrypted_dek),
+        user_id, user_was_created = _create_user_record(
+            db,
+            email=email,
+            display_name=display_name,
+            avatar_url=avatar_url,
         )
-        db.execute(
-            "INSERT INTO oauth_identities "
-            "(user_id, provider, provider_user_id, provider_email, provider_data) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (user_id, provider, provider_user_id, email, provider_data_json),
+        _insert_oauth_identity(
+            db,
+            user_id=user_id,
+            provider=provider,
+            provider_user_id=provider_user_id,
+            email=email,
+            provider_data_json=provider_data_json,
         )
+        if not user_was_created:
+            _touch_last_login(db, user_id)
         db.commit()
 
-    # Provision outside the control DB transaction
-    tenant = provision_user(user_id, email)
+    tenant = _ensure_tenant_provisioned(user_id, email)
+    if not user_was_created:
+        return tenant
+
+    # Provision outside the control DB transaction.
     _migrate_legacy_data(tenant)
     return tenant
 ```
@@ -2865,14 +3047,64 @@ from yinshi.exceptions import GitError
 logger = logging.getLogger(__name__)
 
 _ADJECTIVES = [
-    "swift", "bold", "calm", "dark", "keen", "warm", "cool", "pure", "wise", "fast",
-    "bright", "quiet", "sharp", "smooth", "steady", "gentle", "vivid", "grand", "noble",
-    "fresh", "prime", "lunar", "solar", "amber", "coral", "ivory", "olive", "azure",
+    "swift",
+    "bold",
+    "calm",
+    "dark",
+    "keen",
+    "warm",
+    "cool",
+    "pure",
+    "wise",
+    "fast",
+    "bright",
+    "quiet",
+    "sharp",
+    "smooth",
+    "steady",
+    "gentle",
+    "vivid",
+    "grand",
+    "noble",
+    "fresh",
+    "prime",
+    "lunar",
+    "solar",
+    "amber",
+    "coral",
+    "ivory",
+    "olive",
+    "azure",
 ]
 _NOUNS = [
-    "fox", "owl", "elk", "wolf", "hawk", "bear", "lynx", "crane", "drake", "finch",
-    "heron", "raven", "otter", "tiger", "eagle", "falcon", "panda", "bison", "cedar",
-    "maple", "river", "stone", "flame", "frost", "storm", "ridge", "grove", "brook",
+    "fox",
+    "owl",
+    "elk",
+    "wolf",
+    "hawk",
+    "bear",
+    "lynx",
+    "crane",
+    "drake",
+    "finch",
+    "heron",
+    "raven",
+    "otter",
+    "tiger",
+    "eagle",
+    "falcon",
+    "panda",
+    "bison",
+    "cedar",
+    "maple",
+    "river",
+    "stone",
+    "flame",
+    "frost",
+    "storm",
+    "ridge",
+    "grove",
+    "brook",
 ]
 
 _ALLOWED_URL_SCHEMES = ("https://", "ssh://", "git@")
@@ -2913,7 +3145,7 @@ def _git_askpass_env(access_token: str | None) -> Iterator[dict[str, str] | None
         askpass_path = Path(temp_dir) / "askpass.sh"
         askpass_path.write_text(
             "#!/bin/sh\n"
-            "case \"$1\" in\n"
+            'case "$1" in\n'
             "  *Username*) printf '%s\\n' 'x-access-token' ;;\n"
             "  *) printf '%s\\n' \"$YINSHI_GIT_TOKEN\" ;;\n"
             "esac\n",
@@ -2952,6 +3184,120 @@ async def _run_git(
     return stdout.decode().strip()
 
 
+def _normalize_remote_url_for_compare(url: str) -> str:
+    """Normalize a remote URL enough to compare logical equality."""
+    if not url:
+        raise ValueError("url must not be empty")
+    normalized_url = url.strip()
+    if not normalized_url:
+        raise ValueError("url must not be blank")
+    if normalized_url.endswith(".git"):
+        normalized_url = normalized_url[:-4]
+    return normalized_url.rstrip("/")
+
+
+def _remote_urls_match(existing_remote_url: str, expected_remote_url: str) -> bool:
+    """Return whether two remote URLs refer to the same repository."""
+    if not isinstance(existing_remote_url, str):
+        raise TypeError("existing_remote_url must be a string")
+    if not isinstance(expected_remote_url, str):
+        raise TypeError("expected_remote_url must be a string")
+    if not existing_remote_url.strip():
+        return False
+    if not expected_remote_url.strip():
+        raise ValueError("expected_remote_url must not be blank")
+    return _normalize_remote_url_for_compare(
+        existing_remote_url
+    ) == _normalize_remote_url_for_compare(expected_remote_url)
+
+
+async def _has_remote_refs(repo_path: str, remote_name: str = "origin") -> bool:
+    """Return whether one local checkout has fetched refs for one remote."""
+    if not isinstance(repo_path, str):
+        raise TypeError("repo_path must be a string")
+    if not isinstance(remote_name, str):
+        raise TypeError("remote_name must be a string")
+    normalized_repo_path = repo_path.strip()
+    normalized_remote_name = remote_name.strip()
+    if not normalized_repo_path:
+        raise ValueError("repo_path must not be empty")
+    if not normalized_remote_name:
+        raise ValueError("remote_name must not be empty")
+
+    refs_output = await _run_git(
+        [
+            "for-each-ref",
+            "--format=%(refname)",
+            f"refs/remotes/{normalized_remote_name}",
+        ],
+        cwd=normalized_repo_path,
+    )
+    for ref_name in refs_output.splitlines():
+        normalized_ref_name = ref_name.strip()
+        if not normalized_ref_name:
+            continue
+        if normalized_ref_name == f"refs/remotes/{normalized_remote_name}/HEAD":
+            continue
+        return True
+    return False
+
+
+async def get_remote_url(
+    repo_path: str,
+    remote_name: str = "origin",
+) -> str | None:
+    """Return one configured remote URL, or None when it is missing."""
+    if not repo_path:
+        raise ValueError("repo_path must not be empty")
+    if not remote_name:
+        raise ValueError("remote_name must not be empty")
+
+    try:
+        remote_url = await _run_git(
+            ["remote", "get-url", remote_name],
+            cwd=repo_path,
+        )
+    except GitError:
+        return None
+
+    normalized_remote_url = remote_url.strip()
+    if not normalized_remote_url:
+        return None
+    return normalized_remote_url
+
+
+async def ensure_remote_url(
+    repo_path: str,
+    remote_url: str,
+    remote_name: str = "origin",
+) -> bool:
+    """Ensure a checkout points one named remote at the expected URL."""
+    if not repo_path:
+        raise ValueError("repo_path must not be empty")
+    if not remote_name:
+        raise ValueError("remote_name must not be empty")
+    if not remote_url:
+        raise ValueError("remote_url must not be empty")
+
+    current_remote_url = await get_remote_url(repo_path, remote_name=remote_name)
+    if current_remote_url is not None:
+        if _normalize_remote_url_for_compare(
+            current_remote_url
+        ) == _normalize_remote_url_for_compare(remote_url):
+            return False
+        await _run_git(
+            ["remote", "set-url", remote_name, remote_url],
+            cwd=repo_path,
+        )
+        return True
+
+    await _run_git(
+        ["remote", "add", remote_name, remote_url],
+        cwd=repo_path,
+    )
+    return True
+
+
 async def clone_repo(
     url: str,
     dest: str,
@@ -2966,13 +3312,34 @@ async def clone_repo(
     dest_path = Path(dest)
     if dest_path.exists():
         if await validate_local_repo(dest):
-            # Already cloned -- pull latest instead
+            # Verify the existing clone's remote matches the requested URL
+            # before reusing it to prevent cross-repo data leakage.
+            try:
+                existing_remote = await _run_git(
+                    ["remote", "get-url", "origin"],
+                    cwd=dest,
+                )
+            except GitError:
+                existing_remote = ""
+            if not _remote_urls_match(existing_remote, url):
+                raise GitError(f"Destination already contains a clone of a different repository")
+            had_remote_refs_before_fetch = await _has_remote_refs(dest)
             logger.info("Reusing existing clone at %s", dest)
             try:
                 with _git_askpass_env(access_token) as env:
                     await _run_git(["fetch", "--all"], cwd=dest, env=env)
-            except GitError:
-                pass
+            except GitError as error:
+                if not had_remote_refs_before_fetch:
+                    raise GitError(
+                        "Existing clone is incomplete and could not be refreshed"
+                    ) from error
+                logger.warning(
+                    "Fetch failed for existing clone at %s; reusing existing refs",
+                    dest,
+                )
+                return dest
+            if not had_remote_refs_before_fetch and not await _has_remote_refs(dest):
+                raise GitError("Existing clone is incomplete and missing remote refs")
             return dest
         raise GitError("Destination already exists but is not a git repository")
     dest_path.parent.mkdir(parents=True, exist_ok=True)
@@ -3010,10 +3377,63 @@ async def clone_local_repo(
     return dest
 
 
-async def create_worktree(repo_path: str, worktree_path: str, branch: str) -> str:
+async def resolve_remote_base_ref(
+    repo_path: str,
+    access_token: str | None = None,
+) -> str:
+    """Fetch origin and return the tracked default remote branch reference."""
+    assert repo_path, "repo_path must not be empty"
+
+    with _git_askpass_env(access_token) as env:
+        await _run_git(["fetch", "origin"], cwd=repo_path, env=env)
+        try:
+            symbolic_ref = await _run_git(
+                ["symbolic-ref", "refs/remotes/origin/HEAD"],
+                cwd=repo_path,
+                env=env,
+            )
+        except GitError:
+            symbolic_ref = ""
+
+    normalized_symbolic_ref = symbolic_ref.strip()
+    if normalized_symbolic_ref.startswith("refs/remotes/origin/"):
+        remote_branch = normalized_symbolic_ref.removeprefix("refs/remotes/")
+        assert remote_branch, "remote_branch must not be empty"
+        return remote_branch
+
+    for fallback_remote_branch in ("origin/main", "origin/master"):
+        try:
+            await _run_git(
+                ["rev-parse", "--verify", fallback_remote_branch],
+                cwd=repo_path,
+            )
+        except GitError:
+            continue
+        return fallback_remote_branch
+
+    raise GitError("Could not determine the remote default branch")
+
+
+async def create_worktree(
+    repo_path: str,
+    worktree_path: str,
+    branch: str,
+    *,
+    base_ref: str | None = None,
+) -> str:
     """Create a git worktree with a new branch. Returns the worktree path."""
+    assert repo_path, "repo_path must not be empty"
+    assert worktree_path, "worktree_path must not be empty"
+    assert branch, "branch must not be empty"
+
     Path(worktree_path).parent.mkdir(parents=True, exist_ok=True)
-    await _run_git(["worktree", "add", "-b", branch, worktree_path], cwd=repo_path)
+    worktree_add_args = ["worktree", "add", "-b", branch, worktree_path]
+    if base_ref is not None:
+        normalized_base_ref = base_ref.strip()
+        if not normalized_base_ref:
+            raise ValueError("base_ref must not be empty when provided")
+        worktree_add_args.append(normalized_base_ref)
+    await _run_git(worktree_add_args, cwd=repo_path)
     logger.info("Created worktree %s (branch: %s)", worktree_path, branch)
     return worktree_path
 
@@ -3072,6 +3492,88 @@ async def validate_local_repo(path: str) -> bool:
         return False
 ```
 
+## services/git_runtime.py
+
+Runtime git authentication is intentionally separate from the general git
+helper module. The ordinary git service creates repositories, branches, and
+worktrees. This file answers a narrower question: when a live prompt needs to
+run a Git command against a private GitHub remote, what short-lived credential
+should the sidecar receive right now? The answer is a tiny validated payload
+that only supports the single strategy Yinshi currently trusts for unattended
+runtime access: GitHub App HTTPS tokens scoped to `github.com`.
+
+```python {chunk="git_runtime" file="backend/src/yinshi/services/git_runtime.py"}
+"""Runtime git authentication helpers for sidecar-backed agent sessions."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from yinshi.services.github_app import resolve_github_runtime_access_token
+
+
+@dataclass(frozen=True, slots=True)
+class GitRuntimeAuth:
+    """One short-lived git credential payload for the sidecar."""
+
+    strategy: str
+    host: str
+    access_token: str
+
+    def as_sidecar_payload(self) -> dict[str, object]:
+        """Serialize the runtime credential into the sidecar wire format."""
+        if self.strategy != "github_app_https":
+            raise ValueError(f"Unsupported git auth strategy: {self.strategy}")
+        if self.host != "github.com":
+            raise ValueError(f"Unsupported git auth host: {self.host}")
+        if not self.access_token:
+            raise ValueError("access_token must not be empty")
+        return {
+            "strategy": self.strategy,
+            "host": self.host,
+            "accessToken": self.access_token,
+        }
+
+
+async def resolve_git_runtime_auth(
+    user_id: str | None,
+    remote_url: str | None,
+    installation_id: int | None,
+) -> GitRuntimeAuth | None:
+    """Resolve one ephemeral git credential for the current prompt session."""
+    if user_id is None:
+        return None
+    if not isinstance(user_id, str):
+        raise TypeError("user_id must be a string or None")
+    normalized_user_id = user_id.strip()
+    if not normalized_user_id:
+        raise ValueError("user_id must not be empty")
+    if remote_url is None:
+        return None
+    if not isinstance(remote_url, str):
+        raise TypeError("remote_url must be a string or None")
+    normalized_remote_url = remote_url.strip()
+    if not normalized_remote_url:
+        return None
+    if installation_id is not None and not isinstance(installation_id, int):
+        raise TypeError("installation_id must be an integer or None")
+    if installation_id is not None and installation_id <= 0:
+        raise ValueError("installation_id must be positive")
+
+    access_token = await resolve_github_runtime_access_token(
+        normalized_user_id,
+        normalized_remote_url,
+        installation_id,
+    )
+    if access_token is None:
+        return None
+    return GitRuntimeAuth(
+        strategy="github_app_https",
+        host="github.com",
+        access_token=access_token,
+    )
+```
+
 # Workspace Management
 
 ## services/workspace.py
@@ -3098,16 +3600,19 @@ from yinshi.exceptions import (
     RepoNotFoundError,
     WorkspaceNotFoundError,
 )
-from yinshi.services.github_app import resolve_github_clone_access
 from yinshi.services.git import (
     clone_local_repo,
     clone_repo,
     create_worktree,
     delete_worktree,
+    ensure_remote_url,
     generate_branch_name,
+    get_remote_url,
+    resolve_remote_base_ref,
     restore_worktree,
     validate_local_repo,
 )
+from yinshi.services.github_app import normalize_github_remote, resolve_github_clone_access
 from yinshi.tenant import TenantContext
 from yinshi.utils.paths import is_path_inside
 
@@ -3136,17 +3641,17 @@ def _fetch_workspace(db: sqlite3.Connection, workspace_id: str) -> sqlite3.Row:
 
 
 def _tenant_path_is_trusted(tenant: TenantContext, path: str) -> bool:
-    """Return whether a tenant path is inside an allowed execution root."""
+    """Return whether a tenant path is inside tenant-managed storage."""
     assert tenant.data_dir, "tenant.data_dir must not be empty"
     assert path, "path must not be empty"
-
     if is_path_inside(path, tenant.data_dir):
         return True
 
     settings = get_settings()
+    if settings.container_enabled:
+        return False
     if settings.allowed_repo_base and is_path_inside(path, settings.allowed_repo_base):
         return True
-
     return False
 
 
@@ -3187,6 +3692,18 @@ async def _materialize_repo_checkout(
     raise RepoNotFoundError("Repo checkout is missing and cannot be repaired")
 
 
+async def _sync_repo_checkout_remote(
+    repo_path: str,
+    remote_url: str | None,
+) -> bool:
+    """Ensure one valid checkout points at the canonical remote URL."""
+    if not await validate_local_repo(repo_path):
+        return False
+    if remote_url is None:
+        return False
+    return await ensure_remote_url(repo_path, remote_url)
+
+
 async def _resolve_remote_checkout(
     tenant: TenantContext,
     remote_url: str | None,
@@ -3212,6 +3729,63 @@ async def _resolve_remote_checkout(
     )
 
 
+async def _refresh_repo_remote_metadata(
+    tenant: TenantContext,
+    repo_path: str,
+    remote_url: str | None,
+    installation_id: int | None,
+) -> tuple[str | None, str | None, int | None]:
+    """Refresh canonical remote metadata without breaking local-only recovery."""
+    source_repo_is_available = await validate_local_repo(repo_path)
+    access_token = None
+    refreshed_remote_url = remote_url
+    refreshed_installation_id = installation_id
+
+    if remote_url:
+        try:
+            (
+                refreshed_remote_url,
+                access_token,
+                resolved_installation_id,
+            ) = await _resolve_remote_checkout(tenant, remote_url)
+        except GitError as exc:
+            if not source_repo_is_available:
+                raise
+            logger.warning(
+                "Refreshing repo %s from local checkout because remote auth failed: %s",
+                repo_path,
+                exc,
+            )
+        else:
+            if resolved_installation_id is not None:
+                refreshed_installation_id = resolved_installation_id
+
+    return refreshed_remote_url, access_token, refreshed_installation_id
+
+
+async def _trusted_repo_needs_refresh(
+    repo_path: str,
+    remote_url: str | None,
+    installation_id: int | None,
+) -> bool:
+    """Return whether a trusted repo should refresh remote metadata."""
+    if not await validate_local_repo(repo_path):
+        return True
+    if remote_url is None:
+        return False
+    if installation_id is None:
+        return True
+
+    normalized_remote = normalize_github_remote(remote_url)
+    if normalized_remote is None:
+        return False
+
+    current_remote_url = await get_remote_url(repo_path)
+    if current_remote_url is None:
+        return True
+    return current_remote_url.rstrip("/") != normalized_remote.clone_url.rstrip("/")
+
+
 async def ensure_repo_checkout_for_tenant(
     db: sqlite3.Connection,
     tenant: TenantContext,
@@ -3226,49 +3800,46 @@ async def ensure_repo_checkout_for_tenant(
     repo = _fetch_repo(db, repo_id)
     repo_path = repo["root_path"]
     assert repo_path, "repo root_path must not be empty"
-
-    if _tenant_path_is_trusted(tenant, repo_path):
-        return dict(repo)
-
-    target_repo_path = _tenant_repo_path(tenant, repo_id)
     remote_url = repo["remote_url"]
-    access_token = None
     installation_id = repo["installation_id"] if "installation_id" in repo.keys() else None
     source_repo_is_available = await validate_local_repo(repo_path)
-    if remote_url:
-        if source_repo_is_available:
-            # Preserve existing local work even if the remote can no longer be
-            # reached or re-authenticated.
-            try:
-                (
-                    remote_url,
-                    access_token,
-                    resolved_installation_id,
-                ) = await _resolve_remote_checkout(
-                    tenant,
-                    remote_url,
-                )
-            except GitError as exc:
-                logger.warning(
-                    "Repairing repo %s from local checkout because remote auth failed: %s",
-                    repo_id,
-                    exc,
-                )
-                access_token = None
-            else:
-                if resolved_installation_id is not None:
-                    installation_id = resolved_installation_id
-        else:
-            (
-                remote_url,
-                access_token,
-                resolved_installation_id,
-            ) = await _resolve_remote_checkout(
-                tenant,
-                remote_url,
-            )
-            if resolved_installation_id is not None:
-                installation_id = resolved_installation_id
+
+    if _tenant_path_is_trusted(tenant, repo_path):
+        if source_repo_is_available and not await _trusted_repo_needs_refresh(
+            repo_path,
+            remote_url,
+            installation_id,
+        ):
+            return dict(repo)
+
+        refreshed_remote_url, _, refreshed_installation_id = await _refresh_repo_remote_metadata(
+            tenant,
+            repo_path,
+            remote_url,
+            installation_id,
+        )
+        remote_was_updated = await _sync_repo_checkout_remote(repo_path, refreshed_remote_url)
+        metadata_changed = (
+            refreshed_remote_url != remote_url
+            or refreshed_installation_id != installation_id
+        )
+        if not remote_was_updated and not metadata_changed:
+            return dict(repo)
+
+        db.execute(
+            "UPDATE repos SET remote_url = ?, installation_id = ? WHERE id = ?",
+            (refreshed_remote_url, refreshed_installation_id, repo_id),
+        )
+        db.commit()
+        return dict(_fetch_repo(db, repo_id))
+
+    target_repo_path = _tenant_repo_path(tenant, repo_id)
+    remote_url, access_token, installation_id = await _refresh_repo_remote_metadata(
+        tenant,
+        repo_path,
+        remote_url,
+        installation_id,
+    )
     await _materialize_repo_checkout(
         repo_path,
         target_repo_path,
@@ -3283,9 +3854,7 @@ async def ensure_repo_checkout_for_tenant(
     for workspace in workspaces:
         branch = workspace["branch"]
         if not branch:
-            raise WorkspaceNotFoundError(
-                f"Workspace {workspace['id']} is missing its branch name"
-            )
+            raise WorkspaceNotFoundError(f"Workspace {workspace['id']} is missing its branch name")
         target_workspace_path = _workspace_path(target_repo_path, branch)
         await restore_worktree(target_repo_path, target_workspace_path, branch)
         db.execute(
@@ -3302,6 +3871,40 @@ async def ensure_repo_checkout_for_tenant(
 
     updated_repo = _fetch_repo(db, repo_id)
     return dict(updated_repo)
+
+
+async def relink_github_repos_for_tenant(
+    db: sqlite3.Connection,
+    tenant: TenantContext,
+    owner_login: str,
+) -> int:
+    """Refresh existing tenant repos after one GitHub App installation is connected."""
+    if not owner_login:
+        raise ValueError("owner_login must not be empty")
+    refreshed_repo_count = 0
+    repos = db.execute(
+        "SELECT id FROM repos WHERE remote_url IS NOT NULL ORDER BY created_at ASC"
+    ).fetchall()
+
+    for repo_row in repos:
+        repo = _fetch_repo(db, repo_row["id"])
+        remote_url = repo["remote_url"]
+        if not isinstance(remote_url, str) or not remote_url:
+            continue
+        github_remote = normalize_github_remote(remote_url)
+        if github_remote is None:
+            continue
+        if github_remote.owner.lower() != owner_login.lower():
+            continue
+
+        refreshed_repo = await ensure_repo_checkout_for_tenant(db, tenant, repo["id"])
+        if refreshed_repo["remote_url"] != repo["remote_url"]:
+            refreshed_repo_count += 1
+            continue
+        if refreshed_repo["installation_id"] != repo["installation_id"]:
+            refreshed_repo_count += 1
+
+    return refreshed_repo_count
 
 
 async def ensure_workspace_checkout_for_tenant(
@@ -3339,8 +3942,24 @@ async def create_workspace_for_repo(
     repo_path = repo["root_path"]
     assert repo_path, "repo_path must not be empty"
     worktree_dir = _workspace_path(repo_path, branch)
+    base_ref: str | None = None
 
-    await create_worktree(repo_path, worktree_dir, branch)
+    remote_url = repo["remote_url"]
+    if remote_url:
+        access_token = None
+        try:
+            if tenant is not None:
+                _, access_token, _ = await _resolve_remote_checkout(tenant, remote_url)
+            base_ref = await resolve_remote_base_ref(repo_path, access_token=access_token)
+        except GitError as exc:
+            logger.warning(
+                "Creating worktree for repo %s from local HEAD because remote sync failed: %s",
+                repo_id,
+                exc,
+            )
+            base_ref = None
+
+    await create_worktree(repo_path, worktree_dir, branch, base_ref=base_ref)
 
     cursor = db.execute(
         """INSERT INTO workspaces (repo_id, name, branch, path, state)
@@ -3349,9 +3968,7 @@ async def create_workspace_for_repo(
     )
     db.commit()
 
-    row = db.execute(
-        "SELECT * FROM workspaces WHERE rowid = ?", (cursor.lastrowid,)
-    ).fetchone()
+    row = db.execute("SELECT * FROM workspaces WHERE rowid = ?", (cursor.lastrowid,)).fetchone()
     return dict(row)
 
 
@@ -3848,6 +4465,54 @@ async def resolve_github_clone_access(
         access_token=access_token,
         manage_url=installation.html_url,
     )
+
+
+async def resolve_github_runtime_access_token(
+    user_id: str,
+    remote_url: str,
+    installation_id: int | None,
+) -> str | None:
+    """Resolve a short-lived GitHub App token for runtime git operations.
+
+    This helper returns ``None`` when token refresh is unavailable so prompt
+    execution can continue even if git push/fetch credentials are temporarily
+    missing.
+    """
+    assert user_id, "user_id must not be empty"
+    assert remote_url, "remote_url must not be empty"
+
+    github_remote = normalize_github_remote(remote_url)
+    if github_remote is None:
+        return None
+    if not _github_app_is_configured():
+        return None
+
+    if installation_id is not None:
+        installation = _find_user_installation(user_id, installation_id)
+        if installation is None:
+            return None
+        try:
+            return await get_installation_token(installation_id)
+        except (GitHubAppError, GitHubInstallationUnusableError):
+            logger.warning(
+                "Failed to mint runtime GitHub token for installation %s",
+                installation_id,
+                exc_info=True,
+            )
+            return None
+
+    try:
+        clone_access = await resolve_github_clone_access(user_id, remote_url)
+    except (GitHubAppError, GitHubInstallationUnusableError):
+        logger.warning(
+            "Failed to resolve runtime GitHub clone access for %s",
+            remote_url,
+            exc_info=True,
+        )
+        return None
+    if clone_access is None:
+        return None
+    return clone_access.access_token
 ```
 
 ## api/github.py
@@ -3909,11 +4574,13 @@ from __future__ import annotations
 import io
 import json
 import logging
+import os
 import shutil
 import sqlite3
 import stat
 import tempfile
 import zipfile
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, cast
 
@@ -3926,6 +4593,7 @@ from yinshi.models import PI_CONFIG_CATEGORIES, PI_CONFIG_CATEGORY_ORDER
 from yinshi.services.git import _git_askpass_env, _run_git, _validate_clone_url, clone_repo
 from yinshi.services.github_app import resolve_github_clone_access
 from yinshi.services.user_settings import (
+    _sanitize_pi_settings,
     clear_pi_settings,
     get_sidecar_settings_payload,
     set_pi_settings_enabled,
@@ -3935,11 +4603,22 @@ from yinshi.services.user_settings import (
 logger = logging.getLogger(__name__)
 
 _PI_CONFIG_DIRECTORY_NAME = "pi-config"
+_PI_RUNTIME_DIRECTORY_NAME = "pi-runtime"
 _AGENT_DIRECTORY_NAME = "agent"
-_MAX_UPLOAD_BYTES = 50 * 1024 * 1024
+_SESSION_RUNTIME_DIRECTORY_NAME = "sessions"
+MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 _MAX_EXTRACTED_BYTES = 200 * 1024 * 1024
 _EXTRACT_CHUNK_BYTES = 64 * 1024
 _INSTRUCTION_FILENAMES = ("AGENTS.md", "CLAUDE.md")
+_SENSITIVE_JSON_FILENAMES = frozenset(
+    {
+        "auth.json",
+        "credentials.json",
+        "oauth.json",
+        "tokens.json",
+        "secrets.json",
+    }
+)
 _DIRECTORY_CATEGORIES = frozenset(
     {"skills", "extensions", "prompts", "agents", "themes", "sessions"}
 )
@@ -3954,6 +4633,14 @@ _CATEGORY_PATHS = {
     "models": Path("agent/models.json"),
     "sessions": Path("agent/sessions"),
 }
+
+
+@dataclass(frozen=True, slots=True)
+class PiRuntimeInputs:
+    """One resolved Pi runtime configuration for sidecar execution."""
+
+    agent_dir: str | None
+    settings_payload: dict[str, object] | None
 
 
 def _validate_user_id(user_id: str) -> str:
@@ -3976,15 +4663,37 @@ def _validate_data_dir(data_dir: str) -> Path:
     return Path(normalized_data_dir)
 
 
+def _validate_runtime_session_id(runtime_session_id: str) -> str:
+    """Require a non-empty session identifier for runtime override paths."""
+    if not isinstance(runtime_session_id, str):
+        raise TypeError("runtime_session_id must be a string")
+    normalized_session_id = runtime_session_id.strip()
+    if not normalized_session_id:
+        raise ValueError("runtime_session_id must not be empty")
+    return normalized_session_id
+
+
 def _pi_config_root_path(data_dir: str) -> Path:
     """Return the root directory that stores a user's imported Pi config."""
     data_root = _validate_data_dir(data_dir)
     return data_root / _PI_CONFIG_DIRECTORY_NAME
 
 
+def _pi_runtime_root_path(data_dir: str) -> Path:
+    """Return the root directory that stores derived runtime-only Pi data."""
+    data_root = _validate_data_dir(data_dir)
+    return data_root / _PI_RUNTIME_DIRECTORY_NAME
+
+
 def _pi_agent_dir_path(data_dir: str) -> Path:
     """Return the agentDir path for a user's imported Pi config."""
     return _pi_config_root_path(data_dir) / _AGENT_DIRECTORY_NAME
+
+
+def _session_runtime_root_path(data_dir: str, runtime_session_id: str) -> Path:
+    """Return the per-session runtime directory for repo instruction overlays."""
+    normalized_session_id = _validate_runtime_session_id(runtime_session_id)
+    return _pi_runtime_root_path(data_dir) / _SESSION_RUNTIME_DIRECTORY_NAME / normalized_session_id
 
 
 def _ordered_categories(categories: set[str]) -> list[str]:
@@ -4008,6 +4717,149 @@ def _load_categories_json(encoded_categories: str) -> list[str]:
             raise ValueError(f"Unsupported stored category: {category}")
         normalized_categories.add(category)
     return _ordered_categories(normalized_categories)
+
+
+def _is_sensitive_filename(path: Path) -> bool:
+    """Return whether one path name is a known secret-bearing config file."""
+    file_name = path.name
+    assert file_name, "path.name must not be empty"
+
+    if file_name in _SENSITIVE_JSON_FILENAMES:
+        return True
+    if file_name == ".env":
+        return True
+    if file_name.startswith(".env."):
+        return True
+    return False
+
+
+def _normalize_secret_key_name(key: str) -> str:
+    """Collapse a JSON key into a token-comparable secret marker string."""
+    if not isinstance(key, str):
+        raise TypeError("key must be a string")
+    return "".join(character for character in key.lower() if character.isalnum())
+
+
+def _looks_like_secret_key(key: str) -> bool:
+    """Return whether one JSON key name is likely to hold a credential."""
+    normalized_key = _normalize_secret_key_name(key)
+    if not normalized_key:
+        return False
+    if "secret" in normalized_key:
+        return True
+    if normalized_key.endswith("apikey"):
+        return True
+    if normalized_key.endswith("token"):
+        return True
+    if normalized_key.endswith("privatekey"):
+        return True
+    if normalized_key.endswith("clientkey"):
+        return True
+    if normalized_key in {
+        "apikey",
+        "accesskey",
+        "accesstoken",
+        "refreshtoken",
+        "authtoken",
+        "bearertoken",
+        "clientsecret",
+        "privatekey",
+    }:
+        return True
+    return False
+
+
+def _scrub_json_payload_secrets(payload: object) -> tuple[object, bool]:
+    """Drop secret-bearing keys from one decoded JSON payload."""
+    if isinstance(payload, dict):
+        scrubbed_payload: dict[str, object] = {}
+        did_remove_secret = False
+        for key, value in payload.items():
+            if not isinstance(key, str):
+                raise TypeError("JSON object keys must be strings")
+            if _looks_like_secret_key(key):
+                did_remove_secret = True
+                continue
+            scrubbed_value, value_removed_secret = _scrub_json_payload_secrets(value)
+            if value_removed_secret:
+                did_remove_secret = True
+            scrubbed_payload[key] = scrubbed_value
+        return scrubbed_payload, did_remove_secret
+
+    if isinstance(payload, list):
+        scrubbed_items: list[object] = []
+        did_remove_secret = False
+        for item in payload:
+            scrubbed_item, item_removed_secret = _scrub_json_payload_secrets(item)
+            if item_removed_secret:
+                did_remove_secret = True
+            scrubbed_items.append(scrubbed_item)
+        return scrubbed_items, did_remove_secret
+
+    return payload, False
+
+
+def _scrub_json_file_secrets(json_path: Path) -> None:
+    """Rewrite one JSON file after removing secret-bearing keys."""
+    if not json_path.is_file():
+        raise ValueError("json_path must point to an existing file")
+    if json_path.suffix.lower() != ".json":
+        raise ValueError("json_path must be a JSON file")
+
+    try:
+        payload = json.loads(json_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return
+
+    scrubbed_payload, did_remove_secret = _scrub_json_payload_secrets(payload)
+    if not did_remove_secret:
+        return
+
+    json_path.write_text(
+        json.dumps(scrubbed_payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _scrub_secret_files(config_root: Path) -> None:
+    """Delete imported files that are primarily used to store credentials."""
+    if not config_root.is_dir():
+        raise ValueError("config_root must point to a directory")
+
+    for candidate_path in config_root.rglob("*"):
+        if not candidate_path.is_file():
+            continue
+        if not _is_sensitive_filename(candidate_path):
+            continue
+        _remove_path(candidate_path)
+
+
+def _scrub_json_secrets(config_root: Path) -> None:
+    """Rewrite imported JSON files after removing nested credential fields."""
+    if not config_root.is_dir():
+        raise ValueError("config_root must point to a directory")
+
+    for json_path in config_root.rglob("*.json"):
+        if not json_path.is_file():
+            continue
+        _scrub_json_file_secrets(json_path)
+
+
+def _scrub_settings_payload(config_root: Path) -> None:
+    """Rewrite settings.json so on-disk runtime config matches stored sanitized settings."""
+    if not config_root.is_dir():
+        raise ValueError("config_root must point to a directory")
+
+    settings_path = config_root / _CATEGORY_PATHS["settings"]
+    if not settings_path.is_file():
+        return
+
+    settings_payload = _read_settings_json(settings_path)
+    sanitized_settings = _sanitize_pi_settings(settings_payload)
+    settings_path.write_text(
+        json.dumps(sanitized_settings, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
 
 
 def _dump_categories_json(categories: list[str]) -> str:
@@ -4158,7 +5010,7 @@ def _safe_zip_target(root_path: Path, archive_name: str) -> Path:
 
 def _extract_archive(zip_data: bytes, temp_root: Path) -> None:
     """Extract a validated zip archive into a temporary directory."""
-    if len(zip_data) > _MAX_UPLOAD_BYTES:
+    if len(zip_data) > MAX_UPLOAD_BYTES:
         raise PiConfigError("Uploaded archive exceeds the 50MB size limit")
     if not zip_data.startswith(b"PK"):
         raise PiConfigError("Uploaded file is not a zip archive")
@@ -4224,6 +5076,12 @@ def _prepare_destination(config_root: Path) -> None:
     config_root.parent.mkdir(parents=True, exist_ok=True)
 
 
+def _recreate_directory_root(root_path: Path) -> None:
+    """Replace one directory tree with a new empty directory."""
+    _remove_path(root_path)
+    root_path.mkdir(parents=True, exist_ok=True)
+
+
 def _mirror_instruction_files(config_root: Path) -> None:
     """Copy supported root instruction files into agent/ for SDK discovery."""
     agent_dir = config_root / _AGENT_DIRECTORY_NAME
@@ -4263,6 +5121,54 @@ def _instruction_runtime_paths(config_root: Path) -> list[Path]:
     """Return the mirrored instruction file paths inside agent/."""
     agent_dir = config_root / _AGENT_DIRECTORY_NAME
     return [agent_dir / filename for filename in _INSTRUCTION_FILENAMES]
+
+
+def _link_runtime_agent_children(source_agent_dir: Path, target_agent_dir: Path) -> None:
+    """Link all base agent assets into a runtime override directory except AGENTS.md."""
+    if not source_agent_dir.exists():
+        raise PiConfigError(f"Base agent directory does not exist: {source_agent_dir}")
+    if not source_agent_dir.is_dir():
+        raise PiConfigError(f"Base agent directory is not a directory: {source_agent_dir}")
+    if not target_agent_dir.exists():
+        raise PiConfigError(f"Target agent directory does not exist: {target_agent_dir}")
+    if not target_agent_dir.is_dir():
+        raise PiConfigError(f"Target agent directory is not a directory: {target_agent_dir}")
+
+    for source_path in sorted(source_agent_dir.iterdir(), key=lambda path: path.name):
+        if source_path.name == "AGENTS.md":
+            continue
+        target_path = target_agent_dir / source_path.name
+        relative_source_path = os.path.relpath(source_path, target_agent_dir)
+        target_path.symlink_to(
+            relative_source_path,
+            target_is_directory=source_path.is_dir(),
+        )
+
+
+def _materialize_repo_agent_override(
+    data_dir: str,
+    runtime_session_id: str,
+    repo_agents_md: str,
+    base_agent_dir: str | None,
+) -> str:
+    """Build one per-session agentDir that overlays repo instructions onto the base config."""
+    if not isinstance(repo_agents_md, str):
+        raise TypeError("repo_agents_md must be a string")
+
+    runtime_root = _session_runtime_root_path(data_dir, runtime_session_id)
+    _recreate_directory_root(runtime_root)
+
+    runtime_agent_dir = runtime_root / _AGENT_DIRECTORY_NAME
+    runtime_agent_dir.mkdir(parents=True, exist_ok=True)
+
+    if base_agent_dir is not None:
+        base_agent_path = Path(base_agent_dir)
+        _link_runtime_agent_children(base_agent_path, runtime_agent_dir)
+
+    # The runtime directory overlays only AGENTS.md so all other Pi assets stay shared.
+    runtime_agents_md_path = runtime_agent_dir / "AGENTS.md"
+    runtime_agents_md_path.write_text(repo_agents_md, encoding="utf-8")
+    return str(runtime_agent_dir)
 
 
 def _scan_categories(config_root: Path) -> list[str]:
@@ -4331,8 +5237,11 @@ def _apply_enabled_categories(
 
 def _scrub_pi_config(config_root: Path, *, keep_git: bool) -> None:
     """Remove sensitive or host-specific files from an imported config."""
-    _remove_path(config_root / "auth.json")
-    _remove_path(config_root / _AGENT_DIRECTORY_NAME / "auth.json")
+    if not config_root.is_dir():
+        raise ValueError("config_root must point to a directory")
+    _scrub_secret_files(config_root)
+    _scrub_json_secrets(config_root)
+    _scrub_settings_payload(config_root)
     _remove_path(config_root / "bin")
     _remove_path(config_root / _AGENT_DIRECTORY_NAME / "bin")
     if not keep_git:
@@ -4538,8 +5447,8 @@ async def sync_pi_config(
     row = _require_pi_config_row(normalized_user_id)
     if row["source_type"] != "github":
         raise PiConfigError("Only GitHub-backed Pi configs can be synced")
-    if row["status"] == "cloning":
-        raise PiConfigError("Pi config is still cloning")
+    if row["status"] in ("cloning", "syncing"):
+        raise PiConfigError(f"Pi config is currently {row['status']}")
 
     repo_url = row["repo_url"]
     if not isinstance(repo_url, str) or not repo_url:
@@ -4550,7 +5459,17 @@ async def sync_pi_config(
     disabled_categories = set(previous_available) - set(previous_enabled)
     config_root = _pi_config_root_path(data_dir)
 
-    _update_pi_config_row(normalized_user_id, status="syncing", error_message=None)
+    # Atomically transition to syncing. Only one caller can win this
+    # race -- the rest will see rowcount == 0 and raise.
+    with get_control_db() as db:
+        result = db.execute(
+            "UPDATE pi_configs SET status = 'syncing', error_message = NULL "
+            "WHERE user_id = ? AND status = 'ready'",
+            (normalized_user_id,),
+        )
+        if result.rowcount == 0:
+            raise PiConfigError("Pi config is not ready for sync")
+        db.commit()
     try:
         clone_url, resolved_access_token = await _resolve_clone_details(
             normalized_user_id, repo_url
@@ -4642,30 +5561,61 @@ def update_enabled_categories(
     return cast(dict[str, Any], get_pi_config(normalized_user_id))
 
 
-def resolve_pi_runtime(user_id: str, data_dir: str) -> tuple[str | None, dict[str, object] | None]:
-    """Return the active Pi runtime inputs for the current request, if any."""
+def resolve_pi_runtime(user_id: str, data_dir: str) -> PiRuntimeInputs:
+    """Return the active Pi runtime inputs when container mode is enabled."""
     settings = get_settings()
     if not settings.container_enabled:
-        return None, None
+        return PiRuntimeInputs(agent_dir=None, settings_payload=None)
 
     config = get_pi_config(user_id)
     if config is None:
-        return None, None
+        return PiRuntimeInputs(agent_dir=None, settings_payload=None)
     if config["status"] != "ready":
-        return None, None
+        return PiRuntimeInputs(agent_dir=None, settings_payload=None)
 
     agent_dir = _pi_agent_dir_path(data_dir)
     if not agent_dir.is_dir():
-        return None, None
+        return PiRuntimeInputs(agent_dir=None, settings_payload=None)
 
     settings_payload = get_sidecar_settings_payload(user_id)
-    return str(agent_dir), settings_payload
+    return PiRuntimeInputs(
+        agent_dir=str(agent_dir),
+        settings_payload=settings_payload,
+    )
 
 
 def resolve_agent_dir(user_id: str, data_dir: str) -> str | None:
     """Return the agentDir path when a ready Pi config should be active."""
-    agent_dir, _settings_payload = resolve_pi_runtime(user_id, data_dir)
-    return agent_dir
+    runtime_inputs = resolve_pi_runtime(user_id, data_dir)
+    return runtime_inputs.agent_dir
+
+
+def resolve_effective_pi_runtime(
+    user_id: str,
+    data_dir: str,
+    *,
+    runtime_session_id: str | None = None,
+    repo_agents_md: str | None = None,
+) -> PiRuntimeInputs:
+    """Return runtime inputs with an optional repo-level AGENTS.md overlay applied."""
+    runtime_inputs = resolve_pi_runtime(user_id, data_dir)
+
+    if repo_agents_md is None:
+        return runtime_inputs
+
+    if runtime_session_id is None:
+        raise ValueError("runtime_session_id must be provided when repo_agents_md is set")
+
+    override_agent_dir = _materialize_repo_agent_override(
+        data_dir,
+        runtime_session_id,
+        repo_agents_md,
+        runtime_inputs.agent_dir,
+    )
+    return PiRuntimeInputs(
+        agent_dir=override_agent_dir,
+        settings_payload=runtime_inputs.settings_payload,
+    )
 ```
 
 # User Settings
@@ -4747,22 +5697,14 @@ def _upsert_settings_row(
     serialized_payload = json.dumps(sanitized_payload, sort_keys=True)
 
     with get_control_db() as db:
-        existing_row = db.execute(
-            "SELECT user_id FROM user_settings WHERE user_id = ?",
-            (normalized_user_id,),
-        ).fetchone()
-        if existing_row is None:
-            db.execute(
-                "INSERT INTO user_settings (user_id, pi_settings_json, pi_settings_enabled) "
-                "VALUES (?, ?, ?)",
-                (normalized_user_id, serialized_payload, int(enabled)),
-            )
-        else:
-            db.execute(
-                "UPDATE user_settings SET pi_settings_json = ?, pi_settings_enabled = ? "
-                "WHERE user_id = ?",
-                (serialized_payload, int(enabled), normalized_user_id),
-            )
+        db.execute(
+            "INSERT INTO user_settings (user_id, pi_settings_json, pi_settings_enabled) "
+            "VALUES (?, ?, ?) "
+            "ON CONFLICT(user_id) DO UPDATE SET "
+            "pi_settings_json = excluded.pi_settings_json, "
+            "pi_settings_enabled = excluded.pi_settings_enabled",
+            (normalized_user_id, serialized_payload, int(enabled)),
+        )
         db.commit()
 
 
@@ -4799,26 +5741,19 @@ def set_pi_settings_enabled(user_id: str, enabled: bool) -> None:
         raise TypeError("enabled must be a boolean")
 
     with get_control_db() as db:
-        row = cast(
-            sqlite3.Row | None,
+        if enabled:
             db.execute(
-                "SELECT user_id FROM user_settings WHERE user_id = ?",
+                "INSERT INTO user_settings (user_id, pi_settings_json, pi_settings_enabled) "
+                "VALUES (?, ?, ?) "
+                "ON CONFLICT(user_id) DO UPDATE SET "
+                "pi_settings_enabled = excluded.pi_settings_enabled",
+                (normalized_user_id, "{}", 1),
+            )
+        else:
+            db.execute(
+                "UPDATE user_settings SET pi_settings_enabled = 0 WHERE user_id = ?",
                 (normalized_user_id,),
-            ).fetchone(),
-        )
-        if row is None:
-            if enabled:
-                db.execute(
-                    "INSERT INTO user_settings (user_id, pi_settings_json, pi_settings_enabled) "
-                    "VALUES (?, ?, ?)",
-                    (normalized_user_id, "{}", 1),
-                )
-                db.commit()
-            return
-        db.execute(
-            "UPDATE user_settings SET pi_settings_enabled = ? WHERE user_id = ?",
-            (int(enabled), normalized_user_id),
-        )
+            )
         db.commit()
 
 
@@ -4846,6 +5781,297 @@ def get_sidecar_settings_payload(user_id: str) -> dict[str, object] | None:
 ```
 
 # Sidecar Communication
+
+## services/run_coordinator.py
+
+Streaming prompts can outlive the HTTP request that started them, so the backend
+needs one tiny piece of shared state: a map from session IDs to live sidecar
+clients that know how to cancel work. `RunCoordinator` is that map. It keeps the
+contract deliberately small -- register, request cancellation, release -- and
+wraps the dictionary in an `asyncio.Lock` so concurrent prompt and cancel calls
+cannot race each other into stale state.
+
+```python {chunk="run_coordinator" file="backend/src/yinshi/services/run_coordinator.py"}
+"""Run coordinator for managing active prompt runs and cancellation."""
+
+import asyncio
+import logging
+
+from yinshi.services.sidecar import SidecarClient
+
+logger = logging.getLogger(__name__)
+
+
+class RunCoordinator:
+    """Manages active sidecar runs keyed by session id."""
+
+    def __init__(self) -> None:
+        self._runs: dict[str, SidecarClient] = {}
+        self._lock = asyncio.Lock()
+
+    async def register(self, session_id: str, sidecar: SidecarClient) -> None:
+        """Register a new active run."""
+        if not session_id:
+            raise ValueError("session_id must be non-empty")
+        cancel_method = getattr(sidecar, "cancel", None)
+        if not callable(cancel_method):
+            raise TypeError("sidecar must expose a callable cancel method")
+
+        async with self._lock:
+            self._runs[session_id] = sidecar
+            logger.debug("Run registered: session=%s", session_id)
+
+    async def request_cancel(self, session_id: str) -> bool:
+        """Request cancellation for a run. Returns True when a run was found."""
+        if not session_id:
+            raise ValueError("session_id must be non-empty")
+
+        async with self._lock:
+            sidecar = self._runs.get(session_id)
+        if sidecar is None:
+            return False
+
+        await sidecar.cancel(session_id)
+        logger.info("Cancel requested: session=%s", session_id)
+        return True
+
+    async def release(self, session_id: str) -> None:
+        """Remove a run record."""
+        if not session_id:
+            raise ValueError("session_id must be non-empty")
+
+        async with self._lock:
+            self._runs.pop(session_id, None)
+            logger.debug("Run released: session=%s", session_id)
+
+
+_coordinator: RunCoordinator | None = None
+
+
+def get_run_coordinator() -> RunCoordinator:
+    """Get the global run coordinator instance."""
+    global _coordinator
+    if _coordinator is None:
+        _coordinator = RunCoordinator()
+    return _coordinator
+```
+
+## services/sidecar_runtime.py
+
+This module resolves the execution environment that the sidecar should see for a
+single tenant-scoped request. It translates host paths into the container's
+mount namespace, applies repo-level `AGENTS.md` overlays via the Pi config
+runtime helpers, and exposes a narrow set of container activity hooks used by
+streaming endpoints. In other words: this is the adapter between request-time
+FastAPI state and the longer-lived sidecar/container runtime.
+
+```python {chunk="sidecar_runtime" file="backend/src/yinshi/services/sidecar_runtime.py"}
+"""Shared tenant sidecar runtime resolution for containerized execution."""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+
+from fastapi import Request
+
+from yinshi.config import get_settings
+from yinshi.exceptions import ContainerStartError
+from yinshi.services.pi_config import resolve_effective_pi_runtime
+from yinshi.tenant import TenantContext
+from yinshi.utils.paths import is_path_inside
+
+
+@dataclass(frozen=True, slots=True)
+class TenantSidecarContext:
+    """Resolved sidecar runtime inputs for one tenant-scoped request."""
+
+    socket_path: str | None
+    agent_dir: str | None
+    settings_payload: dict[str, object] | None
+
+
+def remap_path_for_container(
+    host_path: str,
+    data_dir: str,
+    *,
+    mount_path: str = "/data",
+) -> str:
+    """Translate a host path into the tenant container mount namespace."""
+    if not isinstance(host_path, str):
+        raise TypeError("host_path must be a string")
+    normalized_host_path = host_path.strip()
+    if not normalized_host_path:
+        raise ValueError("host_path must not be empty")
+    if not isinstance(data_dir, str):
+        raise TypeError("data_dir must be a string")
+    normalized_data_dir = data_dir.strip()
+    if not normalized_data_dir:
+        raise ValueError("data_dir must not be empty")
+    if not isinstance(mount_path, str):
+        raise TypeError("mount_path must be a string")
+    normalized_mount_path = mount_path.strip()
+    if not normalized_mount_path:
+        raise ValueError("mount_path must not be empty")
+
+    if not is_path_inside(normalized_host_path, normalized_data_dir):
+        raise ValueError("Path outside user data directory")
+
+    resolved_host_path = os.path.realpath(normalized_host_path)
+    resolved_data_dir = os.path.realpath(normalized_data_dir)
+    if resolved_host_path == resolved_data_dir:
+        return normalized_mount_path
+
+    relative_path = os.path.relpath(resolved_host_path, resolved_data_dir)
+    return os.path.join(normalized_mount_path, relative_path)
+
+
+def _resolve_agent_dir_for_runtime(
+    agent_dir: str | None,
+    data_dir: str,
+    *,
+    container_enabled: bool,
+) -> str | None:
+    """Return the runtime-visible agent dir for the current execution mode."""
+    if agent_dir is None:
+        return None
+    if not isinstance(agent_dir, str):
+        raise TypeError("agent_dir must be a string or None")
+    normalized_agent_dir = agent_dir.strip()
+    if not normalized_agent_dir:
+        raise ValueError("agent_dir must not be empty when provided")
+
+    if not container_enabled:
+        return normalized_agent_dir
+    if not is_path_inside(normalized_agent_dir, data_dir):
+        return normalized_agent_dir
+    return remap_path_for_container(normalized_agent_dir, data_dir)
+
+
+async def resolve_tenant_sidecar_context(
+    request: Request,
+    tenant: TenantContext | None,
+    runtime_session_id: str | None = None,
+    repo_agents_md: str | None = None,
+) -> TenantSidecarContext:
+    """Resolve the socket path and Pi runtime inputs for one request."""
+    if tenant is None:
+        return TenantSidecarContext(
+            socket_path=None,
+            agent_dir=None,
+            settings_payload=None,
+        )
+
+    settings = get_settings()
+    runtime_inputs = resolve_effective_pi_runtime(
+        tenant.user_id,
+        tenant.data_dir,
+        runtime_session_id=runtime_session_id,
+        repo_agents_md=repo_agents_md,
+    )
+    runtime_agent_dir = _resolve_agent_dir_for_runtime(
+        runtime_inputs.agent_dir,
+        tenant.data_dir,
+        container_enabled=settings.container_enabled,
+    )
+
+    if not settings.container_enabled:
+        return TenantSidecarContext(
+            socket_path=None,
+            agent_dir=runtime_agent_dir,
+            settings_payload=runtime_inputs.settings_payload,
+        )
+
+    container_manager = getattr(request.app.state, "container_manager", None)
+    if container_manager is None:
+        raise ContainerStartError("Container manager is not initialized")
+
+    container_info = await container_manager.ensure_container(tenant.user_id, tenant.data_dir)
+    return TenantSidecarContext(
+        socket_path=container_info.socket_path,
+        agent_dir=runtime_agent_dir,
+        settings_payload=runtime_inputs.settings_payload,
+    )
+
+
+def touch_tenant_container(request: Request, tenant: TenantContext | None) -> None:
+    """Mark one tenant container as recently used when container mode is active."""
+    container_manager, user_id = _tenant_container_manager(request, tenant)
+    if container_manager is None or user_id is None:
+        return
+    touch = getattr(container_manager, "touch", None)
+    if callable(touch):
+        touch(user_id)
+
+
+def begin_tenant_container_activity(request: Request, tenant: TenantContext | None) -> None:
+    """Mark one tenant container as busy for the duration of a request step."""
+    container_manager, user_id = _tenant_container_manager(request, tenant)
+    if container_manager is None or user_id is None:
+        return
+    begin_activity = getattr(container_manager, "begin_activity", None)
+    if callable(begin_activity):
+        begin_activity(user_id)
+
+
+def end_tenant_container_activity(request: Request, tenant: TenantContext | None) -> None:
+    """Release one in-flight request marker from a tenant container."""
+    container_manager, user_id = _tenant_container_manager(request, tenant)
+    if container_manager is None or user_id is None:
+        return
+    end_activity = getattr(container_manager, "end_activity", None)
+    if callable(end_activity):
+        end_activity(user_id)
+
+
+def protect_tenant_container(
+    request: Request,
+    tenant: TenantContext | None,
+    *,
+    lease_key: str,
+    timeout_s: int,
+) -> None:
+    """Keep one tenant container alive for a named long-lived operation."""
+    container_manager, user_id = _tenant_container_manager(request, tenant)
+    if container_manager is None or user_id is None:
+        return
+    protect = getattr(container_manager, "protect", None)
+    if callable(protect):
+        protect(user_id, lease_key, timeout_s)
+
+
+def release_tenant_container(
+    request: Request,
+    tenant: TenantContext | None,
+    *,
+    lease_key: str,
+) -> None:
+    """Remove one named long-lived keepalive lease from a tenant container."""
+    container_manager, user_id = _tenant_container_manager(request, tenant)
+    if container_manager is None or user_id is None:
+        return
+    unprotect = getattr(container_manager, "unprotect", None)
+    if callable(unprotect):
+        unprotect(user_id, lease_key)
+
+
+def _tenant_container_manager(
+    request: Request,
+    tenant: TenantContext | None,
+) -> tuple[object | None, str | None]:
+    """Return the container manager plus tenant user id when container mode is active."""
+    if tenant is None:
+        return None, None
+
+    settings = get_settings()
+    if not settings.container_enabled:
+        return None, None
+
+    container_manager = getattr(request.app.state, "container_manager", None)
+    if container_manager is None:
+        return None, None
+    return container_manager, tenant.user_id
+```
 
 ## services/sidecar.py
 
@@ -4907,7 +6133,7 @@ class SidecarClient:
         Args:
             socket_path: Explicit path to the Unix socket.  When *None*,
                 falls back to the global ``sidecar_socket_path`` setting
-                (backward-compatible for non-container mode).
+                used by host-side execution.
         """
         if socket_path is None:
             settings = get_settings()
@@ -4964,9 +6190,7 @@ class SidecarClient:
         except ValueError as exc:
             message_text = str(exc)
             if "longer than limit" in message_text:
-                raise SidecarError(
-                    "Sidecar message exceeded the configured read limit"
-                ) from exc
+                raise SidecarError("Sidecar message exceeded the configured read limit") from exc
             raise
         if not line:
             return None
@@ -4983,6 +6207,7 @@ class SidecarClient:
         cwd: str,
         provider_auth: dict[str, Any] | None = None,
         provider_config: dict[str, Any] | None = None,
+        git_auth: dict[str, Any] | None = None,
         agent_dir: str | None = None,
         settings_payload: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
@@ -4992,6 +6217,8 @@ class SidecarClient:
             options["providerAuth"] = provider_auth
         if provider_config:
             options["providerConfig"] = provider_config
+        if git_auth:
+            options["gitAuth"] = git_auth
         if agent_dir:
             options["agentDir"] = agent_dir
         if settings_payload:
@@ -5005,22 +6232,26 @@ class SidecarClient:
         cwd: str = ".",
         provider_auth: dict[str, Any] | None = None,
         provider_config: dict[str, Any] | None = None,
+        git_auth: dict[str, Any] | None = None,
         agent_dir: str | None = None,
         settings_payload: dict[str, Any] | None = None,
     ) -> None:
         """Pre-create a pi session on the sidecar."""
-        await self._send({
-            "type": "warmup",
-            "id": session_id,
-            "options": self._build_options(
-                model,
-                cwd,
-                provider_auth,
-                provider_config,
-                agent_dir=agent_dir,
-                settings_payload=settings_payload,
-            ),
-        })
+        await self._send(
+            {
+                "type": "warmup",
+                "id": session_id,
+                "options": self._build_options(
+                    model,
+                    cwd,
+                    provider_auth,
+                    provider_config,
+                    git_auth,
+                    agent_dir=agent_dir,
+                    settings_payload=settings_payload,
+                ),
+            }
+        )
 
     async def query(
         self,
@@ -5030,23 +6261,27 @@ class SidecarClient:
         cwd: str = ".",
         provider_auth: dict[str, Any] | None = None,
         provider_config: dict[str, Any] | None = None,
+        git_auth: dict[str, Any] | None = None,
         agent_dir: str | None = None,
         settings_payload: dict[str, Any] | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Send a prompt and yield streaming events from the sidecar."""
-        await self._send({
-            "type": "query",
-            "id": session_id,
-            "prompt": prompt,
-            "options": self._build_options(
-                model,
-                cwd,
-                provider_auth,
-                provider_config,
-                agent_dir=agent_dir,
-                settings_payload=settings_payload,
-            ),
-        })
+        await self._send(
+            {
+                "type": "query",
+                "id": session_id,
+                "prompt": prompt,
+                "options": self._build_options(
+                    model,
+                    cwd,
+                    provider_auth,
+                    provider_config,
+                    git_auth,
+                    agent_dir=agent_dir,
+                    settings_payload=settings_payload,
+                ),
+            }
+        )
 
         while True:
             msg = await self._read_line()
@@ -5219,9 +6454,7 @@ class SidecarClient:
         if msg is None:
             raise SidecarError("Sidecar connection lost during OAuth input submission")
         if msg.get("type") == "error":
-            raise SidecarError(
-                f"OAuth input submission failed: {msg.get('error', 'unknown')}"
-            )
+            raise SidecarError(f"OAuth input submission failed: {msg.get('error', 'unknown')}")
         if msg.get("type") != "oauth_submitted":
             raise SidecarError(f"Unexpected response type: {msg.get('type')}")
         return msg
@@ -5259,7 +6492,7 @@ async def create_sidecar_connection(
 
     Args:
         socket_path: Explicit Unix socket path.  *None* uses the global
-            setting (non-container mode).
+            host-sidecar setting.
     """
     client = SidecarClient()
     await client.connect(socket_path)
@@ -5288,7 +6521,7 @@ import os
 import re
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
 from yinshi.exceptions import ContainerNotReadyError, ContainerStartError
@@ -5311,6 +6544,8 @@ class ContainerInfo:
     socket_path: str
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     last_activity: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    active_request_count: int = 0
+    protected_operation_deadlines: dict[str, datetime] = field(default_factory=dict)
 
 
 class ContainerManager:
@@ -5332,7 +6567,13 @@ class ContainerManager:
         self._global_lock = asyncio.Lock()
         self._socket_poll_timeout_s: float = 10.0
         self._socket_poll_interval_s: float = 0.1
+        self._pipe_read_timeout_s: float = 1.0
         self._initialized = False
+
+    @staticmethod
+    def _now() -> datetime:
+        """Return the current UTC timestamp."""
+        return datetime.now(timezone.utc)
 
     # -- Podman subprocess helper -------------------------------------------
 
@@ -5350,34 +6591,73 @@ class ContainerManager:
         proc: asyncio.subprocess.Process | None = None
         try:
             proc = await asyncio.create_subprocess_exec(
-                self._podman_bin, *args,
+                self._podman_bin,
+                *args,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            raw_out, raw_err = await asyncio.wait_for(
-                proc.communicate(), timeout=timeout,
-            )
         except FileNotFoundError:
             raise ContainerStartError("podman binary not found") from None
+
+        assert proc is not None, "create_subprocess_exec must return a process"
+
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=timeout)
         except asyncio.TimeoutError:
-            if proc is not None:
-                proc.kill()
+            await self._stop_process(proc)
             raise ContainerStartError(
                 f"Podman command timed out: podman {' '.join(args)}"
             ) from None
 
-        stdout = raw_out.decode().strip()
-        stderr = raw_err.decode().strip()
+        stdout = await self._read_process_pipe(proc.stdout)
+        stderr = await self._read_process_pipe(proc.stderr)
+
         returncode = proc.returncode
         if returncode is None:
             raise ContainerStartError("Podman process exited without a return code")
 
         if check and returncode != 0:
-            raise ContainerStartError(
-                f"podman {args[0]} failed: {stderr}"
-            )
+            raise ContainerStartError(f"podman {args[0]} failed: {stderr}")
 
         return returncode, stdout, stderr
+
+    async def _read_process_pipe(
+        self,
+        stream: asyncio.StreamReader | None,
+    ) -> str:
+        """Read one subprocess pipe without waiting forever for inherited descriptors."""
+        if stream is None:
+            return ""
+
+        try:
+            raw_data = await asyncio.wait_for(
+                stream.read(64 * 1024),
+                timeout=self._pipe_read_timeout_s,
+            )
+        except asyncio.TimeoutError:
+            return ""
+
+        if not raw_data:
+            return ""
+        return raw_data.decode().strip()
+
+    async def _stop_process(
+        self,
+        proc: asyncio.subprocess.Process,
+    ) -> None:
+        """Terminate one subprocess while tolerating races with an already-exited process."""
+        if proc.returncode is not None:
+            return
+
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            return
+
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=1.0)
+        except asyncio.TimeoutError:
+            logger.warning("Timed out waiting for Podman process shutdown")
 
     # -- Initialization -----------------------------------------------------
 
@@ -5389,22 +6669,111 @@ class ContainerManager:
         """
         if self._initialized:
             return
+        self._ensure_socket_base_dir()
+        await self._verify_podman_available()
         await self._ensure_network()
+        await self._ensure_image()
         await self._cleanup_orphaned_containers()
         self._initialized = True
 
     # -- Podman network -----------------------------------------------------
 
+    def _ensure_socket_base_dir(self) -> None:
+        """Create the shared socket base directory with restricted permissions."""
+        socket_base_dir = self._settings.container_socket_base
+        if not isinstance(socket_base_dir, str):
+            raise TypeError("container_socket_base must be a string")
+        normalized_socket_base_dir = socket_base_dir.strip()
+        if not normalized_socket_base_dir:
+            raise ValueError("container_socket_base must not be empty")
+
+        try:
+            if os.path.exists(normalized_socket_base_dir):
+                if not os.path.isdir(normalized_socket_base_dir):
+                    raise ContainerStartError("container socket base path must be a directory")
+            else:
+                os.makedirs(normalized_socket_base_dir, mode=0o700, exist_ok=True)
+            os.chmod(normalized_socket_base_dir, 0o700)
+        except OSError as exc:
+            raise ContainerStartError(
+                f"Failed to prepare container socket base: {normalized_socket_base_dir}"
+            ) from exc
+
+    async def _verify_podman_available(self) -> None:
+        """Fail fast when the Podman CLI is missing or unhealthy."""
+        await self._run_podman("--version")
+
     async def _ensure_network(self) -> None:
-        """Create the restricted Podman network if it doesn't exist."""
-        rc, _, _ = await self._run_podman(
-            "network", "exists", _SIDECAR_NET, check=False,
+        """Create the tenant network and repair old internal-only variants."""
+        rc, stdout, _ = await self._run_podman(
+            "network",
+            "inspect",
+            _SIDECAR_NET,
+            check=False,
         )
         if rc != 0:
-            await self._run_podman(
-                "network", "create", "--internal", _SIDECAR_NET,
+            await self._create_network()
+            return
+
+        if self._network_is_internal(stdout):
+            await self._run_podman("network", "rm", _SIDECAR_NET)
+            await self._create_network()
+            logger.info("Recreated Podman network %s without internal isolation", _SIDECAR_NET)
+
+    async def _create_network(self) -> None:
+        """Create one Podman network with outbound access for model providers."""
+        await self._run_podman(
+            "network",
+            "create",
+            _SIDECAR_NET,
+        )
+        logger.info("Created Podman network %s", _SIDECAR_NET)
+
+    def _network_is_internal(self, inspect_output: str) -> bool:
+        """Return whether one inspected Podman network blocks outbound traffic."""
+        if not isinstance(inspect_output, str):
+            raise TypeError("inspect_output must be a string")
+        normalized_inspect_output = inspect_output.strip()
+        if not normalized_inspect_output:
+            return False
+
+        try:
+            parsed_output = json.loads(normalized_inspect_output)
+        except json.JSONDecodeError as exc:
+            raise ContainerStartError("Podman network inspect returned invalid JSON") from exc
+        if not isinstance(parsed_output, list):
+            raise ContainerStartError("Podman network inspect returned an invalid payload")
+        if not parsed_output:
+            return False
+
+        network_info = parsed_output[0]
+        if not isinstance(network_info, dict):
+            raise ContainerStartError("Podman network inspect returned a non-object network")
+
+        internal_value = network_info.get("internal")
+        if isinstance(internal_value, bool):
+            return internal_value
+        return False
+
+    async def _ensure_image(self) -> None:
+        """Require the configured sidecar image to be present locally."""
+        image_name = self._settings.container_image
+        if not isinstance(image_name, str):
+            raise TypeError("container_image must be a string")
+        normalized_image_name = image_name.strip()
+        if not normalized_image_name:
+            raise ValueError("container_image must not be empty")
+
+        rc, _, _ = await self._run_podman(
+            "image",
+            "exists",
+            normalized_image_name,
+            check=False,
+        )
+        if rc != 0:
+            raise ContainerStartError(
+                f"Configured sidecar image is not available locally: {normalized_image_name}"
             )
-            logger.info("Created Podman network %s", _SIDECAR_NET)
 
     # -- Orphan cleanup -----------------------------------------------------
 
@@ -5412,9 +6781,12 @@ class ContainerManager:
         """Remove containers left over from a previous process crash."""
         try:
             rc, stdout, _ = await self._run_podman(
-                "ps", "-a",
-                "--filter", "label=yinshi.user_id",
-                "--format", "json",
+                "ps",
+                "-a",
+                "--filter",
+                "label=yinshi.user_id",
+                "--format",
+                "json",
                 check=False,
             )
             if rc != 0 or not stdout:
@@ -5440,7 +6812,9 @@ class ContainerManager:
     # -- Public API ---------------------------------------------------------
 
     async def ensure_container(
-        self, user_id: str, data_dir: str,
+        self,
+        user_id: str,
+        data_dir: str,
     ) -> ContainerInfo:
         """Get or create a sidecar container for a user.
 
@@ -5476,7 +6850,89 @@ class ContainerManager:
         """Update last activity timestamp for a user's container."""
         info = self._containers.get(user_id)
         if info:
-            info.last_activity = datetime.now(timezone.utc)
+            info.last_activity = self._now()
+
+    def begin_activity(self, user_id: str) -> None:
+        """Mark a container as busy for the lifetime of one request."""
+        if not isinstance(user_id, str):
+            raise TypeError("user_id must be a string")
+        normalized_user_id = user_id.strip()
+        if not normalized_user_id:
+            raise ValueError("user_id must not be empty")
+
+        info = self._containers.get(normalized_user_id)
+        if info is None:
+            logger.warning("Cannot mark activity for missing container: %s", normalized_user_id[:8])
+            return
+        info.active_request_count += 1
+        info.last_activity = self._now()
+
+    def end_activity(self, user_id: str) -> None:
+        """Release one active request marker for a user's container."""
+        if not isinstance(user_id, str):
+            raise TypeError("user_id must be a string")
+        normalized_user_id = user_id.strip()
+        if not normalized_user_id:
+            raise ValueError("user_id must not be empty")
+
+        info = self._containers.get(normalized_user_id)
+        if info is None:
+            logger.warning("Cannot end activity for missing container: %s", normalized_user_id[:8])
+            return
+        if info.active_request_count == 0:
+            logger.warning(
+                "Cannot end activity for container %s without a matching begin",
+                normalized_user_id[:8],
+            )
+            return
+        info.active_request_count -= 1
+        info.last_activity = self._now()
+
+    def protect(self, user_id: str, lease_key: str, timeout_s: int) -> None:
+        """Keep one container alive for a named long-lived operation."""
+        if not isinstance(user_id, str):
+            raise TypeError("user_id must be a string")
+        normalized_user_id = user_id.strip()
+        if not normalized_user_id:
+            raise ValueError("user_id must not be empty")
+        if not isinstance(lease_key, str):
+            raise TypeError("lease_key must be a string")
+        normalized_lease_key = lease_key.strip()
+        if not normalized_lease_key:
+            raise ValueError("lease_key must not be empty")
+        if not isinstance(timeout_s, int):
+            raise TypeError("timeout_s must be an integer")
+        if timeout_s <= 0:
+            raise ValueError("timeout_s must be positive")
+
+        info = self._containers.get(normalized_user_id)
+        if info is None:
+            logger.warning("Cannot protect missing container: %s", normalized_user_id[:8])
+            return
+        info.protected_operation_deadlines[normalized_lease_key] = self._now() + timedelta(
+            seconds=timeout_s
+        )
+        info.last_activity = self._now()
+
+    def unprotect(self, user_id: str, lease_key: str) -> None:
+        """Remove one named long-lived operation lease from a user's container."""
+        if not isinstance(user_id, str):
+            raise TypeError("user_id must be a string")
+        normalized_user_id = user_id.strip()
+        if not normalized_user_id:
+            raise ValueError("user_id must not be empty")
+        if not isinstance(lease_key, str):
+            raise TypeError("lease_key must be a string")
+        normalized_lease_key = lease_key.strip()
+        if not normalized_lease_key:
+            raise ValueError("lease_key must not be empty")
+
+        info = self._containers.get(normalized_user_id)
+        if info is None:
+            logger.warning("Cannot unprotect missing container: %s", normalized_user_id[:8])
+            return
+        info.protected_operation_deadlines.pop(normalized_lease_key, None)
+        info.last_activity = self._now()
 
     async def destroy_container(self, user_id: str) -> None:
         """Stop and remove a user's container."""
@@ -5490,11 +6946,11 @@ class ContainerManager:
     async def reap_idle(self) -> int:
         """Destroy containers that have been idle past the timeout."""
         timeout = self._settings.container_idle_timeout_s
-        cutoff = datetime.now(timezone.utc)
+        cutoff = self._now()
         idle_users = [
             uid
             for uid, info in self._containers.items()
-            if (cutoff - info.last_activity).total_seconds() > timeout
+            if self._container_is_reapable(info, cutoff, timeout)
         ]
         for uid in idle_users:
             await self.destroy_container(uid)
@@ -5523,7 +6979,10 @@ class ContainerManager:
     async def _is_running(self, container_id: str) -> bool:
         """Check if a container is still running."""
         rc, stdout, _ = await self._run_podman(
-            "inspect", "--format", "{{.State.Status}}", container_id,
+            "inspect",
+            "--format",
+            "{{.State.Status}}",
+            container_id,
             check=False,
         )
         return rc == 0 and stdout == "running"
@@ -5531,37 +6990,60 @@ class ContainerManager:
     async def _remove_container(self, container_id: str) -> None:
         """Force-remove a container."""
         rc, _, _ = await self._run_podman(
-            "rm", "-f", container_id, check=False,
+            "rm",
+            "-f",
+            container_id,
+            check=False,
         )
         if rc == 0:
             logger.info("Removed container %s", container_id[:12])
 
     async def _create_container(
-        self, user_id: str, data_dir: str,
+        self,
+        user_id: str,
+        data_dir: str,
     ) -> ContainerInfo:
         """Start a new sidecar container for a user."""
         s = self._settings
         socket_dir = os.path.join(s.container_socket_base, user_id)
-        os.makedirs(socket_dir, mode=0o700, exist_ok=True)
         socket_path = os.path.join(socket_dir, "sidecar.sock")
+        self._prepare_socket_dir(socket_dir, socket_path)
 
         real_data_dir = os.path.realpath(data_dir)
         cpus = str(s.container_cpu_quota / 100000)
 
         _, container_id, _ = await self._run_podman(
-            "run", "-d",
-            "--name", f"yinshi-sidecar-{user_id}",
-            "--env", "SIDECAR_SOCKET_PATH=/run/sidecar/sidecar.sock",
-            "-v", f"{socket_dir}:/run/sidecar:rw",
-            "-v", f"{real_data_dir}:/data:rw",
-            "--network", _SIDECAR_NET,
-            "--memory", s.container_memory_limit,
-            "--memory-swap", s.container_memory_limit,
-            "--cpus", cpus,
-            "--pids-limit", str(s.container_pids_limit),
-            "--security-opt", "no-new-privileges",
-            "--cap-drop", "ALL",
-            "--label", f"yinshi.user_id={user_id}",
+            "run",
+            "-d",
+            "--replace",
+            "--name",
+            f"yinshi-sidecar-{user_id}",
+            "--user",
+            "0:0",
+            "--env",
+            "SIDECAR_SOCKET_PATH=/run/sidecar/sidecar.sock",
+            "--env",
+            "HOME=/tmp",
+            "-v",
+            f"{socket_dir}:/run/sidecar:rw",
+            "-v",
+            f"{real_data_dir}:/data:rw",
+            "--network",
+            _SIDECAR_NET,
+            "--memory",
+            s.container_memory_limit,
+            "--memory-swap",
+            s.container_memory_limit,
+            "--cpus",
+            cpus,
+            "--pids-limit",
+            str(s.container_pids_limit),
+            "--security-opt",
+            "no-new-privileges",
+            "--cap-drop",
+            "ALL",
+            "--label",
+            f"yinshi.user_id={user_id}",
             s.container_image,
         )
 
@@ -5581,17 +7063,95 @@ class ContainerManager:
         return info
 
     async def _wait_for_socket(self, socket_path: str) -> None:
-        """Poll until the sidecar socket file appears."""
+        """Poll until the sidecar accepts a connection and sends its init message."""
         deadline = time.monotonic() + self._socket_poll_timeout_s
         while time.monotonic() < deadline:
-            exists = await asyncio.to_thread(os.path.exists, socket_path)
-            if exists:
-                return
-            await asyncio.sleep(self._socket_poll_interval_s)
+            reader: asyncio.StreamReader | None = None
+            writer: asyncio.StreamWriter | None = None
+            try:
+                reader, writer = await asyncio.open_unix_connection(socket_path)
+                init_line = await asyncio.wait_for(
+                    reader.readline(),
+                    timeout=self._socket_poll_interval_s,
+                )
+                if init_line:
+                    init_message = json.loads(init_line.decode())
+                    if init_message.get("type") == "init_status" and init_message.get("success"):
+                        return
+                await asyncio.sleep(self._socket_poll_interval_s)
+            except (
+                asyncio.TimeoutError,
+                ConnectionRefusedError,
+                FileNotFoundError,
+                OSError,
+                json.JSONDecodeError,
+            ):
+                await asyncio.sleep(self._socket_poll_interval_s)
+            finally:
+                if writer is not None:
+                    writer.close()
+                    try:
+                        await writer.wait_closed()
+                    except OSError:
+                        pass
 
         raise ContainerNotReadyError(
             f"Sidecar socket not ready after {self._socket_poll_timeout_s}s"
         )
+
+    def _prepare_socket_dir(self, socket_dir: str, socket_path: str) -> None:
+        """Create one user socket directory and remove any stale socket file."""
+        if not isinstance(socket_dir, str):
+            raise TypeError("socket_dir must be a string")
+        normalized_socket_dir = socket_dir.strip()
+        if not normalized_socket_dir:
+            raise ValueError("socket_dir must not be empty")
+        if not isinstance(socket_path, str):
+            raise TypeError("socket_path must be a string")
+        normalized_socket_path = socket_path.strip()
+        if not normalized_socket_path:
+            raise ValueError("socket_path must not be empty")
+
+        try:
+            os.makedirs(normalized_socket_dir, mode=0o700, exist_ok=True)
+            os.chmod(normalized_socket_dir, 0o700)
+            if os.path.lexists(normalized_socket_path):
+                if os.path.isdir(normalized_socket_path):
+                    raise ContainerStartError("container socket path must not be a directory")
+                os.unlink(normalized_socket_path)
+        except OSError as exc:
+            raise ContainerStartError(
+                f"Failed to prepare socket directory for user container: {normalized_socket_dir}"
+            ) from exc
+
+    def _container_is_reapable(
+        self,
+        info: ContainerInfo,
+        cutoff: datetime,
+        timeout_s: int,
+    ) -> bool:
+        """Return whether one container can be safely reaped."""
+        if not isinstance(timeout_s, int):
+            raise TypeError("timeout_s must be an integer")
+        if timeout_s < 0:
+            raise ValueError("timeout_s must not be negative")
+
+        self._prune_expired_protection(info, cutoff)
+        if info.active_request_count > 0:
+            return False
+        if info.protected_operation_deadlines:
+            return False
+        return (cutoff - info.last_activity).total_seconds() > timeout_s
+
+    def _prune_expired_protection(self, info: ContainerInfo, cutoff: datetime) -> None:
+        """Drop any expired protection lease from one container."""
+        expired_lease_keys = [
+            lease_key
+            for lease_key, deadline in info.protected_operation_deadlines.items()
+            if deadline <= cutoff
+        ]
+        for lease_key in expired_lease_keys:
+            del info.protected_operation_deadlines[lease_key]
 ```
 
 # API Layer
@@ -5760,23 +7320,43 @@ from yinshi.auth import (
     SESSION_MAX_AGE,
     _resolve_tenant_from_user_id,
     create_session_token,
+    get_session_identity,
     oauth,
+    revoke_auth_session,
     revoke_auth_sessions,
     verify_session_token,
 )
 from yinshi.config import get_settings
 from yinshi.db import get_control_db
-from yinshi.exceptions import GitHubAppError, GitHubInstallationUnusableError
+from yinshi.exceptions import (
+    ContainerNotReadyError,
+    ContainerStartError,
+    GitError,
+    GitHubAppError,
+    GitHubInstallationUnusableError,
+    SidecarError,
+)
 from yinshi.models import ProviderAuthInputIn, ProviderAuthStartOut, ProviderAuthStatusOut
 from yinshi.rate_limit import limiter
 from yinshi.services.accounts import resolve_or_create_user
 from yinshi.services.github_app import get_installation_details
 from yinshi.services.provider_connections import create_provider_connection
 from yinshi.services.sidecar import create_sidecar_connection
+from yinshi.services.sidecar_runtime import (
+    begin_tenant_container_activity,
+    end_tenant_container_activity,
+    protect_tenant_container,
+    release_tenant_container,
+    resolve_tenant_sidecar_context,
+    touch_tenant_container,
+)
+from yinshi.services.workspace import relink_github_repos_for_tenant
+from yinshi.tenant import get_user_db
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth", tags=["auth"])
 _GITHUB_INSTALL_STATE_MAX_AGE_S = 600
+_PROVIDER_OAUTH_CONTAINER_LEASE_TIMEOUT_S = 1800
 
 
 def _set_session_cookie(response: RedirectResponse, user_id: str) -> None:
@@ -5829,12 +7409,72 @@ def _verify_github_install_state(state: str) -> str | None:
     return None
 
 
-def _current_user_id(request: Request) -> str | None:
-    """Return the authenticated user id from the session cookie."""
+def _current_session_identity(request: Request) -> tuple[str, str] | None:
+    """Return the authenticated user and auth session ids from the session cookie."""
     token = request.cookies.get("yinshi_session")
     if not token:
         return None
-    return verify_session_token(token)
+    return get_session_identity(token)
+
+
+def _current_user_id(request: Request) -> str | None:
+    """Return the authenticated user id from the session cookie."""
+    session_identity = _current_session_identity(request)
+    if session_identity is None:
+        return None
+    return session_identity[0]
+
+
+async def _refresh_connected_github_repos(
+    user_id: str,
+    account_login: str,
+) -> None:
+    """Backfill repo installation links after a GitHub App connect completes."""
+    if not user_id:
+        raise ValueError("user_id must not be empty")
+    if not account_login:
+        raise ValueError("account_login must not be empty")
+
+    tenant = _resolve_tenant_from_user_id(user_id)
+    if tenant is None:
+        return
+
+    try:
+        with get_user_db(tenant) as db:
+            await relink_github_repos_for_tenant(
+                db,
+                tenant,
+                account_login,
+            )
+    except (GitError, GitHubAppError) as exc:
+        logger.warning(
+            "Failed to refresh GitHub repo links for user %s and owner %s: %s",
+            user_id,
+            account_login,
+            exc,
+        )
+
+
+async def _resolve_provider_sidecar_socket(
+    request: Request,
+    user_id: str,
+) -> tuple[object | None, str | None]:
+    """Resolve the tenant record plus socket path for provider-auth sidecar calls."""
+    if not isinstance(user_id, str):
+        raise TypeError("user_id must be a string")
+    normalized_user_id = user_id.strip()
+    if not normalized_user_id:
+        raise ValueError("user_id must not be empty")
+
+    tenant = _resolve_tenant_from_user_id(normalized_user_id)
+    try:
+        tenant_sidecar_context = await resolve_tenant_sidecar_context(request, tenant)
+    except (ContainerStartError, ContainerNotReadyError) as error:
+        raise HTTPException(
+            status_code=503,
+            detail="Agent environment temporarily unavailable",
+        ) from error
+    return tenant, tenant_sidecar_context.socket_path
 
 
 def _normalize_provider_flow_status(status: object) -> str:
@@ -5845,6 +7485,30 @@ def _normalize_provider_flow_status(status: object) -> str:
     if not normalized_status:
         raise HTTPException(status_code=500, detail="OAuth flow status is invalid")
     return normalized_status
+
+
+def _provider_auth_lease_key(flow_id: str) -> str:
+    """Build the container lease key used to protect one OAuth flow."""
+    if not isinstance(flow_id, str):
+        raise TypeError("flow_id must be a string")
+    normalized_flow_id = flow_id.strip()
+    if not normalized_flow_id:
+        raise ValueError("flow_id must not be empty")
+    return f"oauth:{normalized_flow_id}"
+
+
+def _provider_auth_sidecar_http_error(error: Exception) -> HTTPException:
+    """Translate provider-auth sidecar errors into stable HTTP responses."""
+    message = str(error)
+    if "OAuth flow not found" in message:
+        return HTTPException(status_code=404, detail="OAuth flow not found")
+    if "OAuth provider is not available" in message:
+        detail = message.removeprefix("OAuth start failed: ")
+        return HTTPException(status_code=400, detail=detail)
+    return HTTPException(
+        status_code=503,
+        detail="Agent environment temporarily unavailable",
+    )
 
 
 def _build_provider_auth_start_payload(flow: dict[str, Any]) -> dict[str, Any]:
@@ -5936,6 +7600,33 @@ def _require_provider_match(provider: str, flow: dict[str, Any]) -> None:
         raise HTTPException(status_code=400, detail="Provider mismatch")
 
 
+async def _persist_completed_provider_auth(
+    user_id: str,
+    provider: str,
+    flow: dict[str, Any],
+    sidecar: Any,
+) -> None:
+    """Persist completed provider credentials and clear the finished flow."""
+    flow_id = flow.get("flow_id")
+    if not isinstance(flow_id, str) or not flow_id:
+        raise HTTPException(status_code=500, detail="OAuth flow id is invalid")
+    credentials = flow.get("credentials")
+    if not isinstance(credentials, dict) or not credentials:
+        raise HTTPException(status_code=500, detail="OAuth flow did not return credentials")
+    create_provider_connection(
+        user_id,
+        provider,
+        "oauth",
+        credentials,
+        label="",
+    )
+    try:
+        await sidecar.clear_oauth_flow(flow_id)
+    except SidecarError as error:
+        if "OAuth flow not found" not in str(error):
+            raise _provider_auth_sidecar_http_error(error) from error
+
+
 # --- Google OAuth ---
 
 
@@ -5974,7 +7665,9 @@ async def callback_google(request: Request) -> RedirectResponse:
     if not user_info:
         return RedirectResponse(url="/?error=no_user_info")
 
-    email = user_info["email"]
+    email = user_info.get("email")
+    if not email or not user_info.get("email_verified"):
+        return RedirectResponse(url="/?error=email_not_verified")
 
     try:
         tenant = resolve_or_create_user(
@@ -6109,9 +7802,13 @@ async def github_install_callback(request: Request) -> RedirectResponse:
     if not state:
         return RedirectResponse(url="/app?github_connect_error=invalid_state")
 
-    user_id = _verify_github_install_state(state)
-    if not user_id:
+    state_user_id = _verify_github_install_state(state)
+    if not state_user_id:
         return RedirectResponse(url="/app?github_connect_error=invalid_state")
+    current_user_id = _current_user_id(request)
+    if current_user_id != state_user_id:
+        return RedirectResponse(url="/app?github_connect_error=invalid_state")
+    user_id = state_user_id
 
     installation_id_text = request.query_params.get("installation_id")
     if not installation_id_text:
@@ -6168,6 +7865,8 @@ async def github_install_callback(request: Request) -> RedirectResponse:
         )
         db.commit()
 
+    await _refresh_connected_github_repos(user_id, account_login)
+
     return RedirectResponse(url="/app?github_connected=1")
 
 
@@ -6177,12 +7876,27 @@ async def start_provider_auth(provider: str, request: Request) -> dict[str, Any]
     user_id = _current_user_id(request)
     if user_id is None:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    sidecar = await create_sidecar_connection()
+    tenant, socket_path = await _resolve_provider_sidecar_socket(request, user_id)
+    sidecar = None
+    begin_tenant_container_activity(request, tenant)
     try:
+        sidecar = await create_sidecar_connection(socket_path)
         flow = await sidecar.start_oauth_flow(provider)
+    except (OSError, SidecarError) as error:
+        raise _provider_auth_sidecar_http_error(error) from error
     finally:
-        await sidecar.disconnect()
-    return _build_provider_auth_start_payload(flow)
+        end_tenant_container_activity(request, tenant)
+        touch_tenant_container(request, tenant)
+        if sidecar is not None:
+            await sidecar.disconnect()
+    payload = _build_provider_auth_start_payload(flow)
+    protect_tenant_container(
+        request,
+        tenant,
+        lease_key=_provider_auth_lease_key(payload["flow_id"]),
+        timeout_s=_PROVIDER_OAUTH_CONTAINER_LEASE_TIMEOUT_S,
+    )
+    return payload
 
 
 @router.get("/providers/{provider}/callback")
@@ -6191,17 +7905,28 @@ async def callback_provider_auth(provider: str, flow_id: str, request: Request) 
     user_id = _current_user_id(request)
     if user_id is None:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    sidecar = await create_sidecar_connection()
+    tenant, socket_path = await _resolve_provider_sidecar_socket(request, user_id)
+    lease_key = _provider_auth_lease_key(flow_id)
+    sidecar = None
+    begin_tenant_container_activity(request, tenant)
     try:
+        sidecar = await create_sidecar_connection(socket_path)
         flow = await sidecar.get_oauth_flow_status(flow_id)
         _require_provider_match(provider, flow)
         status = _normalize_provider_flow_status(flow.get("status"))
         if status in {"pending", "starting"}:
+            protect_tenant_container(
+                request,
+                tenant,
+                lease_key=lease_key,
+                timeout_s=_PROVIDER_OAUTH_CONTAINER_LEASE_TIMEOUT_S,
+            )
             return JSONResponse(
                 status_code=202,
                 content=_build_provider_auth_status_payload(flow, status=status),
             )
         if status == "error":
+            release_tenant_container(request, tenant, lease_key=lease_key)
             error_message = flow.get("error")
             if not isinstance(error_message, str) or not error_message:
                 error_message = "OAuth flow failed"
@@ -6216,22 +7941,21 @@ async def callback_provider_auth(provider: str, flow_id: str, request: Request) 
         if status != "complete":
             raise HTTPException(status_code=500, detail=f"Unexpected OAuth status: {status}")
 
-        credentials = flow.get("credentials")
-        if not isinstance(credentials, dict) or not credentials:
-            raise HTTPException(status_code=500, detail="OAuth flow did not return credentials")
-        create_provider_connection(
+        await _persist_completed_provider_auth(
             user_id,
             provider,
-            "oauth",
-            credentials,
-            label="",
+            flow,
+            sidecar,
         )
-        await sidecar.clear_oauth_flow(flow_id)
-        return JSONResponse(
-            _build_provider_auth_status_payload(flow, status="complete")
-        )
+        release_tenant_container(request, tenant, lease_key=lease_key)
+        return JSONResponse(_build_provider_auth_status_payload(flow, status="complete"))
+    except (OSError, SidecarError) as error:
+        raise _provider_auth_sidecar_http_error(error) from error
     finally:
-        await sidecar.disconnect()
+        end_tenant_container_activity(request, tenant)
+        touch_tenant_container(request, tenant)
+        if sidecar is not None:
+            await sidecar.disconnect()
 
 
 @router.post("/providers/{provider}/callback", response_model=ProviderAuthStatusOut)
@@ -6241,19 +7965,32 @@ async def submit_provider_auth_callback(
     request: Request,
 ) -> JSONResponse:
     """Submit pasted OAuth callback data into an active provider auth flow."""
-    if _current_user_id(request) is None:
+    user_id = _current_user_id(request)
+    if user_id is None:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
-    sidecar = await create_sidecar_connection()
+    tenant, socket_path = await _resolve_provider_sidecar_socket(request, user_id)
+    lease_key = _provider_auth_lease_key(payload.flow_id)
+    sidecar = None
+    begin_tenant_container_activity(request, tenant)
     try:
+        sidecar = await create_sidecar_connection(socket_path)
         flow = await sidecar.get_oauth_flow_status(payload.flow_id)
         _require_provider_match(provider, flow)
         status = _normalize_provider_flow_status(flow.get("status"))
         if status == "complete":
+            await _persist_completed_provider_auth(
+                user_id,
+                provider,
+                flow,
+                sidecar,
+            )
+            release_tenant_container(request, tenant, lease_key=lease_key)
             return JSONResponse(
                 _build_provider_auth_status_payload(flow, status="complete"),
             )
         if status == "error":
+            release_tenant_container(request, tenant, lease_key=lease_key)
             error_message = flow.get("error")
             if not isinstance(error_message, str) or not error_message:
                 error_message = "OAuth flow failed"
@@ -6270,6 +8007,12 @@ async def submit_provider_auth_callback(
             payload.flow_id,
             payload.authorization_input,
         )
+        protect_tenant_container(
+            request,
+            tenant,
+            lease_key=lease_key,
+            timeout_s=_PROVIDER_OAUTH_CONTAINER_LEASE_TIMEOUT_S,
+        )
         return JSONResponse(
             status_code=202,
             content=_build_provider_auth_status_payload(
@@ -6281,8 +8024,13 @@ async def submit_provider_auth_callback(
                 status="pending",
             ),
         )
+    except (OSError, SidecarError) as error:
+        raise _provider_auth_sidecar_http_error(error) from error
     finally:
-        await sidecar.disconnect()
+        end_tenant_container_activity(request, tenant)
+        touch_tenant_container(request, tenant)
+        if sidecar is not None:
+            await sidecar.disconnect()
 
 
 # --- Backward compatibility: /auth/login redirects to /auth/login/google ---
@@ -6338,8 +8086,12 @@ async def me(request: Request) -> dict[str, Any]:
 
 
 @router.post("/logout")
-async def logout() -> RedirectResponse:
-    """Clear session cookie."""
+async def logout(request: Request) -> RedirectResponse:
+    """Revoke the current auth session and clear the session cookie."""
+    session_identity = _current_session_identity(request)
+    if session_identity is not None:
+        user_id, auth_session_id = session_identity
+        revoke_auth_session(user_id, auth_session_id)
     response = RedirectResponse(url="/")
     _clear_session_cookie(response)
     return response
@@ -6372,6 +8124,7 @@ Local imports are fail-closed: they require an explicitly configured
 
 import logging
 import sqlite3
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -6388,7 +8141,7 @@ from yinshi.exceptions import (
 )
 from yinshi.models import RepoCreate, RepoOut, RepoUpdate
 from yinshi.rate_limit import limiter
-from yinshi.services.git import clone_repo, validate_local_repo
+from yinshi.services.git import clone_local_repo, clone_repo, validate_local_repo
 from yinshi.services.github_app import GitHubCloneAccess, resolve_github_clone_access
 from yinshi.services.workspace import delete_workspace
 from yinshi.utils.paths import is_path_inside
@@ -6397,7 +8150,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/repos", tags=["repos"])
 
 # Only these columns can be updated via PATCH
-_UPDATABLE_COLUMNS = {"name", "custom_prompt"}
+_UPDATABLE_COLUMNS = {"name", "custom_prompt", "agents_md"}
 
 
 def _validate_local_path(path_str: str) -> str:
@@ -6506,8 +8259,10 @@ def list_repos(request: Request) -> list[dict[str, Any]]:
 async def import_repo(body: RepoCreate, request: Request) -> dict[str, Any]:
     """Import a repository (clone from URL or register local path)."""
     tenant = get_tenant(request)
+    settings = get_settings()
     normalized_remote_url = body.remote_url
     clone_access: GitHubCloneAccess | None = None
+    repo_id: str | None = None
 
     if body.local_path:
         resolved = _validate_local_path(body.local_path)
@@ -6516,7 +8271,15 @@ async def import_repo(body: RepoCreate, request: Request) -> dict[str, Any]:
         is_repo = await validate_local_repo(resolved)
         if not is_repo:
             raise HTTPException(status_code=400, detail="Not a valid git repository")
-        root_path = resolved
+        if tenant and settings.container_enabled:
+            repo_id = uuid.uuid4().hex
+            root_path = str(Path(tenant.data_dir) / "repos" / repo_id)
+            try:
+                await clone_local_repo(resolved, root_path)
+            except GitError as error:
+                raise HTTPException(status_code=400, detail=str(error)) from error
+        else:
+            root_path = resolved
     elif body.remote_url:
         clone_access = await _resolve_clone_access(request, body.remote_url)
         access_token = None
@@ -6524,10 +8287,18 @@ async def import_repo(body: RepoCreate, request: Request) -> dict[str, Any]:
             normalized_remote_url = clone_access.clone_url
             access_token = clone_access.access_token
 
+        # Sanitize name to prevent path traversal.
+        safe_name = Path(body.name).name
+        if not safe_name or safe_name != body.name or ".." in body.name:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid repository name (must be a simple directory name)",
+            )
+
         if tenant:
-            clone_dir = str(Path(tenant.data_dir) / "repos" / body.name)
+            clone_dir = str(Path(tenant.data_dir) / "repos" / safe_name)
         else:
-            clone_dir = str(Path.home() / ".yinshi" / "repos" / body.name)
+            clone_dir = str(Path.home() / ".yinshi" / "repos" / safe_name)
         try:
             root_path = await clone_repo(
                 normalized_remote_url or body.remote_url,
@@ -6551,27 +8322,44 @@ async def import_repo(body: RepoCreate, request: Request) -> dict[str, Any]:
         installation_id = clone_access.installation_id
     with get_db_for_request(request) as db:
         if tenant:
-            cursor = db.execute(
-                """INSERT INTO repos (name, remote_url, root_path, custom_prompt, installation_id)
-                   VALUES (?, ?, ?, ?, ?)""",
-                (
-                    body.name,
-                    normalized_remote_url,
-                    root_path,
-                    body.custom_prompt,
-                    installation_id,
-                ),
-            )
+            if repo_id is None:
+                cursor = db.execute(
+                    """INSERT INTO repos (name, remote_url, root_path, custom_prompt, agents_md, installation_id)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    (
+                        body.name,
+                        normalized_remote_url,
+                        root_path,
+                        body.custom_prompt,
+                        body.agents_md,
+                        installation_id,
+                    ),
+                )
+            else:
+                cursor = db.execute(
+                    """INSERT INTO repos (id, name, remote_url, root_path, custom_prompt, agents_md, installation_id)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        repo_id,
+                        body.name,
+                        normalized_remote_url,
+                        root_path,
+                        body.custom_prompt,
+                        body.agents_md,
+                        installation_id,
+                    ),
+                )
         else:
             email = get_user_email(request)
             cursor = db.execute(
-                """INSERT INTO repos (name, remote_url, root_path, custom_prompt, owner_email, installation_id)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
+                """INSERT INTO repos (name, remote_url, root_path, custom_prompt, agents_md, owner_email, installation_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
                 (
                     body.name,
                     normalized_remote_url,
                     root_path,
                     body.custom_prompt,
+                    body.agents_md,
                     email,
                     installation_id,
                 ),
@@ -7015,7 +8803,6 @@ Tests: test_prompt_session_not_found, test_prompt_streams_sidecar_events,
 import asyncio
 import json
 import logging
-import os
 import sqlite3
 import uuid
 from collections.abc import AsyncGenerator
@@ -7039,21 +8826,26 @@ from yinshi.exceptions import (
 )
 from yinshi.model_catalog import get_provider_metadata, normalize_model_ref
 from yinshi.rate_limit import limiter
+from yinshi.services.git_runtime import resolve_git_runtime_auth
 from yinshi.services.keys import record_usage
 from yinshi.services.provider_connections import (
     resolve_provider_connection,
     update_provider_connection_secret,
 )
+from yinshi.services.run_coordinator import get_run_coordinator
 from yinshi.services.sidecar import SidecarClient, create_sidecar_connection
+from yinshi.services.sidecar_runtime import (
+    begin_tenant_container_activity,
+    end_tenant_container_activity,
+    remap_path_for_container,
+    resolve_tenant_sidecar_context,
+    touch_tenant_container,
+)
 from yinshi.services.workspace import ensure_workspace_checkout_for_tenant
 from yinshi.utils.paths import is_path_inside
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
-
-# Active sessions: maps session_id -> SidecarClient for cancel support
-_active_sessions: dict[str, SidecarClient] = {}
-_active_sessions_lock = asyncio.Lock()
 
 # Batch DB writes every N chunks to reduce I/O
 _PERSIST_BATCH_SIZE = 10
@@ -7069,6 +8861,7 @@ class ExecutionContext:
     provider: str
     provider_auth: dict[str, object] | None
     provider_config: dict[str, object] | None
+    git_auth: dict[str, object] | None = None
     agent_dir: str | None = None
     settings_payload: dict[str, object] | None = None
     model_ref: str = ""
@@ -7077,6 +8870,7 @@ class ExecutionContext:
 class PromptRequest(BaseModel):
     prompt: str = Field(..., max_length=100_000)
     model: str | None = None
+    thinking: bool | None = None
 
     @field_validator("model")
     @classmethod
@@ -7085,6 +8879,55 @@ class PromptRequest(BaseModel):
         if value is None:
             return None
         return normalize_model_ref(value)
+
+
+def _catalog_reasoning_support(
+    catalog_payload: dict[str, Any],
+    model_ref: str,
+) -> bool | None:
+    """Return whether one catalog model supports reasoning."""
+    if not isinstance(catalog_payload, dict):
+        raise TypeError("catalog_payload must be a dictionary")
+    if not isinstance(model_ref, str):
+        raise TypeError("model_ref must be a string")
+    normalized_model_ref = model_ref.strip()
+    if not normalized_model_ref:
+        raise ValueError("model_ref must not be empty")
+
+    models_payload = catalog_payload.get("models")
+    if not isinstance(models_payload, list):
+        return None
+
+    for model_payload in models_payload:
+        if not isinstance(model_payload, dict):
+            continue
+        if model_payload.get("ref") != normalized_model_ref:
+            continue
+
+        reasoning_value = model_payload.get("reasoning")
+        if isinstance(reasoning_value, bool):
+            return reasoning_value
+        logger.warning("Catalog reasoning flag missing for model %s", normalized_model_ref)
+        return None
+
+    logger.warning("Catalog entry missing for model %s", normalized_model_ref)
+    return None
+
+
+def _build_effective_settings(
+    settings_payload: dict[str, object] | None,
+    thinking_override: bool | None,
+    reasoning_supported: bool | None,
+) -> dict[str, object] | None:
+    """Merge one prompt-scoped thinking override into the sidecar settings."""
+    if thinking_override is None:
+        return settings_payload
+    if reasoning_supported is False:
+        return settings_payload
+
+    effective_settings = dict(settings_payload or {})
+    effective_settings["thinking"] = thinking_override
+    return effective_settings
 
 
 _FILLER_PREFIXES = [
@@ -7202,7 +9045,8 @@ def _summarize_prompt(prompt: str, max_words: int = 3) -> str:
     significant = [w for w in words if w.lower() not in _STOP_WORDS]
 
     if not significant:
-        significant = words[:max_words] if words else [text[:30]]
+        collapsed_text = "-".join(text.split())
+        significant = words[:max_words] if words else [collapsed_text[:30]]
 
     result = significant[:max_words]
     summary = "-".join(w.lower() for w in result)
@@ -7215,16 +9059,16 @@ def _summarize_prompt(prompt: str, max_words: int = 3) -> str:
 
 
 def _workspace_path_is_trusted(tenant: Any, workspace_path: str) -> bool:
-    """Return whether a workspace path is inside the trusted execution roots."""
+    """Return whether a workspace path is inside tenant-managed storage."""
     assert workspace_path, "workspace_path must not be empty"
-
     if is_path_inside(workspace_path, tenant.data_dir):
         return True
 
     settings = get_settings()
+    if settings.container_enabled:
+        return False
     if settings.allowed_repo_base and is_path_inside(workspace_path, settings.allowed_repo_base):
         return True
-
     return False
 
 
@@ -7245,14 +9089,7 @@ def _remap_path(
     mount: str = "/data",
 ) -> str:
     """Translate a host workspace path to the container's mount namespace."""
-    resolved = os.path.realpath(host_path)
-    base = os.path.realpath(data_dir)
-    if not is_path_inside(host_path, data_dir):
-        raise ValueError("Path outside user data directory")
-    if resolved == base:
-        return mount
-    relative = os.path.relpath(resolved, base)
-    return os.path.join(mount, relative)
+    return remap_path_for_container(host_path, data_dir, mount_path=mount)
 
 
 def _lookup_session(
@@ -7265,9 +9102,11 @@ def _lookup_session(
     if tenant:
         row = db.execute(
             "SELECT s.*, w.path as workspace_path, w.id as workspace_id, "
-            "w.name as workspace_name, w.branch as workspace_branch "
+            "w.name as workspace_name, w.branch as workspace_branch, "
+            "r.remote_url, r.installation_id, r.agents_md "
             "FROM sessions s "
             "JOIN workspaces w ON s.workspace_id = w.id "
+            "JOIN repos r ON w.repo_id = r.id "
             "WHERE s.id = ?",
             (session_id,),
         ).fetchone()
@@ -7276,7 +9115,7 @@ def _lookup_session(
     row = db.execute(
         "SELECT s.*, w.path as workspace_path, w.id as workspace_id, "
         "w.name as workspace_name, w.branch as workspace_branch, "
-        "r.owner_email "
+        "r.owner_email, r.remote_url, r.installation_id, r.agents_md "
         "FROM sessions s "
         "JOIN workspaces w ON s.workspace_id = w.id "
         "JOIN repos r ON w.repo_id = r.id "
@@ -7289,8 +9128,12 @@ def _lookup_session(
 async def _resolve_execution_context(
     request: Request,
     tenant: Any,
+    runtime_session_id: str,
     workspace_path: str,
     model: str,
+    remote_url: str | None = None,
+    installation_id: int | None = None,
+    agents_md: str | None = None,
 ) -> ExecutionContext:
     """Resolve all sidecar execution inputs for the current request."""
     if not tenant:
@@ -7301,47 +9144,43 @@ async def _resolve_execution_context(
             provider="",
             provider_auth=None,
             provider_config=None,
+            git_auth=None,
             model_ref=model,
         )
 
     _validate_workspace_path(tenant, workspace_path)
 
-    from yinshi.services.pi_config import resolve_pi_runtime
-
-    container_mgr = getattr(request.app.state, "container_manager", None)
-    sidecar_socket: str | None = None
-    effective_cwd = workspace_path
-    agent_dir: str | None = None
-
-    if container_mgr and is_path_inside(workspace_path, tenant.data_dir):
-        try:
-            container_info = await container_mgr.ensure_container(
-                tenant.user_id,
-                tenant.data_dir,
-            )
-            sidecar_socket = container_info.socket_path
-            effective_cwd = _remap_path(workspace_path, tenant.data_dir)
-        except (ContainerStartError, ContainerNotReadyError):
-            logger.exception("Container start failed for user %s", tenant.user_id[:8])
-            raise HTTPException(
-                status_code=503,
-                detail="Agent environment temporarily unavailable",
-            )
-    elif container_mgr:
-        logger.warning(
-            "Container isolation bypassed: workspace %s is outside data_dir",
-            workspace_path,
-        )
-
-    host_agent_dir, settings_payload = resolve_pi_runtime(tenant.user_id, tenant.data_dir)
-    if host_agent_dir:
-        if container_mgr and is_path_inside(host_agent_dir, tenant.data_dir):
-            agent_dir = _remap_path(host_agent_dir, tenant.data_dir)
-        else:
-            agent_dir = host_agent_dir
-
-    sidecar_tmp = await create_sidecar_connection(sidecar_socket)
     try:
+        tenant_sidecar_context = await resolve_tenant_sidecar_context(
+            request,
+            tenant,
+            runtime_session_id=runtime_session_id,
+            repo_agents_md=agents_md,
+        )
+    except (ContainerStartError, ContainerNotReadyError):
+        logger.exception("Container start failed for user %s", tenant.user_id[:8])
+        raise HTTPException(
+            status_code=503,
+            detail="Agent environment temporarily unavailable",
+        ) from None
+    sidecar_socket = tenant_sidecar_context.socket_path
+    effective_cwd = workspace_path
+    agent_dir = tenant_sidecar_context.agent_dir
+    settings_payload = tenant_sidecar_context.settings_payload
+
+    if sidecar_socket is not None:
+        try:
+            effective_cwd = _remap_path(workspace_path, tenant.data_dir)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=403,
+                detail="Workspace path outside allowed directories",
+            ) from exc
+
+    sidecar_tmp = None
+    begin_tenant_container_activity(request, tenant)
+    try:
+        sidecar_tmp = await create_sidecar_connection(sidecar_socket)
         resolved = await sidecar_tmp.resolve_model(model, agent_dir=agent_dir)
         provider: str | None = resolved["provider"]
         if not provider:
@@ -7384,10 +9223,17 @@ async def _resolve_execution_context(
             dict[str, object] | None,
             auth_resolved.get("model_config"),
         )
+        git_runtime_auth = await resolve_git_runtime_auth(
+            tenant.user_id,
+            remote_url,
+            installation_id,
+        )
     except KeyNotFoundError as exc:
         raise HTTPException(status_code=402, detail=str(exc)) from exc
     finally:
-        await sidecar_tmp.disconnect()
+        end_tenant_container_activity(request, tenant)
+        if sidecar_tmp is not None:
+            await sidecar_tmp.disconnect()
 
     return ExecutionContext(
         sidecar_socket=sidecar_socket,
@@ -7396,6 +9242,7 @@ async def _resolve_execution_context(
         provider=provider,
         provider_auth=provider_auth,
         provider_config=resolved_provider_config or provider_config,
+        git_auth=None if git_runtime_auth is None else git_runtime_auth.as_sidecar_payload(),
         agent_dir=agent_dir,
         settings_payload=settings_payload,
         model_ref=resolved_model_ref,
@@ -7413,7 +9260,7 @@ async def prompt_session(
     tenant = get_tenant(request)
     with get_db_for_request(request) as db:
         session = _lookup_session(db, session_id, request)
-        if session and tenant and not _workspace_path_is_trusted(tenant, session["workspace_path"]):
+        if session and tenant:
             try:
                 await ensure_workspace_checkout_for_tenant(
                     db,
@@ -7434,32 +9281,25 @@ async def prompt_session(
         raise HTTPException(status_code=409, detail="Session already has an active stream")
 
     workspace_path = session["workspace_path"]
+    remote_url = session["remote_url"] if "remote_url" in session.keys() else None
+    installation_id = session["installation_id"] if "installation_id" in session.keys() else None
     model = normalize_model_ref(body.model or session["model"])
     prompt = body.prompt
     turn_id = uuid.uuid4().hex
 
-    context = await _resolve_execution_context(request, tenant, workspace_path, model)
-
-    container_mgr = getattr(request.app.state, "container_manager", None)
-
-    logger.info(
-        "Prompt received: session=%s prompt_len=%d model=%s provider=%s key_source=%s",
-        session_id,
-        len(prompt),
-        model,
-        context.provider,
-        context.key_source,
-    )
-
-    # Save user message + set status to running
+    # Atomically claim the session for this stream. The WHERE clause
+    # ensures only one concurrent request can transition idle -> running.
     with get_db_for_request(request) as db:
+        result = db.execute(
+            "UPDATE sessions SET status = 'running' WHERE id = ? AND status = 'idle'",
+            (session_id,),
+        )
+        if result.rowcount == 0:
+            raise HTTPException(status_code=409, detail="Session already has an active stream")
+
         db.execute(
             "INSERT INTO messages (session_id, role, content, turn_id) VALUES (?, 'user', ?, ?)",
             (session_id, prompt, turn_id),
-        )
-        db.execute(
-            "UPDATE sessions SET status = 'running' WHERE id = ?",
-            (session_id,),
         )
         # Update workspace name on first prompt (when name == branch)
         if session["workspace_name"] == session["workspace_branch"]:
@@ -7470,26 +9310,81 @@ async def prompt_session(
             )
         db.commit()
 
+    try:
+        context = await _resolve_execution_context(
+            request,
+            tenant,
+            session_id,
+            workspace_path,
+            model,
+            remote_url=remote_url,
+            installation_id=installation_id,
+            agents_md=session["agents_md"] if "agents_md" in session.keys() else None,
+        )
+    except Exception:
+        with get_db_for_request(request) as db:
+            db.execute(
+                "UPDATE sessions SET status = 'idle' WHERE id = ?",
+                (session_id,),
+            )
+            db.commit()
+        raise
+
+    logger.info(
+        "Prompt received: session=%s prompt_len=%d model=%s provider=%s key_source=%s",
+        session_id,
+        len(prompt),
+        model,
+        context.provider,
+        context.key_source,
+    )
+
     async def event_stream() -> AsyncGenerator[str, None]:
         sidecar: SidecarClient | None = None
+        coordinator = get_run_coordinator()
         accumulated = ""
         assistant_msg_id: str | None = None
         chunk_count = 0
         usage_data: dict[str, Any] = {}
         result_provider = context.provider or ""
+        turn_status = "completed"
+
+        begin_tenant_container_activity(request, tenant)
 
         try:
             sidecar = await create_sidecar_connection(context.sidecar_socket)
-            async with _active_sessions_lock:
-                _active_sessions[session_id] = sidecar
+            await coordinator.register(session_id, sidecar)
+
+            reasoning_supported: bool | None = None
+            if body.thinking is not None:
+                catalog_payload = await sidecar.get_catalog(agent_dir=context.agent_dir)
+                reasoning_supported = _catalog_reasoning_support(
+                    catalog_payload,
+                    context.model_ref or model,
+                )
+                if reasoning_supported is False:
+                    logger.info(
+                        "Ignoring thinking override for non-reasoning model: "
+                        "session=%s model=%s",
+                        session_id,
+                        context.model_ref or model,
+                    )
+
+            effective_settings = _build_effective_settings(
+                context.settings_payload,
+                body.thinking,
+                reasoning_supported,
+            )
+
             await sidecar.warmup(
                 session_id,
                 model=context.model_ref or model,
                 cwd=context.effective_cwd,
                 provider_auth=cast(dict[str, Any] | None, context.provider_auth),
                 provider_config=cast(dict[str, Any] | None, context.provider_config),
+                git_auth=cast(dict[str, Any] | None, context.git_auth),
                 agent_dir=context.agent_dir,
-                settings_payload=context.settings_payload,
+                settings_payload=effective_settings,
             )
 
             logger.info("Streaming started: session=%s turn_id=%s", session_id, turn_id)
@@ -7501,8 +9396,9 @@ async def prompt_session(
                 cwd=context.effective_cwd,
                 provider_auth=cast(dict[str, Any] | None, context.provider_auth),
                 provider_config=cast(dict[str, Any] | None, context.provider_config),
+                git_auth=cast(dict[str, Any] | None, context.git_auth),
                 agent_dir=context.agent_dir,
-                settings_payload=context.settings_payload,
+                settings_payload=effective_settings,
             ):
                 event_type = event.get("type")
                 logger.debug(
@@ -7510,6 +9406,11 @@ async def prompt_session(
                     event_type,
                     list(event.keys()),
                 )
+
+                if event_type == "cancelled":
+                    turn_status = "cancelled"
+                    yield f"data: {json.dumps({'type': 'cancelled', 'reason': 'user_stop'})}\n\n"
+                    break
 
                 if event_type == "message":
                     data = event.get("data", {})
@@ -7549,18 +9450,30 @@ async def prompt_session(
                     if data.get("type") == "result":
                         usage_data = data.get("usage", {})
                         result_provider = data.get("provider", result_provider)
-                        if assistant_msg_id:
-                            with get_db_for_request(request) as db:
+                        # Ensure an assistant message row exists even for
+                        # short responses (< batch size) or tool-only turns.
+                        with get_db_for_request(request) as db:
+                            if assistant_msg_id is None:
+                                assistant_msg_id = uuid.uuid4().hex
                                 db.execute(
-                                    "UPDATE messages SET full_message = ? WHERE id = ?",
-                                    (json.dumps(event), assistant_msg_id),
+                                    (
+                                        "INSERT INTO messages "
+                                        "(id, session_id, role, content, turn_id) "
+                                        "VALUES (?, ?, 'assistant', ?, ?)"
+                                    ),
+                                    (assistant_msg_id, session_id, accumulated, turn_id),
                                 )
-                                db.commit()
+                            db.execute(
+                                "UPDATE messages SET full_message = ?, turn_status = ? WHERE id = ?",
+                                (json.dumps(event), turn_status, assistant_msg_id),
+                            )
+                            db.commit()
 
                     # Yield the SSE event with the inner data
                     yield f"data: {json.dumps(data)}\n\n"
 
                 elif event_type == "error":
+                    turn_status = "failed"
                     error_msg = event.get("error", "Unknown sidecar error")
                     yield f"data: {json.dumps({'type': 'error', 'error': error_msg})}\n\n"
 
@@ -7581,21 +9494,22 @@ async def prompt_session(
                 "error": "An internal error occurred",
             }
             yield f"data: {json.dumps(error_event)}\n\n"
+            turn_status = "failed"
 
         finally:
             with get_db_for_request(request) as db:
                 # Save any unsaved partial content
                 if accumulated and assistant_msg_id is None:
                     db.execute(
-                        "INSERT INTO messages (session_id, role, content, turn_id) "
-                        "VALUES (?, 'assistant', ?, ?)",
-                        (session_id, accumulated, turn_id),
+                        "INSERT INTO messages (session_id, role, content, turn_id, turn_status) "
+                        "VALUES (?, 'assistant', ?, ?, ?)",
+                        (session_id, accumulated, turn_id, turn_status),
                     )
                 elif accumulated and assistant_msg_id:
                     # Final flush of accumulated content
                     db.execute(
-                        "UPDATE messages SET content = ? WHERE id = ?",
-                        (accumulated, assistant_msg_id),
+                        "UPDATE messages SET content = ?, turn_status = ? WHERE id = ?",
+                        (accumulated, turn_status, assistant_msg_id),
                     )
                 # Reset session status
                 db.execute(
@@ -7619,20 +9533,20 @@ async def prompt_session(
                     logger.exception("Failed to record usage: session=%s", session_id)
 
             # Keep container alive after activity
-            if container_mgr and tenant:
-                container_mgr.touch(tenant.user_id)
+            end_tenant_container_activity(request, tenant)
+            touch_tenant_container(request, tenant)
 
-            async with _active_sessions_lock:
-                _active_sessions.pop(session_id, None)
+            await coordinator.release(session_id)
             if sidecar:
                 await sidecar.disconnect()
 
             logger.info(
-                "Turn complete: session=%s turn_id=%s chunks=%d content_len=%d",
+                "Turn complete: session=%s turn_id=%s chunks=%d content_len=%d turn_status=%s",
                 session_id,
                 turn_id,
                 chunk_count,
                 len(accumulated),
+                turn_status,
             )
 
     return StreamingResponse(
@@ -7654,13 +9568,13 @@ async def cancel_session(session_id: str, request: Request) -> dict[str, str]:
     if not get_tenant(request):
         check_owner(session["owner_email"], get_user_email(request))
 
-    sidecar = _active_sessions.get(session_id)
-    if not sidecar:
+    coordinator = get_run_coordinator()
+    found = await coordinator.request_cancel(session_id)
+    if not found:
         raise HTTPException(status_code=409, detail="No active stream for this session")
 
-    await sidecar.cancel(session_id)
     logger.info("Cancel requested: session=%s", session_id)
-    return {"status": "cancelled"}
+    return {"status": "stopping"}
 ```
 
 ## settings.py
@@ -7698,6 +9612,7 @@ from yinshi.models import (
 )
 from yinshi.rate_limit import limiter
 from yinshi.services.pi_config import (
+    MAX_UPLOAD_BYTES,
     get_pi_config,
     import_from_github,
     import_from_upload,
@@ -7713,6 +9628,8 @@ from yinshi.services.provider_connections import (
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/settings", tags=["settings"])
+_UPLOAD_READ_CHUNK_BYTES = 1024 * 1024
+_UPLOAD_TOO_LARGE_DETAIL = "Uploaded archive exceeds the 50MB size limit"
 
 
 def _github_http_exception(error: GitHubAccessError) -> HTTPException:
@@ -7742,6 +9659,42 @@ def _pi_config_http_exception(error: PiConfigError) -> HTTPException:
 def _connection_http_exception(error: Exception) -> HTTPException:
     """Convert provider connection validation errors into user-facing 400s."""
     return HTTPException(status_code=400, detail=str(error))
+
+
+def _upload_too_large_http_exception() -> HTTPException:
+    """Return the stable 413 used for oversized Pi config uploads."""
+    return HTTPException(status_code=413, detail=_UPLOAD_TOO_LARGE_DETAIL)
+
+
+async def _read_upload_bytes(
+    file: UploadFile,
+    *,
+    max_bytes: int,
+) -> bytes:
+    """Read one uploaded file while enforcing a hard byte limit."""
+    if not isinstance(max_bytes, int):
+        raise TypeError("max_bytes must be an integer")
+    if max_bytes <= 0:
+        raise ValueError("max_bytes must be positive")
+
+    reported_size = getattr(file, "size", None)
+    if isinstance(reported_size, int):
+        if reported_size > max_bytes:
+            raise _upload_too_large_http_exception()
+
+    upload_bytes = bytearray()
+    total_bytes_read = 0
+    while True:
+        chunk = await file.read(_UPLOAD_READ_CHUNK_BYTES)
+        if not chunk:
+            break
+        total_bytes_read += len(chunk)
+        if total_bytes_read > max_bytes:
+            raise _upload_too_large_http_exception()
+        upload_bytes.extend(chunk)
+
+    assert total_bytes_read == len(upload_bytes)
+    return bytes(upload_bytes)
 
 
 @router.get("/keys", response_model=list[ApiKeyOut])
@@ -7869,8 +9822,8 @@ async def upload_pi_config(file: UploadFile, request: Request) -> dict[str, Any]
     """Import a Pi config from an uploaded zip archive."""
     tenant = require_tenant(request)
     filename = file.filename or "pi-config.zip"
-    zip_data = await file.read()
     try:
+        zip_data = await _read_upload_bytes(file, max_bytes=MAX_UPLOAD_BYTES)
         return await import_from_upload(
             user_id=tenant.user_id,
             data_dir=tenant.data_dir,
@@ -7879,6 +9832,8 @@ async def upload_pi_config(file: UploadFile, request: Request) -> dict[str, Any]
         )
     except PiConfigError as error:
         raise _pi_config_http_exception(error) from error
+    finally:
+        await file.close()
 
 
 @router.patch("/pi-config/categories", response_model=PiConfigOut)
@@ -7944,14 +9899,20 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 
 from yinshi.api.deps import require_tenant
+from yinshi.exceptions import ContainerNotReadyError, ContainerStartError, SidecarError
 from yinshi.model_catalog import get_provider_metadata
 from yinshi.models import ProviderCatalogOut
-from yinshi.services.pi_config import resolve_pi_runtime
 from yinshi.services.provider_connections import list_provider_connections
 from yinshi.services.sidecar import create_sidecar_connection
+from yinshi.services.sidecar_runtime import (
+    begin_tenant_container_activity,
+    end_tenant_container_activity,
+    resolve_tenant_sidecar_context,
+    touch_tenant_container,
+)
 
 router = APIRouter(tags=["catalog"])
 
@@ -7986,15 +9947,31 @@ def _build_provider_entry(
 async def get_catalog(request: Request) -> dict[str, Any]:
     """Return the current user's provider/model catalog."""
     tenant = require_tenant(request)
-    agent_dir, _settings_payload = resolve_pi_runtime(tenant.user_id, tenant.data_dir)
+    try:
+        tenant_sidecar_context = await resolve_tenant_sidecar_context(request, tenant)
+    except (ContainerStartError, ContainerNotReadyError) as error:
+        raise HTTPException(
+            status_code=503,
+            detail="Agent environment temporarily unavailable",
+        ) from error
     connections = list_provider_connections(tenant.user_id)
     connected_provider_ids = {connection["provider"] for connection in connections}
 
-    sidecar = await create_sidecar_connection()
+    sidecar = None
+    begin_tenant_container_activity(request, tenant)
     try:
-        catalog = await sidecar.get_catalog(agent_dir=agent_dir)
+        sidecar = await create_sidecar_connection(tenant_sidecar_context.socket_path)
+        catalog = await sidecar.get_catalog(agent_dir=tenant_sidecar_context.agent_dir)
+    except (OSError, SidecarError) as error:
+        raise HTTPException(
+            status_code=503,
+            detail="Agent environment temporarily unavailable",
+        ) from error
     finally:
-        await sidecar.disconnect()
+        end_tenant_container_activity(request, tenant)
+        touch_tenant_container(request, tenant)
+        if sidecar is not None:
+            await sidecar.disconnect()
 
     supported_provider_ids = {
         provider_row["id"]
@@ -8140,19 +10117,18 @@ _cors_origins = [app_settings.frontend_url]
 if app_settings.debug and "http://localhost:5173" not in _cors_origins:
     _cors_origins.append("http://localhost:5173")
 
+# Middleware order: last registered = outermost = runs first.
+# Auth must run before session, and CORS must be outermost
+# so preflight responses include the correct headers.
+app.add_middleware(SessionMiddleware, secret_key=app_settings.secret_key)
+app.add_middleware(AuthMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PATCH", "DELETE"],
+    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Content-Type", "X-Requested-With"],
 )
-
-# Session (authlib OAuth state storage)
-app.add_middleware(SessionMiddleware, secret_key=app_settings.secret_key)
-
-# Auth
-app.add_middleware(AuthMiddleware)
 
 # Routes
 app.include_router(auth_routes.router)
@@ -8215,21 +10191,30 @@ import "./index.css";
 
 declare const __GIT_COMMIT_HASH__: string;
 
-datadogRum.init({
-  applicationId: "6ca07893-ea15-4577-88cb-ef72b856ad3e",
-  clientToken: "pubbe7e2760d9e429d5cda2d2eb49a408be",
-  site: "datadoghq.com",
-  service: "yinshi",
-  env: "prod",
-  version: __GIT_COMMIT_HASH__,
-  sessionSampleRate: 100,
-  sessionReplaySampleRate: 100,
-  trackResources: true,
-  trackUserInteractions: true,
-  trackLongTasks: true,
-  defaultPrivacyLevel: "allow",
-  plugins: [reactPlugin({ router: false })],
-});
+/* Defer Datadog RUM so it does not compete with first paint. */
+const initDatadogRum = () => {
+  datadogRum.init({
+    applicationId: "6ca07893-ea15-4577-88cb-ef72b856ad3e",
+    clientToken: "pubbe7e2760d9e429d5cda2d2eb49a408be",
+    site: "datadoghq.com",
+    service: "yinshi",
+    env: "prod",
+    version: __GIT_COMMIT_HASH__,
+    sessionSampleRate: 100,
+    sessionReplaySampleRate: 100,
+    trackResources: true,
+    trackUserInteractions: true,
+    trackLongTasks: true,
+    defaultPrivacyLevel: "allow",
+    plugins: [reactPlugin({ router: false })],
+  });
+};
+
+if ("requestIdleCallback" in window) {
+  window.requestIdleCallback(initDatadogRum);
+} else {
+  setTimeout(initDatadogRum, 0);
+}
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
@@ -8248,13 +10233,17 @@ Top-level routing. The landing page is public. All `/app` routes are wrapped in
 `RequireAuth` and `Layout`, which provides the sidebar and main content area.
 
 ```typescript {chunk="app_tsx" file="frontend/src/App.tsx"}
+import React, { Suspense } from "react";
 import { Route, Routes } from "react-router-dom";
+import ChunkErrorBoundary from "./components/ChunkErrorBoundary";
 import Layout from "./components/Layout";
 import RequireAuth from "./components/RequireAuth";
-import EmptyState from "./pages/EmptyState";
 import Landing from "./pages/Landing";
-import Session from "./pages/Session";
-import Settings from "./pages/Settings";
+
+/* Code-split authenticated routes so landing page visitors download only what they need. */
+const EmptyState = React.lazy(() => import("./pages/EmptyState"));
+const Session = React.lazy(() => import("./pages/Session"));
+const Settings = React.lazy(() => import("./pages/Settings"));
 
 export default function App() {
   return (
@@ -8262,13 +10251,188 @@ export default function App() {
       <Route path="/" element={<Landing />} />
       <Route element={<RequireAuth />}>
         <Route element={<Layout />}>
-          <Route path="/app" element={<EmptyState />} />
-          <Route path="/app/session/:id" element={<Session />} />
-          <Route path="/app/settings" element={<Settings />} />
+          <Route
+            path="/app"
+            element={
+              <ChunkErrorBoundary><Suspense><EmptyState /></Suspense></ChunkErrorBoundary>
+            }
+          />
+          <Route
+            path="/app/session/:id"
+            element={
+              <ChunkErrorBoundary><Suspense><Session /></Suspense></ChunkErrorBoundary>
+            }
+          />
+          <Route
+            path="/app/settings"
+            element={
+              <ChunkErrorBoundary><Suspense><Settings /></Suspense></ChunkErrorBoundary>
+            }
+          />
         </Route>
       </Route>
     </Routes>
   );
+}
+```
+
+## ChunkErrorBoundary.tsx
+
+The route shell intentionally lazy-loads the heaviest pages, which introduces a
+new failure mode during deploys: the browser can request a stale code-split
+chunk after the server has already published a newer build. `ChunkErrorBoundary`
+turns that white-screen failure into a recoverable experience. It detects common
+chunk-load signatures, records whether the current entry script has already
+triggered one automatic reload, and falls back to a manual retry prompt when the
+browser refuses storage access or a second reload would loop forever.
+
+```typescript {chunk="chunk_error_boundary" file="frontend/src/components/ChunkErrorBoundary.tsx"}
+import React from "react";
+
+interface State {
+  hasError: boolean;
+  reloadRecommended: boolean;
+}
+
+const CHUNK_RELOAD_STORAGE_KEY = "yinshi.chunk-reload-signature";
+const CHUNK_ERROR_PATTERNS = [
+  "chunkloaderror",
+  "failed to fetch dynamically imported module",
+  "error loading dynamically imported module",
+  "importing a module script failed",
+  "loading chunk",
+] as const;
+
+function readErrorSignature(error: unknown): string {
+  if (error instanceof Error) {
+    return `${error.name} ${error.message}`.toLowerCase();
+  }
+  return String(error).toLowerCase();
+}
+
+export function isChunkLoadError(error: unknown): boolean {
+  const errorSignature = readErrorSignature(error);
+  return CHUNK_ERROR_PATTERNS.some((pattern) => errorSignature.includes(pattern));
+}
+
+function isStorageAccessError(error: unknown): boolean {
+  if (!(error instanceof DOMException)) {
+    return false;
+  }
+  if (error.name === "QuotaExceededError") {
+    return true;
+  }
+  if (error.name === "SecurityError") {
+    return true;
+  }
+  return false;
+}
+
+function readEntryScriptSignature(): string {
+  if (typeof document === "undefined") {
+    return "server";
+  }
+  const entryScript = document.querySelector<HTMLScriptElement>('script[type="module"][src]');
+  const entryScriptSource = entryScript?.src;
+  if (typeof entryScriptSource === "string" && entryScriptSource.length > 0) {
+    return entryScriptSource;
+  }
+  return "unknown-entry-script";
+}
+
+export function shouldReloadForChunkError(
+  storage: Pick<Storage, "getItem" | "setItem">,
+  pathname: string,
+  entryScriptSignature: string,
+): boolean {
+  if (typeof pathname !== "string") {
+    throw new TypeError("pathname must be a string");
+  }
+  if (!pathname) {
+    throw new Error("pathname must not be empty");
+  }
+  if (typeof entryScriptSignature !== "string") {
+    throw new TypeError("entryScriptSignature must be a string");
+  }
+  if (!entryScriptSignature) {
+    throw new Error("entryScriptSignature must not be empty");
+  }
+  const reloadSignature = `${pathname}:${entryScriptSignature}`;
+  if (storage.getItem(CHUNK_RELOAD_STORAGE_KEY) === reloadSignature) {
+    return false;
+  }
+  storage.setItem(CHUNK_RELOAD_STORAGE_KEY, reloadSignature);
+  return true;
+}
+
+/**
+ * Catches errors thrown by React.lazy() when a code-split chunk fails to
+ * load (network error, deploy mismatch, etc.) and renders a retry prompt
+ * instead of crashing the entire app to a white screen.
+ */
+export default class ChunkErrorBoundary extends React.Component<
+  React.PropsWithChildren,
+  State
+> {
+  state: State = { hasError: false, reloadRecommended: false };
+
+  static getDerivedStateFromError(): State {
+    return { hasError: true, reloadRecommended: false };
+  }
+
+  componentDidCatch(error: unknown): void {
+    if (typeof window === "undefined") {
+      return;
+    }
+    if (!isChunkLoadError(error)) {
+      return;
+    }
+    let shouldReload = false;
+    try {
+      shouldReload = shouldReloadForChunkError(
+        window.sessionStorage,
+        window.location.pathname,
+        readEntryScriptSignature(),
+      );
+    } catch (storageError: unknown) {
+      if (!isStorageAccessError(storageError)) {
+        throw storageError;
+      }
+      this.setState({ reloadRecommended: true });
+      return;
+    }
+    if (shouldReload) {
+      window.location.reload();
+      return;
+    }
+    this.setState({ reloadRecommended: true });
+  }
+
+  handleRetry = () => {
+    if (this.state.reloadRecommended && typeof window !== "undefined") {
+      window.location.reload();
+      return;
+    }
+    this.setState({ hasError: false, reloadRecommended: false });
+  };
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div style={{ padding: "2rem", textAlign: "center" }}>
+          <p>
+            {this.state.reloadRecommended
+              ? "This page needs a refresh after the latest deploy."
+              : "Something went wrong loading this page."}
+          </p>
+          <button onClick={this.handleRetry} style={{ marginTop: "1rem" }}>
+            {this.state.reloadRecommended ? "Reload page" : "Try again"}
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
 }
 ```
 
@@ -8280,8 +10444,6 @@ landing page "ink-wash painting" aesthetic with parchment textures and vermillio
 accents, and animation keyframes.
 
 ```css {chunk="index_css" file="frontend/src/index.css"}
-@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,600;0,700;1,300;1,400&family=EB+Garamond:ital,wght@0,400;0,500;0,600;1,400;1,500&display=swap');
-
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -8582,6 +10744,23 @@ accents, and animation keyframes.
   color: var(--lp-parchment);
   background: var(--lp-ink);
   border-color: var(--lp-ink);
+}
+
+.landing-nav-actions {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.landing-github-link {
+  color: var(--lp-ink-faded);
+  transition: color 0.3s ease;
+  display: flex;
+  align-items: center;
+}
+
+.landing-github-link:hover {
+  color: var(--lp-ink);
 }
 
 /* ---- Hero ---- */
@@ -8891,6 +11070,36 @@ accents, and animation keyframes.
   margin: 0;
 }
 
+.landing-cap-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 1rem;
+  margin-top: 1rem;
+}
+
+.landing-cap-link {
+  color: var(--lp-ink);
+  font-size: 0.85rem;
+  letter-spacing: 0.02em;
+  text-decoration: underline;
+  text-decoration-color: rgba(26, 20, 16, 0.28);
+  text-underline-offset: 0.2rem;
+  transition: color 0.2s ease, text-decoration-color 0.2s ease;
+}
+
+.landing-cap-link:hover {
+  color: var(--lp-vermillion);
+  text-decoration-color: currentColor;
+}
+
+.landing-cap-link:focus-visible {
+  outline: 2px solid rgba(194, 59, 34, 0.45);
+  outline-offset: 3px;
+  border-radius: 2px;
+  color: var(--lp-vermillion);
+  text-decoration-color: currentColor;
+}
+
 /* ---- Final CTA ---- */
 
 .landing-final {
@@ -8938,101 +11147,6 @@ accents, and animation keyframes.
 
 .landing-footer-sep {
   opacity: 0.4;
-}
-
-/* ---- Landing page markdown prose ---- */
-
-.landing-markdown p {
-  margin: 0;
-}
-
-.landing-markdown strong {
-  font-weight: 600;
-  color: var(--lp-ink);
-}
-
-.landing-markdown em {
-  font-style: italic;
-  color: var(--lp-vermillion);
-}
-
-.landing-markdown a {
-  color: var(--lp-vermillion);
-  text-decoration: underline;
-  text-underline-offset: 2px;
-  transition: color 0.2s ease;
-}
-
-.landing-markdown a:hover {
-  color: var(--lp-vermillion-dark);
-}
-
-.landing-markdown code {
-  background: rgba(26, 20, 16, 0.08);
-  border-radius: 3px;
-  padding: 0.1em 0.3em;
-  font-size: 0.9em;
-  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
-  color: var(--lp-ink);
-}
-
-.landing-markdown pre {
-  background: rgba(26, 20, 16, 0.06);
-  border-radius: 6px;
-  padding: 0.75em 1em;
-  margin: 0.75em 0;
-  overflow-x: auto;
-}
-
-.landing-markdown pre code {
-  background: none;
-  padding: 0;
-  font-size: 0.85em;
-}
-
-.landing-markdown ul,
-.landing-markdown ol {
-  margin: 0.5em 0;
-  padding-left: 1.5em;
-}
-
-.landing-markdown ul { list-style-type: disc; }
-.landing-markdown ol { list-style-type: decimal; }
-
-.landing-markdown li {
-  margin: 0.25em 0;
-}
-
-.landing-markdown blockquote {
-  border-left: 2px solid var(--lp-ink-faded);
-  padding-left: 0.75em;
-  margin: 0.5em 0;
-  color: var(--lp-ink-faded);
-}
-
-.landing-markdown hr {
-  border: none;
-  border-top: 1px solid rgba(26, 20, 16, 0.15);
-  margin: 0.75em 0;
-}
-
-.landing-markdown table {
-  border-collapse: collapse;
-  margin: 0.5em 0;
-  font-size: 0.9em;
-  width: 100%;
-}
-
-.landing-markdown th,
-.landing-markdown td {
-  border: 1px solid rgba(26, 20, 16, 0.15);
-  padding: 0.4em 0.6em;
-  text-align: left;
-}
-
-.landing-markdown th {
-  background: rgba(26, 20, 16, 0.04);
-  font-weight: 600;
 }
 
 /* ---- Animations ---- */
@@ -9391,6 +11505,7 @@ export interface Repo {
   remote_url: string | null;
   root_path: string;
   custom_prompt: string | null;
+  agents_md: string | null;
 }
 
 export interface GitHubInstallation {
@@ -9519,6 +11634,7 @@ export interface Message {
   content: string | null;
   full_message: string | null;
   turn_id: string | null;
+  turn_status: string | null;
 }
 
 interface StructuredApiErrorPayload {
@@ -9677,6 +11793,7 @@ export type SSEEvent =
   | { type: "message_delta"; delta?: unknown }
   | { type: "message_stop" }
   | { type: "result"; [key: string]: unknown }
+  | { type: "cancelled"; reason?: string }
   | { type: "error"; error: string };
 
 export interface ContentBlock {
@@ -9704,13 +11821,14 @@ export async function* streamPrompt(
   sessionId: string,
   prompt: string,
   model?: string,
+  thinking?: boolean,
   signal?: AbortSignal,
 ): AsyncGenerator<SSEEvent> {
   const res = await fetch(`/api/sessions/${sessionId}/prompt`, {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-Requested-With": "XMLHttpRequest" },
     credentials: "include",
-    body: JSON.stringify({ prompt, model }),
+    body: JSON.stringify({ prompt, model, thinking }),
     signal,
   });
 
@@ -9791,6 +11909,7 @@ export interface ChatMessage {
   content: string;
   blocks: TurnBlock[];
   streaming?: boolean;
+  turnStatus?: "completed" | "cancelled" | "failed";
   timestamp: number;
 }
 
@@ -9809,33 +11928,42 @@ function appendOrCreate(blocks: TurnBlock[], type: "text" | "thinking", text: st
   }
 }
 
+export type RunState = "idle" | "running" | "stopping";
+
 export function useAgentStream(sessionId: string | undefined) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [streaming, setStreaming] = useState(false);
+  const [runState, setRunState] = useState<RunState>("idle");
   const abortRef = useRef<AbortController | null>(null);
+  const queuedPromptRef = useRef<{ prompt: string; model?: string; thinking?: boolean } | null>(null);
+  // Track if the current run was cancelled by user (not an error)
+  const wasCancelledRef = useRef(false);
 
-  const sendPrompt = useCallback(
-    async (prompt: string, model?: string) => {
-      if (!sessionId || streaming) return;
+  const startPrompt = useCallback(
+    async (prompt: string, model?: string, thinking?: boolean) => {
+      if (!sessionId) return;
+      const normalizedPrompt = prompt.trim();
+      if (!normalizedPrompt) return;
 
       setMessages((prev) => [
         ...prev,
         {
           id: nextId(),
           role: "user",
-          content: prompt,
+          content: normalizedPrompt,
           blocks: [],
           timestamp: Date.now(),
         },
       ]);
 
-      setStreaming(true);
+      setRunState("running");
       const controller = new AbortController();
       abortRef.current = controller;
+      wasCancelledRef.current = false;
 
       const turnId = nextId();
       const blocks: TurnBlock[] = [];
       let rafId: number | null = null;
+      let turnStatus: "completed" | "cancelled" | "failed" = "completed";
 
       function upsertTurn(done = false) {
         const allText = blocks
@@ -9851,6 +11979,7 @@ export function useAgentStream(sessionId: string | undefined) {
             content: allText,
             blocks: snapshot,
             streaming: !done,
+            turnStatus: done ? turnStatus : undefined,
             timestamp: Date.now(),
           };
           const idx = prev.findIndex((m) => m.id === turnId);
@@ -9880,12 +12009,21 @@ export function useAgentStream(sessionId: string | undefined) {
       try {
         for await (const event of streamPrompt(
           sessionId,
-          prompt,
+          normalizedPrompt,
           model,
+          thinking,
           controller.signal,
         )) {
           if (event.type === "error") {
             blocks.push({ id: nextId(), type: "error", text: event.error });
+            turnStatus = "failed";
+            scheduleUpsert(true);
+            break;
+          }
+
+          if (event.type === "cancelled") {
+            turnStatus = "cancelled";
+            wasCancelledRef.current = true;
             scheduleUpsert(true);
             break;
           }
@@ -9995,6 +12133,7 @@ export function useAgentStream(sessionId: string | undefined) {
             event.type === "result" ||
             (event as Record<string, unknown>).type === "message_stop"
           ) {
+            turnStatus = wasCancelledRef.current ? "cancelled" : "completed";
             scheduleUpsert(true);
           }
         }
@@ -10005,20 +12144,29 @@ export function useAgentStream(sessionId: string | undefined) {
             type: "error",
             text: e instanceof Error ? e.message : "Stream failed",
           });
+          turnStatus = "failed";
           scheduleUpsert(true);
         }
       } finally {
         if (rafId) cancelAnimationFrame(rafId);
-        setStreaming(false);
         abortRef.current = null;
+
+        const queuedPrompt = queuedPromptRef.current;
+        queuedPromptRef.current = null;
+        setRunState("idle");
+
+        // Always replay a queued steering prompt once the active run finishes.
+        if (queuedPrompt) {
+          void startPrompt(queuedPrompt.prompt, queuedPrompt.model, queuedPrompt.thinking);
+        }
       }
     },
-    [sessionId, streaming],
+    [sessionId],
   );
 
   const cancel = useCallback(async () => {
-    abortRef.current?.abort();
-    setStreaming(false);
+    if (runState !== "running") return;
+    setRunState("stopping");
     if (sessionId) {
       try {
         await cancelSession(sessionId);
@@ -10026,9 +12174,41 @@ export function useAgentStream(sessionId: string | undefined) {
         /* best-effort */
       }
     }
-  }, [sessionId]);
+  }, [sessionId, runState]);
 
-  return { messages, sendPrompt, cancel, streaming, setMessages };
+  const sendPrompt = useCallback(
+    async (prompt: string, model?: string, thinking?: boolean) => {
+      if (!sessionId) return;
+      const normalizedPrompt = prompt.trim();
+      if (!normalizedPrompt) return;
+
+      if (runState === "running") {
+        // Queue steering prompt and request stop
+        queuedPromptRef.current = { prompt: normalizedPrompt, model, thinking };
+        await cancel();
+        return;
+      }
+
+      if (runState === "stopping") {
+        // Replace queued steering prompt
+        queuedPromptRef.current = { prompt: normalizedPrompt, model, thinking };
+        return;
+      }
+
+      // runState === "idle", start normally
+      await startPrompt(normalizedPrompt, model, thinking);
+    },
+    [cancel, runState, startPrompt],
+  );
+
+  return {
+    messages,
+    sendPrompt,
+    cancel,
+    runState,
+    setMessages,
+    streaming: runState === "running" || runState === "stopping",
+  };
 }
 ```
 
@@ -10326,7 +12506,7 @@ export function usePiConfig(): UsePiConfigReturn {
     if (!config) {
       return false;
     }
-    if (updatingCategories) {
+    if (updatingCategories || syncing) {
       return false;
     }
     setError(null);
@@ -10951,6 +13131,12 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
     setShowImport(false);
   }
 
+  function handleRepoUpdated(updatedRepo: Repo) {
+    setRepos((prev) =>
+      prev.map((repo) => (repo.id === updatedRepo.id ? updatedRepo : repo)),
+    );
+  }
+
   return (
     <aside className="flex h-full w-72 flex-col border-r border-gray-800 bg-gray-900">
       <div className="flex items-center justify-between px-4 py-3 border-b border-gray-800">
@@ -11017,6 +13203,7 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
             key={repo.id}
             repo={repo}
             activeSessionId={activeSessionId}
+            onRepoUpdated={handleRepoUpdated}
             onNavigate={onNavigate}
           />
         ))}
@@ -11079,10 +13266,12 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
 function RepoSection({
   repo,
   activeSessionId,
+  onRepoUpdated,
   onNavigate,
 }: {
   repo: Repo;
   activeSessionId: string | undefined;
+  onRepoUpdated: (repo: Repo) => void;
   onNavigate?: () => void;
 }) {
   const navigate = useNavigate();
@@ -11092,6 +13281,15 @@ function RepoSection({
   const [creating, setCreating] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
+  const [showSettings, setShowSettings] = useState(false);
+  const [agentsMdDraft, setAgentsMdDraft] = useState(repo.agents_md ?? "");
+  const [settingsSaving, setSettingsSaving] = useState(false);
+  const [settingsError, setSettingsError] = useState<string | null>(null);
+  const [settingsNotice, setSettingsNotice] = useState<string | null>(null);
+
+  useEffect(() => {
+    setAgentsMdDraft(repo.agents_md ?? "");
+  }, [repo.agents_md]);
 
   useEffect(() => {
     if (expanded && !loaded) {
@@ -11152,6 +13350,47 @@ function RepoSection({
     }
   }
 
+  async function saveRepoSettings() {
+    setSettingsSaving(true);
+    setSettingsError(null);
+    setSettingsNotice(null);
+    try {
+      const updatedRepo = await api.patch<Repo>(`/api/repos/${repo.id}`, {
+        agents_md: agentsMdDraft.trim() ? agentsMdDraft : null,
+      });
+      onRepoUpdated(updatedRepo);
+      setAgentsMdDraft(updatedRepo.agents_md ?? "");
+      setSettingsNotice("Repo instructions saved.");
+    } catch (error) {
+      console.error(`Failed to update repo ${repo.id} settings`, error);
+      setSettingsError(
+        error instanceof Error ? error.message : "Failed to save repo instructions.",
+      );
+    } finally {
+      setSettingsSaving(false);
+    }
+  }
+
+  function cancelRepoSettings() {
+    setAgentsMdDraft(repo.agents_md ?? "");
+    setSettingsError(null);
+    setSettingsNotice(null);
+    setShowSettings(false);
+  }
+
+  function toggleRepoSettings(event: React.MouseEvent<HTMLButtonElement>) {
+    event.stopPropagation();
+    setSettingsError(null);
+    setSettingsNotice(null);
+
+    if (showSettings) {
+      setShowSettings(false);
+    } else {
+      setExpanded(true);
+      setShowSettings(true);
+    }
+  }
+
   const activeWorkspaces = workspaces.filter((ws) => ws.state !== "archived");
   const archivedWorkspaces = workspaces.filter((ws) => ws.state === "archived");
   const initial = repo.name.charAt(0).toUpperCase();
@@ -11186,10 +13425,81 @@ function RepoSection({
             </svg>
           )}
         </button>
+        <button
+          onClick={toggleRepoSettings}
+          className="shrink-0 px-3 py-2 text-gray-600 opacity-0 group-hover:opacity-100 hover:text-gray-300 transition-opacity"
+          title="Repo settings"
+        >
+          <svg
+            className="h-3.5 w-3.5"
+            fill="none"
+            viewBox="0 0 24 24"
+            strokeWidth={1.5}
+            stroke="currentColor"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              d="M4.5 12a7.5 7.5 0 1 1 15 0 7.5 7.5 0 0 1-15 0Zm7.5-3.75v3.75l2.25 2.25"
+            />
+          </svg>
+        </button>
       </div>
 
       {expanded && (
         <>
+          {showSettings && (
+            <div className="space-y-2 border-b border-gray-800/80 bg-gray-950/50 px-4 py-3">
+              <div className="pl-9">
+                <label
+                  htmlFor={`repo-agents-md-${repo.id}`}
+                  className="text-[11px] font-semibold uppercase tracking-wide text-gray-500"
+                >
+                  AGENTS.md override
+                </label>
+                <p className="mt-1 text-xs text-gray-400">
+                  Used as the repo-level runtime instructions for new sessions from this repo.
+                </p>
+                <textarea
+                  id={`repo-agents-md-${repo.id}`}
+                  value={agentsMdDraft}
+                  onChange={(event) => setAgentsMdDraft(event.target.value)}
+                  rows={10}
+                  spellCheck={false}
+                  className="mt-2 w-full rounded-md border border-gray-800 bg-gray-900 px-3 py-2 text-sm text-gray-100 outline-none focus:border-blue-500"
+                  placeholder="Leave blank to disable the repo-level override."
+                />
+                {settingsError && (
+                  <div className="mt-2 rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-300">
+                    {settingsError}
+                  </div>
+                )}
+                {settingsNotice && !settingsError && (
+                  <div className="mt-2 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-200">
+                    {settingsNotice}
+                  </div>
+                )}
+                <div className="mt-3 flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void saveRepoSettings()}
+                    disabled={settingsSaving}
+                    className="rounded-md bg-blue-500 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-40"
+                  >
+                    {settingsSaving ? "Saving..." : "Save AGENTS.md"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={cancelRepoSettings}
+                    disabled={settingsSaving}
+                    className="rounded-md bg-gray-800 px-3 py-1.5 text-xs text-gray-400 disabled:opacity-40"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
           {workspaceError && (
             <div className="px-11 py-2 text-xs text-red-400">
               {workspaceError}
@@ -11516,9 +13826,9 @@ const SLASH_COMMANDS: SlashCommand[] = [
 interface ChatViewProps {
   messages: ChatMessage[];
   streaming: boolean;
-  onSend: (prompt: string) => void;
-  onCancel: () => void;
-  onCommand?: (name: string, args: string) => void;
+  onSend: (prompt: string) => void | Promise<void>;
+  onCancel: () => void | Promise<void>;
+  onCommand?: (name: string, args: string) => void | Promise<void>;
 }
 
 export default function ChatView({
@@ -11578,7 +13888,7 @@ export default function ChatView({
     (e?: React.FormEvent) => {
       e?.preventDefault();
       const text = input.trim();
-      if (!text || streaming) return;
+      if (!text) return;
 
       // Intercept slash commands
       if (text.startsWith("/")) {
@@ -11596,7 +13906,7 @@ export default function ChatView({
         }
       }
 
-      onSend(text);
+      void onSend(text);
       setInput("");
       setShowMenu(false);
       if (inputRef.current) {
@@ -11605,6 +13915,8 @@ export default function ChatView({
     },
     [input, streaming, onSend, onCommand],
   );
+
+  const hasInput = input.trim().length > 0;
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -11733,10 +14045,12 @@ export default function ChatView({
             className="flex-1 resize-none rounded-xl bg-gray-800 px-4 py-3 text-sm text-gray-100 placeholder-gray-500 outline-none focus:ring-2 focus:ring-blue-500"
             style={{ maxHeight: "120px" }}
           />
-          {streaming ? (
+          {streaming && !hasInput ? (
             <button
               type="button"
-              onClick={onCancel}
+              onClick={() => {
+                void onCancel();
+              }}
               className="flex h-11 w-11 items-center justify-center rounded-xl bg-red-500/20 text-red-400 active:bg-red-500/30"
               aria-label="Cancel"
             >
@@ -11757,9 +14071,9 @@ export default function ChatView({
           ) : (
             <button
               type="submit"
-              disabled={!input.trim()}
+              disabled={!hasInput}
               className="flex h-11 w-11 items-center justify-center rounded-xl bg-blue-500 text-white disabled:opacity-30 active:bg-blue-600"
-              aria-label="Send"
+              aria-label={streaming ? "Steer" : "Send"}
             >
               <svg
                 className="h-5 w-5"
@@ -12603,8 +14917,6 @@ when redirected back from a failed login.
 
 ```typescript {chunk="landing" file="frontend/src/pages/Landing.tsx"}
 import { useSearchParams } from "react-router-dom";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
 
 const ERROR_MESSAGES: Record<string, string> = {
   oauth_error: "Sign-in was cancelled or failed. Please try again.",
@@ -12619,15 +14931,35 @@ const ERROR_MESSAGES: Record<string, string> = {
 /*  Ink-wash painting palette: parchment, ink black, vermillion seal   */
 /* ------------------------------------------------------------------ */
 
-const CAPABILITIES = [
+type CapabilityCard = {
+  title: string;
+  desc: string;
+  icon: JSX.Element;
+  links?: Array<{
+    href: string;
+    label: string;
+  }>;
+};
+
+const CAPABILITIES: CapabilityCard[] = [
   {
-    title: "Git Workspaces",
-    desc: "Import any GitHub repo or local path. Yinshi clones it, creates isolated worktrees with random branch names, and lets your agent operate freely without touching main.",
+    title: "Tenant Isolation",
+    desc: "Each account runs in its own tenant boundary. Yinshi keeps per-user data separate and runs the sidecar in a dedicated container with dropped Linux capabilities, no-new-privileges, and resource limits. Private repos are supported through a GitHub App integration.",
     icon: (
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} className="h-6 w-6">
-        <path strokeLinecap="round" strokeLinejoin="round" d="M13.19 8.688a4.5 4.5 0 0 1 1.242 7.244l-4.5 4.5a4.5 4.5 0 0 1-6.364-6.364l1.757-1.757m9.553-4.07a4.5 4.5 0 0 0-1.242-7.244l4.5-4.5a4.5 4.5 0 0 1 6.364 6.364l-1.757 1.757" />
+        <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75 11.25 15 15 9.75m6 2.25c0 4.97-4.03 9-9 9s-9-4.03-9-9 4.03-9 9-9 9 4.03 9 9Z" />
       </svg>
     ),
+    links: [
+      {
+        href: "/architecture.html#container-isolation",
+        label: "Container isolation",
+      },
+      {
+        href: "/architecture.html#github-app-integration",
+        label: "GitHub App integration",
+      },
+    ],
   },
   {
     title: "AI Agent Sessions",
@@ -12648,13 +14980,19 @@ const CAPABILITIES = [
     ),
   },
   {
-    title: "Branching by Default",
-    desc: "Every workspace runs on a disposable git branch. Your main branch stays untouched. Review the agent's work through standard git diffs and merges.",
+    title: "Encrypted Secrets",
+    desc: "Provider keys and connection secrets are encrypted at rest with AES-256-GCM. Per-user encryption keys are wrapped using HKDF-derived key encryption keys, so stored secrets are not kept as plaintext.",
     icon: (
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} className="h-6 w-6">
-        <path strokeLinecap="round" strokeLinejoin="round" d="M3 7.5 7.5 3m0 0L12 7.5M7.5 3v13.5m13.5-6L16.5 15m0 0L12 10.5m4.5 4.5V6" />
+        <path strokeLinecap="round" strokeLinejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 1 0-9 0v3.75m-1.5 0h12A1.5 1.5 0 0 1 19.5 12v7.5A1.5 1.5 0 0 1 18 21H6A1.5 1.5 0 0 1 4.5 19.5V12A1.5 1.5 0 0 1 6 10.5Z" />
       </svg>
     ),
+    links: [
+      {
+        href: "/architecture.html#encryption-key-management",
+        label: "Encryption and key management",
+      },
+    ],
   },
 ];
 
@@ -12673,9 +15011,22 @@ export default function Landing() {
       {/* ---- Navigation ---- */}
       <nav className="landing-nav">
         <span className="landing-brand">Yinshi</span>
-        <a href="/auth/login" className="landing-nav-link">
-          Sign In / Sign Up
-        </a>
+        <div className="landing-nav-actions">
+          <a
+            href="https://github.com/codyborders/yinshi"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="landing-github-link"
+            aria-label="GitHub repository"
+          >
+            <svg viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+              <path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12" />
+            </svg>
+          </a>
+          <a href="/auth/login" className="landing-nav-link">
+            Sign In / Sign Up
+          </a>
+        </div>
       </nav>
 
       {errorMessage && (
@@ -12702,16 +15053,17 @@ export default function Landing() {
             src="/yinshi-scholar.jpg"
             alt="Yinshi Scholar -- classical ink painting"
             className="landing-mascot"
+            width={360}
+            height={360}
+            fetchPriority="high"
           />
         </div>
         <div className="landing-hero-text">
           <h1 className="landing-title">Yinshi</h1>
           <p className="landing-subtitle">Run coding agents in your browser</p>
-          <div className="landing-desc landing-markdown">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>
-              {`Yinshi makes it easy to manage coding agents across git repos and worktrees. `}
-            </ReactMarkdown>
-          </div>
+          <p className="landing-desc">
+            Yinshi makes it easy to manage coding agents across git repos and worktrees.
+          </p>
           <div className="landing-cta-group">
             <a href="/auth/login" className="landing-cta">
               Get Started
@@ -12759,9 +15111,16 @@ export default function Landing() {
             <div key={cap.title} className="landing-cap-card">
               <div className="landing-cap-icon">{cap.icon}</div>
               <h3 className="landing-cap-title">{cap.title}</h3>
-              <div className="landing-cap-desc landing-markdown">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>{cap.desc}</ReactMarkdown>
-              </div>
+              <p className="landing-cap-desc">{cap.desc}</p>
+              {cap.links ? (
+                <div className="landing-cap-links">
+                  {cap.links.map((link) => (
+                    <a key={link.href} href={link.href} className="landing-cap-link">
+                      {link.label}
+                    </a>
+                  ))}
+                </div>
+              ) : null}
             </div>
           ))}
         </div>
@@ -12769,11 +15128,9 @@ export default function Landing() {
 
       {/* ---- Final CTA ---- */}
       <section className="landing-final">
-        <div className="landing-final-text landing-markdown">
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>
-            {`No IDE or app required. Fire up your browser, import your repos and pi configs, and get to work.`}
-          </ReactMarkdown>
-        </div>
+        <p className="landing-final-text">
+          No IDE or app required. Fire up your browser, import your repos and pi configs, and get to work.
+        </p>
         <a href="/auth/login" className="landing-cta">
           Get Started
         </a>
@@ -12788,7 +15145,6 @@ export default function Landing() {
     </div>
   );
 }
-
 ```
 
 ## Login.tsx
@@ -12938,6 +15294,8 @@ export default function Session() {
   const [loadingHistory, setLoadingHistory] = useState(true);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [updatingModel, setUpdatingModel] = useState(false);
+  const [thinkingEnabled, setThinkingEnabled] = useState(true);
+  const [hasThinkingOverride, setHasThinkingOverride] = useState(false);
 
   // Load existing message history
   useEffect(() => {
@@ -12993,6 +15351,11 @@ export default function Session() {
     return () => {
       cancelled = true;
     };
+  }, [id]);
+
+  useEffect(() => {
+    setThinkingEnabled(true);
+    setHasThinkingOverride(false);
   }, [id]);
 
   const addSystemMessage = useCallback(
@@ -13211,6 +15574,19 @@ export default function Session() {
   const selectedModelRequiresConnection = selectedModelOption
     ? !connectedProviderIds.has(selectedModelOption.provider)
     : false;
+  const canOverrideThinking = selectedModelOption?.reasoning === true;
+  const thinkingOverride = canOverrideThinking && hasThinkingOverride
+    ? thinkingEnabled
+    : undefined;
+
+  const handleSend = useCallback(
+    async (prompt: string) => {
+      // The model selector persists directly to the session, so prompt
+      // submission should keep using the backend's session model.
+      await sendPrompt(prompt, undefined, thinkingOverride);
+    },
+    [sendPrompt, thinkingOverride],
+  );
 
   return (
     <>
@@ -13254,6 +15630,48 @@ export default function Session() {
               </option>
             ))}
           </select>
+          {/* Thinking toggle */}
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              disabled={streaming || !canOverrideThinking}
+              onClick={() => {
+                setHasThinkingOverride(true);
+                setThinkingEnabled((currentThinkingEnabled) => !currentThinkingEnabled);
+              }}
+              className={`flex items-center gap-1 rounded px-2 py-1 text-xs transition-colors ${
+                streaming || !canOverrideThinking
+                  ? "cursor-not-allowed opacity-40"
+                  : thinkingEnabled
+                    ? "bg-purple-900/50 text-purple-300 hover:bg-purple-900/70"
+                    : "bg-gray-800 text-gray-500 hover:bg-gray-700"
+              }`}
+              title={
+                !canOverrideThinking
+                  ? "This model does not support thinking"
+                  : !hasThinkingOverride
+                    ? "Using the model default thinking setting - click to set an explicit override"
+                  : thinkingEnabled
+                    ? "Thinking enabled - click to disable"
+                    : "Thinking disabled - click to enable"
+              }
+            >
+              <svg
+                className="h-3 w-3"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={2}
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"
+                />
+              </svg>
+              <span>Thinking</span>
+            </button>
+          </div>
         </div>
         {streaming && (
           <div className="flex items-center gap-2">
@@ -13285,7 +15703,7 @@ export default function Session() {
               <ChatView
                 messages={messages}
                 streaming={streaming}
-                onSend={sendPrompt}
+                onSend={handleSend}
                 onCancel={cancel}
                 onCommand={handleCommand}
               />
@@ -13863,6 +16281,398 @@ main().catch((err) => {
 });
 ```
 
+## git_auth.js
+
+The sidecar's bash tool normally runs commands exactly as the SDK would on a
+local machine. Private GitHub remotes are the exception: they need an ephemeral
+credential that should never be written into repo config, shell history, or the
+user's global Git settings. This module intercepts just the remote Git
+subcommands Yinshi cares about, installs a temporary `GIT_ASKPASS` helper, and
+executes the command in a scrubbed environment so authenticated fetches and
+clones work without leaking long-lived secrets.
+
+```javascript {chunk="git_auth_js" file="sidecar/src/git_auth.js"}
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { spawn } from "node:child_process";
+
+import { createBashTool, createLocalBashOperations } from "@mariozechner/pi-coding-agent";
+
+const GIT_REMOTE_SUBCOMMANDS = new Set(["clone", "fetch", "ls-remote", "pull", "push"]);
+const SHELL_AND_OPERATOR = "&&";
+
+function assertNonEmptyString(value, name) {
+  if (typeof value !== "string") {
+    throw new TypeError(`${name} must be a string`);
+  }
+  const normalizedValue = value.trim();
+  if (!normalizedValue) {
+    throw new Error(`${name} must be a non-empty string`);
+  }
+  return normalizedValue;
+}
+
+function quoteShellLiteral(value) {
+  const normalizedValue = assertNonEmptyString(value, "value");
+  return `'${normalizedValue.replace(/'/g, `'\"'\"'`)}'`;
+}
+
+function buildGitAskpassScript(tokenFilePath) {
+  const normalizedTokenFilePath = assertNonEmptyString(tokenFilePath, "tokenFilePath");
+  return "#!/bin/sh\n"
+    + "case \"$1\" in\n"
+    + "  *Username*) printf '%s\\n' 'x-access-token' ;;\n"
+    + `  *) cat ${quoteShellLiteral(normalizedTokenFilePath)} ;;\n`
+    + "esac\n";
+}
+
+export function normalizeGitAuth(gitAuth) {
+  if (gitAuth === null || gitAuth === undefined) {
+    return null;
+  }
+  if (typeof gitAuth !== "object" || Array.isArray(gitAuth)) {
+    throw new TypeError("gitAuth must be an object");
+  }
+
+  if (gitAuth.strategy !== "github_app_https") {
+    throw new Error(`Unsupported git auth strategy: ${gitAuth.strategy}`);
+  }
+  const normalizedHost = assertNonEmptyString(gitAuth.host, "gitAuth.host");
+  if (normalizedHost !== "github.com") {
+    throw new Error("gitAuth.host must be github.com");
+  }
+  const normalizedAccessToken = assertNonEmptyString(
+    gitAuth.accessToken,
+    "gitAuth.accessToken",
+  );
+  return {
+    strategy: gitAuth.strategy,
+    host: normalizedHost,
+    accessToken: normalizedAccessToken,
+  };
+}
+
+export function tokenizeShellCommand(command) {
+  const normalizedCommand = assertNonEmptyString(command, "command");
+  const tokens = [];
+  let currentToken = "";
+  let quoteMode = null;
+
+  const pushCurrentToken = () => {
+    if (!currentToken) {
+      return;
+    }
+    tokens.push(currentToken);
+    currentToken = "";
+  };
+
+  for (let index = 0; index < normalizedCommand.length; index += 1) {
+    const character = normalizedCommand[index];
+
+    if (quoteMode === "single") {
+      if (character === "'") {
+        quoteMode = null;
+      } else {
+        currentToken += character;
+      }
+      continue;
+    }
+    if (quoteMode === "double") {
+      if (character === "\"") {
+        quoteMode = null;
+        continue;
+      }
+      if (character === "\\") {
+        index += 1;
+        if (index >= normalizedCommand.length) {
+          throw new Error("command ends with an incomplete escape sequence");
+        }
+        currentToken += normalizedCommand[index];
+        continue;
+      }
+      currentToken += character;
+      continue;
+    }
+
+    if (character === "'") {
+      quoteMode = "single";
+      continue;
+    }
+    if (character === "\"") {
+      quoteMode = "double";
+      continue;
+    }
+    if (character === "\\") {
+      index += 1;
+      if (index >= normalizedCommand.length) {
+        throw new Error("command ends with an incomplete escape sequence");
+      }
+      currentToken += normalizedCommand[index];
+      continue;
+    }
+    if (/\s/.test(character)) {
+      pushCurrentToken();
+      continue;
+    }
+    if (character === "&") {
+      if (normalizedCommand[index + 1] !== "&") {
+        throw new Error("unsupported shell operator: &");
+      }
+      pushCurrentToken();
+      tokens.push(SHELL_AND_OPERATOR);
+      index += 1;
+      continue;
+    }
+    if (character === ";" || character === "|" || character === ">" || character === "<" || character === "`") {
+      throw new Error(`unsupported shell operator: ${character}`);
+    }
+    if (character === "$") {
+      throw new Error("unsupported shell expansion");
+    }
+
+    currentToken += character;
+  }
+
+  if (quoteMode !== null) {
+    throw new Error("command contains an unterminated quote");
+  }
+
+  pushCurrentToken();
+  return tokens;
+}
+
+function resolveGitWorkingDirectory(tokens, defaultCwd) {
+  const normalizedDefaultCwd = assertNonEmptyString(defaultCwd, "defaultCwd");
+  if (tokens.length === 0) {
+    return { gitCwd: normalizedDefaultCwd, gitIndex: 0 };
+  }
+  if (tokens[0] !== "cd") {
+    return { gitCwd: normalizedDefaultCwd, gitIndex: 0 };
+  }
+  if (tokens.length < 4) {
+    return null;
+  }
+  if (tokens[2] !== SHELL_AND_OPERATOR) {
+    return null;
+  }
+  if (!tokens[1]) {
+    return null;
+  }
+
+  return {
+    gitCwd: path.resolve(normalizedDefaultCwd, tokens[1]),
+    gitIndex: 3,
+  };
+}
+
+export function parseGitCommandForRuntimeAuth(command, defaultCwd) {
+  let tokens = null;
+  try {
+    tokens = tokenizeShellCommand(command);
+  } catch {
+    return null;
+  }
+  const resolvedPrefix = resolveGitWorkingDirectory(tokens, defaultCwd);
+  if (resolvedPrefix === null) {
+    return null;
+  }
+
+  const { gitCwd, gitIndex } = resolvedPrefix;
+  if (tokens.length <= gitIndex) {
+    return null;
+  }
+  if (tokens[gitIndex] !== "git") {
+    return null;
+  }
+
+  const gitArguments = tokens.slice(gitIndex + 1);
+  if (gitArguments.length === 0) {
+    return null;
+  }
+  if (gitArguments.includes(SHELL_AND_OPERATOR)) {
+    return null;
+  }
+  if (gitArguments[0].startsWith("-")) {
+    return null;
+  }
+
+  const normalizedSubcommand = gitArguments[0].toLowerCase();
+  if (!GIT_REMOTE_SUBCOMMANDS.has(normalizedSubcommand)) {
+    return null;
+  }
+
+  return {
+    command: "git",
+    cwd: gitCwd,
+    gitArguments,
+    subcommand: normalizedSubcommand,
+  };
+}
+
+export function createGitAskpassBundle(accessToken) {
+  const normalizedAccessToken = assertNonEmptyString(accessToken, "accessToken");
+  const bundleDirPath = fs.mkdtempSync(path.join(os.tmpdir(), "yinshi-git-"));
+  fs.chmodSync(bundleDirPath, 0o700);
+
+  const tokenFilePath = path.join(bundleDirPath, "token");
+  const askpassPath = path.join(bundleDirPath, "askpass.sh");
+  fs.writeFileSync(tokenFilePath, normalizedAccessToken, { encoding: "utf-8", mode: 0o600 });
+  fs.chmodSync(tokenFilePath, 0o600);
+  fs.writeFileSync(
+    askpassPath,
+    buildGitAskpassScript(tokenFilePath),
+    { encoding: "utf-8", mode: 0o700 },
+  );
+  fs.chmodSync(askpassPath, 0o700);
+
+  return {
+    askpassPath,
+    bundleDirPath,
+    cleanup() {
+      fs.rmSync(bundleDirPath, { recursive: true, force: true });
+    },
+  };
+}
+
+function createGitExecutionEnvironment(baseEnv, askpassPath) {
+  const normalizedAskpassPath = assertNonEmptyString(askpassPath, "askpassPath");
+  const executionEnvironment = {
+    ...process.env,
+    ...(baseEnv || {}),
+  };
+  executionEnvironment.GCM_INTERACTIVE = "Never";
+  executionEnvironment.GIT_ASKPASS = normalizedAskpassPath;
+  executionEnvironment.GIT_CONFIG_NOSYSTEM = "1";
+  executionEnvironment.GIT_CONFIG_GLOBAL = os.devNull;
+  executionEnvironment.GIT_PAGER = "cat";
+  executionEnvironment.GIT_TERMINAL_PROMPT = "0";
+  return executionEnvironment;
+}
+
+function createGitCommandArguments(gitArguments) {
+  if (!Array.isArray(gitArguments)) {
+    throw new TypeError("gitArguments must be an array");
+  }
+  if (gitArguments.length === 0) {
+    throw new Error("gitArguments must not be empty");
+  }
+  return [
+    "-c",
+    "core.hooksPath=/dev/null",
+    "-c",
+    "credential.helper=",
+    ...gitArguments,
+  ];
+}
+
+function executeGitCommand(parsedGitCommand, execOptions, gitAuth) {
+  if (!parsedGitCommand || typeof parsedGitCommand !== "object") {
+    throw new TypeError("parsedGitCommand is required");
+  }
+  const normalizedGitAuth = normalizeGitAuth(gitAuth);
+  if (normalizedGitAuth === null) {
+    throw new Error("gitAuth is required for authenticated git execution");
+  }
+  const askpassBundle = createGitAskpassBundle(normalizedGitAuth.accessToken);
+  const gitCommandArguments = createGitCommandArguments(parsedGitCommand.gitArguments);
+  const gitEnvironment = createGitExecutionEnvironment(execOptions?.env, askpassBundle.askpassPath);
+
+  return new Promise((resolve, reject) => {
+    const gitChild = spawn(
+      parsedGitCommand.command,
+      gitCommandArguments,
+      {
+        cwd: parsedGitCommand.cwd,
+        detached: true,
+        env: gitEnvironment,
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+
+    let timedOut = false;
+    const timeoutSeconds = execOptions?.timeout;
+    const timeoutHandle = timeoutSeconds && timeoutSeconds > 0
+      ? setTimeout(() => {
+        timedOut = true;
+        gitChild.kill();
+      }, timeoutSeconds * 1000)
+      : null;
+
+    const onAbort = () => {
+      gitChild.kill();
+    };
+
+    gitChild.stdout?.on("data", execOptions.onData);
+    gitChild.stderr?.on("data", execOptions.onData);
+
+    if (execOptions?.signal) {
+      if (execOptions.signal.aborted) {
+        onAbort();
+      } else {
+        execOptions.signal.addEventListener("abort", onAbort, { once: true });
+      }
+    }
+
+    const cleanup = () => {
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
+      if (execOptions?.signal) {
+        execOptions.signal.removeEventListener("abort", onAbort);
+      }
+      askpassBundle.cleanup();
+    };
+
+    gitChild.on("error", (error) => {
+      cleanup();
+      reject(error);
+    });
+    gitChild.on("close", (exitCode) => {
+      cleanup();
+      if (execOptions?.signal?.aborted) {
+        reject(new Error("aborted"));
+        return;
+      }
+      if (timedOut) {
+        reject(new Error(`timeout:${timeoutSeconds}`));
+        return;
+      }
+      resolve({ exitCode });
+    });
+  });
+}
+
+export function createGitRuntimeBashOperations(defaultCwd, gitAuth) {
+  const normalizedDefaultCwd = assertNonEmptyString(defaultCwd, "defaultCwd");
+  const normalizedGitAuth = normalizeGitAuth(gitAuth);
+  const localBashOperations = createLocalBashOperations();
+
+  return {
+    exec(command, cwd, execOptions) {
+      const effectiveCwd = assertNonEmptyString(cwd || normalizedDefaultCwd, "cwd");
+      if (normalizedGitAuth === null) {
+        return localBashOperations.exec(command, effectiveCwd, execOptions);
+      }
+
+      const parsedGitCommand = parseGitCommandForRuntimeAuth(command, effectiveCwd);
+      if (parsedGitCommand === null) {
+        return localBashOperations.exec(command, effectiveCwd, execOptions);
+      }
+
+      return executeGitCommand(parsedGitCommand, execOptions, normalizedGitAuth);
+    },
+  };
+}
+
+export function createGitAwareBashTool(cwd, gitAuth) {
+  const normalizedCwd = assertNonEmptyString(cwd, "cwd");
+  return createBashTool(normalizedCwd, {
+    operations: createGitRuntimeBashOperations(normalizedCwd, gitAuth),
+  });
+}
+```
+
 ## sidecar.js
 
 The sidecar implementation. It runs a `net.Server` on a Unix domain socket,
@@ -13888,11 +16698,14 @@ import {
   ModelRegistry,
   SessionManager,
   SettingsManager,
-  createCodingTools,
+  createEditTool,
+  createReadTool,
+  createWriteTool,
 } from "@mariozechner/pi-coding-agent";
 import { getOAuthProvider } from "@mariozechner/pi-ai/oauth";
 
 import { HEALTH_CHECK_INTERVAL } from "./constants.js";
+import { createGitAwareBashTool } from "./git_auth.js";
 
 const __sidecarDir = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_MODEL_REF = "minimax/MiniMax-M2.7";
@@ -13902,8 +16715,6 @@ const LEGACY_MODEL_ALIASES = new Map([
   ["minimax-m2.5-highspeed", "minimax/MiniMax-M2.5-highspeed"],
   ["minimax-m2.7", DEFAULT_MODEL_REF],
   ["minimax-m2.7-highspeed", "minimax/MiniMax-M2.7-highspeed"],
-  ["minimax-m2.7-highspeed", "minimax/MiniMax-M2.7-highspeed"],
-  ["minimax-m2.7", DEFAULT_MODEL_REF],
   ["opus", "anthropic/claude-opus-4-20250514"],
   ["sonnet", "anthropic/claude-sonnet-4-20250514"],
 ]);
@@ -13949,6 +16760,15 @@ function buildModelsJsonPath(agentDir) {
     return null;
   }
   return modelsJsonPath;
+}
+
+function createYinshiCodingTools(cwd, gitAuth) {
+  return [
+    createReadTool(cwd),
+    createGitAwareBashTool(cwd, gitAuth),
+    createEditTool(cwd),
+    createWriteTool(cwd),
+  ];
 }
 
 function normalizeApiKeyWithConfigSecret(secret) {
@@ -14332,6 +17152,10 @@ export class YinshiSidecar {
   }
 
   handleRequest(request, socket) {
+    if (!request || typeof request !== "object") {
+      sendToSocket(socket, { id: "unknown", type: "error", error: "Invalid request format" });
+      return;
+    }
     const { type, id } = request;
     switch (type) {
       case "auth_resolve":
@@ -14607,7 +17431,7 @@ export class YinshiSidecar {
     });
   }
 
-  async _createPiSession(sessionId, modelRef, cwd, providerAuth, providerConfig, agentDir, importedSettings) {
+  async _createPiSession(sessionId, modelRef, cwd, providerAuth, providerConfig, gitAuth, agentDir, importedSettings) {
     const { authStorage: sessionAuth } = createModelRegistry(providerAuth, agentDir);
     const sessionRegistry = new ModelRegistry(sessionAuth, buildModelsJsonPath(agentDir));
     const model = resolveModel(modelRef, providerAuth, agentDir, providerConfig);
@@ -14625,7 +17449,7 @@ export class YinshiSidecar {
       cwd,
       model,
       thinkingLevel: "off",
-      tools: createCodingTools(cwd),
+      tools: createYinshiCodingTools(cwd, gitAuth),
       sessionManager: SessionManager.inMemory(),
       settingsManager,
       authStorage: sessionAuth,
@@ -14653,6 +17477,7 @@ export class YinshiSidecar {
     const cwd = options.cwd || process.cwd();
     const providerAuth = options.providerAuth || null;
     const providerConfig = options.providerConfig || null;
+    const gitAuth = options.gitAuth || null;
     const agentDir = options.agentDir || null;
     const importedSettings = options.settings || null;
 
@@ -14663,6 +17488,7 @@ export class YinshiSidecar {
         cwd,
         providerAuth,
         providerConfig,
+        gitAuth,
         agentDir,
         importedSettings,
       );
@@ -14673,7 +17499,9 @@ export class YinshiSidecar {
         cwd,
         providerAuth,
         providerConfig,
+        gitAuth,
         unsubscribe: null,
+        cancelRequested: false,
       });
       console.log(`[sidecar] Warmed up session ${sessionId}`);
     } catch (err) {
@@ -14687,14 +17515,16 @@ export class YinshiSidecar {
     const cwd = options.cwd || process.cwd();
     const providerAuth = options.providerAuth || null;
     const providerConfig = options.providerConfig || null;
+    const gitAuth = options.gitAuth || null;
     const agentDir = options.agentDir || null;
     const importedSettings = options.settings || null;
+    let entry = this.activeSessions.get(sessionId);
 
     try {
-      let entry = this.activeSessions.get(sessionId);
       const authChanged = JSON.stringify(entry?.providerAuth || null) !== JSON.stringify(providerAuth);
       const configChanged = JSON.stringify(entry?.providerConfig || null) !== JSON.stringify(providerConfig);
-      if (!entry || entry.modelRef !== modelRef || authChanged || configChanged) {
+      const gitAuthChanged = JSON.stringify(entry?.gitAuth || null) !== JSON.stringify(gitAuth);
+      if (!entry || entry.modelRef !== modelRef || authChanged || configChanged || gitAuthChanged) {
         if (entry) {
           if (entry.unsubscribe) {
             entry.unsubscribe();
@@ -14707,6 +17537,7 @@ export class YinshiSidecar {
           cwd,
           providerAuth,
           providerConfig,
+          gitAuth,
           agentDir,
           importedSettings,
         );
@@ -14717,7 +17548,9 @@ export class YinshiSidecar {
           cwd,
           providerAuth,
           providerConfig,
+          gitAuth,
           unsubscribe: null,
+          cancelRequested: false,
         };
         this.activeSessions.set(sessionId, entry);
       }
@@ -14795,13 +17628,26 @@ export class YinshiSidecar {
       });
 
       await piSession.prompt(prompt);
+      // Clear cancelRequested after normal completion
+      entry.cancelRequested = false;
     } catch (err) {
-      console.error(`[sidecar] Error in session ${sessionId}:`, err.message);
-      sendToSocket(socket, {
-        id: sessionId,
-        type: "error",
-        error: err.message,
-      });
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      if (entry?.cancelRequested) {
+        console.log(`[sidecar] Session ${sessionId} cancelled by user`);
+        sendToSocket(socket, {
+          id: sessionId,
+          type: "cancelled",
+        });
+        // Clear cancelRequested after handling cancellation
+        entry.cancelRequested = false;
+      } else {
+        console.error(`[sidecar] Error in session ${sessionId}:`, errorMessage);
+        sendToSocket(socket, {
+          id: sessionId,
+          type: "error",
+          error: errorMessage,
+        });
+      }
     }
   }
 
@@ -14812,6 +17658,7 @@ export class YinshiSidecar {
       return;
     }
     console.log(`[sidecar] Cancelling session ${sessionId}`);
+    entry.cancelRequested = true;
     await entry.piSession.abort();
   }
 
