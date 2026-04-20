@@ -27,11 +27,29 @@ export default function SlashCommandMenu({
 
   if (filtered.length === 0) return null;
 
+  const piCount = filtered.filter((cmd) => cmd.source === "pi").length;
+  const builtinCount = filtered.length - piCount;
+
   return (
     <div
       role="listbox"
-      className="absolute bottom-full left-0 right-0 mb-1 max-h-48 overflow-y-auto rounded-xl border border-gray-700 bg-gray-900 shadow-lg"
+      // max-h-80 (20rem = 320px, ~8 items) with overflow scroll gives users a
+      // clear signal that the list continues. Smaller caps (max-h-48) hid the
+      // pi skills below the fold and made 130+ entries invisible without a
+      // discoverable scroll affordance.
+      className="absolute bottom-full left-0 right-0 mb-1 max-h-80 overflow-y-auto rounded-xl border border-gray-700 bg-gray-900 shadow-lg"
     >
+      <div className="sticky top-0 flex items-center justify-between border-b border-gray-800 bg-gray-900 px-3 py-1.5 text-xs text-gray-500">
+        <span>
+          {filtered.length} command{filtered.length === 1 ? "" : "s"}
+          {piCount > 0 && builtinCount > 0 && (
+            <span className="ml-1 text-gray-600">
+              ({builtinCount} builtin, {piCount} from Pi config)
+            </span>
+          )}
+        </span>
+        <span className="font-mono text-gray-600">scroll to see all</span>
+      </div>
       {filtered.map((cmd, i) => (
         <div
           key={`${cmd.source}:${cmd.name}`}
@@ -47,10 +65,14 @@ export default function SlashCommandMenu({
               : "text-gray-300 hover:bg-gray-800/50"
           }`}
         >
-          <span className="font-mono font-medium text-blue-500">
+          <span
+            className={`font-mono font-medium ${
+              cmd.source === "builtin" ? "text-blue-500" : "text-emerald-400"
+            }`}
+          >
             /{cmd.name}
           </span>
-          <span className="text-gray-500">{cmd.description}</span>
+          <span className="truncate text-gray-500">{cmd.description}</span>
         </div>
       ))}
     </div>
