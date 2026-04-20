@@ -111,6 +111,9 @@ function createWebUIContext(sessionId, socket, model) {
 
   return {
     notify(message, level = "info") {
+      console.log(
+        `[sidecar][ui.notify] session=${sessionId} level=${level} len=${String(message).length}`,
+      );
       emitWarningText(message, level);
     },
     setStatus() {},
@@ -1017,8 +1020,12 @@ export class YinshiSidecar {
     // handlers call ctx.ui.notify() can surface output in the chat. Without
     // this binding, notify() calls silently vanish in RPC mode.
     const runner = session.extensionRunner;
+    console.log(
+      `[sidecar] session ${sessionId} extensionRunner=${runner ? "present" : "MISSING"}`,
+    );
     if (runner) {
       runner.setUIContext(createWebUIContext(sessionId, socket, model));
+      console.log(`[sidecar] session ${sessionId} UI context bound`);
     }
     console.log(
       `[sidecar] Created pi session ${sessionId} with model ${model.name || model.id}`
