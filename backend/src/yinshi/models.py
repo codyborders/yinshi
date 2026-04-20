@@ -1,7 +1,7 @@
 """Pydantic models for API request/response schemas."""
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -412,35 +412,27 @@ class PiConfigOut(BaseModel):
     enabled_categories: list[str]
 
 
-class PiSkillCommand(BaseModel):
-    """One skill exposed as a slash command."""
+class PiCommand(BaseModel):
+    """One slash command exposed from the user's imported Pi config.
 
+    The ``kind`` discriminator preserves the source of the command so the UI
+    can group or style entries, while keeping the wire format flat. Fields
+    are the minimum needed to render + invoke the command; host filesystem
+    paths and rarely-used metadata are intentionally omitted.
+    """
+
+    kind: Literal["skill", "prompt", "extension"]
     name: str
     description: str = ""
     command_name: str
-    disable_model_invocation: bool = False
-
-
-class PiPromptCommand(BaseModel):
-    """One prompt template exposed as a slash command."""
-
-    name: str
-    description: str = ""
-    command_name: str
-
-
-class PiExtensionCommand(BaseModel):
-    """One extension-registered slash command."""
-
-    name: str
-    description: str = ""
-    command_name: str
-    extension_path: str | None = None
 
 
 class PiConfigCommandsOut(BaseModel):
-    """Slash commands resolved from the imported Pi config."""
+    """Slash commands resolved from the imported Pi config.
 
-    skills: list[PiSkillCommand] = Field(default_factory=list)
-    prompts: list[PiPromptCommand] = Field(default_factory=list)
-    extension_commands: list[PiExtensionCommand] = Field(default_factory=list)
+    See sidecar/src/sidecar.js listResources for the producer side. The
+    wire contract is a single flat list; the ``kind`` field on each entry
+    distinguishes skills, prompts, and extension-registered commands.
+    """
+
+    commands: list[PiCommand] = Field(default_factory=list)

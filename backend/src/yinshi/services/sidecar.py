@@ -4,11 +4,26 @@ import asyncio
 import json
 import logging
 from collections.abc import AsyncGenerator
-from typing import Any
+from typing import Any, TypedDict
 
 from yinshi.config import get_settings
 from yinshi.exceptions import SidecarError, SidecarNotConnectedError
 from yinshi.model_catalog import DEFAULT_SESSION_MODEL
+
+
+class PiCommandPayload(TypedDict):
+    """One slash command as serialized over the sidecar socket."""
+
+    kind: str
+    name: str
+    description: str
+    command_name: str
+
+
+class PiCommandsPayload(TypedDict):
+    """Wire shape returned by the sidecar's list_resources handler."""
+
+    commands: list[PiCommandPayload]
 
 logger = logging.getLogger(__name__)
 
@@ -282,26 +297,37 @@ class SidecarClient:
             raise SidecarError(f"Unexpected response type: {msg.get('type')}")
         return msg
 
-    async def list_resources(self, *, agent_dir: str | None = None) -> dict[str, Any]:
-        """Request the list of skills, prompts, and extension commands from the sidecar."""
-        request_id = "list_resources"
+    async def list_imported_commands(
+        self, *, agent_dir: str | None = None
+    ) -> PiCommandsPayload:
+        """Request the slash commands discoverable from the user's imported Pi config.
+
+        Returns a flat ``commands`` list where each entry carries ``kind`` to
+        distinguish skills, prompts, and extension-registered commands.
+        Requests run on a dedicated connection (see create_sidecar_connection)
+        so the hardcoded request id never collides with concurrent calls.
+        """
         await self._send(
             {
                 "type": "list_resources",
-                "id": request_id,
+                "id": "list_imported_commands",
                 "options": {"agentDir": agent_dir} if agent_dir else {},
             }
         )
         msg = await self._read_line()
         if msg is None:
-            raise SidecarError("Sidecar connection lost during list_resources request")
+            raise SidecarError(
+                "Sidecar connection lost during list_imported_commands request"
+            )
         if msg.get("type") == "error":
             raise SidecarError(
-                f"list_resources request failed: {msg.get('error', 'unknown')}"
+                f"list_imported_commands failed: {msg.get('error', 'unknown')}"
             )
         if msg.get("type") != "resources":
             raise SidecarError(f"Unexpected response type: {msg.get('type')}")
-        return msg
+        raw_commands = msg.get("commands", [])
+        assert isinstance(raw_commands, list), "sidecar commands must be a list"
+        return {"commands": raw_commands}
 
     async def resolve_provider_auth(
         self,

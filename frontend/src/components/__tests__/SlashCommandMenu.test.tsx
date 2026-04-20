@@ -1,13 +1,13 @@
 import { render, screen, fireEvent } from "@testing-library/react";
 import { describe, it, expect, vi } from "vitest";
-import SlashCommandMenu from "../SlashCommandMenu";
+import SlashCommandMenu, { type SlashCommand } from "../SlashCommandMenu";
 
-const COMMANDS = [
-  { name: "help", description: "List available commands" },
-  { name: "model", description: "Show or change the AI model" },
-  { name: "tree", description: "Show workspace file tree" },
-  { name: "export", description: "Download chat as markdown" },
-  { name: "clear", description: "Clear chat display" },
+const COMMANDS: SlashCommand[] = [
+  { name: "help", description: "List available commands", source: "builtin" },
+  { name: "model", description: "Show or change the AI model", source: "builtin" },
+  { name: "tree", description: "Show workspace file tree", source: "builtin" },
+  { name: "export", description: "Download chat as markdown", source: "builtin" },
+  { name: "clear", description: "Clear chat display", source: "builtin" },
 ];
 
 describe("SlashCommandMenu", () => {
@@ -68,7 +68,7 @@ describe("SlashCommandMenu", () => {
     const items = screen.getAllByRole("option");
     // /tree is the third command (index 2)
     fireEvent.mouseDown(items[2]);
-    expect(onSelect).toHaveBeenCalledWith("tree");
+    expect(onSelect).toHaveBeenCalledWith(COMMANDS[2]);
   });
 
   it("returns null when no commands match filter", () => {

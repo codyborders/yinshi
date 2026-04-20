@@ -6,14 +6,23 @@ import SlashCommandMenu, { type SlashCommand } from "./SlashCommandMenu";
 import StreamingDots from "./StreamingDots";
 
 const SLASH_COMMANDS: SlashCommand[] = [
-  { name: "help", description: "List available commands" },
-  { name: "model", description: "Show or change the AI model" },
-  { name: "tree", description: "Show workspace file tree" },
-  { name: "export", description: "Download chat as markdown" },
-  { name: "clear", description: "Clear chat display" },
+  { name: "help", description: "List available commands", source: "builtin" },
+  { name: "model", description: "Show or change the AI model", source: "builtin" },
+  { name: "tree", description: "Show workspace file tree", source: "builtin" },
+  { name: "export", description: "Download chat as markdown", source: "builtin" },
+  { name: "clear", description: "Clear chat display", source: "builtin" },
 ];
 
-const YINSHI_COMMAND_NAMES = new Set(SLASH_COMMANDS.map((c) => c.name));
+const BUILTIN_COMMAND_NAMES = new Set(SLASH_COMMANDS.map((c) => c.name));
+
+// The textarea grows with content up to this height (in px); beyond that it scrolls.
+const INPUT_HEIGHT_MAX = 120;
+
+function resizeInput(element: HTMLTextAreaElement | null): void {
+  if (element === null) return;
+  element.style.height = "auto";
+  element.style.height = Math.min(element.scrollHeight, INPUT_HEIGHT_MAX) + "px";
+}
 
 interface ChatViewProps {
   messages: ChatMessage[];
@@ -77,25 +86,21 @@ export default function ChatView({
   const menuVisible = slashFilter !== null && filteredCommands.length > 0;
 
   const selectCommand = useCallback(
-    (name: string) => {
+    (command: SlashCommand) => {
       setShowMenu(false);
       setMenuIndex(0);
-      if (YINSHI_COMMAND_NAMES.has(name)) {
+      if (command.source === "builtin") {
         // Yinshi UI commands dispatch immediately and clear the input.
         setInput("");
-        if (inputRef.current) inputRef.current.style.height = "auto";
-        onCommand?.(name, "");
+        resizeInput(inputRef.current);
+        onCommand?.(command.name, "");
         return;
       }
       // Pi commands (skills, prompts, extensions) accept arguments. Insert the
-      // command with a trailing space so the user can add arguments before submitting.
-      const nextInput = `/${name} `;
-      setInput(nextInput);
-      if (inputRef.current) {
-        inputRef.current.focus();
-        inputRef.current.style.height = "auto";
-        inputRef.current.style.height = Math.min(inputRef.current.scrollHeight, 120) + "px";
-      }
+      // command with a trailing space so the user can add arguments before submit.
+      setInput(`/${command.name} `);
+      inputRef.current?.focus();
+      resizeInput(inputRef.current);
     },
     [onCommand],
   );
@@ -106,18 +111,19 @@ export default function ChatView({
       const text = input.trim();
       if (!text) return;
 
-      // Only intercept slash commands that are Yinshi UI commands. Pi skill /
-      // prompt / extension commands (including anything not in YINSHI_COMMAND_NAMES)
-      // pass through to onSend and pi executes them internally via session.prompt().
+      // Only intercept slash commands whose first token matches a builtin Yinshi
+      // UI command. Pi skill / prompt / extension commands pass through to onSend
+      // and pi executes them internally via session.prompt(). Builtins win on name
+      // collisions with imported pi commands by intent.
       if (text.startsWith("/")) {
         const parts = text.slice(1).split(/\s+/);
         const cmdName = parts[0]?.toLowerCase() ?? "";
         const cmdArgs = parts.slice(1).join(" ");
-        if (YINSHI_COMMAND_NAMES.has(cmdName)) {
+        if (BUILTIN_COMMAND_NAMES.has(cmdName)) {
           setInput("");
           setShowMenu(false);
           setMenuIndex(0);
-          if (inputRef.current) inputRef.current.style.height = "auto";
+          resizeInput(inputRef.current);
           onCommand?.(cmdName, cmdArgs);
           return;
         }
@@ -126,9 +132,7 @@ export default function ChatView({
       void onSend(text);
       setInput("");
       setShowMenu(false);
-      if (inputRef.current) {
-        inputRef.current.style.height = "auto";
-      }
+      resizeInput(inputRef.current);
     },
     [input, streaming, onSend, onCommand],
   );
@@ -151,7 +155,7 @@ export default function ChatView({
         if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
           e.preventDefault();
           const cmd = filteredCommands[menuIndex];
-          if (cmd) selectCommand(cmd.name);
+          if (cmd) selectCommand(cmd);
           return;
         }
         if (e.key === "Escape") {
@@ -170,12 +174,9 @@ export default function ChatView({
 
   const handleInputChange = useCallback(
     (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-      const val = e.target.value;
-      setInput(val);
+      setInput(e.target.value);
       setMenuIndex(0);
-      const el = e.target;
-      el.style.height = "auto";
-      el.style.height = Math.min(el.scrollHeight, 120) + "px";
+      resizeInput(e.target);
     },
     [],
   );

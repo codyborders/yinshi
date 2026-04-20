@@ -900,3 +900,87 @@ def test_extract_archive_counts_actual_decompressed_bytes(tmp_path) -> None:
             assert str(exc) == "Archive expands beyond the allowed size limit"
         else:
             raise AssertionError("Expected PiConfigError for oversized extracted content")
+
+
+def test_list_pi_config_commands_returns_empty_without_imported_config(
+    auth_client: TestClient,
+) -> None:
+    """Users with no imported Pi config get an empty commands list with zero sidecar work."""
+    # No upload has happened for this tenant, so agent_dir resolves to None and
+    # the route must short-circuit before calling the sidecar.
+    with patch(
+        "yinshi.api.settings.create_sidecar_connection",
+    ) as mock_connect:
+        response = auth_client.get("/api/settings/pi-config/commands")
+
+    assert response.status_code == 200
+    assert response.json() == {"commands": []}
+    assert mock_connect.call_count == 0
+
+
+def test_list_pi_config_commands_returns_sidecar_payload(
+    auth_client: TestClient,
+) -> None:
+    """After import, the route proxies the sidecar's commands list through pydantic."""
+    _activate_container_runtime()
+    upload_response = auth_client.post(
+        "/api/settings/pi-config/upload",
+        files={"file": ("pi-config.zip", _build_pi_archive(), "application/zip")},
+    )
+    assert upload_response.status_code == 201
+
+    fake_commands = [
+        {"kind": "skill", "name": "caveman", "description": "grunt", "command_name": "skill:caveman"},
+        {"kind": "prompt", "name": "greet", "description": "say hi", "command_name": "greet"},
+        {"kind": "extension", "name": "lint", "description": "run lint", "command_name": "lint"},
+    ]
+    mock_sidecar = AsyncMock()
+    mock_sidecar.list_imported_commands = AsyncMock(
+        return_value={"commands": fake_commands},
+    )
+    mock_sidecar.disconnect = AsyncMock()
+
+    with patch(
+        "yinshi.api.settings.create_sidecar_connection",
+        return_value=mock_sidecar,
+    ):
+        response = auth_client.get("/api/settings/pi-config/commands")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload == {"commands": fake_commands}
+    # The route must pass the resolved agent_dir through; don't assert the exact
+    # path (varies by test tmp dir) but confirm the sidecar was called.
+    assert mock_sidecar.list_imported_commands.await_count == 1
+    assert mock_sidecar.disconnect.await_count == 1
+
+
+def test_list_pi_config_commands_returns_503_on_sidecar_failure(
+    auth_client: TestClient,
+) -> None:
+    """Sidecar errors surface as 503 and still guarantee socket cleanup."""
+    from yinshi.exceptions import SidecarError
+
+    _activate_container_runtime()
+    upload_response = auth_client.post(
+        "/api/settings/pi-config/upload",
+        files={"file": ("pi-config.zip", _build_pi_archive(), "application/zip")},
+    )
+    assert upload_response.status_code == 201
+
+    mock_sidecar = AsyncMock()
+    mock_sidecar.list_imported_commands = AsyncMock(
+        side_effect=SidecarError("sidecar crashed mid-read"),
+    )
+    mock_sidecar.disconnect = AsyncMock()
+
+    with patch(
+        "yinshi.api.settings.create_sidecar_connection",
+        return_value=mock_sidecar,
+    ):
+        response = auth_client.get("/api/settings/pi-config/commands")
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Agent environment temporarily unavailable"
+    # The finally block must still close the socket even on failure.
+    assert mock_sidecar.disconnect.await_count == 1

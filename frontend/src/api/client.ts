@@ -107,30 +107,17 @@ export interface PiConfig {
   enabled_categories: string[];
 }
 
-export interface PiSkillCommand {
-  name: string;
-  description: string;
-  command_name: string;
-  disable_model_invocation: boolean;
-}
+export type PiCommandKind = "skill" | "prompt" | "extension";
 
-export interface PiPromptCommand {
+export interface PiCommand {
+  kind: PiCommandKind;
   name: string;
   description: string;
   command_name: string;
-}
-
-export interface PiExtensionCommand {
-  name: string;
-  description: string;
-  command_name: string;
-  extension_path: string | null;
 }
 
 export interface PiConfigCommands {
-  skills: PiSkillCommand[];
-  prompts: PiPromptCommand[];
-  extension_commands: PiExtensionCommand[];
+  commands: PiCommand[];
 }
 
 export interface Workspace {

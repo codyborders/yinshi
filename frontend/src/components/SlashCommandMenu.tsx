@@ -1,13 +1,18 @@
+export type SlashCommandSource = "builtin" | "pi";
+
 export interface SlashCommand {
   name: string;
   description: string;
+  // "builtin" dispatches to a Yinshi UI handler on click; "pi" inserts the
+  // command into the input so the user can supply arguments before submit.
+  source: SlashCommandSource;
 }
 
 interface SlashCommandMenuProps {
   filter: string;
   commands: SlashCommand[];
   selectedIndex: number;
-  onSelect: (name: string) => void;
+  onSelect: (command: SlashCommand) => void;
 }
 
 export default function SlashCommandMenu({
@@ -29,12 +34,12 @@ export default function SlashCommandMenu({
     >
       {filtered.map((cmd, i) => (
         <div
-          key={cmd.name}
+          key={`${cmd.source}:${cmd.name}`}
           role="option"
           aria-selected={i === selectedIndex}
           onMouseDown={(e) => {
             e.preventDefault();
-            onSelect(cmd.name);
+            onSelect(cmd);
           }}
           className={`flex cursor-pointer items-center gap-3 px-4 py-2 text-sm ${
             i === selectedIndex

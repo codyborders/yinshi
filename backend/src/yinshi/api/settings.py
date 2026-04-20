@@ -1,5 +1,7 @@
 """API key management endpoints (BYOK -- Bring Your Own Key)."""
 
+import asyncio
+import json
 import logging
 from typing import Any
 
@@ -215,47 +217,71 @@ def get_pi_config_route(request: Request) -> dict[str, Any]:
     return config
 
 
-_EMPTY_PI_COMMANDS: dict[str, list[Any]] = {
-    "skills": [],
-    "prompts": [],
-    "extension_commands": [],
-}
 _SIDECAR_UNAVAILABLE_DETAIL = "Agent environment temporarily unavailable"
 
 
 @router.get("/pi-config/commands", response_model=PiConfigCommandsOut)
 async def list_pi_config_commands(request: Request) -> dict[str, Any]:
-    """Return skills, prompts, and extension slash commands from the imported config."""
+    """Return the slash commands discoverable from the user's imported Pi config."""
     tenant = require_tenant(request)
+    assert tenant is not None, "require_tenant must raise rather than return None"
+
     try:
         tenant_sidecar_context = await resolve_tenant_sidecar_context(request, tenant)
     except (ContainerStartError, ContainerNotReadyError) as error:
+        logger.warning(
+            "pi-config/commands: container unavailable for user %s",
+            tenant.user_id[:8],
+            exc_info=True,
+        )
         raise HTTPException(status_code=503, detail=_SIDECAR_UNAVAILABLE_DETAIL) from error
 
     # No imported config means no custom commands -- skip the sidecar round trip.
     if tenant_sidecar_context.agent_dir is None:
-        return dict(_EMPTY_PI_COMMANDS)
+        return {"commands": []}
 
+    resources = await _fetch_imported_commands(
+        request, tenant, tenant_sidecar_context.socket_path, tenant_sidecar_context.agent_dir
+    )
+    assert isinstance(resources, dict), "sidecar list_imported_commands must return a dict"
+    return {"commands": resources.get("commands", [])}
+
+
+async def _fetch_imported_commands(
+    request: Request,
+    tenant: Any,
+    socket_path: str | None,
+    agent_dir: str,
+) -> dict[str, Any]:
+    """Open a sidecar connection, fetch commands, guarantee cleanup even on errors."""
     sidecar = None
     begin_tenant_container_activity(request, tenant)
     try:
-        sidecar = await create_sidecar_connection(tenant_sidecar_context.socket_path)
-        resources = await sidecar.list_resources(
-            agent_dir=tenant_sidecar_context.agent_dir,
+        sidecar = await create_sidecar_connection(socket_path)
+        return await sidecar.list_imported_commands(agent_dir=agent_dir)
+    except (OSError, SidecarError, json.JSONDecodeError, asyncio.TimeoutError) as error:
+        logger.warning(
+            "pi-config/commands: sidecar call failed for user %s",
+            tenant.user_id[:8],
+            exc_info=True,
         )
-    except (OSError, SidecarError) as error:
         raise HTTPException(status_code=503, detail=_SIDECAR_UNAVAILABLE_DETAIL) from error
     finally:
-        end_tenant_container_activity(request, tenant)
-        touch_tenant_container(request, tenant)
+        # Each cleanup call is independent. Guard individually so one failure
+        # doesn't skip the rest -- a missed disconnect leaks the socket.
+        try:
+            end_tenant_container_activity(request, tenant)
+        except Exception:
+            logger.exception("end_tenant_container_activity failed")
+        try:
+            touch_tenant_container(request, tenant)
+        except Exception:
+            logger.exception("touch_tenant_container failed")
         if sidecar is not None:
-            await sidecar.disconnect()
-
-    # Explicitly project the known fields to strip sidecar-internal keys (id/type)
-    # and match PiConfigCommandsOut exactly.
-    return {
-        key: resources.get(key, []) for key in _EMPTY_PI_COMMANDS
-    }
+            try:
+                await sidecar.disconnect()
+            except Exception:
+                logger.exception("sidecar disconnect failed")
 
 
 @router.post("/pi-config/github", response_model=PiConfigOut, status_code=201)

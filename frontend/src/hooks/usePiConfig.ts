@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import { ApiError, api, type PiConfig } from "../api/client";
+import { invalidatePiCommands } from "../api/piCommandsCache";
 
 export interface UsePiConfigReturn {
   config: PiConfig | null;
@@ -89,6 +90,7 @@ export function usePiConfig(): UsePiConfigReturn {
       if (isMountedRef.current) {
         setConfig(nextConfig);
       }
+      invalidatePiCommands();
       return true;
     } catch (requestError) {
       if (isMountedRef.current) {
@@ -110,6 +112,7 @@ export function usePiConfig(): UsePiConfigReturn {
       if (isMountedRef.current) {
         setConfig(nextConfig);
       }
+      invalidatePiCommands();
       return true;
     } catch (requestError) {
       if (isMountedRef.current) {
@@ -131,6 +134,7 @@ export function usePiConfig(): UsePiConfigReturn {
       if (isMountedRef.current) {
         setConfig(nextConfig);
       }
+      invalidatePiCommands();
       return true;
     } catch (requestError) {
       if (isMountedRef.current) {
@@ -151,6 +155,7 @@ export function usePiConfig(): UsePiConfigReturn {
       if (isMountedRef.current) {
         setConfig(null);
       }
+      invalidatePiCommands();
       return true;
     } catch (requestError) {
       if (isMountedRef.current) {
@@ -189,6 +194,7 @@ export function usePiConfig(): UsePiConfigReturn {
       if (isMountedRef.current) {
         setConfig(nextConfig);
       }
+      invalidatePiCommands();
       return true;
     } catch (requestError) {
       if (isMountedRef.current) {

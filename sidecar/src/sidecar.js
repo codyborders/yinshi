@@ -202,68 +202,135 @@ function getCatalog(agentDir) {
   };
 }
 
-function emptyResourcePayload() {
-  return { skills: [], prompts: [], extension_commands: [] };
+// Pi skill/prompt/extension names come from user-uploaded zips. Constrain them
+// to a conservative character class so they can't break palette rendering or
+// leak control chars into any downstream string interpolation. 64 chars matches
+// pi's own skill-name validation.
+const NAME_PATTERN = /^[a-zA-Z0-9_:.\-]{1,64}$/;
+const DESCRIPTION_LENGTH_MAX = 240;
+// Hard cap per category so a pathological zip can't balloon the JSON line or
+// the browser palette. Real configs are usually dozens; 500 is generous.
+const COMMANDS_PER_CATEGORY_MAX = 500;
+
+function safeName(rawName) {
+  if (typeof rawName !== "string") {
+    return null;
+  }
+  return NAME_PATTERN.test(rawName) ? rawName : null;
 }
 
-function toSkillSummary(skill) {
+function safeDescription(rawDescription) {
+  if (typeof rawDescription !== "string") {
+    return "";
+  }
+  return rawDescription.length > DESCRIPTION_LENGTH_MAX
+    ? rawDescription.slice(0, DESCRIPTION_LENGTH_MAX)
+    : rawDescription;
+}
+
+function skillToCommand(skill) {
+  const name = safeName(skill?.name);
+  if (name === null) {
+    return null;
+  }
   return {
-    name: skill.name,
-    description: typeof skill.description === "string" ? skill.description : "",
-    command_name: `skill:${skill.name}`,
-    disable_model_invocation: Boolean(skill.disableModelInvocation),
+    kind: "skill",
+    name,
+    description: safeDescription(skill?.description),
+    command_name: `skill:${name}`,
   };
 }
 
-function toPromptSummary(prompt) {
+function promptToCommand(prompt) {
+  const name = safeName(prompt?.name);
+  if (name === null) {
+    return null;
+  }
   return {
-    name: prompt.name,
-    description: typeof prompt.description === "string" ? prompt.description : "",
-    command_name: prompt.name,
+    kind: "prompt",
+    name,
+    description: safeDescription(prompt?.description),
+    command_name: name,
   };
 }
 
-function toExtensionCommandSummaries(extension) {
+function extensionToCommands(extension) {
   // Pi exposes extension-registered slash commands via the Extension.commands map
   // populated during loader.reload(); keys are the invocation names.
   if (!extension || !(extension.commands instanceof Map)) {
     return [];
   }
-  const extensionPath = extension.path || null;
-  const summaries = [];
-  for (const [commandName, registered] of extension.commands.entries()) {
-    if (typeof commandName !== "string" || !commandName) {
+  const commands = [];
+  for (const [rawCommandName, registered] of extension.commands.entries()) {
+    const name = safeName(rawCommandName);
+    if (name === null) {
       continue;
     }
-    const description =
-      registered && typeof registered.description === "string"
-        ? registered.description
-        : "";
-    summaries.push({
-      name: commandName,
-      description,
-      command_name: commandName,
-      extension_path: extensionPath,
+    commands.push({
+      kind: "extension",
+      name,
+      description: safeDescription(registered?.description),
+      command_name: name,
     });
   }
-  return summaries;
+  return commands;
 }
 
-function mapLoaderArray(loaderResult, property, transform) {
-  // Loader getters can return undefined on failure paths; normalise to empty
-  // so callers don't need to repeat the defensive check for every category.
-  const values = loaderResult?.[property];
-  if (!Array.isArray(values)) {
-    return [];
+// Cache the list_resources payload per agentDir keyed by the most-recent
+// mtime across the agent tree. Without this, every session mount re-evaluates
+// every extension module via jiti (moduleCache:false in the pi SDK), which
+// DoS-exposes the shared Node event loop.
+const _listResourcesCache = new Map();
+
+async function _collectAgentDirMtime(agentDir) {
+  // Find the max mtime across the agent tree. A skill file edit, a new
+  // extension dropped in, or a category-toggle rename all change this.
+  let maxMtimeMs = 0;
+  const pending = [agentDir];
+  while (pending.length > 0) {
+    const current = pending.pop();
+    let stats;
+    try {
+      stats = await fs.promises.stat(current);
+    } catch {
+      continue;
+    }
+    if (stats.mtimeMs > maxMtimeMs) {
+      maxMtimeMs = stats.mtimeMs;
+    }
+    if (!stats.isDirectory()) {
+      continue;
+    }
+    let entries;
+    try {
+      entries = await fs.promises.readdir(current);
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      pending.push(path.join(current, entry));
+    }
   }
-  return values.map(transform);
+  return maxMtimeMs;
+}
+
+function _capCommands(commands) {
+  return commands.length > COMMANDS_PER_CATEGORY_MAX
+    ? commands.slice(0, COMMANDS_PER_CATEGORY_MAX)
+    : commands;
 }
 
 async function listResources(agentDir) {
   // Without an imported agentDir we intentionally return nothing: the SDK would
   // otherwise fall back to the host's ~/.pi/agent and leak host-local resources.
   if (!agentDir || typeof agentDir !== "string") {
-    return emptyResourcePayload();
+    return { commands: [] };
+  }
+
+  const mtimeMs = await _collectAgentDirMtime(agentDir);
+  const cached = _listResourcesCache.get(agentDir);
+  if (cached && cached.mtimeMs === mtimeMs) {
+    return cached.payload;
   }
 
   const loader = new DefaultResourceLoader({
@@ -274,16 +341,23 @@ async function listResources(agentDir) {
   });
   await loader.reload();
 
+  const skillsResult = loader.getSkills();
+  const promptsResult = loader.getPrompts();
   const extensionsResult = loader.getExtensions();
-  const extensions = Array.isArray(extensionsResult?.extensions)
-    ? extensionsResult.extensions
-    : [];
 
-  return {
-    skills: mapLoaderArray(loader.getSkills(), "skills", toSkillSummary),
-    prompts: mapLoaderArray(loader.getPrompts(), "prompts", toPromptSummary),
-    extension_commands: extensions.flatMap(toExtensionCommandSummaries),
+  const skills = Array.isArray(skillsResult?.skills) ? skillsResult.skills : [];
+  const prompts = Array.isArray(promptsResult?.prompts) ? promptsResult.prompts : [];
+  const extensions = Array.isArray(extensionsResult?.extensions) ? extensionsResult.extensions : [];
+
+  const skillCommands = _capCommands(skills.map(skillToCommand).filter((c) => c !== null));
+  const promptCommands = _capCommands(prompts.map(promptToCommand).filter((c) => c !== null));
+  const extensionCommands = _capCommands(extensions.flatMap(extensionToCommands));
+
+  const payload = {
+    commands: [...skillCommands, ...promptCommands, ...extensionCommands],
   };
+  _listResourcesCache.set(agentDir, { mtimeMs, payload });
+  return payload;
 }
 
 function _normalizeManualInputPrompt(promptMessage) {
