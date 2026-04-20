@@ -60,7 +60,7 @@ def _validate_intake_path(intake_path: str) -> str:
     return intake_path
 
 
-@router.post("/rum/v2/{intake_path}")
+@router.post("/rum/api/v2/{intake_path}")
 async def proxy_datadog_intake(intake_path: str, request: Request) -> Response:
     """Forward a browser SDK intake POST to Datadog and relay the response."""
     validated_intake_path = _validate_intake_path(intake_path)

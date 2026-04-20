@@ -59,7 +59,7 @@ def test_proxy_forwards_rum_payload(
 
     with _patched_upstream(monkeypatch, handler) as captured:
         response = noauth_client.post(
-            "/rum/v2/rum?ddsource=browser&dd-api-key=pub_token",
+            "/rum/api/v2/rum?ddsource=browser&dd-api-key=pub_token",
             content=b'{"hello":"world"}',
             headers={"Content-Type": "text/plain;charset=UTF-8"},
         )
@@ -81,7 +81,7 @@ def test_proxy_accepts_replay_and_logs_paths(
     for intake_path in ("replay", "logs"):
         with _patched_upstream(monkeypatch, handler):
             response = noauth_client.post(
-                f"/rum/v2/{intake_path}?dd-api-key=pub_token",
+                f"/rum/api/v2/{intake_path}?dd-api-key=pub_token",
                 content=b"payload",
             )
         assert response.status_code == 200
@@ -92,7 +92,7 @@ def test_proxy_rejects_unknown_intake_path(
 ) -> None:
     """Unknown intake paths return 404 so the proxy cannot reach arbitrary URLs."""
     response = noauth_client.post(
-        "/rum/v2/secrets?dd-api-key=pub_token",
+        "/rum/api/v2/secrets?dd-api-key=pub_token",
         content=b"payload",
     )
     assert response.status_code == 404
@@ -114,7 +114,7 @@ def test_proxy_is_open_when_auth_enabled(
     with _patched_upstream(monkeypatch, handler):
         with FastAPIClient(app) as anonymous_client:
             response = anonymous_client.post(
-                "/rum/v2/rum?dd-api-key=pub_token",
+                "/rum/api/v2/rum?dd-api-key=pub_token",
                 content=b"payload",
             )
     assert response.status_code == 202
@@ -126,7 +126,7 @@ def test_proxy_rejects_oversized_declared_body(
     """A Content-Length above the cap is rejected before buffering."""
     oversize_bytes = datadog_proxy.MAX_BODY_BYTES + 1
     response = noauth_client.post(
-        "/rum/v2/rum?dd-api-key=pub_token",
+        "/rum/api/v2/rum?dd-api-key=pub_token",
         content=b"x",
         headers={"Content-Length": str(oversize_bytes)},
     )
@@ -144,7 +144,7 @@ def test_proxy_maps_upstream_timeout_to_504(
 
     with _patched_upstream(monkeypatch, handler):
         response = noauth_client.post(
-            "/rum/v2/rum?dd-api-key=pub_token",
+            "/rum/api/v2/rum?dd-api-key=pub_token",
             content=b"payload",
         )
     assert response.status_code == 504
@@ -165,7 +165,7 @@ def test_proxy_strips_cookie_and_host_headers(
     with _patched_upstream(monkeypatch, handler):
         noauth_client.cookies.set("session", "secret-value")
         response = noauth_client.post(
-            "/rum/v2/rum?dd-api-key=pub_token",
+            "/rum/api/v2/rum?dd-api-key=pub_token",
             content=b"payload",
         )
     assert response.status_code == 202
