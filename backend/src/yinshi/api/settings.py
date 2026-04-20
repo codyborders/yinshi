@@ -244,7 +244,13 @@ async def list_pi_config_commands(request: Request) -> dict[str, Any]:
         request, tenant, tenant_sidecar_context.socket_path, tenant_sidecar_context.agent_dir
     )
     assert isinstance(resources, dict), "sidecar list_imported_commands must return a dict"
-    return {"commands": resources.get("commands", [])}
+    commands = resources.get("commands", [])
+    logger.info(
+        "pi-config/commands: returning %d commands for user %s",
+        len(commands) if isinstance(commands, list) else -1,
+        tenant.user_id[:8],
+    )
+    return {"commands": commands}
 
 
 async def _fetch_imported_commands(
