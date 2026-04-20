@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import net from "node:net";
+import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -7,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import {
   createAgentSession,
   AuthStorage,
+  DefaultResourceLoader,
   ModelRegistry,
   SessionManager,
   SettingsManager,
@@ -197,6 +199,90 @@ function getCatalog(agentDir) {
     default_model: DEFAULT_MODEL_REF,
     providers,
     models,
+  };
+}
+
+function emptyResourcePayload() {
+  return { skills: [], prompts: [], extension_commands: [] };
+}
+
+function toSkillSummary(skill) {
+  return {
+    name: skill.name,
+    description: typeof skill.description === "string" ? skill.description : "",
+    command_name: `skill:${skill.name}`,
+    disable_model_invocation: Boolean(skill.disableModelInvocation),
+  };
+}
+
+function toPromptSummary(prompt) {
+  return {
+    name: prompt.name,
+    description: typeof prompt.description === "string" ? prompt.description : "",
+    command_name: prompt.name,
+  };
+}
+
+function toExtensionCommandSummaries(extension) {
+  // Pi exposes extension-registered slash commands via the Extension.commands map
+  // populated during loader.reload(); keys are the invocation names.
+  if (!extension || !(extension.commands instanceof Map)) {
+    return [];
+  }
+  const extensionPath = extension.path || null;
+  const summaries = [];
+  for (const [commandName, registered] of extension.commands.entries()) {
+    if (typeof commandName !== "string" || !commandName) {
+      continue;
+    }
+    const description =
+      registered && typeof registered.description === "string"
+        ? registered.description
+        : "";
+    summaries.push({
+      name: commandName,
+      description,
+      command_name: commandName,
+      extension_path: extensionPath,
+    });
+  }
+  return summaries;
+}
+
+function mapLoaderArray(loaderResult, property, transform) {
+  // Loader getters can return undefined on failure paths; normalise to empty
+  // so callers don't need to repeat the defensive check for every category.
+  const values = loaderResult?.[property];
+  if (!Array.isArray(values)) {
+    return [];
+  }
+  return values.map(transform);
+}
+
+async function listResources(agentDir) {
+  // Without an imported agentDir we intentionally return nothing: the SDK would
+  // otherwise fall back to the host's ~/.pi/agent and leak host-local resources.
+  if (!agentDir || typeof agentDir !== "string") {
+    return emptyResourcePayload();
+  }
+
+  const loader = new DefaultResourceLoader({
+    // Use a neutral cwd so project-local .pi/ directories under the sidecar's
+    // working directory don't bleed into this user's resource listing.
+    cwd: os.tmpdir(),
+    agentDir,
+  });
+  await loader.reload();
+
+  const extensionsResult = loader.getExtensions();
+  const extensions = Array.isArray(extensionsResult?.extensions)
+    ? extensionsResult.extensions
+    : [];
+
+  return {
+    skills: mapLoaderArray(loader.getSkills(), "skills", toSkillSummary),
+    prompts: mapLoaderArray(loader.getPrompts(), "prompts", toPromptSummary),
+    extension_commands: extensions.flatMap(toExtensionCommandSummaries),
   };
 }
 
@@ -479,6 +565,9 @@ export class YinshiSidecar {
       case "catalog":
         this.handleCatalog(id, socket, request.options || {});
         break;
+      case "list_resources":
+        void this.handleListResources(id, socket, request.options || {});
+        break;
       case "oauth_clear":
         this.clearOAuthFlow(id, socket, request.flowId);
         break;
@@ -521,6 +610,26 @@ export class YinshiSidecar {
         id: id || "catalog",
         type: "error",
         error: err instanceof Error ? err.message : "Failed to build model catalog",
+      });
+    }
+  }
+
+  async handleListResources(id, socket, options) {
+    try {
+      const resources = await listResources(options.agentDir || null);
+      sendToSocket(socket, {
+        id: id || "list_resources",
+        type: "resources",
+        ...resources,
+      });
+    } catch (err) {
+      sendToSocket(socket, {
+        id: id || "list_resources",
+        type: "error",
+        error:
+          err instanceof Error
+            ? err.message
+            : "Failed to list imported pi resources",
       });
     }
   }

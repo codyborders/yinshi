@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ChatMessage } from "../hooks/useAgentStream";
 import AssistantTurn from "./AssistantTurn";
 import MessageBubble from "./MessageBubble";
@@ -13,12 +13,18 @@ const SLASH_COMMANDS: SlashCommand[] = [
   { name: "clear", description: "Clear chat display" },
 ];
 
+const YINSHI_COMMAND_NAMES = new Set(SLASH_COMMANDS.map((c) => c.name));
+
 interface ChatViewProps {
   messages: ChatMessage[];
   streaming: boolean;
   onSend: (prompt: string) => void | Promise<void>;
   onCancel: () => void | Promise<void>;
   onCommand?: (name: string, args: string) => void | Promise<void>;
+  // Pi-provided slash commands (skills, prompts, extension commands). These
+  // are inserted into the input on click so the user can supply arguments,
+  // then submitted as a regular prompt that pi handles internally.
+  piCommands?: SlashCommand[];
 }
 
 export default function ChatView({
@@ -27,6 +33,7 @@ export default function ChatView({
   onSend,
   onCancel,
   onCommand,
+  piCommands,
 }: ChatViewProps) {
   const [input, setInput] = useState("");
   const [showMenu, setShowMenu] = useState(false);
@@ -52,12 +59,18 @@ export default function ChatView({
     }
   }, [messages]);
 
+  // Full palette = Yinshi UI commands + any imported pi skills/prompts/extensions.
+  const allCommands = useMemo<SlashCommand[]>(
+    () => [...SLASH_COMMANDS, ...(piCommands ?? [])],
+    [piCommands],
+  );
+
   // Compute slash command filter from current input
   const slashMatch = input.match(/^\/(\S*)$/);
   const slashFilter = slashMatch ? slashMatch[1] : null;
   const filteredCommands =
     slashFilter !== null
-      ? SLASH_COMMANDS.filter((c) =>
+      ? allCommands.filter((c) =>
           c.name.startsWith(slashFilter.toLowerCase()),
         )
       : [];
@@ -65,11 +78,24 @@ export default function ChatView({
 
   const selectCommand = useCallback(
     (name: string) => {
-      setInput("");
       setShowMenu(false);
       setMenuIndex(0);
-      if (inputRef.current) inputRef.current.style.height = "auto";
-      onCommand?.(name, "");
+      if (YINSHI_COMMAND_NAMES.has(name)) {
+        // Yinshi UI commands dispatch immediately and clear the input.
+        setInput("");
+        if (inputRef.current) inputRef.current.style.height = "auto";
+        onCommand?.(name, "");
+        return;
+      }
+      // Pi commands (skills, prompts, extensions) accept arguments. Insert the
+      // command with a trailing space so the user can add arguments before submitting.
+      const nextInput = `/${name} `;
+      setInput(nextInput);
+      if (inputRef.current) {
+        inputRef.current.focus();
+        inputRef.current.style.height = "auto";
+        inputRef.current.style.height = Math.min(inputRef.current.scrollHeight, 120) + "px";
+      }
     },
     [onCommand],
   );
@@ -80,18 +106,19 @@ export default function ChatView({
       const text = input.trim();
       if (!text) return;
 
-      // Intercept slash commands
+      // Only intercept slash commands that are Yinshi UI commands. Pi skill /
+      // prompt / extension commands (including anything not in YINSHI_COMMAND_NAMES)
+      // pass through to onSend and pi executes them internally via session.prompt().
       if (text.startsWith("/")) {
         const parts = text.slice(1).split(/\s+/);
         const cmdName = parts[0]?.toLowerCase() ?? "";
         const cmdArgs = parts.slice(1).join(" ");
-        const matched = SLASH_COMMANDS.find((c) => c.name === cmdName);
-        if (matched) {
+        if (YINSHI_COMMAND_NAMES.has(cmdName)) {
           setInput("");
           setShowMenu(false);
           setMenuIndex(0);
           if (inputRef.current) inputRef.current.style.height = "auto";
-          onCommand?.(matched.name, cmdArgs);
+          onCommand?.(cmdName, cmdArgs);
           return;
         }
       }
@@ -219,7 +246,7 @@ export default function ChatView({
         {menuVisible && (
           <SlashCommandMenu
             filter={slashFilter ?? ""}
-            commands={SLASH_COMMANDS}
+            commands={allCommands}
             selectedIndex={menuIndex}
             onSelect={selectCommand}
           />

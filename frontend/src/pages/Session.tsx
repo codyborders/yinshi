@@ -2,8 +2,10 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
 import { api, type Message } from "../api/client";
 import ChatView from "../components/ChatView";
+import type { SlashCommand } from "../components/SlashCommandMenu";
 import { useAgentStream, type ChatMessage } from "../hooks/useAgentStream";
 import { useCatalog } from "../hooks/useCatalog";
+import { usePiCommands } from "../hooks/usePiCommands";
 import {
   DEFAULT_SESSION_MODEL,
   availableSessionModelsMarkdown,
@@ -23,6 +25,7 @@ export default function Session() {
   const { messages, sendPrompt, cancel, streaming, setMessages } =
     useAgentStream(id);
   const { catalog, loading: loadingCatalog } = useCatalog();
+  const { commands: piCommands } = usePiCommands();
   const [sessionModel, setSessionModel] = useState(DEFAULT_SESSION_MODEL);
   const [loadingHistory, setLoadingHistory] = useState(true);
   const [historyError, setHistoryError] = useState<string | null>(null);
@@ -321,6 +324,20 @@ export default function Session() {
     [sendPrompt, thinkingOverride],
   );
 
+  // Flatten skills / prompts / extension commands into the palette format.
+  // Pi invokes these internally when the user submits "/<command_name> [args]".
+  const piSlashCommands = useMemo<SlashCommand[]>(() => {
+    const toSlashCommand = (entry: { command_name: string; description: string }): SlashCommand => ({
+      name: entry.command_name,
+      description: entry.description,
+    });
+    return [
+      ...piCommands.skills.map(toSlashCommand),
+      ...piCommands.prompts.map(toSlashCommand),
+      ...piCommands.extension_commands.map(toSlashCommand),
+    ];
+  }, [piCommands]);
+
   return (
     <>
       {/* Header */}
@@ -439,6 +456,7 @@ export default function Session() {
                 onSend={handleSend}
                 onCancel={cancel}
                 onCommand={handleCommand}
+                piCommands={piSlashCommands}
               />
             </div>
           </div>

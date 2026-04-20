@@ -282,6 +282,27 @@ class SidecarClient:
             raise SidecarError(f"Unexpected response type: {msg.get('type')}")
         return msg
 
+    async def list_resources(self, *, agent_dir: str | None = None) -> dict[str, Any]:
+        """Request the list of skills, prompts, and extension commands from the sidecar."""
+        request_id = "list_resources"
+        await self._send(
+            {
+                "type": "list_resources",
+                "id": request_id,
+                "options": {"agentDir": agent_dir} if agent_dir else {},
+            }
+        )
+        msg = await self._read_line()
+        if msg is None:
+            raise SidecarError("Sidecar connection lost during list_resources request")
+        if msg.get("type") == "error":
+            raise SidecarError(
+                f"list_resources request failed: {msg.get('error', 'unknown')}"
+            )
+        if msg.get("type") != "resources":
+            raise SidecarError(f"Unexpected response type: {msg.get('type')}")
+        return msg
+
     async def resolve_provider_auth(
         self,
         *,

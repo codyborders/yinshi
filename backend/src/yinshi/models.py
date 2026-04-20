@@ -410,3 +410,37 @@ class PiConfigOut(BaseModel):
     error_message: str | None = None
     available_categories: list[str]
     enabled_categories: list[str]
+
+
+class PiSkillCommand(BaseModel):
+    """One skill exposed as a slash command."""
+
+    name: str
+    description: str = ""
+    command_name: str
+    disable_model_invocation: bool = False
+
+
+class PiPromptCommand(BaseModel):
+    """One prompt template exposed as a slash command."""
+
+    name: str
+    description: str = ""
+    command_name: str
+
+
+class PiExtensionCommand(BaseModel):
+    """One extension-registered slash command."""
+
+    name: str
+    description: str = ""
+    command_name: str
+    extension_path: str | None = None
+
+
+class PiConfigCommandsOut(BaseModel):
+    """Slash commands resolved from the imported Pi config."""
+
+    skills: list[PiSkillCommand] = Field(default_factory=list)
+    prompts: list[PiPromptCommand] = Field(default_factory=list)
+    extension_commands: list[PiExtensionCommand] = Field(default_factory=list)

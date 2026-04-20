@@ -38,6 +38,15 @@ vi.mock("../../hooks/useCatalog", () => ({
   useCatalog: () => useCatalogMock(),
 }));
 
+vi.mock("../../hooks/usePiCommands", () => ({
+  usePiCommands: () => ({
+    commands: { skills: [], prompts: [], extension_commands: [] },
+    loading: false,
+    error: null,
+    reload: vi.fn(),
+  }),
+}));
+
 import Session from "../Session";
 
 function renderSession() {

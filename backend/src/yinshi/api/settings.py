@@ -7,16 +7,20 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, UploadFi
 
 from yinshi.api.deps import require_tenant
 from yinshi.exceptions import (
+    ContainerNotReadyError,
+    ContainerStartError,
     GitHubAccessError,
     GitHubAppError,
     KeyNotFoundError,
     PiConfigError,
     PiConfigNotFoundError,
+    SidecarError,
 )
 from yinshi.models import (
     ApiKeyCreate,
     ApiKeyOut,
     PiConfigCategoryUpdate,
+    PiConfigCommandsOut,
     PiConfigImport,
     PiConfigOut,
     ProviderConnectionCreate,
@@ -36,6 +40,13 @@ from yinshi.services.provider_connections import (
     create_provider_connection,
     delete_provider_connection,
     list_provider_connections,
+)
+from yinshi.services.sidecar import create_sidecar_connection
+from yinshi.services.sidecar_runtime import (
+    begin_tenant_container_activity,
+    end_tenant_container_activity,
+    resolve_tenant_sidecar_context,
+    touch_tenant_container,
 )
 
 logger = logging.getLogger(__name__)
@@ -202,6 +213,49 @@ def get_pi_config_route(request: Request) -> dict[str, Any]:
     if config is None:
         raise HTTPException(status_code=404, detail="Pi config not found")
     return config
+
+
+_EMPTY_PI_COMMANDS: dict[str, list[Any]] = {
+    "skills": [],
+    "prompts": [],
+    "extension_commands": [],
+}
+_SIDECAR_UNAVAILABLE_DETAIL = "Agent environment temporarily unavailable"
+
+
+@router.get("/pi-config/commands", response_model=PiConfigCommandsOut)
+async def list_pi_config_commands(request: Request) -> dict[str, Any]:
+    """Return skills, prompts, and extension slash commands from the imported config."""
+    tenant = require_tenant(request)
+    try:
+        tenant_sidecar_context = await resolve_tenant_sidecar_context(request, tenant)
+    except (ContainerStartError, ContainerNotReadyError) as error:
+        raise HTTPException(status_code=503, detail=_SIDECAR_UNAVAILABLE_DETAIL) from error
+
+    # No imported config means no custom commands -- skip the sidecar round trip.
+    if tenant_sidecar_context.agent_dir is None:
+        return dict(_EMPTY_PI_COMMANDS)
+
+    sidecar = None
+    begin_tenant_container_activity(request, tenant)
+    try:
+        sidecar = await create_sidecar_connection(tenant_sidecar_context.socket_path)
+        resources = await sidecar.list_resources(
+            agent_dir=tenant_sidecar_context.agent_dir,
+        )
+    except (OSError, SidecarError) as error:
+        raise HTTPException(status_code=503, detail=_SIDECAR_UNAVAILABLE_DETAIL) from error
+    finally:
+        end_tenant_container_activity(request, tenant)
+        touch_tenant_container(request, tenant)
+        if sidecar is not None:
+            await sidecar.disconnect()
+
+    # Explicitly project the known fields to strip sidecar-internal keys (id/type)
+    # and match PiConfigCommandsOut exactly.
+    return {
+        key: resources.get(key, []) for key in _EMPTY_PI_COMMANDS
+    }
 
 
 @router.post("/pi-config/github", response_model=PiConfigOut, status_code=201)
