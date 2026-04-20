@@ -85,15 +85,51 @@ function createYinshiCodingTools(cwd, gitAuth) {
   ];
 }
 
-// Extensions such as rtk-metrics report command output via ctx.ui.notify(),
-// which is designed for pi's interactive TUI. Without a bound UI context the
-// notifications vanish in RPC mode. This adapter surfaces notify() calls as
-// assistant chat messages so the user can see command results in the web UI.
-// The dialog-style methods return safe no-op defaults because the web UI
-// doesn't yet have an inline equivalent.
+// Pi's Theme is a color/styling helper for terminal output. In a web chat
+// we have no ANSI support, so every helper returns the text unchanged. The
+// shape matches interactive/theme/theme.d.ts so extensions calling
+// ctx.ui.theme.fg(...) or ctx.ui.theme.strikethrough(...) don't throw.
+function createPassthroughTheme() {
+  const passthrough = (_color, text) => (typeof text === "string" ? text : String(text ?? ""));
+  const onlyText = (text) => (typeof text === "string" ? text : String(text ?? ""));
+  return {
+    fg: passthrough,
+    bg: passthrough,
+    bold: onlyText,
+    italic: onlyText,
+    underline: onlyText,
+    inverse: onlyText,
+    strikethrough: onlyText,
+    getFgAnsi() {
+      return "";
+    },
+    getBgAnsi() {
+      return "";
+    },
+    getColorMode() {
+      return "none";
+    },
+    getThinkingBorderColor() {
+      return onlyText;
+    },
+    getBashModeBorderColor() {
+      return onlyText;
+    },
+    name: "web",
+    path: undefined,
+  };
+}
+
+// Extensions (rtk-metrics, plan-mode, etc.) drive their output through the
+// same ExtensionUIContext that pi's interactive TUI implements. Without a
+// bound context every method throws or no-ops and the command output never
+// reaches the user. This adapter fills in the full surface: notify() is
+// forwarded as chat text, dialog methods explain the limitation, and
+// text-styling/theme helpers are passthroughs so calls like
+// ctx.ui.theme.fg("accent", "...") don't throw inside a handler.
 function createWebUIContext(sessionId, socket, model) {
   function emitAssistantText(message) {
-    const text = typeof message === "string" ? message : String(message);
+    const text = typeof message === "string" ? message : String(message ?? "");
     sendToSocket(socket, {
       id: sessionId,
       type: "message",
@@ -104,44 +140,91 @@ function createWebUIContext(sessionId, socket, model) {
     });
   }
 
-  function emitWarningText(message, level) {
+  function emitWithLevel(message, level) {
     const prefix = level === "error" ? "Error: " : level === "warning" ? "Warning: " : "";
-    emitAssistantText(prefix + (typeof message === "string" ? message : String(message)));
+    emitAssistantText(prefix + (typeof message === "string" ? message : String(message ?? "")));
   }
 
+  const theme = createPassthroughTheme();
+
   return {
+    // ── notifications ────────────────────────────────────────────────
     notify(message, level = "info") {
       console.log(
-        `[sidecar][ui.notify] session=${sessionId} level=${level} len=${String(message).length}`,
+        `[sidecar][ui.notify] session=${sessionId} level=${level} len=${String(message ?? "").length}`,
       );
-      emitWarningText(message, level);
+      emitWithLevel(message, level);
     },
+    // ── status/widget/title (TUI-only surfaces) ──────────────────────
+    // Accept the calls so plan-mode and friends don't throw; the web UI
+    // doesn't render these yet, so they're ignored rather than displayed.
     setStatus() {},
     setWorkingMessage() {},
     setWidget() {},
+    setHeader() {},
+    setFooter() {},
+    setTitle() {},
+    // ── interactive dialogs ──────────────────────────────────────────
+    // None of these have a web equivalent yet. Emit a brief explanation
+    // so the user understands why a command that would prompt in local
+    // pi just terminates here, and return sensible defaults.
     async select() {
       emitAssistantText(
-        "Interactive selection is not available in the web UI; the extension needs to route this through a tool call instead.",
+        "Interactive selection is not yet supported in the web UI; cancelling the prompt.",
       );
       return undefined;
     },
     async confirm() {
       emitAssistantText(
-        "Interactive confirmation is not available in the web UI; defaulting to no.",
+        "Interactive confirmation is not yet supported in the web UI; defaulting to no.",
       );
       return false;
     },
     async input() {
       emitAssistantText(
-        "Interactive text input is not available in the web UI; the extension needs to route this through a tool call instead.",
+        "Interactive text input is not yet supported in the web UI; cancelling the prompt.",
       );
       return undefined;
     },
+    async editor() {
+      emitAssistantText(
+        "The multi-line editor is not yet supported in the web UI; cancelling the prompt.",
+      );
+      return undefined;
+    },
+    async custom() {
+      emitAssistantText(
+        "Custom overlays are not yet supported in the web UI; cancelling the prompt.",
+      );
+      return undefined;
+    },
+    // ── editor shims (no-op since there's no pi TUI input line) ──────
+    pasteToEditor() {},
+    setEditorText() {},
+    getEditorText() {
+      return "";
+    },
+    setEditorComponent() {},
     onTerminalInput() {
       return () => {};
     },
-    // Some extensions read model info off the ctx via non-standard paths;
-    // expose the active model name defensively so lookups don't crash.
+    // ── theme surface ────────────────────────────────────────────────
+    theme,
+    getAllThemes() {
+      return [{ name: theme.name, path: undefined }];
+    },
+    getTheme() {
+      return theme;
+    },
+    setTheme() {
+      return { success: false, error: "Theme switching is not supported in the web UI" };
+    },
+    // ── tool output expansion (TUI setting, N/A for chat) ────────────
+    getToolsExpanded() {
+      return true;
+    },
+    setToolsExpanded() {},
+    // Defensive metadata in case extensions read non-standard properties.
     modelName: model?.name,
   };
 }
