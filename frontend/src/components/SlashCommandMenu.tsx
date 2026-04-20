@@ -1,3 +1,5 @@
+import { useEffect, useRef } from "react";
+
 export type SlashCommandSource = "builtin" | "pi";
 
 export interface SlashCommand {
@@ -21,9 +23,23 @@ export default function SlashCommandMenu({
   selectedIndex,
   onSelect,
 }: SlashCommandMenuProps) {
+  const selectedRef = useRef<HTMLDivElement>(null);
+
   const filtered = commands.filter((cmd) =>
     cmd.name.startsWith(filter.toLowerCase()),
   );
+
+  // When arrow-key navigation moves the highlight past the visible fold,
+  // keep the selected row on-screen by scrolling the container. Using
+  // block:"nearest" avoids yanking the whole list on small moves. The
+  // existence check covers jsdom, which does not implement scrollIntoView.
+  useEffect(() => {
+    const selected = selectedRef.current;
+    if (selected === null || typeof selected.scrollIntoView !== "function") {
+      return;
+    }
+    selected.scrollIntoView({ block: "nearest" });
+  }, [selectedIndex, filtered.length]);
 
   if (filtered.length === 0) return null;
 
@@ -48,11 +64,14 @@ export default function SlashCommandMenu({
             </span>
           )}
         </span>
-        <span className="font-mono text-gray-600">scroll to see all</span>
+        <span className="font-mono text-gray-600">
+          &uarr;&darr; navigate &middot; tab to pick
+        </span>
       </div>
       {filtered.map((cmd, i) => (
         <div
           key={`${cmd.source}:${cmd.name}`}
+          ref={i === selectedIndex ? selectedRef : null}
           role="option"
           aria-selected={i === selectedIndex}
           onMouseDown={(e) => {
