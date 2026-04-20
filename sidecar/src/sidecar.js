@@ -1014,6 +1014,9 @@ export class YinshiSidecar {
     const agentDir = options.agentDir || null;
     const importedSettings = options.settings || null;
     let entry = this.activeSessions.get(sessionId);
+    console.log(
+      `[sidecar] processQuery session=${sessionId} model=${modelRef} hasEntry=${!!entry} promptLen=${prompt?.length ?? 0}`,
+    );
 
     try {
       const authChanged = JSON.stringify(entry?.providerAuth || null) !== JSON.stringify(providerAuth);
@@ -1059,6 +1062,9 @@ export class YinshiSidecar {
       let usage = null;
 
       entry.unsubscribe = piSession.subscribe((event) => {
+        // Temporary diagnostic so we can see every event pi emits while we
+        // track down why turns never reach the browser.
+        console.log(`[sidecar][event] session=${sessionId} type=${event.type}`);
         switch (event.type) {
           case "message_update": {
             const assistantEvent = event.assistantMessageEvent;
@@ -1122,7 +1128,9 @@ export class YinshiSidecar {
         }
       });
 
+      console.log(`[sidecar] piSession.prompt start session=${sessionId}`);
       await piSession.prompt(prompt);
+      console.log(`[sidecar] piSession.prompt end session=${sessionId}`);
       // Clear cancelRequested after normal completion
       entry.cancelRequested = false;
     } catch (err) {
