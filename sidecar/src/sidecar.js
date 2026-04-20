@@ -85,6 +85,64 @@ function createYinshiCodingTools(cwd, gitAuth) {
   ];
 }
 
+// Extensions such as rtk-metrics report command output via ctx.ui.notify(),
+// which is designed for pi's interactive TUI. Without a bound UI context the
+// notifications vanish in RPC mode. This adapter surfaces notify() calls as
+// assistant chat messages so the user can see command results in the web UI.
+// The dialog-style methods return safe no-op defaults because the web UI
+// doesn't yet have an inline equivalent.
+function createWebUIContext(sessionId, socket, model) {
+  function emitAssistantText(message) {
+    const text = typeof message === "string" ? message : String(message);
+    sendToSocket(socket, {
+      id: sessionId,
+      type: "message",
+      data: {
+        type: "assistant",
+        message: { content: [{ type: "text", text }] },
+      },
+    });
+  }
+
+  function emitWarningText(message, level) {
+    const prefix = level === "error" ? "Error: " : level === "warning" ? "Warning: " : "";
+    emitAssistantText(prefix + (typeof message === "string" ? message : String(message)));
+  }
+
+  return {
+    notify(message, level = "info") {
+      emitWarningText(message, level);
+    },
+    setStatus() {},
+    setWorkingMessage() {},
+    setWidget() {},
+    async select() {
+      emitAssistantText(
+        "Interactive selection is not available in the web UI; the extension needs to route this through a tool call instead.",
+      );
+      return undefined;
+    },
+    async confirm() {
+      emitAssistantText(
+        "Interactive confirmation is not available in the web UI; defaulting to no.",
+      );
+      return false;
+    },
+    async input() {
+      emitAssistantText(
+        "Interactive text input is not available in the web UI; the extension needs to route this through a tool call instead.",
+      );
+      return undefined;
+    },
+    onTerminalInput() {
+      return () => {};
+    },
+    // Some extensions read model info off the ctx via non-standard paths;
+    // expose the active model name defensively so lookups don't crash.
+    modelName: model?.name,
+  };
+}
+
 function normalizeApiKeyWithConfigSecret(secret) {
   if (typeof secret === "string") {
     const normalizedSecret = secret.trim();
@@ -926,7 +984,7 @@ export class YinshiSidecar {
     });
   }
 
-  async _createPiSession(sessionId, modelRef, cwd, providerAuth, providerConfig, gitAuth, agentDir, importedSettings) {
+  async _createPiSession(sessionId, socket, modelRef, cwd, providerAuth, providerConfig, gitAuth, agentDir, importedSettings) {
     const { authStorage: sessionAuth } = createModelRegistry(providerAuth, agentDir);
     const sessionRegistry = new ModelRegistry(sessionAuth, buildModelsJsonPath(agentDir));
     const model = resolveModel(modelRef, providerAuth, agentDir, providerConfig);
@@ -955,6 +1013,13 @@ export class YinshiSidecar {
     }
 
     const { session } = await createAgentSession(sessionOptions);
+    // Bind a web-friendly UI context so extensions (e.g. rtk-metrics) whose
+    // handlers call ctx.ui.notify() can surface output in the chat. Without
+    // this binding, notify() calls silently vanish in RPC mode.
+    const runner = session.extensionRunner;
+    if (runner) {
+      runner.setUIContext(createWebUIContext(sessionId, socket, model));
+    }
     console.log(
       `[sidecar] Created pi session ${sessionId} with model ${model.name || model.id}`
       + (agentDir ? ` and agentDir ${agentDir}` : ""),
@@ -979,6 +1044,7 @@ export class YinshiSidecar {
     try {
       const { session: piSession, model } = await this._createPiSession(
         sessionId,
+        socket,
         modelRef,
         cwd,
         providerAuth,
@@ -1031,6 +1097,7 @@ export class YinshiSidecar {
         }
         const { session: piSession, model } = await this._createPiSession(
           sessionId,
+          socket,
           modelRef,
           cwd,
           providerAuth,
@@ -1060,6 +1127,12 @@ export class YinshiSidecar {
       }
 
       let usage = null;
+      // When pi handles a prompt as an extension command (text starting with
+      // "/" that matches a registered command), it returns from prompt()
+      // without firing "agent_end". The stream would hang forever waiting
+      // for a "result" event. Track whether agent_end fired so we can emit
+      // a synthetic one after prompt() resolves.
+      let agentEndEmitted = false;
 
       entry.unsubscribe = piSession.subscribe((event) => {
         // Temporary diagnostic so we can see every event pi emits while we
@@ -1116,6 +1189,7 @@ export class YinshiSidecar {
               },
             });
             usage = null;
+            agentEndEmitted = true;
             break;
           case "auto_retry_start":
             console.log(
@@ -1133,6 +1207,23 @@ export class YinshiSidecar {
       console.log(`[sidecar] piSession.prompt end session=${sessionId}`);
       // Clear cancelRequested after normal completion
       entry.cancelRequested = false;
+
+      // Pi returns from prompt() without firing agent_end when it handles an
+      // extension command inline (e.g. `/rtk-stats`). Synthesise the result
+      // event so the client stream loop terminates cleanly instead of hanging.
+      if (!agentEndEmitted) {
+        console.log(`[sidecar] synthesising result for session ${sessionId}`);
+        sendToSocket(socket, {
+          id: sessionId,
+          type: "message",
+          data: {
+            type: "result",
+            usage: usage || {},
+            provider: model.provider,
+            model: `${model.provider}/${model.id}`,
+          },
+        });
+      }
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : String(err);
       if (entry?.cancelRequested) {
