@@ -43,6 +43,10 @@ export default defineConfig({
         target: "http://localhost:8000",
         changeOrigin: true,
       },
+      "/rum": {
+        target: "http://localhost:8000",
+        changeOrigin: true,
+      },
     },
   },
 });

@@ -24,6 +24,9 @@ const initDatadogRum = () => {
     trackUserInteractions: true,
     trackLongTasks: true,
     defaultPrivacyLevel: "allow",
+    // Route intake through our own origin so DNS-level blockers targeting
+    // `browser-intake-datadoghq.com` (e.g. NextDNS, Pi-hole) cannot break RUM.
+    proxy: (options) => `/rum${options.path}?${options.parameters}`,
     plugins: [reactPlugin({ router: false })],
   });
 };

@@ -11,7 +11,17 @@ from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from starlette.middleware.sessions import SessionMiddleware
 
-from yinshi.api import auth_routes, catalog, github, repos, sessions, settings, stream, workspaces
+from yinshi.api import (
+    auth_routes,
+    catalog,
+    datadog_proxy,
+    github,
+    repos,
+    sessions,
+    settings,
+    stream,
+    workspaces,
+)
 from yinshi.auth import AuthMiddleware, setup_oauth
 from yinshi.config import get_settings
 from yinshi.db import init_control_db, init_db
@@ -91,6 +101,7 @@ app.add_middleware(
 # Routes
 app.include_router(auth_routes.router)
 app.include_router(catalog.router)
+app.include_router(datadog_proxy.router)
 app.include_router(github.router)
 app.include_router(repos.router)
 app.include_router(workspaces.router)

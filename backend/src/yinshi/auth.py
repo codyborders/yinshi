@@ -226,7 +226,9 @@ def _resolve_tenant_from_user_id(user_id: str) -> TenantContext | None:
 class AuthMiddleware(BaseHTTPMiddleware):
     """Middleware that checks for valid session cookie on protected routes."""
 
-    OPEN_PREFIXES = ("/auth/", "/health", "/static/")
+    # `/rum/` is the Datadog browser-intake proxy; the SDK cannot send auth
+    # cookies or the `X-Requested-With` CSRF header, so keep it public.
+    OPEN_PREFIXES = ("/auth/", "/health", "/static/", "/rum/")
 
     async def dispatch(
         self,
