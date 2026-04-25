@@ -50,23 +50,14 @@ def test_catalog_filters_unsupported_providers(auth_client: TestClient) -> None:
         }
     )
 
-    tenant = getattr(auth_client, "yinshi_tenant")
-    from yinshi.services.sidecar_runtime import TenantSidecarContext
-
-    tenant_sidecar_context = TenantSidecarContext(
-        socket_path="/tmp/tenant-sidecar.sock",
-        agent_dir=str(tenant.data_dir),
-        settings_payload=None,
-    )
-
     with (
         patch(
             "yinshi.api.catalog.create_sidecar_connection", return_value=mock_sidecar
         ) as create_conn,
         patch(
             "yinshi.api.catalog.resolve_tenant_sidecar_context",
-            new=AsyncMock(return_value=tenant_sidecar_context),
-        ),
+            new=AsyncMock(),
+        ) as resolve_context,
         patch("yinshi.api.catalog.touch_tenant_container") as touch_container,
     ):
         resp = auth_client.get("/api/catalog")
@@ -75,13 +66,14 @@ def test_catalog_filters_unsupported_providers(auth_client: TestClient) -> None:
     payload = resp.json()
     assert [provider["id"] for provider in payload["providers"]] == ["openai"]
     assert [model["provider"] for model in payload["models"]] == ["openai"]
-    create_conn.assert_awaited_once_with("/tmp/tenant-sidecar.sock")
-    mock_sidecar.get_catalog.assert_awaited_once_with(agent_dir=str(tenant.data_dir))
-    touch_container.assert_called_once()
+    create_conn.assert_awaited_once_with(None)
+    mock_sidecar.get_catalog.assert_awaited_once_with(agent_dir=None)
+    resolve_context.assert_not_awaited()
+    touch_container.assert_not_called()
 
 
-def test_catalog_returns_503_when_tenant_sidecar_is_unavailable(auth_client: TestClient) -> None:
-    """Catalog should fail closed when the tenant sidecar socket cannot be reached."""
+def test_catalog_returns_503_when_sidecars_are_unavailable(auth_client: TestClient) -> None:
+    """Catalog should fail closed when no sidecar socket can be reached."""
     from yinshi.exceptions import SidecarNotConnectedError
     from yinshi.services.sidecar_runtime import TenantSidecarContext
 

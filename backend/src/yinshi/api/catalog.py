@@ -10,6 +10,7 @@ from yinshi.api.deps import require_tenant
 from yinshi.exceptions import ContainerNotReadyError, ContainerStartError, SidecarError
 from yinshi.model_catalog import get_provider_metadata
 from yinshi.models import ProviderCatalogOut
+from yinshi.services.pi_config import resolve_effective_pi_runtime
 from yinshi.services.provider_connections import list_provider_connections
 from yinshi.services.sidecar import create_sidecar_connection
 from yinshi.services.sidecar_runtime import (
@@ -18,6 +19,7 @@ from yinshi.services.sidecar_runtime import (
     resolve_tenant_sidecar_context,
     touch_tenant_container,
 )
+from yinshi.tenant import TenantContext
 
 router = APIRouter(tags=["catalog"])
 
@@ -48,10 +50,24 @@ def _build_provider_entry(
     }
 
 
-@router.get("/api/catalog", response_model=ProviderCatalogOut)
-async def get_catalog(request: Request) -> dict[str, Any]:
-    """Return the current user's provider/model catalog."""
-    tenant = require_tenant(request)
+async def _load_catalog_from_sidecar(
+    *,
+    socket_path: str | None,
+    agent_dir: str | None,
+) -> dict[str, Any]:
+    """Load model catalog data from one sidecar socket."""
+    sidecar = await create_sidecar_connection(socket_path)
+    try:
+        return await sidecar.get_catalog(agent_dir=agent_dir)
+    finally:
+        await sidecar.disconnect()
+
+
+async def _load_catalog_with_tenant_container(
+    request: Request,
+    tenant: TenantContext,
+) -> dict[str, Any]:
+    """Fall back to the tenant container when no host sidecar is available."""
     try:
         tenant_sidecar_context = await resolve_tenant_sidecar_context(request, tenant)
     except (ContainerStartError, ContainerNotReadyError) as error:
@@ -59,14 +75,13 @@ async def get_catalog(request: Request) -> dict[str, Any]:
             status_code=503,
             detail="Agent environment temporarily unavailable",
         ) from error
-    connections = list_provider_connections(tenant.user_id)
-    connected_provider_ids = {connection["provider"] for connection in connections}
 
-    sidecar = None
     begin_tenant_container_activity(request, tenant)
     try:
-        sidecar = await create_sidecar_connection(tenant_sidecar_context.socket_path)
-        catalog = await sidecar.get_catalog(agent_dir=tenant_sidecar_context.agent_dir)
+        return await _load_catalog_from_sidecar(
+            socket_path=tenant_sidecar_context.socket_path,
+            agent_dir=tenant_sidecar_context.agent_dir,
+        )
     except (OSError, SidecarError) as error:
         raise HTTPException(
             status_code=503,
@@ -75,8 +90,26 @@ async def get_catalog(request: Request) -> dict[str, Any]:
     finally:
         end_tenant_container_activity(request, tenant)
         touch_tenant_container(request, tenant)
-        if sidecar is not None:
-            await sidecar.disconnect()
+
+
+@router.get("/api/catalog", response_model=ProviderCatalogOut)
+async def get_catalog(request: Request) -> dict[str, Any]:
+    """Return the current user's provider/model catalog."""
+    tenant = require_tenant(request)
+    connections = list_provider_connections(tenant.user_id)
+    connected_provider_ids = {connection["provider"] for connection in connections}
+    runtime_inputs = resolve_effective_pi_runtime(tenant.user_id, tenant.data_dir)
+
+    try:
+        # Catalog construction reads model metadata only. Use the persistent host
+        # sidecar so settings/model dropdowns do not wait for a tenant execution
+        # container to cold-start. Execution paths still use tenant containers.
+        catalog = await _load_catalog_from_sidecar(
+            socket_path=None,
+            agent_dir=runtime_inputs.agent_dir,
+        )
+    except (OSError, SidecarError):
+        catalog = await _load_catalog_with_tenant_container(request, tenant)
 
     supported_provider_ids = {
         provider_row["id"]
