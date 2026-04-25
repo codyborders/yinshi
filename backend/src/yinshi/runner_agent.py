@@ -196,17 +196,12 @@ def _load_storage_profile() -> RunnerStorageProfileSpec:
     return _storage_profile_spec(storage_profile)
 
 
-def _requires_explicit_storage(profile: RunnerStorageProfileSpec) -> bool:
-    """Return whether a profile requires explicit Archil storage class evidence."""
-    return profile.value != _AWS_STORAGE_PROFILE
-
-
 def load_config() -> RunnerAgentConfig:
     """Build runner agent config from environment variables."""
     control_url = _env_text("YINSHI_CONTROL_URL", _DEFAULT_CONTROL_URL)
     assert control_url is not None, "default control URL must be non-empty"
     profile = _load_storage_profile()
-    explicit_storage_required = _requires_explicit_storage(profile)
+    explicit_storage_required = profile.value != _AWS_STORAGE_PROFILE
     sqlite_storage = _validate_storage_class(
         env_name="YINSHI_RUNNER_SQLITE_STORAGE",
         value=_env_text("YINSHI_RUNNER_SQLITE_STORAGE", profile.sqlite_storage),

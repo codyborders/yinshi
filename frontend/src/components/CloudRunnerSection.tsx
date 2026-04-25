@@ -86,6 +86,18 @@ const STORAGE_LABELS: Record<string, string> = {
   s3_files_or_local_posix: "S3 Files or local POSIX",
 };
 
+const RUNNER_STATUS_CLASSES: Record<CloudRunnerStatus, string> = {
+  offline: "border-gray-600 bg-gray-800 text-gray-300",
+  online: "border-green-500/40 bg-green-500/10 text-green-300",
+  pending: "border-yellow-500/40 bg-yellow-500/10 text-yellow-200",
+  revoked: "border-red-500/40 bg-red-500/10 text-red-300",
+};
+
+const OPTION_STATUS_CLASSES: Record<RunnerSetupOption["status"], string> = {
+  Experimental: "border-yellow-500/40 bg-yellow-500/10 text-yellow-200",
+  Supported: "border-green-500/40 bg-green-500/10 text-green-300",
+};
+
 function formatTimestamp(value: string | null): string {
   if (!value) {
     return "Never used";
@@ -94,23 +106,11 @@ function formatTimestamp(value: string | null): string {
 }
 
 function runnerStatusClass(status: CloudRunnerStatus): string {
-  if (status === "online") {
-    return "border-green-500/40 bg-green-500/10 text-green-300";
-  }
-  if (status === "pending") {
-    return "border-yellow-500/40 bg-yellow-500/10 text-yellow-200";
-  }
-  if (status === "revoked") {
-    return "border-red-500/40 bg-red-500/10 text-red-300";
-  }
-  return "border-gray-600 bg-gray-800 text-gray-300";
+  return RUNNER_STATUS_CLASSES[status];
 }
 
 function optionStatusClass(status: RunnerSetupOption["status"]): string {
-  if (status === "Experimental") {
-    return "border-yellow-500/40 bg-yellow-500/10 text-yellow-200";
-  }
-  return "border-green-500/40 bg-green-500/10 text-green-300";
+  return OPTION_STATUS_CLASSES[status];
 }
 
 function runnerEnvironmentText(registration: CloudRunnerRegistration): string {

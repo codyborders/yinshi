@@ -258,11 +258,6 @@ def _validated_storage_class(
     return requested_value
 
 
-def _profile_requires_explicit_storage(profile: RunnerStorageProfileSpec) -> bool:
-    """Return whether a profile needs explicit Archil storage declarations."""
-    return profile.value != _AWS_STORAGE_PROFILE
-
-
 def _storage_capabilities(
     capabilities: dict[str, Any],
     *,
@@ -289,7 +284,7 @@ def _storage_capabilities(
         if _path_contains(normalized_shared_files_dir, normalized_sqlite_dir):
             raise ValueError("sqlite_dir must not live under shared_files_dir")
 
-    explicit_storage_required = _profile_requires_explicit_storage(profile)
+    explicit_storage_required = profile.value != _AWS_STORAGE_PROFILE
     sqlite_storage = _validated_storage_class(
         capabilities,
         key="sqlite_storage",

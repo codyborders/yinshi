@@ -16,7 +16,6 @@ test("settings shows runner storage options", async ({ page }) => {
   await expect(page.getByText("Archil-managed active storage/cache").first()).toBeVisible();
 });
 
-
 test("settings can add and remove a BYOK key without exposing the raw secret", async ({ page }) => {
   const rawKey = "sk-openai-playwright-secret-key";
 
