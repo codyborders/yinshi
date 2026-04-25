@@ -5,6 +5,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from tests.conftest import _configure_test_env
@@ -75,6 +76,50 @@ def test_startup_fails_closed_when_image_is_missing(
             pass
 
     get_settings.cache_clear()
+
+
+def test_transport_security_redirects_plain_http() -> None:
+    """Transport middleware should redirect HTTP when HTTPS is required."""
+    from yinshi.main import TransportSecurityMiddleware
+
+    test_app = FastAPI()
+    test_app.add_middleware(
+        TransportSecurityMiddleware,
+        require_https=True,
+        hsts_enabled=True,
+    )
+
+    @test_app.get("/health")
+    async def health() -> dict[str, str]:
+        return {"status": "ok"}
+
+    with TestClient(test_app, follow_redirects=False) as client:
+        response = client.get("http://testserver/health")
+
+    assert response.status_code == 307
+    assert response.headers["location"] == "https://testserver/health"
+
+
+def test_transport_security_adds_hsts_for_https_forwarded_proto() -> None:
+    """Transport middleware should add HSTS when the edge reports HTTPS."""
+    from yinshi.main import TransportSecurityMiddleware
+
+    test_app = FastAPI()
+    test_app.add_middleware(
+        TransportSecurityMiddleware,
+        require_https=True,
+        hsts_enabled=True,
+    )
+
+    @test_app.get("/health")
+    async def health() -> dict[str, str]:
+        return {"status": "ok"}
+
+    with TestClient(test_app) as client:
+        response = client.get("/health", headers={"X-Forwarded-Proto": "https"})
+
+    assert response.status_code == 200
+    assert response.headers["Strict-Transport-Security"] == "max-age=31536000; includeSubDomains"
 
 
 def test_startup_without_containers_skips_podman(

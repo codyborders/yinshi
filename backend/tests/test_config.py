@@ -66,3 +66,48 @@ def test_short_encryption_pepper_is_rejected(monkeypatch):
     with pytest.raises(RuntimeError, match="at least 32 bytes"):
         get_settings()
     get_settings.cache_clear()
+
+
+def test_key_encryption_key_requires_key_id(monkeypatch):
+    """Server-managed KEKs should carry a non-empty key id for rotation."""
+    monkeypatch.setenv("DISABLE_AUTH", "true")
+    monkeypatch.setenv("KEY_ENCRYPTION_KEY", "b" * 64)
+    monkeypatch.setenv("KEY_ENCRYPTION_KEY_ID", "   ")
+
+    from yinshi.config import get_settings
+
+    get_settings.cache_clear()
+    with pytest.raises(RuntimeError, match="KEY_ENCRYPTION_KEY_ID"):
+        get_settings()
+    get_settings.cache_clear()
+
+
+def test_invalid_security_mode_is_rejected(monkeypatch):
+    """Security mode environment values should fail fast when misspelled."""
+    monkeypatch.setenv("DISABLE_AUTH", "true")
+    monkeypatch.setenv("TENANT_DB_ENCRYPTION", "sometimes")
+
+    from yinshi.config import get_settings
+
+    get_settings.cache_clear()
+    with pytest.raises(RuntimeError, match="TENANT_DB_ENCRYPTION"):
+        get_settings()
+    get_settings.cache_clear()
+
+
+def test_auto_tenant_db_encryption_is_required_in_authenticated_production(monkeypatch):
+    """Auto mode should fail closed for tenant DB encryption in production auth mode."""
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", "fake-client-id")
+    monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "fake-secret")
+    monkeypatch.setenv("DISABLE_AUTH", "false")
+    monkeypatch.setenv("SECRET_KEY", "test-secret")
+    monkeypatch.setenv("KEY_ENCRYPTION_KEY", "b" * 64)
+    monkeypatch.setenv("TENANT_DB_ENCRYPTION", "auto")
+    monkeypatch.setenv("DEBUG", "false")
+
+    from yinshi.config import get_settings, tenant_db_encryption_required
+
+    get_settings.cache_clear()
+    settings = get_settings()
+    assert tenant_db_encryption_required(settings) is True
+    get_settings.cache_clear()

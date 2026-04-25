@@ -154,10 +154,9 @@ def test_resolve_or_create_user_handles_concurrent_provider_logins(
             call_log.append("generate_dek")
         return b"k" * 32
 
-    def fake_wrap_dek(dek: bytes, user_id: str, pepper: bytes) -> bytes:
+    def fake_wrap_new_user_dek(dek: bytes, user_id: str) -> bytes:
         assert dek == b"k" * 32
         assert user_id
-        assert pepper == bytes.fromhex("a" * 64)
         with call_log_lock:
             call_log.append("wrap_dek")
         return b"wrapped-dek"
@@ -181,7 +180,7 @@ def test_resolve_or_create_user_handles_concurrent_provider_logins(
         )
 
     monkeypatch.setattr(accounts_service, "generate_dek", fake_generate_dek)
-    monkeypatch.setattr(accounts_service, "wrap_dek", fake_wrap_dek)
+    monkeypatch.setattr(accounts_service, "wrap_new_user_dek", fake_wrap_new_user_dek)
 
     with ThreadPoolExecutor(max_workers=2) as executor:
         google_future = executor.submit(resolve_google)

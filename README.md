@@ -1,56 +1,30 @@
 # Yinshi
 
-Yinshi is a browser-based coding environment that uses [pi](https://pi.dev) agents.
+Yinshi is a browser-based coding environment for running [pi](https://pi.dev) agents against Git repositories. Users import a GitHub repository or an allowed local repository, create an isolated workspace branch, chat with the agent, then review the resulting branch through normal Git tooling.
 
 ## How It Works
 
-1. **Import a repo** - Paste a GitHub URL, `user/repo` shorthand, or a local path. Yinshi clones it and stores the bare repo on the server. Private repos are supported through a GitHub App integration.
+Importing a repository stores a bare checkout on the server. Private GitHub repositories use the GitHub App integration. A workspace is a git worktree on a throwaway branch, so main stays untouched until the user merges outside Yinshi. The chat view streams pi agent events while the agent edits files inside that workspace.
 
-2. **Create a workspace** - Each workspace is a git worktree on a throwaway branch. Your main branch stays untouched.
+Yinshi is designed for browser-first use. It removes local IDE setup, works from mobile browsers, and lets users bring their own model-provider credentials. Provider secrets are stored through AES-256-GCM encryption.
 
-3. **Chat with the agent** - Describe what you want built or changed. The pi agent reads, writes, and refactors code inside the workspace. Every change lives on the workspace branch.
+## Data Protection Model
 
-4. **Review and merge** - When you're satisfied, merge the branch through standard git tooling. If you're not, discard it. Nothing touches main until you say so.
+Yinshi uses a middle-ground security model rather than zero-knowledge hosting. The server still sees plaintext while it runs user sessions. Stored user data is protected through per-user encryption keys, optional SQLCipher tenant databases, encrypted sensitive control fields, narrow sidecar container mounts, and HTTPS enforcement. See [docs/security/middle-ground-threat-model.md](docs/security/middle-ground-threat-model.md) for the exact guarantee, the non-guarantee, and operator duties.
 
-## What Makes It Useful
+## Architecture
 
-- **Zero local setup** - No IDE, no CLI, no environment configuration. Works from a phone, tablet, or any browser.
-- **Isolation by default** - Every workspace runs on its own git branch. Experiments can't break production code.
-- **Bring your own key** - Supply your own API keys for the underlying model providers. Keys are encrypted at rest with AES-256-GCM.
-- **Bring your own pi config** - Import custom pi configurations (skills, extensions, prompts, agents, themes, and more) from a GitHub repository or a zip upload.
-- **Multi-tenant** - Each user gets an isolated SQLite database. A control database manages authentication and shared state.
-- **Mobile-first** - The interface adapts from phone to desktop. Start a coding session on your laptop, check progress from your phone.
+The backend is FastAPI. SQLite stores data in a control database plus one tenant database per user. Pydantic handles request validation and settings. Authlib provides Google and GitHub OAuth. The `cryptography` package handles AES-256-GCM and HKDF. `slowapi` rate-limits sensitive routes. `httpx` is used for outbound HTTP calls. Uvicorn serves the ASGI app.
 
-## Tech Stack
+The frontend is React 18 with React Router, TypeScript, Tailwind CSS, Vite, Vitest, and Playwright. Chat markdown rendering uses `react-markdown` with `remark-gfm`.
 
-### Backend
+The sidecar is a Node.js bridge to the pi coding agent SDK. In tenant mode, the backend starts a dedicated Podman container per user and talks to the sidecar over a Unix domain socket. By default the sidecar receives only the active runtime paths it needs, not the user's whole data directory.
 
-- [FastAPI](https://fastapi.tiangolo.com/) - async Python web framework
-- [SQLite](https://sqlite.org/) - embedded database (per-user tenant DBs plus a control DB)
-- [Pydantic](https://docs.pydantic.dev/) - data validation and settings management
-- [Authlib](https://authlib.org/) - Google and GitHub OAuth authentication
-- [cryptography](https://cryptography.io/) - AES-256-GCM encryption and HKDF key derivation
-- [slowapi](https://github.com/laurentS/slowapi) - rate limiting on sensitive routes
-- [httpx](https://www.python-httpx.org/) - async HTTP client
-- [uvicorn](https://www.uvicorn.org/) - ASGI server
-
-### Frontend
-
-- [React 18](https://react.dev/) - UI framework
-- [React Router](https://reactrouter.com/) - client-side routing
-- [TypeScript](https://www.typescriptlang.org/) - type safety
-- [Tailwind CSS](https://tailwindcss.com/) - utility-first styling with a custom parchment/ink color system
-- [react-markdown](https://github.com/remarkjs/react-markdown) + [remark-gfm](https://github.com/remarkjs/remark-gfm) - markdown rendering in chat
-- [Vite](https://vite.dev/) - build tooling
-- [Vitest](https://vitest.dev/) + [Playwright](https://playwright.dev/) - unit and end-to-end testing
-
-### Sidecar
-
-- [pi coding agent SDK](https://pi.dev) - Node.js sidecar that bridges the backend to the pi agent over a Unix domain socket. In tenant mode it runs inside a dedicated per-user Podman container by default.
+SQLCipher support is optional at install time. Production deployments that set `TENANT_DB_ENCRYPTION=required` must install either `sqlcipher3` or `pysqlcipher3` in the backend environment.
 
 ## Development
 
-Backend development uses per-user containers by default. Set `CONTAINER_ENABLED=false` only for explicit no-auth/dev/test host-side execution.
+Backend development uses per-user containers by default. Set `CONTAINER_ENABLED=false` only for explicit no-auth, development, or test execution on the host.
 
 ```bash
 cd backend
@@ -63,29 +37,17 @@ uvicorn yinshi.main:app --reload
 
 ## Project Structure
 
-```
+```text
 backend/
-  src/yinshi/            # FastAPI application
-    api/                 # Route handlers (auth, repos, workspaces, sessions, streaming, settings, github)
-    services/            # Business logic (workspace lifecycle, git, crypto, container, pi config, keys)
-    auth.py              # OAuth middleware and session management
-    db.py                # SQLite schema, migrations, per-user tenant databases
-    tenant.py            # Multi-tenant context resolution
-    config.py            # Environment-based settings
-    rate_limit.py        # Rate limiting configuration
-    main.py              # App entry point
-  tests/                 # pytest test suite
-
+  src/yinshi/            FastAPI app, tenant DB code, auth, services, API routes
+  tests/                 pytest suite
 frontend/
-  src/
-    api/                 # API client
-    components/          # Sidebar, ChatView, MessageBubble, Layout, PiConfigSection, etc.
-    hooks/               # useAuth, useTheme, useAgentStream, usePiConfig
-    pages/               # Landing, Session, Settings, EmptyState
-  public/                # Static assets
-
+  src/                   React app, API client, hooks, pages, components
+  public/                static assets
 sidecar/
-  src/                   # Node.js pi agent bridge (Unix socket server)
+  src/                   Node.js pi agent bridge
+lit/
+  yinshi.lit.md          annotated source document
 ```
 
 ## Documentation

@@ -164,6 +164,9 @@ def test_list_repos_includes_null_owner(
     monkeypatch.setenv("DISABLE_AUTH", "false")
     monkeypatch.setenv("SECRET_KEY", "test-secret-key")
     monkeypatch.setenv("CONTAINER_ENABLED", "false")
+    monkeypatch.setenv("TENANT_DB_ENCRYPTION", "disabled")
+    monkeypatch.setenv("CONTROL_FIELD_ENCRYPTION", "disabled")
+    monkeypatch.setenv("REQUIRE_HTTPS", "disabled")
     from yinshi.config import get_settings
 
     get_settings.cache_clear()

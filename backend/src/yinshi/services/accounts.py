@@ -9,7 +9,8 @@ from typing import Any
 
 from yinshi.config import get_settings
 from yinshi.db import get_control_db
-from yinshi.services.crypto import generate_dek, wrap_dek
+from yinshi.services.crypto import generate_dek
+from yinshi.services.keys import wrap_new_user_dek
 from yinshi.tenant import TenantContext, get_user_db, init_user_db, user_data_dir
 
 logger = logging.getLogger(__name__)
@@ -32,7 +33,7 @@ def provision_user(user_id: str, email: str) -> TenantContext:
     tenant = make_tenant(user_id, email)
     repos_dir = os.path.join(tenant.data_dir, "repos")
     os.makedirs(repos_dir, exist_ok=True)
-    init_user_db(tenant.db_path)
+    init_user_db(tenant.db_path, tenant=tenant)
 
     logger.info("Provisioned user %s at %s", user_id, tenant.data_dir)
     return tenant
@@ -235,12 +236,11 @@ def _generate_encrypted_dek(user_id: str) -> bytes | None:
         raise ValueError("user_id must not be empty")
 
     settings = get_settings()
-    pepper = settings.encryption_pepper_bytes
-    if not pepper:
+    if not settings.active_key_encryption_key_bytes:
         return None
 
     dek = generate_dek()
-    encrypted_dek = wrap_dek(dek, normalized_user_id, pepper)
+    encrypted_dek = wrap_new_user_dek(dek, normalized_user_id)
     if not encrypted_dek:
         raise RuntimeError("Wrapped DEK must not be empty")
     return encrypted_dek

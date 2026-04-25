@@ -6,7 +6,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-from yinshi.config import get_settings
+from yinshi.config import control_field_encryption_enabled, get_settings
 from yinshi.model_catalog import DEFAULT_SESSION_MODEL
 
 logger = logging.getLogger(__name__)
@@ -364,6 +364,63 @@ def _migrate_control(conn: sqlite3.Connection) -> None:
             WHERE id NOT IN (SELECT id FROM provider_connections)
             """)
         conn.commit()
+
+    _migrate_encrypted_control_fields(conn)
+
+
+def _migrate_encrypted_control_fields(conn: sqlite3.Connection) -> None:
+    """Encrypt sensitive control-plane text fields when field encryption is active."""
+    settings = get_settings()
+    if not control_field_encryption_enabled(settings):
+        return
+
+    from yinshi.services.control_encryption import encrypt_control_text
+    from yinshi.services.crypto import is_encrypted_text
+
+    user_settings_rows = conn.execute(
+        "SELECT user_id, pi_settings_json FROM user_settings"
+    ).fetchall()
+    for row in user_settings_rows:
+        stored_value = row["pi_settings_json"]
+        if isinstance(stored_value, str) and not is_encrypted_text(stored_value):
+            conn.execute(
+                "UPDATE user_settings SET pi_settings_json = ? WHERE user_id = ?",
+                (
+                    encrypt_control_text(
+                        "user_settings.pi_settings_json",
+                        row["user_id"],
+                        stored_value,
+                    ),
+                    row["user_id"],
+                ),
+            )
+
+    pi_config_rows = conn.execute(
+        "SELECT id, user_id, source_label, repo_url, error_message FROM pi_configs"
+    ).fetchall()
+    for row in pi_config_rows:
+        updates: list[str] = []
+        values: list[object] = []
+        for field_name in ("source_label", "repo_url", "error_message"):
+            stored_value = row[field_name]
+            if stored_value is None:
+                continue
+            if isinstance(stored_value, str) and not is_encrypted_text(stored_value):
+                updates.append(f"{field_name} = ?")
+                values.append(
+                    encrypt_control_text(
+                        f"pi_configs.{field_name}",
+                        row["user_id"],
+                        stored_value,
+                    )
+                )
+        if updates:
+            values.append(row["id"])
+            conn.execute(
+                f"UPDATE pi_configs SET {', '.join(updates)} WHERE id = ?",  # noqa: S608
+                values,
+            )
+    conn.commit()
 
 
 def init_control_db() -> None:

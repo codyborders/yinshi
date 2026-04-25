@@ -1,4 +1,6 @@
-"""BYOK key resolution and usage logging."""
+"""BYOK key resolution, DEK wrapping, and usage logging."""
+
+from __future__ import annotations
 
 import logging
 import uuid
@@ -6,7 +8,16 @@ import uuid
 from yinshi.config import get_settings
 from yinshi.db import get_control_db
 from yinshi.exceptions import EncryptionNotConfiguredError, KeyNotFoundError
-from yinshi.services.crypto import decrypt_api_key, generate_dek, unwrap_dek, wrap_dek
+from yinshi.services.crypto import (
+    decrypt_api_key,
+    generate_dek,
+    is_wrapped_dek_envelope,
+    unwrap_dek,
+    unwrap_dek_with_keks,
+    wrap_dek,
+    wrap_dek_with_kek,
+    wrapped_dek_key_id,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -19,34 +30,108 @@ _MINIMAX_COSTS = {
 }
 
 
-def get_user_dek(user_id: str) -> bytes:
-    """Retrieve and unwrap the user's DEK from the control DB."""
+def _require_user_id(user_id: str) -> str:
+    """Normalize user identifiers before using them in key derivation."""
+    if not isinstance(user_id, str):
+        raise TypeError("user_id must be a string")
+    normalized_user_id = user_id.strip()
+    if not normalized_user_id:
+        raise ValueError("user_id must not be empty")
+    return normalized_user_id
+
+
+def _wrap_user_dek(dek: bytes, user_id: str) -> bytes:
+    """Wrap a user DEK with the strongest configured server key source."""
     settings = get_settings()
+    normalized_user_id = _require_user_id(user_id)
+    key_encryption_key = settings.key_encryption_key_bytes
+    if key_encryption_key:
+        return wrap_dek_with_kek(
+            dek,
+            normalized_user_id,
+            settings.key_encryption_key_id,
+            key_encryption_key,
+        )
+    pepper = settings.encryption_pepper_bytes
+    if pepper:
+        return wrap_dek(dek, normalized_user_id, pepper)
+    raise EncryptionNotConfiguredError("KEY_ENCRYPTION_KEY or ENCRYPTION_PEPPER is required")
+
+
+def _unwrap_user_dek(wrapped: bytes, user_id: str) -> bytes:
+    """Unwrap a stored user DEK from either current or legacy storage."""
+    settings = get_settings()
+    normalized_user_id = _require_user_id(user_id)
+    if is_wrapped_dek_envelope(wrapped):
+        key_encryption_key = settings.key_encryption_key_bytes
+        if not key_encryption_key:
+            raise EncryptionNotConfiguredError(
+                "KEY_ENCRYPTION_KEY is required to unwrap versioned DEK envelopes"
+            )
+        keyring = {settings.key_encryption_key_id: key_encryption_key}
+        return unwrap_dek_with_keks(wrapped, normalized_user_id, keyring)
+
     pepper = settings.encryption_pepper_bytes
     if not pepper:
-        raise EncryptionNotConfiguredError("Encryption pepper not configured")
+        raise EncryptionNotConfiguredError("ENCRYPTION_PEPPER is required for legacy DEK unwrap")
+    return unwrap_dek(wrapped, normalized_user_id, pepper)
 
+
+def _stored_dek_needs_rewrap(wrapped: bytes) -> bool:
+    """Return whether a DEK should be rewritten under the current KEK metadata."""
+    settings = get_settings()
+    if not settings.key_encryption_key_bytes:
+        return False
+    if not is_wrapped_dek_envelope(wrapped):
+        return True
+    return wrapped_dek_key_id(wrapped) != settings.key_encryption_key_id
+
+
+def _store_wrapped_dek(user_id: str, encrypted_dek: bytes) -> None:
+    """Persist a wrapped DEK for a user with a narrow update statement."""
+    normalized_user_id = _require_user_id(user_id)
+    if not isinstance(encrypted_dek, bytes):
+        raise TypeError("encrypted_dek must be bytes")
+    if not encrypted_dek:
+        raise ValueError("encrypted_dek must not be empty")
+    with get_control_db() as db:
+        db.execute(
+            "UPDATE users SET encrypted_dek = ? WHERE id = ?",
+            (encrypted_dek, normalized_user_id),
+        )
+        db.commit()
+
+
+def get_user_dek(user_id: str) -> bytes:
+    """Retrieve and unwrap the user's DEK from the control DB."""
+    normalized_user_id = _require_user_id(user_id)
     with get_control_db() as db:
         row = db.execute(
-            "SELECT encrypted_dek FROM users WHERE id = ?", (user_id,)
+            "SELECT encrypted_dek FROM users WHERE id = ?",
+            (normalized_user_id,),
         ).fetchone()
     if not row:
-        raise KeyNotFoundError(f"User {user_id} not found")
+        raise KeyNotFoundError(f"User {normalized_user_id} not found")
 
-    if not row["encrypted_dek"]:
-        # Lazy-generate DEK for accounts created before encryption was configured
+    stored_dek = row["encrypted_dek"]
+    if not stored_dek:
+        # Lazy-generate DEKs for accounts created before encryption was configured.
         dek = generate_dek()
-        encrypted_dek = wrap_dek(dek, user_id, pepper)
-        with get_control_db() as db:
-            db.execute(
-                "UPDATE users SET encrypted_dek = ? WHERE id = ?",
-                (encrypted_dek, user_id),
-            )
-            db.commit()
-        logger.info("Generated DEK for user %s (legacy account)", user_id)
+        encrypted_dek = _wrap_user_dek(dek, normalized_user_id)
+        _store_wrapped_dek(normalized_user_id, encrypted_dek)
+        logger.info("Generated DEK for user %s (legacy account)", normalized_user_id)
         return dek
 
-    return unwrap_dek(row["encrypted_dek"], user_id, pepper)
+    dek = _unwrap_user_dek(stored_dek, normalized_user_id)
+    if _stored_dek_needs_rewrap(stored_dek):
+        _store_wrapped_dek(normalized_user_id, _wrap_user_dek(dek, normalized_user_id))
+        logger.info("Rewrapped DEK for user %s with current key id", normalized_user_id)
+    return dek
+
+
+def wrap_new_user_dek(dek: bytes, user_id: str) -> bytes:
+    """Wrap a freshly generated user DEK for account provisioning."""
+    return _wrap_user_dek(dek, user_id)
 
 
 def resolve_user_api_key(user_id: str, provider: str) -> str | None:
@@ -54,23 +139,30 @@ def resolve_user_api_key(user_id: str, provider: str) -> str | None:
 
     Returns the plaintext API key, or None if no key is stored.
     """
+    normalized_user_id = _require_user_id(user_id)
+    if not isinstance(provider, str):
+        raise TypeError("provider must be a string")
+    normalized_provider = provider.strip()
+    if not normalized_provider:
+        raise ValueError("provider must not be empty")
+
     with get_control_db() as db:
         row = db.execute(
             "SELECT encrypted_key FROM api_keys WHERE user_id = ? AND provider = ? "
             "ORDER BY created_at DESC LIMIT 1",
-            (user_id, provider),
+            (normalized_user_id, normalized_provider),
         ).fetchone()
 
         if not row:
             return None
 
-        dek = get_user_dek(user_id)
+        dek = get_user_dek(normalized_user_id)
         key = decrypt_api_key(row["encrypted_key"], dek)
 
         db.execute(
             "UPDATE api_keys SET last_used_at = CURRENT_TIMESTAMP "
             "WHERE user_id = ? AND provider = ?",
-            (user_id, provider),
+            (normalized_user_id, normalized_provider),
         )
         db.commit()
 
@@ -86,9 +178,7 @@ def resolve_api_key_for_prompt(user_id: str, provider: str) -> tuple[str, str]:
     if byok_key:
         return byok_key, "byok"
 
-    raise KeyNotFoundError(
-        f"No API key found for {provider}. Add your own key in Settings."
-    )
+    raise KeyNotFoundError(f"No API key found for {provider}. Add your own key in Settings.")
 
 
 def estimate_cost_cents(provider: str, usage: dict[str, int]) -> float:
@@ -151,5 +241,9 @@ def record_usage(
 
     logger.info(
         "Usage recorded: user=%s provider=%s model=%s cost=%.2fc source=%s",
-        user_id, provider, model, cost, key_source,
+        user_id,
+        provider,
+        model,
+        cost,
+        key_source,
     )

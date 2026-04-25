@@ -2,14 +2,17 @@
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
+from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.sessions import SessionMiddleware
+from starlette.responses import RedirectResponse
+from starlette.types import ASGIApp
 
 from yinshi.api import (
     auth_routes,
@@ -23,7 +26,7 @@ from yinshi.api import (
     workspaces,
 )
 from yinshi.auth import AuthMiddleware, setup_oauth
-from yinshi.config import get_settings
+from yinshi.config import get_settings, https_required
 from yinshi.db import init_control_db, init_db
 from yinshi.rate_limit import limiter
 
@@ -32,6 +35,47 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+
+class TransportSecurityMiddleware(BaseHTTPMiddleware):
+    """Enforce HTTPS and HSTS when production transport hardening is enabled."""
+
+    def __init__(
+        self,
+        app: ASGIApp,
+        *,
+        require_https: bool,
+        hsts_enabled: bool,
+    ) -> None:
+        """Configure transport security behavior from validated settings."""
+        super().__init__(app)
+        if not isinstance(require_https, bool):
+            raise TypeError("require_https must be a boolean")
+        if not isinstance(hsts_enabled, bool):
+            raise TypeError("hsts_enabled must be a boolean")
+        self._require_https = require_https
+        self._hsts_enabled = hsts_enabled
+
+    async def dispatch(
+        self,
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
+        """Redirect plaintext requests and attach HSTS to HTTPS responses."""
+        forwarded_proto = request.headers.get("x-forwarded-proto", request.url.scheme)
+        request_scheme = forwarded_proto.split(",", maxsplit=1)[0].strip().lower()
+        if self._require_https:
+            if request_scheme != "https":
+                https_url = request.url.replace(scheme="https")
+                return RedirectResponse(str(https_url), status_code=307)
+        response = await call_next(request)
+        if self._hsts_enabled:
+            if request_scheme == "https":
+                response.headers.setdefault(
+                    "Strict-Transport-Security",
+                    "max-age=31536000; includeSubDomains",
+                )
+        return response
 
 
 @asynccontextmanager
@@ -88,8 +132,19 @@ if app_settings.debug and "http://localhost:5173" not in _cors_origins:
 # Middleware order: last registered = outermost = runs first.
 # Auth must run before session, and CORS must be outermost
 # so preflight responses include the correct headers.
-app.add_middleware(SessionMiddleware, secret_key=app_settings.secret_key)
+_https_required = https_required(app_settings)
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=app_settings.secret_key,
+    https_only=_https_required,
+    same_site="lax",
+)
 app.add_middleware(AuthMiddleware)
+app.add_middleware(
+    TransportSecurityMiddleware,
+    require_https=_https_required,
+    hsts_enabled=app_settings.hsts_enabled and not app_settings.debug,
+)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,

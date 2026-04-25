@@ -33,8 +33,13 @@ def _activate_container_runtime() -> None:
     class _TestContainerManager:
         """Provide the minimal container interface needed by runtime tests."""
 
-        async def ensure_container(self, user_id: str, data_dir: str) -> SimpleNamespace:
-            del user_id, data_dir
+        async def ensure_container(
+            self,
+            user_id: str,
+            data_dir: str,
+            mounts: object | None = None,
+        ) -> SimpleNamespace:
+            del user_id, data_dir, mounts
             return SimpleNamespace(socket_path="/tmp/test-tenant-sidecar.sock")
 
         def touch(self, user_id: str) -> None:
@@ -930,7 +935,12 @@ def test_list_pi_config_commands_returns_sidecar_payload(
     assert upload_response.status_code == 201
 
     fake_commands = [
-        {"kind": "skill", "name": "caveman", "description": "grunt", "command_name": "skill:caveman"},
+        {
+            "kind": "skill",
+            "name": "caveman",
+            "description": "grunt",
+            "command_name": "skill:caveman",
+        },
         {"kind": "prompt", "name": "greet", "description": "say hi", "command_name": "greet"},
         {"kind": "extension", "name": "lint", "description": "run lint", "command_name": "lint"},
     ]

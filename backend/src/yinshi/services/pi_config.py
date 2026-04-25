@@ -21,6 +21,7 @@ from yinshi.config import get_settings
 from yinshi.db import get_control_db
 from yinshi.exceptions import PiConfigError, PiConfigNotFoundError
 from yinshi.models import PI_CONFIG_CATEGORIES, PI_CONFIG_CATEGORY_ORDER
+from yinshi.services.control_encryption import decrypt_control_text, encrypt_control_text
 from yinshi.services.git import _git_askpass_env, _run_git, _validate_clone_url, clone_repo
 from yinshi.services.github_app import resolve_github_clone_access
 from yinshi.services.user_settings import (
@@ -299,7 +300,25 @@ def _dump_categories_json(categories: list[str]) -> str:
     return json.dumps(_ordered_categories(normalized_categories))
 
 
-def _row_to_pi_config(row: sqlite3.Row) -> dict[str, Any]:
+def _decrypt_pi_config_row(row: sqlite3.Row) -> dict[str, Any]:
+    """Return a Pi config row with sensitive control fields decrypted."""
+    config_dict = dict(row)
+    user_id = str(config_dict["user_id"])
+    for field_name in ("source_label", "repo_url", "error_message"):
+        field_value = config_dict.get(field_name)
+        if field_value is None:
+            continue
+        if not isinstance(field_value, str):
+            raise ValueError(f"Pi config field {field_name} must be text or NULL")
+        config_dict[field_name] = decrypt_control_text(
+            f"pi_configs.{field_name}",
+            user_id,
+            field_value,
+        )
+    return config_dict
+
+
+def _row_to_pi_config(row: dict[str, Any]) -> dict[str, Any]:
     """Convert a database row into an API-facing config dictionary."""
     config_dict = dict(row)
     config_dict["available_categories"] = _load_categories_json(row["available_categories"])
@@ -307,20 +326,23 @@ def _row_to_pi_config(row: sqlite3.Row) -> dict[str, Any]:
     return config_dict
 
 
-def _get_pi_config_row(user_id: str) -> sqlite3.Row | None:
-    """Return the raw Pi config database row for a user."""
+def _get_pi_config_row(user_id: str) -> dict[str, Any] | None:
+    """Return the decrypted Pi config database row for a user."""
     normalized_user_id = _validate_user_id(user_id)
     with get_control_db() as db:
-        return cast(
+        row = cast(
             sqlite3.Row | None,
             db.execute(
                 "SELECT * FROM pi_configs WHERE user_id = ?",
                 (normalized_user_id,),
             ).fetchone(),
         )
+    if row is None:
+        return None
+    return _decrypt_pi_config_row(row)
 
 
-def _require_pi_config_row(user_id: str) -> sqlite3.Row:
+def _require_pi_config_row(user_id: str) -> dict[str, Any]:
     """Return the Pi config row or raise when it does not exist."""
     row = _get_pi_config_row(user_id)
     if row is None:
@@ -351,8 +373,8 @@ def _insert_pi_config_row(
             (
                 normalized_user_id,
                 source_type,
-                source_label,
-                repo_url,
+                encrypt_control_text("pi_configs.source_label", normalized_user_id, source_label),
+                encrypt_control_text("pi_configs.repo_url", normalized_user_id, repo_url),
                 _dump_categories_json(available_categories),
                 _dump_categories_json(enabled_categories),
                 status,
@@ -360,13 +382,14 @@ def _insert_pi_config_row(
         )
         db.commit()
         row = cast(
-            sqlite3.Row,
+            sqlite3.Row | None,
             db.execute(
                 "SELECT * FROM pi_configs WHERE rowid = ?",
                 (cursor.lastrowid,),
             ).fetchone(),
         )
-    return _row_to_pi_config(row)
+    assert row is not None, "inserted Pi config row must be readable"
+    return _row_to_pi_config(_decrypt_pi_config_row(row))
 
 
 def _update_pi_config_row(user_id: str, **fields: object) -> None:
@@ -390,9 +413,21 @@ def _update_pi_config_row(user_id: str, **fields: object) -> None:
 
     assignments: list[str] = []
     values: list[object] = []
+    encrypted_field_names = {"source_label", "repo_url", "error_message"}
     for field_name, field_value in fields.items():
         assignments.append(f"{field_name} = ?")
-        values.append(field_value)
+        if field_name in encrypted_field_names:
+            if field_value is not None and not isinstance(field_value, str):
+                raise TypeError(f"{field_name} must be text or None")
+            values.append(
+                encrypt_control_text(
+                    f"pi_configs.{field_name}",
+                    normalized_user_id,
+                    field_value,
+                )
+            )
+        else:
+            values.append(field_value)
     values.append(normalized_user_id)
 
     with get_control_db() as db:

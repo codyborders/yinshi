@@ -4,18 +4,21 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from typing import Any, cast
+from typing import cast
 
 from yinshi.db import get_control_db
+from yinshi.services.control_encryption import decrypt_control_text, encrypt_control_text
 
-_BLOCKED_SETTING_KEYS = frozenset({
-    "packages",
-    "extensions",
-    "skills",
-    "prompts",
-    "themes",
-    "enabledModels",
-})
+_BLOCKED_SETTING_KEYS = frozenset(
+    {
+        "packages",
+        "extensions",
+        "skills",
+        "prompts",
+        "themes",
+        "enabledModels",
+    }
+)
 
 
 def _validate_user_id(user_id: str) -> str:
@@ -28,11 +31,18 @@ def _validate_user_id(user_id: str) -> str:
     return normalized_user_id
 
 
-def _decode_settings_json(settings_json: str) -> dict[str, object]:
+def _decode_settings_json(user_id: str, settings_json: str) -> dict[str, object]:
     """Decode a stored settings JSON object."""
     if not isinstance(settings_json, str):
         raise TypeError("settings_json must be a string")
-    payload = json.loads(settings_json)
+    decrypted_settings_json = decrypt_control_text(
+        "user_settings.pi_settings_json",
+        user_id,
+        settings_json,
+    )
+    if decrypted_settings_json is None:
+        raise ValueError("Stored Pi settings must not be NULL")
+    payload = json.loads(decrypted_settings_json)
     if not isinstance(payload, dict):
         raise ValueError("Stored Pi settings must decode to an object")
     normalized_payload = {str(key): value for key, value in payload.items()}
@@ -63,6 +73,12 @@ def _upsert_settings_row(
     normalized_user_id = _validate_user_id(user_id)
     sanitized_payload = _sanitize_pi_settings(settings_payload)
     serialized_payload = json.dumps(sanitized_payload, sort_keys=True)
+    stored_payload = encrypt_control_text(
+        "user_settings.pi_settings_json",
+        normalized_user_id,
+        serialized_payload,
+    )
+    assert stored_payload is not None, "serialized settings payload must not encrypt to NULL"
 
     with get_control_db() as db:
         db.execute(
@@ -71,7 +87,7 @@ def _upsert_settings_row(
             "ON CONFLICT(user_id) DO UPDATE SET "
             "pi_settings_json = excluded.pi_settings_json, "
             "pi_settings_enabled = excluded.pi_settings_enabled",
-            (normalized_user_id, serialized_payload, int(enabled)),
+            (normalized_user_id, stored_payload, int(enabled)),
         )
         db.commit()
 
@@ -99,7 +115,7 @@ def get_pi_settings(user_id: str) -> dict[str, object] | None:
         )
     if row is None:
         return None
-    return _decode_settings_json(row["pi_settings_json"])
+    return _decode_settings_json(normalized_user_id, row["pi_settings_json"])
 
 
 def set_pi_settings_enabled(user_id: str, enabled: bool) -> None:
@@ -115,7 +131,13 @@ def set_pi_settings_enabled(user_id: str, enabled: bool) -> None:
                 "VALUES (?, ?, ?) "
                 "ON CONFLICT(user_id) DO UPDATE SET "
                 "pi_settings_enabled = excluded.pi_settings_enabled",
-                (normalized_user_id, "{}", 1),
+                (
+                    normalized_user_id,
+                    encrypt_control_text(
+                        "user_settings.pi_settings_json", normalized_user_id, "{}"
+                    ),
+                    1,
+                ),
             )
         else:
             db.execute(
@@ -142,7 +164,7 @@ def get_sidecar_settings_payload(user_id: str) -> dict[str, object] | None:
     if not row["pi_settings_enabled"]:
         return None
 
-    settings_payload = _decode_settings_json(row["pi_settings_json"])
+    settings_payload = _decode_settings_json(normalized_user_id, row["pi_settings_json"])
     if not settings_payload:
         return None
     return settings_payload

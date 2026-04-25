@@ -11,7 +11,7 @@ import pytest
 
 from yinshi.api.stream import _remap_path
 from yinshi.exceptions import ContainerNotReadyError, ContainerStartError
-from yinshi.services.container import ContainerInfo, ContainerManager
+from yinshi.services.container import ContainerInfo, ContainerManager, ContainerMount
 from yinshi.utils.paths import is_path_inside
 
 # ---------------------------------------------------------------------------
@@ -114,9 +114,7 @@ def _podman_router(routes: dict[str, AsyncMock]) -> AsyncMock:
 def _ready_socket_listener(expected_socket_path: str) -> AsyncMock:
     """Return a mocked Unix socket listener that emits the sidecar init banner."""
     reader = AsyncMock()
-    reader.readline = AsyncMock(
-        return_value=b'{"id":"init","type":"init_status","success":true}\n'
-    )
+    reader.readline = AsyncMock(return_value=b'{"id":"init","type":"init_status","success":true}\n')
     writer = AsyncMock()
     writer.close = MagicMock()
     writer.wait_closed = AsyncMock(return_value=None)
@@ -140,6 +138,7 @@ def _make_settings(**overrides):
         "container_pids_limit": 256,
         "container_socket_base": "/tmp/test-yinshi-sockets",
         "container_max_count": 0,
+        "container_mount_mode": "narrow",
     }
     defaults.update(overrides)
     s = MagicMock()
@@ -217,6 +216,9 @@ class TestContainerManager:
                 container_id="existing123",
                 user_id=user_id,
                 socket_path="/tmp/fake.sock",
+                mounts=(
+                    ContainerMount(source_path=os.path.realpath(data_dir), target_path="/data"),
+                ),
                 created_at=datetime.now(timezone.utc),
                 last_activity=datetime.now(timezone.utc),
             )
@@ -265,7 +267,9 @@ class TestContainerManager:
 
         socket_path = os.path.join(socket_dir, "sidecar.sock")
         with (
-            patch("asyncio.create_subprocess_exec", AsyncMock(side_effect=_side_effect)) as mock_exec,
+            patch(
+                "asyncio.create_subprocess_exec", AsyncMock(side_effect=_side_effect)
+            ) as mock_exec,
             patch("asyncio.open_unix_connection", _ready_socket_listener(socket_path)),
         ):
             mgr = ContainerManager(settings=settings)
@@ -355,9 +359,9 @@ class TestContainerManager:
         assert count == 0
         assert user_id in mgr._containers
 
-        mgr._containers[user_id].protected_operation_deadlines["oauth:flow-1"] = (
-            datetime.now(timezone.utc) - timedelta(seconds=1)
-        )
+        mgr._containers[user_id].protected_operation_deadlines["oauth:flow-1"] = datetime.now(
+            timezone.utc
+        ) - timedelta(seconds=1)
         mgr._containers[user_id].last_activity = old_time
         with patch(
             "asyncio.create_subprocess_exec",
@@ -646,6 +650,56 @@ class TestContainerManager:
         assert oct(stat.st_mode & 0o777) == oct(0o700)
 
     @pytest.mark.asyncio
+    async def test_ensure_container_uses_explicit_narrow_mounts(self, tmp_path):
+        """Narrow mode should mount only requested tenant paths, not the data root."""
+        socket_base = str(tmp_path / "sockets")
+        settings = _make_settings(container_socket_base=socket_base)
+
+        user_id = "abcdef12345678901234567890abcdef"
+        data_dir = tmp_path / "data"
+        workspace_dir = data_dir / "repos" / "repo1" / ".worktrees" / "branch"
+        workspace_dir.mkdir(parents=True)
+        socket_dir = os.path.join(socket_base, user_id)
+
+        def _side_effect(*args, **kwargs):
+            subcmd = args[1] if len(args) > 1 else ""
+            if subcmd == "run":
+                os.makedirs(socket_dir, exist_ok=True)
+                with open(os.path.join(socket_dir, "sidecar.sock"), "w") as f:
+                    f.write("")
+                return _make_mock_process(stdout="narrow_container_123")
+            if subcmd == "network":
+                return _make_mock_process(returncode=0)
+            if subcmd == "ps":
+                return _make_mock_process(stdout="[]")
+            return _make_mock_process()
+
+        socket_path = os.path.join(socket_dir, "sidecar.sock")
+        with (
+            patch(
+                "asyncio.create_subprocess_exec", AsyncMock(side_effect=_side_effect)
+            ) as mock_exec,
+            patch("asyncio.open_unix_connection", _ready_socket_listener(socket_path)),
+        ):
+            mgr = ContainerManager(settings=settings)
+            await mgr.ensure_container(
+                user_id,
+                str(data_dir),
+                mounts=(
+                    ContainerMount(
+                        source_path=str(workspace_dir),
+                        target_path="/workspace",
+                        read_only=False,
+                    ),
+                ),
+            )
+
+        run_call = next(call for call in mock_exec.call_args_list if call.args[1] == "run")
+        run_args = run_call.args
+        assert f"{workspace_dir.resolve()}:/workspace:rw" in run_args
+        assert f"{data_dir.resolve()}:/data:rw" not in run_args
+
+    @pytest.mark.asyncio
     async def test_run_podman_security_flags(self, tmp_path):
         """Verify podman run is called with correct security flags."""
         socket_base = str(tmp_path / "sockets")
@@ -671,7 +725,9 @@ class TestContainerManager:
 
         socket_path = os.path.join(socket_dir, "sidecar.sock")
         with (
-            patch("asyncio.create_subprocess_exec", AsyncMock(side_effect=_side_effect)) as mock_exec,
+            patch(
+                "asyncio.create_subprocess_exec", AsyncMock(side_effect=_side_effect)
+            ) as mock_exec,
             patch("asyncio.open_unix_connection", _ready_socket_listener(socket_path)),
         ):
             mgr = ContainerManager(settings=settings)
@@ -689,8 +745,10 @@ class TestContainerManager:
         assert "--pids-limit" in run_args
         assert "--network" in run_args
         assert "--replace" in run_args
+        assert "--userns" in run_args
+        assert "keep-id" in run_args
         assert "--user" in run_args
-        assert "0:0" in run_args
+        assert "0:0" not in run_args
         assert "HOME=/tmp" in run_args
 
     @pytest.mark.asyncio

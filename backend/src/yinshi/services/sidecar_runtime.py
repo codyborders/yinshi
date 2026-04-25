@@ -9,6 +9,7 @@ from fastapi import Request
 
 from yinshi.config import get_settings
 from yinshi.exceptions import ContainerStartError
+from yinshi.services.container import ContainerMount
 from yinshi.services.pi_config import resolve_effective_pi_runtime
 from yinshi.tenant import TenantContext
 from yinshi.utils.paths import is_path_inside
@@ -80,11 +81,46 @@ def _resolve_agent_dir_for_runtime(
     return remap_path_for_container(normalized_agent_dir, data_dir)
 
 
+def _container_mounts_for_runtime(
+    tenant: TenantContext,
+    *,
+    agent_dir: str | None,
+    repo_root_path: str | None,
+    workspace_path: str | None,
+) -> tuple[ContainerMount, ...]:
+    """Build the narrow mount set required by one sidecar operation."""
+    mounts: list[ContainerMount] = []
+    mounted_sources: set[str] = set()
+    for source_path, read_only in (
+        (repo_root_path, False),
+        (workspace_path, False),
+        (agent_dir, True),
+    ):
+        if source_path is None:
+            continue
+        normalized_source_path = os.path.realpath(source_path)
+        if normalized_source_path in mounted_sources:
+            continue
+        if not is_path_inside(normalized_source_path, tenant.data_dir):
+            raise ContainerStartError("Sidecar mount path is outside tenant data")
+        mounts.append(
+            ContainerMount(
+                source_path=normalized_source_path,
+                target_path=remap_path_for_container(normalized_source_path, tenant.data_dir),
+                read_only=read_only,
+            )
+        )
+        mounted_sources.add(normalized_source_path)
+    return tuple(mounts)
+
+
 async def resolve_tenant_sidecar_context(
     request: Request,
     tenant: TenantContext | None,
     runtime_session_id: str | None = None,
     repo_agents_md: str | None = None,
+    repo_root_path: str | None = None,
+    workspace_path: str | None = None,
 ) -> TenantSidecarContext:
     """Resolve the socket path and Pi runtime inputs for one request."""
     if tenant is None:
@@ -101,6 +137,7 @@ async def resolve_tenant_sidecar_context(
         runtime_session_id=runtime_session_id,
         repo_agents_md=repo_agents_md,
     )
+    narrow_mounts = settings.container_mount_mode == "narrow"
     runtime_agent_dir = _resolve_agent_dir_for_runtime(
         runtime_inputs.agent_dir,
         tenant.data_dir,
@@ -118,7 +155,19 @@ async def resolve_tenant_sidecar_context(
     if container_manager is None:
         raise ContainerStartError("Container manager is not initialized")
 
-    container_info = await container_manager.ensure_container(tenant.user_id, tenant.data_dir)
+    container_mounts = None
+    if narrow_mounts:
+        container_mounts = _container_mounts_for_runtime(
+            tenant,
+            agent_dir=runtime_inputs.agent_dir,
+            repo_root_path=repo_root_path,
+            workspace_path=workspace_path,
+        )
+    container_info = await container_manager.ensure_container(
+        tenant.user_id,
+        tenant.data_dir,
+        mounts=container_mounts,
+    )
     return TenantSidecarContext(
         socket_path=container_info.socket_path,
         agent_dir=runtime_agent_dir,

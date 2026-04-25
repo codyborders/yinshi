@@ -21,6 +21,15 @@ if TYPE_CHECKING:
     from yinshi.config import Settings
 
 
+@dataclass(frozen=True)
+class ContainerMount:
+    """One host path exposed to a sidecar container."""
+
+    source_path: str
+    target_path: str
+    read_only: bool = False
+
+
 @dataclass
 class ContainerInfo:
     """Tracks a running per-user sidecar container."""
@@ -28,6 +37,7 @@ class ContainerInfo:
     container_id: str
     user_id: str
     socket_path: str
+    mounts: tuple[ContainerMount, ...] = field(default_factory=tuple)
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     last_activity: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     active_request_count: int = 0
@@ -37,8 +47,8 @@ class ContainerInfo:
 class ContainerManager:
     """Manages per-user Podman containers for sidecar isolation.
 
-    Each user gets a dedicated container with only their data directory
-    mounted. Containers are reaped after an idle timeout.
+    Each user gets a dedicated container with only the paths required for the
+    current sidecar operation mounted. Containers are reaped after an idle timeout.
     """
 
     def __init__(
@@ -295,12 +305,63 @@ class ContainerManager:
                 self._locks[user_id] = asyncio.Lock()
             return self._locks[user_id]
 
+    def _default_mounts(self, data_dir: str) -> tuple[ContainerMount, ...]:
+        """Return the legacy tenant-data mount for compatibility paths."""
+        real_data_dir = os.path.realpath(data_dir)
+        return (ContainerMount(source_path=real_data_dir, target_path="/data", read_only=False),)
+
+    def _normalize_mounts(
+        self,
+        data_dir: str,
+        mounts: tuple[ContainerMount, ...] | None,
+    ) -> tuple[ContainerMount, ...]:
+        """Validate and normalize the host paths mounted into a container."""
+        if mounts is None:
+            return self._default_mounts(data_dir)
+        real_data_dir = os.path.realpath(data_dir)
+        normalized_mounts: list[ContainerMount] = []
+        seen_targets: set[str] = set()
+        for mount in mounts:
+            if not isinstance(mount, ContainerMount):
+                raise TypeError("mounts must contain ContainerMount values")
+            source_path = os.path.realpath(mount.source_path)
+            target_path = mount.target_path.strip()
+            if not source_path.startswith(real_data_dir + os.sep):
+                if source_path != real_data_dir:
+                    raise ContainerStartError("container mount source must stay inside tenant data")
+            if source_path == real_data_dir:
+                raise ContainerStartError(
+                    "narrow container mounts must not expose the tenant data root"
+                )
+            if not os.path.exists(source_path):
+                raise ContainerStartError(f"container mount source does not exist: {source_path}")
+            if not os.path.isabs(target_path):
+                raise ContainerStartError("container mount target must be an absolute path")
+            if target_path in seen_targets:
+                raise ContainerStartError("container mount targets must be unique")
+            seen_targets.add(target_path)
+            normalized_mounts.append(
+                ContainerMount(
+                    source_path=source_path,
+                    target_path=target_path,
+                    read_only=mount.read_only,
+                )
+            )
+        return tuple(sorted(normalized_mounts, key=lambda value: value.target_path))
+
+    def _container_has_busy_state(self, info: ContainerInfo) -> bool:
+        """Return whether a container is unsafe to replace for mount changes."""
+        if info.active_request_count > 0:
+            return True
+        return bool(info.protected_operation_deadlines)
+
     # -- Public API ---------------------------------------------------------
 
     async def ensure_container(
         self,
         user_id: str,
         data_dir: str,
+        mounts: tuple[ContainerMount, ...] | None = None,
     ) -> ContainerInfo:
         """Get or create a sidecar container for a user.
 
@@ -309,6 +370,7 @@ class ContainerManager:
         """
         if not _USER_ID_RE.match(user_id):
             raise ValueError(f"Invalid user_id format: {user_id!r}")
+        normalized_mounts = self._normalize_mounts(data_dir, mounts)
 
         if not self._initialized:
             await self.initialize()
@@ -325,12 +387,20 @@ class ContainerManager:
             existing = self._containers.get(user_id)
             if existing:
                 if await self._is_running(existing.container_id):
-                    existing.last_activity = datetime.now(timezone.utc)
-                    return existing
-                await self._remove_container(existing.container_id)
-                del self._containers[user_id]
+                    if existing.mounts == normalized_mounts:
+                        existing.last_activity = datetime.now(timezone.utc)
+                        return existing
+                    if self._container_has_busy_state(existing):
+                        raise ContainerStartError(
+                            "Existing sidecar container is busy with a different mount set"
+                        )
+                    await self._remove_container(existing.container_id)
+                    del self._containers[user_id]
+                else:
+                    await self._remove_container(existing.container_id)
+                    del self._containers[user_id]
 
-            return await self._create_container(user_id, data_dir)
+            return await self._create_container(user_id, data_dir, normalized_mounts)
 
     def touch(self, user_id: str) -> None:
         """Update last activity timestamp for a user's container."""
@@ -488,6 +558,7 @@ class ContainerManager:
         self,
         user_id: str,
         data_dir: str,
+        mounts: tuple[ContainerMount, ...],
     ) -> ContainerInfo:
         """Start a new sidecar container for a user."""
         s = self._settings
@@ -495,8 +566,14 @@ class ContainerManager:
         socket_path = os.path.join(socket_dir, "sidecar.sock")
         self._prepare_socket_dir(socket_dir, socket_path)
 
-        real_data_dir = os.path.realpath(data_dir)
+        del data_dir
         cpus = str(s.container_cpu_quota / 100000)
+        mount_args: list[str] = []
+        for mount in mounts:
+            mode = "ro" if mount.read_only else "rw"
+            mount_args.extend(["-v", f"{mount.source_path}:{mount.target_path}:{mode}"])
+        runtime_uid = os.getuid()
+        runtime_gid = os.getgid()
 
         _, container_id, _ = await self._run_podman(
             "run",
@@ -504,16 +581,17 @@ class ContainerManager:
             "--replace",
             "--name",
             f"yinshi-sidecar-{user_id}",
+            "--userns",
+            "keep-id",
             "--user",
-            "0:0",
+            f"{runtime_uid}:{runtime_gid}",
             "--env",
             "SIDECAR_SOCKET_PATH=/run/sidecar/sidecar.sock",
             "--env",
             "HOME=/tmp",
             "-v",
             f"{socket_dir}:/run/sidecar:rw",
-            "-v",
-            f"{real_data_dir}:/data:rw",
+            *mount_args,
             "--network",
             _SIDECAR_NET,
             "--memory",
@@ -539,6 +617,7 @@ class ContainerManager:
             container_id=container_id,
             user_id=user_id,
             socket_path=socket_path,
+            mounts=mounts,
         )
         self._containers[user_id] = info
         logger.info(

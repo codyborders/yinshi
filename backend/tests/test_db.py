@@ -86,7 +86,7 @@ def test_init_db_migrates_owner_email_column(db_path, monkeypatch):
         conn.commit()
         conn.close()
 
-        from yinshi.db import init_db, get_db
+        from yinshi.db import get_db, init_db
 
         init_db()
 
@@ -117,7 +117,7 @@ def test_init_db_migration_idempotent(db_path, monkeypatch):
     get_settings.cache_clear()
 
     try:
-        from yinshi.db import init_db, get_db
+        from yinshi.db import get_db, init_db
 
         init_db()
         init_db()
@@ -155,7 +155,7 @@ def test_migrate_updates_existing_version(db_path, monkeypatch):
         conn.commit()
         conn.close()
 
-        from yinshi.db import init_db, get_db
+        from yinshi.db import get_db, init_db
 
         init_db()
 
@@ -196,5 +196,72 @@ def test_init_control_db_creates_pi_config_tables(tmp_path, monkeypatch):
             table_names = [row["name"] for row in tables]
             assert "pi_configs" in table_names
             assert "user_settings" in table_names
+    finally:
+        get_settings.cache_clear()
+
+
+def test_control_field_encryption_migrates_existing_pi_settings(tmp_path, monkeypatch):
+    """Control DB migration should encrypt existing sensitive settings payloads."""
+    monkeypatch.setenv("CONTROL_DB_PATH", str(tmp_path / "control.db"))
+    monkeypatch.setenv("SECRET_KEY", "test-secret")
+    monkeypatch.setenv("ENCRYPTION_PEPPER", "a" * 64)
+    monkeypatch.setenv("KEY_ENCRYPTION_KEY", "b" * 64)
+    monkeypatch.setenv("CONTROL_FIELD_ENCRYPTION", "enabled")
+    monkeypatch.setenv("TENANT_DB_ENCRYPTION", "disabled")
+
+    from yinshi.config import get_settings
+
+    get_settings.cache_clear()
+    try:
+        from yinshi.db import get_control_db, init_control_db
+        from yinshi.services.user_settings import get_pi_settings
+
+        init_control_db()
+        with get_control_db() as db:
+            db.execute(
+                "INSERT INTO users (id, email) VALUES (?, ?)",
+                ("user-1", "user@example.com"),
+            )
+            db.execute(
+                "INSERT INTO user_settings (user_id, pi_settings_json, pi_settings_enabled) "
+                "VALUES (?, ?, ?)",
+                ("user-1", '{"provider":{"baseUrl":"https://api.example.com"}}', 1),
+            )
+            db.execute(
+                "INSERT INTO pi_configs "
+                "(user_id, source_type, source_label, repo_url, status) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (
+                    "user-1",
+                    "github",
+                    "owner/private-config",
+                    "https://github.com/owner/private-config.git",
+                    "ready",
+                ),
+            )
+            db.commit()
+
+        init_control_db()
+        with get_control_db() as db:
+            row = db.execute(
+                "SELECT pi_settings_json FROM user_settings WHERE user_id = ?",
+                ("user-1",),
+            ).fetchone()
+            pi_config_row = db.execute(
+                "SELECT source_label, repo_url FROM pi_configs WHERE user_id = ?",
+                ("user-1",),
+            ).fetchone()
+
+        assert row is not None
+        assert row["pi_settings_json"].startswith("enc:v1:")
+        assert "api.example.com" not in row["pi_settings_json"]
+        assert get_pi_settings("user-1") == {"provider": {"baseUrl": "https://api.example.com"}}
+
+        from yinshi.services.pi_config import get_pi_config
+
+        assert pi_config_row is not None
+        assert pi_config_row["source_label"].startswith("enc:v1:")
+        assert "private-config" not in pi_config_row["repo_url"]
+        assert get_pi_config("user-1")["repo_url"] == "https://github.com/owner/private-config.git"
     finally:
         get_settings.cache_clear()

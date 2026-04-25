@@ -193,3 +193,61 @@ def test_get_user_db_migrates_existing_user_db(tenant_env):
     assert "installation_id" in repo_columns
     assert "agents_md" in repo_columns
     assert "turn_status" in message_columns
+
+
+def test_required_tenant_db_encryption_fails_without_sqlcipher(tenant_env, monkeypatch):
+    """Required SQLCipher mode should fail closed when no SQLCipher driver is installed."""
+    from yinshi.config import get_settings
+    from yinshi.tenant import TenantContext, init_user_db
+
+    monkeypatch.setenv("TENANT_DB_ENCRYPTION", "required")
+    get_settings.cache_clear()
+
+    data_dir = os.path.join(tenant_env["user_data_dir"], "ab", "abcdef")
+    db_path = os.path.join(data_dir, "yinshi.db")
+    os.makedirs(data_dir, exist_ok=True)
+    tenant = TenantContext(
+        user_id="abcdef",
+        email="user@example.com",
+        data_dir=data_dir,
+        db_path=db_path,
+    )
+
+    def missing_sqlcipher(name: str):
+        raise ImportError(f"missing {name}")
+
+    monkeypatch.setattr("yinshi.tenant._tenant_database_key", lambda _: b"1" * 32)
+    monkeypatch.setattr("importlib.import_module", missing_sqlcipher)
+
+    with pytest.raises(RuntimeError, match="requires sqlcipher3 or pysqlcipher3"):
+        init_user_db(db_path, tenant=tenant)
+
+
+def test_user_data_encryption_required_checks_marker(tenant_env, monkeypatch):
+    """Required filesystem encryption should fail closed without the marker file."""
+    from yinshi.config import get_settings
+    from yinshi.tenant import TenantContext, init_user_db
+
+    monkeypatch.setenv("TENANT_DB_ENCRYPTION", "disabled")
+    monkeypatch.setenv("USER_DATA_ENCRYPTION", "required")
+    get_settings.cache_clear()
+
+    data_dir = os.path.join(tenant_env["user_data_dir"], "ab", "abcdef")
+    db_path = os.path.join(data_dir, "yinshi.db")
+    os.makedirs(data_dir, exist_ok=True)
+    tenant = TenantContext(
+        user_id="abcdef",
+        email="user@example.com",
+        data_dir=data_dir,
+        db_path=db_path,
+    )
+
+    with pytest.raises(RuntimeError, match=".yinshi-encrypted-storage"):
+        init_user_db(db_path, tenant=tenant)
+
+    Path(tenant_env["user_data_dir"]).joinpath(".yinshi-encrypted-storage").write_text(
+        "fscrypt managed outside Yinshi\n",
+        encoding="utf-8",
+    )
+    init_user_db(db_path, tenant=tenant)
+    assert os.path.exists(db_path)

@@ -95,3 +95,36 @@ def test_encrypt_api_key_wrong_dek_fails():
 
     with pytest.raises(Exception):
         decrypt_api_key(encrypted, dek2)
+
+
+def test_wrap_dek_with_kek_records_key_id_and_roundtrips():
+    """Versioned DEK envelopes should bind ciphertext to user and KEK id."""
+    from yinshi.services.crypto import (
+        generate_dek,
+        unwrap_dek_with_keks,
+        wrap_dek_with_kek,
+        wrapped_dek_key_id,
+    )
+
+    dek = generate_dek()
+    kek = os.urandom(32)
+    wrapped = wrap_dek_with_kek(dek, "user-1", "kek-v1", kek)
+
+    assert wrapped_dek_key_id(wrapped) == "kek-v1"
+    assert unwrap_dek_with_keks(wrapped, "user-1", {"kek-v1": kek}) == dek
+
+    with pytest.raises(Exception):
+        unwrap_dek_with_keks(wrapped, "user-2", {"kek-v1": kek})
+
+
+def test_encrypt_text_uses_authenticated_context():
+    """Encrypted control fields should fail when copied to a different context."""
+    from yinshi.services.crypto import decrypt_text, encrypt_text
+
+    key = os.urandom(32)
+    envelope = encrypt_text("secret settings", key, aad="field:user-1")
+
+    assert envelope.startswith("enc:v1:")
+    assert decrypt_text(envelope, key, aad="field:user-1") == "secret settings"
+    with pytest.raises(Exception):
+        decrypt_text(envelope, key, aad="field:user-2")
