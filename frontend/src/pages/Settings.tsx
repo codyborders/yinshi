@@ -9,6 +9,7 @@ import {
   type ProviderConnection,
   type ProviderDescriptor,
 } from "../api/client";
+import CloudRunnerSection from "../components/CloudRunnerSection";
 import PiConfigSection from "../components/PiConfigSection";
 import PiReleaseNotesSection from "../components/PiReleaseNotesSection";
 import { useAuth } from "../hooks/useAuth";
@@ -420,10 +421,11 @@ function ProviderCard({
   );
 }
 
-type SettingsTab = "providers" | "pi-config" | "pi-release-notes";
+type SettingsTab = "providers" | "cloud-runner" | "pi-config" | "pi-release-notes";
 
 const SETTINGS_TABS: Array<{ id: SettingsTab; label: string }> = [
   { id: "providers", label: "Providers" },
+  { id: "cloud-runner", label: "Cloud runner" },
   { id: "pi-config", label: "Pi config" },
   { id: "pi-release-notes", label: "Pi release notes" },
 ];
@@ -560,6 +562,7 @@ export default function Settings() {
           aria-labelledby={`settings-tab-${activeTab}`}
         >
           {activeTab === "providers" ? <ProvidersSection /> : null}
+          {activeTab === "cloud-runner" ? <CloudRunnerSection /> : null}
           {activeTab === "pi-config" ? <PiConfigSection /> : null}
           {activeTab === "pi-release-notes" ? <PiReleaseNotesSection /> : null}
         </div>

@@ -167,6 +167,100 @@ class UserOut(BaseModel):
     tier: str = "free"
 
 
+class CloudRunnerCreate(BaseModel):
+    """Request a one-time cloud runner registration token."""
+
+    name: str = Field("AWS runner", min_length=1, max_length=120)
+    cloud_provider: Literal["aws"] = "aws"
+    region: str = Field("us-east-1", min_length=1, max_length=64)
+
+    @field_validator("name", "region")
+    @classmethod
+    def validate_non_blank_text(cls, value: str) -> str:
+        """Reject blank runner setup fields after trimming whitespace."""
+        normalized_value = value.strip()
+        if not normalized_value:
+            raise ValueError("Runner setup fields must not be blank")
+        return normalized_value
+
+
+class CloudRunnerOut(BaseModel):
+    """Safe cloud runner status returned to the frontend."""
+
+    id: str
+    created_at: datetime
+    updated_at: datetime
+    name: str
+    cloud_provider: str
+    region: str
+    status: Literal["pending", "online", "offline", "revoked"]
+    registered_at: datetime | None = None
+    last_heartbeat_at: datetime | None = None
+    runner_version: str | None = None
+    capabilities: dict[str, Any] = Field(default_factory=dict)
+    data_dir: str | None = None
+
+
+class CloudRunnerRegistrationOut(BaseModel):
+    """Cloud runner registration response with the one-time token."""
+
+    runner: CloudRunnerOut
+    registration_token: str
+    registration_token_expires_at: datetime
+    control_url: str
+    environment: dict[str, str]
+
+
+class RunnerRegisterIn(BaseModel):
+    """Registration payload submitted by a freshly bootstrapped runner."""
+
+    registration_token: str = Field(..., min_length=32, max_length=512)
+    runner_version: str = Field(..., min_length=1, max_length=120)
+    capabilities: dict[str, Any] = Field(default_factory=dict)
+    data_dir: str = Field(..., min_length=1, max_length=4096)
+
+    @field_validator("registration_token", "runner_version", "data_dir")
+    @classmethod
+    def validate_runner_registration_text(cls, value: str) -> str:
+        """Reject blank runner registration strings."""
+        normalized_value = value.strip()
+        if not normalized_value:
+            raise ValueError("Runner registration values must not be blank")
+        return normalized_value
+
+
+class RunnerRegisterOut(BaseModel):
+    """Registration response containing the runner's bearer token once."""
+
+    runner_id: str
+    runner_token: str
+    status: Literal["online"] = "online"
+
+
+class RunnerHeartbeatIn(BaseModel):
+    """Heartbeat payload submitted by an already registered runner."""
+
+    runner_version: str = Field(..., min_length=1, max_length=120)
+    capabilities: dict[str, Any] = Field(default_factory=dict)
+    data_dir: str = Field(..., min_length=1, max_length=4096)
+
+    @field_validator("runner_version", "data_dir")
+    @classmethod
+    def validate_runner_heartbeat_text(cls, value: str) -> str:
+        """Reject blank runner heartbeat strings."""
+        normalized_value = value.strip()
+        if not normalized_value:
+            raise ValueError("Runner heartbeat values must not be blank")
+        return normalized_value
+
+
+class RunnerHeartbeatOut(BaseModel):
+    """Heartbeat acknowledgement returned to the runner."""
+
+    runner_id: str
+    status: Literal["online"] = "online"
+
+
 class ProviderSetupFieldOut(BaseModel):
     """Describe one provider setup field to the frontend."""
 
@@ -290,15 +384,15 @@ class ProviderConnectionCreate(BaseModel):
         if isinstance(provider, str):
             metadata = get_provider_metadata(provider)
             if normalized_value not in metadata.auth_strategies:
-                raise ValueError(
-                    f"{provider} does not support auth strategy {normalized_value}"
-                )
+                raise ValueError(f"{provider} does not support auth strategy {normalized_value}")
         return normalized_value
 
     @field_validator("secret")
     @classmethod
     def validate_secret(
-        cls, value: str | dict[str, Any], info: ValidationInfo
+        cls,
+        value: str | dict[str, Any],
+        info: ValidationInfo,
     ) -> str | dict[str, Any]:
         """Match secret shape to the requested auth strategy."""
         auth_strategy = info.data.get("auth_strategy")

@@ -274,6 +274,31 @@ CREATE TABLE IF NOT EXISTS user_settings (
     pi_settings_enabled INTEGER DEFAULT 0 NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS user_runners (
+    id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    user_id TEXT NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    cloud_provider TEXT NOT NULL,
+    region TEXT NOT NULL,
+    status TEXT DEFAULT 'pending' NOT NULL,
+    registration_token_hash TEXT,
+    registration_token_expires_at TEXT,
+    runner_token_hash TEXT,
+    registered_at TEXT,
+    last_heartbeat_at TEXT,
+    runner_version TEXT,
+    capabilities_json TEXT DEFAULT '{}' NOT NULL,
+    data_dir TEXT,
+    revoked_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_runners_user ON user_runners(user_id);
+CREATE INDEX IF NOT EXISTS idx_user_runners_registration_token
+ON user_runners(registration_token_hash);
+CREATE INDEX IF NOT EXISTS idx_user_runners_runner_token ON user_runners(runner_token_hash);
+
 CREATE TRIGGER IF NOT EXISTS update_users_updated_at AFTER UPDATE ON users
 BEGIN UPDATE users SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id; END;
 
@@ -282,6 +307,9 @@ BEGIN UPDATE pi_configs SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id; EN
 
 CREATE TRIGGER IF NOT EXISTS update_user_settings_updated_at AFTER UPDATE ON user_settings
 BEGIN UPDATE user_settings SET updated_at = CURRENT_TIMESTAMP WHERE user_id = NEW.user_id; END;
+
+CREATE TRIGGER IF NOT EXISTS update_user_runners_updated_at AFTER UPDATE ON user_runners
+BEGIN UPDATE user_runners SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id; END;
 
 CREATE TRIGGER IF NOT EXISTS update_provider_connections_updated_at AFTER UPDATE ON provider_connections
 BEGIN UPDATE provider_connections SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id; END;
@@ -362,6 +390,42 @@ def _migrate_control(conn: sqlite3.Connection) -> None:
                    encrypted_key, label, '{}', 'connected', last_used_at, NULL
             FROM api_keys
             WHERE id NOT IN (SELECT id FROM provider_connections)
+            """)
+        conn.commit()
+
+    runner_columns = [row[1] for row in conn.execute("PRAGMA table_info(user_runners)")]
+    if not runner_columns:
+        logger.info("Control migration: creating user_runners table")
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS user_runners (
+                id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+                user_id TEXT NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+                name TEXT NOT NULL,
+                cloud_provider TEXT NOT NULL,
+                region TEXT NOT NULL,
+                status TEXT DEFAULT 'pending' NOT NULL,
+                registration_token_hash TEXT,
+                registration_token_expires_at TEXT,
+                runner_token_hash TEXT,
+                registered_at TEXT,
+                last_heartbeat_at TEXT,
+                runner_version TEXT,
+                capabilities_json TEXT DEFAULT '{}' NOT NULL,
+                data_dir TEXT,
+                revoked_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_user_runners_user ON user_runners(user_id);
+            CREATE INDEX IF NOT EXISTS idx_user_runners_registration_token
+            ON user_runners(registration_token_hash);
+            CREATE INDEX IF NOT EXISTS idx_user_runners_runner_token
+            ON user_runners(runner_token_hash);
+            CREATE TRIGGER IF NOT EXISTS update_user_runners_updated_at
+            AFTER UPDATE ON user_runners
+            BEGIN
+                UPDATE user_runners SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id;
+            END;
             """)
         conn.commit()
 

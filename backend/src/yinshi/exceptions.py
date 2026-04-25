@@ -117,3 +117,11 @@ class ContainerStartError(YinshiError):
 
 class ContainerNotReadyError(YinshiError):
     """Raised when a container's sidecar socket is not ready in time."""
+
+
+class RunnerRegistrationError(YinshiError):
+    """Raised when a cloud runner registration token cannot be used."""
+
+
+class RunnerAuthenticationError(YinshiError):
+    """Raised when a cloud runner bearer token is missing or invalid."""

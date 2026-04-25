@@ -59,7 +59,15 @@ describe("Settings", () => {
       loading: false,
       error: null,
     });
-    apiGetMock.mockResolvedValue([]);
+    apiGetMock.mockImplementation((path: string) => {
+      if (path === "/api/settings/connections") {
+        return Promise.resolve([]);
+      }
+      if (path === "/api/settings/runner") {
+        return Promise.resolve(null);
+      }
+      throw new Error(`Unexpected GET path: ${path}`);
+    });
     apiDeleteMock.mockResolvedValue(undefined);
     apiPostMock.mockImplementation((path: string) => {
       if (path === "/auth/providers/openai-codex/start") {
@@ -133,11 +141,74 @@ describe("Settings", () => {
   it("switches between settings tabs", () => {
     render(<Settings />);
 
+    fireEvent.click(screen.getByRole("tab", { name: "Cloud runner" }));
+    expect(screen.getByRole("heading", { name: "Cloud Runner" })).toBeInTheDocument();
+
     fireEvent.click(screen.getByRole("tab", { name: "Pi config" }));
     expect(screen.getByTestId("pi-config-section")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("tab", { name: "Pi release notes" }));
     expect(screen.getByTestId("pi-release-notes-section")).toBeInTheDocument();
     expect(screen.queryByTestId("pi-config-section")).not.toBeInTheDocument();
+  });
+
+  it("creates a cloud runner registration token", async () => {
+    apiPostMock.mockImplementation((path: string) => {
+      if (path === "/api/settings/runner") {
+        return Promise.resolve({
+          runner: {
+            id: "runner-1",
+            created_at: "2026-04-25T00:00:00+00:00",
+            updated_at: "2026-04-25T00:00:00+00:00",
+            name: "AWS runner",
+            cloud_provider: "aws",
+            region: "us-east-1",
+            status: "pending",
+            registered_at: null,
+            last_heartbeat_at: null,
+            runner_version: null,
+            capabilities: {
+              sqlite_storage: "runner_ebs",
+              shared_files_storage: "s3_files_mount",
+            },
+            data_dir: null,
+          },
+          registration_token: "registration-token",
+          registration_token_expires_at: "2026-04-25T01:00:00+00:00",
+          control_url: "https://yinshi.example.com",
+          environment: {
+            YINSHI_CONTROL_URL: "https://yinshi.example.com",
+            YINSHI_REGISTRATION_TOKEN: "registration-token",
+            YINSHI_RUNNER_DATA_DIR: "/var/lib/yinshi",
+            YINSHI_RUNNER_SQLITE_DIR: "/var/lib/yinshi/sqlite",
+            YINSHI_RUNNER_SHARED_FILES_DIR: "/mnt/yinshi-s3-files",
+          },
+        });
+      }
+      throw new Error(`Unexpected POST path: ${path}`);
+    });
+
+    render(<Settings />);
+    fireEvent.click(screen.getByRole("tab", { name: "Cloud runner" }));
+
+    await waitFor(() => {
+      expect(apiGetMock).toHaveBeenCalledWith("/api/settings/runner");
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Create Token" }));
+
+    await waitFor(() => {
+      expect(apiPostMock).toHaveBeenCalledWith("/api/settings/runner", {
+        name: "AWS runner",
+        cloud_provider: "aws",
+        region: "us-east-1",
+      });
+    });
+
+    expect(screen.getByText("One-time registration values")).toBeInTheDocument();
+    expect(screen.getByText("Runner EBS")).toBeInTheDocument();
+    expect(screen.getByText("S3 Files mount")).toBeInTheDocument();
+    expect(screen.getByDisplayValue(/YINSHI_REGISTRATION_TOKEN=registration-token/)).toBeInTheDocument();
+    expect(screen.getByDisplayValue(/YINSHI_RUNNER_SQLITE_DIR=\/var\/lib\/yinshi\/sqlite/)).toBeInTheDocument();
   });
 });

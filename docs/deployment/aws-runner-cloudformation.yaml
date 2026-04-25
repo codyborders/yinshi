@@ -1,0 +1,146 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "Yinshi bring-your-own-cloud runner on AWS EC2 with outbound-only networking."
+
+Parameters:
+  YinshiControlUrl:
+    Type: String
+    Description: "Base URL of the Yinshi control plane, for example https://yinshi.example.com."
+  RegistrationToken:
+    Type: String
+    NoEcho: true
+    Description: "One-time runner registration token generated in Yinshi settings."
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: "VPC where the runner instance should run."
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: "Private or public subnet with outbound internet/NAT access."
+  InstanceType:
+    Type: String
+    Default: t3.medium
+    AllowedPattern: "^[a-z0-9.]+$"
+    Description: "EC2 instance type for the runner."
+  RootVolumeGiB:
+    Type: Number
+    Default: 80
+    MinValue: 40
+    MaxValue: 2048
+    Description: "Encrypted EBS root volume size. Yinshi runner data lives under /var/lib/yinshi."
+  AmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+    Description: "Amazon Linux 2023 AMI SSM parameter."
+  PackageInstallCommand:
+    Type: String
+    Default: "/opt/yinshi-runner/venv/bin/python -m pip install --upgrade 'git+https://github.com/codyborders/yinshi.git#subdirectory=backend'"
+    Description: "Command that installs the yinshi Python package into the runner virtualenv."
+
+Resources:
+  RunnerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Tags:
+        - Key: Application
+          Value: YinshiRunner
+
+  RunnerInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref RunnerRole
+
+  RunnerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "Yinshi runner outbound-only security group."
+      VpcId: !Ref VpcId
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Application
+          Value: YinshiRunner
+
+  RunnerInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref AmiId
+      InstanceType: !Ref InstanceType
+      IamInstanceProfile: !Ref RunnerInstanceProfile
+      SubnetId: !Ref SubnetId
+      SecurityGroupIds:
+        - !Ref RunnerSecurityGroup
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            DeleteOnTermination: false
+            Encrypted: true
+            VolumeSize: !Ref RootVolumeGiB
+            VolumeType: gp3
+      Tags:
+        - Key: Name
+          Value: yinshi-runner
+        - Key: Application
+          Value: YinshiRunner
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -euo pipefail
+
+          dnf update -y
+          dnf install -y git podman python3 python3-pip
+
+          mkdir -p /var/lib/yinshi /opt/yinshi-runner
+          chmod 700 /var/lib/yinshi
+
+          python3 -m venv /opt/yinshi-runner/venv
+          /opt/yinshi-runner/venv/bin/python -m pip install --upgrade pip wheel
+          ${PackageInstallCommand}
+
+          cat >/etc/yinshi-runner.env <<'ENV'
+          YINSHI_CONTROL_URL=${YinshiControlUrl}
+          YINSHI_REGISTRATION_TOKEN=${RegistrationToken}
+          YINSHI_RUNNER_DATA_DIR=/var/lib/yinshi
+          YINSHI_RUNNER_TOKEN_FILE=/var/lib/yinshi/runner-token
+          YINSHI_RUNNER_ENV_FILE=/etc/yinshi-runner.env
+          ENV
+          chmod 600 /etc/yinshi-runner.env
+
+          cat >/etc/systemd/system/yinshi-runner.service <<'SERVICE'
+          [Unit]
+          Description=Yinshi cloud runner
+          After=network-online.target
+          Wants=network-online.target
+
+          [Service]
+          Type=simple
+          EnvironmentFile=/etc/yinshi-runner.env
+          ExecStart=/opt/yinshi-runner/venv/bin/python -m yinshi.runner_agent
+          Restart=always
+          RestartSec=10
+          User=root
+          WorkingDirectory=/var/lib/yinshi
+
+          [Install]
+          WantedBy=multi-user.target
+          SERVICE
+
+          systemctl daemon-reload
+          systemctl enable --now yinshi-runner.service
+
+Outputs:
+  RunnerInstanceId:
+    Description: "EC2 instance ID for the Yinshi runner."
+    Value: !Ref RunnerInstance
+  RunnerSecurityGroupId:
+    Description: "Outbound-only security group assigned to the runner."
+    Value: !Ref RunnerSecurityGroup

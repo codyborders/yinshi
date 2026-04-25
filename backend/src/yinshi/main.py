@@ -20,6 +20,7 @@ from yinshi.api import (
     datadog_proxy,
     github,
     repos,
+    runners,
     sessions,
     settings,
     stream,
@@ -159,6 +160,7 @@ app.include_router(catalog.router)
 app.include_router(datadog_proxy.router)
 app.include_router(github.router)
 app.include_router(repos.router)
+app.include_router(runners.router)
 app.include_router(workspaces.router)
 app.include_router(sessions.router)
 app.include_router(stream.router)

@@ -228,7 +228,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
     # `/rum/` is the Datadog browser-intake proxy; the SDK cannot send auth
     # cookies or the `X-Requested-With` CSRF header, so keep it public.
-    OPEN_PREFIXES = ("/auth/", "/health", "/static/", "/rum/")
+    OPEN_PREFIXES = ("/auth/", "/health", "/runner/", "/static/", "/rum/")
 
     async def dispatch(
         self,

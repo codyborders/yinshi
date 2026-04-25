@@ -72,6 +72,31 @@ export interface ProviderConnection {
   expires_at: string | null;
 }
 
+export type CloudRunnerStatus = "pending" | "online" | "offline" | "revoked";
+
+export interface CloudRunner {
+  id: string;
+  created_at: string;
+  updated_at: string;
+  name: string;
+  cloud_provider: string;
+  region: string;
+  status: CloudRunnerStatus;
+  registered_at: string | null;
+  last_heartbeat_at: string | null;
+  runner_version: string | null;
+  capabilities: Record<string, unknown>;
+  data_dir: string | null;
+}
+
+export interface CloudRunnerRegistration {
+  runner: CloudRunner;
+  registration_token: string;
+  registration_token_expires_at: string;
+  control_url: string;
+  environment: Record<string, string>;
+}
+
 export interface ProviderAuthStart {
   flow_id: string;
   provider: string;
