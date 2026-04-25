@@ -22,6 +22,8 @@ def test_cloud_runner_registration_and_heartbeat(auth_client: TestClient) -> Non
     assert create_payload["runner"]["name"] == "AWS prod runner"
     assert create_payload["environment"]["YINSHI_CONTROL_URL"] == "http://testserver"
     assert create_payload["environment"]["YINSHI_RUNNER_DATA_DIR"] == "/var/lib/yinshi"
+    assert create_payload["environment"]["YINSHI_RUNNER_SQLITE_DIR"] == "/var/lib/yinshi/sqlite"
+    assert create_payload["environment"]["YINSHI_RUNNER_SHARED_FILES_DIR"] == "/mnt/yinshi-s3-files"
     assert create_payload["environment"]["YINSHI_RUNNER_TOKEN_FILE"].endswith("/runner-token")
     assert create_payload["registration_token"]
 
@@ -30,8 +32,10 @@ def test_cloud_runner_registration_and_heartbeat(auth_client: TestClient) -> Non
         json={
             "registration_token": create_payload["registration_token"],
             "runner_version": "0.1.0",
-            "capabilities": {"podman": True},
+            "capabilities": {"podman": True, "shared_files_storage": "s3_files_mount"},
             "data_dir": "/var/lib/yinshi",
+            "sqlite_dir": "/var/lib/yinshi/sqlite",
+            "shared_files_dir": "/mnt/yinshi-s3-files",
         },
     )
     assert register_response.status_code == 201
@@ -55,8 +59,14 @@ def test_cloud_runner_registration_and_heartbeat(auth_client: TestClient) -> Non
         headers={"Authorization": f"Bearer {register_payload['runner_token']}"},
         json={
             "runner_version": "0.1.1",
-            "capabilities": {"podman": True, "aws_region": "us-west-2"},
+            "capabilities": {
+                "podman": True,
+                "aws_region": "us-west-2",
+                "shared_files_storage": "s3_files_mount",
+            },
             "data_dir": "/var/lib/yinshi",
+            "sqlite_dir": "/var/lib/yinshi/sqlite",
+            "shared_files_dir": "/mnt/yinshi-s3-files",
         },
     )
     assert heartbeat_response.status_code == 200
@@ -68,7 +78,35 @@ def test_cloud_runner_registration_and_heartbeat(auth_client: TestClient) -> Non
     assert status_payload["status"] == "online"
     assert status_payload["runner_version"] == "0.1.1"
     assert status_payload["capabilities"]["sqlite"] is True
+    assert status_payload["capabilities"]["sqlite_storage"] == "runner_ebs"
+    assert status_payload["capabilities"]["sqlite_dir"] == "/var/lib/yinshi/sqlite"
+    assert status_payload["capabilities"]["shared_files_storage"] == "s3_files_mount"
+    assert status_payload["capabilities"]["shared_files_dir"] == "/mnt/yinshi-s3-files"
+    assert status_payload["capabilities"]["live_sqlite_on_shared_files"] is False
     assert status_payload["capabilities"]["aws_region"] == "us-west-2"
+
+
+def test_cloud_runner_rejects_sqlite_under_shared_files(auth_client: TestClient) -> None:
+    """Runner registration rejects live SQLite paths on the shared file mount."""
+    create_response = auth_client.post(
+        "/api/settings/runner",
+        json={"name": "AWS runner", "cloud_provider": "aws", "region": "us-east-1"},
+    )
+    assert create_response.status_code == 201
+
+    register_response = auth_client.post(
+        "/runner/register",
+        json={
+            "registration_token": create_response.json()["registration_token"],
+            "runner_version": "0.1.0",
+            "capabilities": {},
+            "data_dir": "/var/lib/yinshi",
+            "sqlite_dir": "/mnt/yinshi-s3-files/sqlite",
+            "shared_files_dir": "/mnt/yinshi-s3-files",
+        },
+    )
+    assert register_response.status_code == 400
+    assert register_response.json()["detail"] == "sqlite_dir must not live under shared_files_dir"
 
 
 def test_cloud_runner_revoke_invalidates_bearer_token(auth_client: TestClient) -> None:

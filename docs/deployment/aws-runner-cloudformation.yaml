@@ -25,7 +25,7 @@ Parameters:
     Default: 80
     MinValue: 40
     MaxValue: 2048
-    Description: "Encrypted EBS root volume size. Yinshi runner data lives under /var/lib/yinshi."
+    Description: "Encrypted EBS root volume size. Live SQLite data lives under /var/lib/yinshi/sqlite."
   AmiId:
     Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
     Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
@@ -34,6 +34,10 @@ Parameters:
     Type: String
     Default: "/opt/yinshi-runner/venv/bin/python -m pip install --upgrade 'git+https://github.com/codyborders/yinshi.git#subdirectory=backend'"
     Description: "Command that installs the yinshi Python package into the runner virtualenv."
+  SharedFilesMountCommand:
+    Type: String
+    Default: ""
+    Description: "Optional shell command that mounts S3 Files or another NFS filesystem at /mnt/yinshi-s3-files. Leave empty to use the local EBS-backed directory."
 
 Resources:
   RunnerRole:
@@ -97,10 +101,19 @@ Resources:
           set -euo pipefail
 
           dnf update -y
-          dnf install -y git podman python3 python3-pip
+          dnf install -y git podman python3 python3-pip nfs-utils
 
-          mkdir -p /var/lib/yinshi /opt/yinshi-runner
-          chmod 700 /var/lib/yinshi
+          mkdir -p /var/lib/yinshi/sqlite /mnt/yinshi-s3-files /opt/yinshi-runner
+          chmod 700 /var/lib/yinshi /var/lib/yinshi/sqlite
+          chmod 755 /mnt/yinshi-s3-files
+
+          cat >/tmp/yinshi-shared-files-mount.sh <<'MOUNT'
+          ${SharedFilesMountCommand}
+          MOUNT
+          if grep -q '[^[:space:]]' /tmp/yinshi-shared-files-mount.sh; then
+            bash /tmp/yinshi-shared-files-mount.sh
+          fi
+          mkdir -p /mnt/yinshi-s3-files/repos /mnt/yinshi-s3-files/worktrees /mnt/yinshi-s3-files/pi-config /mnt/yinshi-s3-files/sessions /mnt/yinshi-s3-files/artifacts /mnt/yinshi-s3-files/db-backups
 
           python3 -m venv /opt/yinshi-runner/venv
           /opt/yinshi-runner/venv/bin/python -m pip install --upgrade pip wheel
@@ -110,6 +123,8 @@ Resources:
           YINSHI_CONTROL_URL=${YinshiControlUrl}
           YINSHI_REGISTRATION_TOKEN=${RegistrationToken}
           YINSHI_RUNNER_DATA_DIR=/var/lib/yinshi
+          YINSHI_RUNNER_SQLITE_DIR=/var/lib/yinshi/sqlite
+          YINSHI_RUNNER_SHARED_FILES_DIR=/mnt/yinshi-s3-files
           YINSHI_RUNNER_TOKEN_FILE=/var/lib/yinshi/runner-token
           YINSHI_RUNNER_ENV_FILE=/etc/yinshi-runner.env
           ENV

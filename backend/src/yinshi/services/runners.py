@@ -6,6 +6,7 @@ import hashlib
 import json
 import secrets
 from datetime import datetime, timedelta, timezone
+from pathlib import PurePosixPath
 from typing import Any, cast
 
 from yinshi.db import get_control_db
@@ -14,6 +15,8 @@ from yinshi.exceptions import RunnerAuthenticationError, RunnerRegistrationError
 _REGISTRATION_TOKEN_TTL_MINUTES = 60
 _HEARTBEAT_ONLINE_WINDOW_SECONDS = 120
 _DEFAULT_RUNNER_DATA_DIR = "/var/lib/yinshi"
+_DEFAULT_SQLITE_DIR = f"{_DEFAULT_RUNNER_DATA_DIR}/sqlite"
+_DEFAULT_SHARED_FILES_DIR = "/mnt/yinshi-s3-files"
 _DEFAULT_RUNNER_TOKEN_FILE = f"{_DEFAULT_RUNNER_DATA_DIR}/runner-token"
 _DEFAULT_RUNNER_ENV_FILE = "/etc/yinshi-runner.env"
 _REGISTRATION_TOKEN_EXPIRED = "Runner registration token has expired"
@@ -22,6 +25,9 @@ _DEFAULT_CAPABILITIES = {
     "sqlite": True,
     "git_worktrees": True,
     "pi_sidecar": True,
+    "sqlite_storage": "runner_ebs",
+    "shared_files_storage": "s3_files_or_local_posix",
+    "live_sqlite_on_shared_files": False,
 }
 
 
@@ -43,6 +49,24 @@ def _require_non_empty_text(value: str, name: str) -> str:
     if not normalized_value:
         raise ValueError(f"{name} must not be empty")
     return normalized_value
+
+
+def _require_storage_path(value: str, name: str) -> PurePosixPath:
+    """Return a normalized absolute runner storage path."""
+    normalized_value = _require_non_empty_text(value, name)
+    path = PurePosixPath(normalized_value)
+    if not path.is_absolute():
+        raise ValueError(f"{name} must be an absolute path")
+    if ".." in path.parts:
+        raise ValueError(f"{name} must not contain parent directory references")
+    return path
+
+
+def _path_contains(parent: PurePosixPath, child: PurePosixPath) -> bool:
+    """Return whether child is equal to or nested under parent."""
+    if child == parent:
+        return True
+    return parent in child.parents
 
 
 def _utc_now() -> datetime:
@@ -106,6 +130,41 @@ def _decode_capabilities(capabilities_json: object) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError("capabilities_json must decode to an object")
     return cast(dict[str, Any], payload)
+
+
+def _storage_capabilities(
+    capabilities: dict[str, Any],
+    *,
+    data_dir: str,
+    sqlite_dir: str | None,
+    shared_files_dir: str | None,
+) -> dict[str, Any]:
+    """Merge runner storage paths with default BYOC storage capabilities."""
+    normalized_data_dir = _require_storage_path(data_dir, "data_dir")
+    normalized_sqlite_dir = _require_storage_path(
+        sqlite_dir or _DEFAULT_SQLITE_DIR,
+        "sqlite_dir",
+    )
+    normalized_shared_files_dir = _require_storage_path(
+        shared_files_dir or _DEFAULT_SHARED_FILES_DIR,
+        "shared_files_dir",
+    )
+    if _path_contains(normalized_shared_files_dir, normalized_sqlite_dir):
+        raise ValueError("sqlite_dir must not live under shared_files_dir")
+
+    merged_capabilities = {**_DEFAULT_CAPABILITIES, **capabilities}
+    merged_capabilities.update(
+        {
+            "data_dir": str(normalized_data_dir),
+            "sqlite_dir": str(normalized_sqlite_dir),
+            "shared_files_dir": str(normalized_shared_files_dir),
+            "sqlite_storage": "runner_ebs",
+            "live_sqlite_on_shared_files": False,
+        }
+    )
+    if "shared_files_storage" not in capabilities:
+        merged_capabilities["shared_files_storage"] = "s3_files_or_local_posix"
+    return merged_capabilities
 
 
 def _display_status(row: Any, *, now: datetime | None = None) -> str:
@@ -179,7 +238,14 @@ def create_runner_registration(
     registration_token_hash = _hash_token(registration_token)
     expires_at = _utc_now() + timedelta(minutes=_REGISTRATION_TOKEN_TTL_MINUTES)
     expires_at_text = _datetime_to_storage(expires_at)
-    empty_capabilities = _capabilities_json({})
+    empty_capabilities = _capabilities_json(
+        _storage_capabilities(
+            {},
+            data_dir=_DEFAULT_RUNNER_DATA_DIR,
+            sqlite_dir=_DEFAULT_SQLITE_DIR,
+            shared_files_dir=_DEFAULT_SHARED_FILES_DIR,
+        )
+    )
 
     with get_control_db() as db:
         db.execute(
@@ -227,6 +293,8 @@ def create_runner_registration(
         "YINSHI_CONTROL_URL": normalized_control_url,
         "YINSHI_REGISTRATION_TOKEN": registration_token,
         "YINSHI_RUNNER_DATA_DIR": _DEFAULT_RUNNER_DATA_DIR,
+        "YINSHI_RUNNER_SQLITE_DIR": _DEFAULT_SQLITE_DIR,
+        "YINSHI_RUNNER_SHARED_FILES_DIR": _DEFAULT_SHARED_FILES_DIR,
         "YINSHI_RUNNER_TOKEN_FILE": _DEFAULT_RUNNER_TOKEN_FILE,
         "YINSHI_RUNNER_ENV_FILE": _DEFAULT_RUNNER_ENV_FILE,
     }
@@ -266,12 +334,21 @@ def register_runner(
     runner_version: str,
     capabilities: dict[str, Any],
     data_dir: str,
+    sqlite_dir: str | None,
+    shared_files_dir: str | None,
 ) -> dict[str, Any]:
     """Consume a one-time registration token and issue a runner bearer token."""
     token_hash = _hash_token(registration_token)
     normalized_version = _require_non_empty_text(runner_version, "runner_version")
-    normalized_data_dir = _require_non_empty_text(data_dir, "data_dir")
-    capabilities_text = _capabilities_json({**_DEFAULT_CAPABILITIES, **capabilities})
+    normalized_data_dir = str(_require_storage_path(data_dir, "data_dir"))
+    capabilities_text = _capabilities_json(
+        _storage_capabilities(
+            capabilities,
+            data_dir=normalized_data_dir,
+            sqlite_dir=sqlite_dir,
+            shared_files_dir=shared_files_dir,
+        )
+    )
     now_text = _datetime_to_storage(_utc_now())
     runner_token = _new_token()
     runner_token_hash = _hash_token(runner_token)
@@ -332,12 +409,21 @@ def record_runner_heartbeat(
     runner_version: str,
     capabilities: dict[str, Any],
     data_dir: str,
+    sqlite_dir: str | None,
+    shared_files_dir: str | None,
 ) -> dict[str, Any]:
     """Record a heartbeat from a registered runner bearer token."""
     token_hash = _hash_token(runner_token)
     normalized_version = _require_non_empty_text(runner_version, "runner_version")
-    normalized_data_dir = _require_non_empty_text(data_dir, "data_dir")
-    capabilities_text = _capabilities_json({**_DEFAULT_CAPABILITIES, **capabilities})
+    normalized_data_dir = str(_require_storage_path(data_dir, "data_dir"))
+    capabilities_text = _capabilities_json(
+        _storage_capabilities(
+            capabilities,
+            data_dir=normalized_data_dir,
+            sqlite_dir=sqlite_dir,
+            shared_files_dir=shared_files_dir,
+        )
+    )
     now_text = _datetime_to_storage(_utc_now())
 
     with get_control_db() as db:

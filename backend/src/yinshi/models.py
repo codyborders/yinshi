@@ -29,6 +29,13 @@ def _strip_required_text(value: str, message: str) -> str:
     return normalized_value
 
 
+def _strip_optional_text(value: str | None, message: str) -> str | None:
+    """Trim an optional string field and reject explicit blank values."""
+    if value is None:
+        return None
+    return _strip_required_text(value, message)
+
+
 class RepoCreate(BaseModel):
     """Request to import a repository."""
 
@@ -223,12 +230,20 @@ class RunnerRegisterIn(BaseModel):
     runner_version: str = Field(..., min_length=1, max_length=120)
     capabilities: dict[str, Any] = Field(default_factory=dict)
     data_dir: str = Field(..., min_length=1, max_length=4096)
+    sqlite_dir: str | None = Field(None, min_length=1, max_length=4096)
+    shared_files_dir: str | None = Field(None, min_length=1, max_length=4096)
 
     @field_validator("registration_token", "runner_version", "data_dir")
     @classmethod
     def validate_runner_registration_text(cls, value: str) -> str:
         """Reject blank runner registration strings."""
         return _strip_required_text(value, "Runner registration values must not be blank")
+
+    @field_validator("sqlite_dir", "shared_files_dir")
+    @classmethod
+    def validate_runner_registration_path(cls, value: str | None) -> str | None:
+        """Reject blank optional runner storage paths."""
+        return _strip_optional_text(value, "Runner storage paths must not be blank")
 
 
 class RunnerRegisterOut(BaseModel):
@@ -245,12 +260,20 @@ class RunnerHeartbeatIn(BaseModel):
     runner_version: str = Field(..., min_length=1, max_length=120)
     capabilities: dict[str, Any] = Field(default_factory=dict)
     data_dir: str = Field(..., min_length=1, max_length=4096)
+    sqlite_dir: str | None = Field(None, min_length=1, max_length=4096)
+    shared_files_dir: str | None = Field(None, min_length=1, max_length=4096)
 
     @field_validator("runner_version", "data_dir")
     @classmethod
     def validate_runner_heartbeat_text(cls, value: str) -> str:
         """Reject blank runner heartbeat strings."""
         return _strip_required_text(value, "Runner heartbeat values must not be blank")
+
+    @field_validator("sqlite_dir", "shared_files_dir")
+    @classmethod
+    def validate_runner_heartbeat_path(cls, value: str | None) -> str | None:
+        """Reject blank optional runner storage paths."""
+        return _strip_optional_text(value, "Runner storage paths must not be blank")
 
 
 class RunnerHeartbeatOut(BaseModel):

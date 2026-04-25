@@ -37,6 +37,27 @@ function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback;
 }
 
+function runnerCapability(runner: CloudRunner, key: string, fallback: string): string {
+  const value = runner.capabilities[key];
+  return typeof value === "string" && value ? value : fallback;
+}
+
+function storageLabel(value: string): string {
+  if (value === "runner_ebs") {
+    return "Runner EBS";
+  }
+  if (value === "s3_files_mount") {
+    return "S3 Files mount";
+  }
+  if (value === "local_posix") {
+    return "Local POSIX";
+  }
+  if (value === "s3_files_or_local_posix") {
+    return "S3 Files or local POSIX";
+  }
+  return value;
+}
+
 export default function CloudRunnerSection() {
   const [runner, setRunner] = useState<CloudRunner | null>(null);
   const [registration, setRegistration] = useState<CloudRunnerRegistration | null>(null);
@@ -116,9 +137,9 @@ export default function CloudRunnerSection() {
         <div>
           <h2 className="text-lg font-semibold text-gray-200">Cloud Runner</h2>
           <p className="mt-2 max-w-3xl text-sm text-gray-400">
-            Run Yinshi sessions on user-owned AWS compute with local EBS-backed
-            POSIX storage. The runner registers outbound, so no inbound ports are
-            required for the setup handshake.
+            Run Yinshi sessions on user-owned AWS compute. Live SQLite stays on
+            runner EBS, while repos, worktrees, Pi config, sessions, and artifacts
+            can live on an S3 Files mount.
           </p>
         </div>
         <span className={`rounded-full border px-3 py-1 text-xs ${runnerStatusClass(status)}`}>
@@ -127,7 +148,7 @@ export default function CloudRunnerSection() {
       </div>
 
       {runner ? (
-        <div className="mt-4 grid gap-3 text-sm text-gray-400 md:grid-cols-3">
+        <div className="mt-4 grid gap-3 text-sm text-gray-400 md:grid-cols-3 lg:grid-cols-5">
           <div>
             <div className="text-xs uppercase tracking-wide text-gray-500">Runner</div>
             <div className="mt-1 text-gray-200">{runner.name}</div>
@@ -139,6 +160,18 @@ export default function CloudRunnerSection() {
           <div>
             <div className="text-xs uppercase tracking-wide text-gray-500">Last heartbeat</div>
             <div className="mt-1 text-gray-200">{formatTimestamp(runner.last_heartbeat_at)}</div>
+          </div>
+          <div>
+            <div className="text-xs uppercase tracking-wide text-gray-500">SQLite</div>
+            <div className="mt-1 text-gray-200">
+              {storageLabel(runnerCapability(runner, "sqlite_storage", "Runner EBS"))}
+            </div>
+          </div>
+          <div>
+            <div className="text-xs uppercase tracking-wide text-gray-500">Shared files</div>
+            <div className="mt-1 text-gray-200">
+              {storageLabel(runnerCapability(runner, "shared_files_storage", "S3 Files ready"))}
+            </div>
           </div>
         </div>
       ) : null}

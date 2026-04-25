@@ -19,6 +19,8 @@ logger = logging.getLogger(__name__)
 RUNNER_VERSION = "0.1.0"
 _DEFAULT_CONTROL_URL = "http://localhost:8000"
 _DEFAULT_DATA_DIR = "/var/lib/yinshi"
+_DEFAULT_SQLITE_DIR = f"{_DEFAULT_DATA_DIR}/sqlite"
+_DEFAULT_SHARED_FILES_DIR = "/mnt/yinshi-s3-files"
 _DEFAULT_TOKEN_FILE = "/var/lib/yinshi/runner-token"
 _DEFAULT_HEARTBEAT_INTERVAL_S = 30.0
 _REQUEST_TIMEOUT_S = 15.0
@@ -33,6 +35,8 @@ class RunnerAgentConfig:
     registration_token: str | None
     runner_token_file: Path
     data_dir: Path
+    sqlite_dir: Path
+    shared_files_dir: Path
     heartbeat_interval_s: float
     env_file: Path | None
 
@@ -63,11 +67,16 @@ def _env_float(name: str, default: float) -> float:
 
 
 def _env_path(name: str, default: str) -> Path:
-    """Read a required filesystem path from the environment."""
+    """Read a required absolute filesystem path from the environment."""
     path_text = _env_text(name, default)
     if path_text is None:
         raise RuntimeError(f"{name} must not be empty")
-    return Path(path_text)
+    path = Path(path_text)
+    if not path.is_absolute():
+        raise RuntimeError(f"{name} must be an absolute path")
+    if ".." in path.parts:
+        raise RuntimeError(f"{name} must not contain parent directory references")
+    return path
 
 
 def load_config() -> RunnerAgentConfig:
@@ -76,6 +85,8 @@ def load_config() -> RunnerAgentConfig:
     assert control_url is not None, "default control URL must be non-empty"
     runner_token_file = _env_path("YINSHI_RUNNER_TOKEN_FILE", _DEFAULT_TOKEN_FILE)
     data_dir = _env_path("YINSHI_RUNNER_DATA_DIR", _DEFAULT_DATA_DIR)
+    sqlite_dir = _env_path("YINSHI_RUNNER_SQLITE_DIR", _DEFAULT_SQLITE_DIR)
+    shared_files_dir = _env_path("YINSHI_RUNNER_SHARED_FILES_DIR", _DEFAULT_SHARED_FILES_DIR)
     env_file_text = _env_text("YINSHI_RUNNER_ENV_FILE")
     env_file = Path(env_file_text) if env_file_text else None
     return RunnerAgentConfig(
@@ -83,6 +94,8 @@ def load_config() -> RunnerAgentConfig:
         registration_token=_env_text("YINSHI_REGISTRATION_TOKEN"),
         runner_token_file=runner_token_file,
         data_dir=data_dir,
+        sqlite_dir=sqlite_dir,
+        shared_files_dir=shared_files_dir,
         heartbeat_interval_s=_env_float(
             "YINSHI_RUNNER_HEARTBEAT_INTERVAL_S",
             _DEFAULT_HEARTBEAT_INTERVAL_S,
@@ -91,28 +104,54 @@ def load_config() -> RunnerAgentConfig:
     )
 
 
-def _ensure_data_dir(data_dir: Path) -> None:
-    """Create and probe the local POSIX data directory used by Yinshi jobs."""
-    data_dir.mkdir(parents=True, exist_ok=True)
-    if not data_dir.is_dir():
-        raise RuntimeError(f"Runner data path is not a directory: {data_dir}")
+def _probe_writable_directory(directory: Path, label: str) -> None:
+    """Create and probe a POSIX directory required by the runner."""
+    directory.mkdir(parents=True, exist_ok=True)
+    if not directory.is_dir():
+        raise RuntimeError(f"Runner {label} path is not a directory: {directory}")
 
-    probe_path = data_dir / ".yinshi-runner-write-check"
+    probe_path = directory / ".yinshi-runner-write-check"
     probe_path.write_text("ok\n", encoding="utf-8")
     if probe_path.read_text(encoding="utf-8") != "ok\n":
-        raise RuntimeError("Runner data directory failed read-after-write check")
+        raise RuntimeError(f"Runner {label} directory failed read-after-write check")
     probe_path.unlink(missing_ok=True)
 
 
-def _capabilities(data_dir: Path) -> dict[str, Any]:
+def _shared_files_storage(shared_files_dir: Path) -> str:
+    """Describe whether the shared file path is a mounted filesystem."""
+    if shared_files_dir.is_mount():
+        return "s3_files_mount"
+    return "local_posix"
+
+
+def _validate_storage_layout(config: RunnerAgentConfig) -> None:
+    """Reject layouts that would put live SQLite on the shared file mount."""
+    try:
+        config.sqlite_dir.relative_to(config.shared_files_dir)
+    except ValueError:
+        return
+    raise RuntimeError(
+        "YINSHI_RUNNER_SQLITE_DIR must not live under YINSHI_RUNNER_SHARED_FILES_DIR"
+    )
+
+
+def _capabilities(config: RunnerAgentConfig) -> dict[str, Any]:
     """Return storage and execution capabilities advertised to the control plane."""
-    _ensure_data_dir(data_dir)
+    _validate_storage_layout(config)
+    _probe_writable_directory(config.data_dir, "data")
+    _probe_writable_directory(config.sqlite_dir, "sqlite")
+    _probe_writable_directory(config.shared_files_dir, "shared files")
     return {
         "posix_storage": True,
         "sqlite": True,
         "git_worktrees": True,
         "pi_sidecar": True,
-        "data_dir": str(data_dir),
+        "data_dir": str(config.data_dir),
+        "sqlite_dir": str(config.sqlite_dir),
+        "shared_files_dir": str(config.shared_files_dir),
+        "sqlite_storage": "runner_ebs",
+        "shared_files_storage": _shared_files_storage(config.shared_files_dir),
+        "live_sqlite_on_shared_files": False,
     }
 
 
@@ -156,8 +195,10 @@ async def _register(config: RunnerAgentConfig, client: httpx.AsyncClient) -> str
     payload = {
         "registration_token": config.registration_token,
         "runner_version": RUNNER_VERSION,
-        "capabilities": _capabilities(config.data_dir),
+        "capabilities": _capabilities(config),
         "data_dir": str(config.data_dir),
+        "sqlite_dir": str(config.sqlite_dir),
+        "shared_files_dir": str(config.shared_files_dir),
     }
     response = await client.post("/runner/register", json=payload)
     response.raise_for_status()
@@ -179,8 +220,10 @@ async def _heartbeat(
     """Send one heartbeat to the control plane."""
     payload = {
         "runner_version": RUNNER_VERSION,
-        "capabilities": _capabilities(config.data_dir),
+        "capabilities": _capabilities(config),
         "data_dir": str(config.data_dir),
+        "sqlite_dir": str(config.sqlite_dir),
+        "shared_files_dir": str(config.shared_files_dir),
     }
     response = await client.post(
         "/runner/heartbeat",
@@ -222,9 +265,10 @@ def main() -> None:
     )
     config = load_config()
     logger.info(
-        "Starting Yinshi cloud runner agent against %s with data dir %s",
+        "Starting Yinshi cloud runner agent against %s with SQLite dir %s and shared files dir %s",
         config.control_url,
-        config.data_dir,
+        config.sqlite_dir,
+        config.shared_files_dir,
     )
     asyncio.run(run_agent(config))
 
