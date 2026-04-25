@@ -98,23 +98,15 @@ read_installed_version() {
   PACKAGE_ROOT="$package_root" PACKAGE_NAME="$package_name" node --input-type=module <<'NODE'
 import fs from "node:fs";
 import path from "node:path";
-import { createRequire } from "node:module";
 
 const packageRoot = process.env.PACKAGE_ROOT;
 const packageName = process.env.PACKAGE_NAME;
 if (!packageRoot || !packageName) {
   process.exit(2);
 }
-const require = createRequire(path.join(packageRoot, "src", "sidecar.js"));
-let entryPath;
-try {
-  entryPath = require.resolve(packageName);
-} catch {
-  process.exit(3);
-}
-let currentPath = path.dirname(entryPath);
+let currentPath = path.join(packageRoot, "src");
 while (true) {
-  const packageJsonPath = path.join(currentPath, "package.json");
+  const packageJsonPath = path.join(currentPath, "node_modules", packageName, "package.json");
   if (fs.existsSync(packageJsonPath)) {
     const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf-8"));
     if (packageJson.name === packageName) {
@@ -247,7 +239,9 @@ log "Updating $package_name from ${previous_version:-not installed} to $latest_v
 if ! npm install --prefix "$temporary_dir" --omit=dev --no-audit --no-fund "$package_name@$latest_version"; then
   fail_update "npm install failed for $package_name@$latest_version"
 fi
-resolved_version="$(read_installed_version "$temporary_dir")"
+if ! resolved_version="$(read_installed_version "$temporary_dir")"; then
+  fail_update "Could not read installed version after npm install"
+fi
 if [[ "$resolved_version" != "$latest_version" ]]; then
   fail_update "Resolved $resolved_version instead of npm latest $latest_version"
 fi

@@ -3,7 +3,6 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -23,7 +22,6 @@ import { HEALTH_CHECK_INTERVAL } from "./constants.js";
 import { createGitAwareBashTool } from "./git_auth.js";
 
 const __sidecarDir = path.dirname(fileURLToPath(import.meta.url));
-const require = createRequire(import.meta.url);
 const PI_PACKAGE_NAME = "@mariozechner/pi-coding-agent";
 const DEFAULT_MODEL_REF = "minimax/MiniMax-M2.7";
 const LEGACY_MODEL_ALIASES = new Map([
@@ -353,10 +351,10 @@ function findPackageJson(packageName) {
   if (typeof packageName !== "string" || !packageName) {
     throw new Error("packageName must be a non-empty string");
   }
-  const entryPath = require.resolve(packageName);
-  let currentPath = path.dirname(entryPath);
+
+  let currentPath = __sidecarDir;
   while (true) {
-    const packageJsonPath = path.join(currentPath, "package.json");
+    const packageJsonPath = path.join(currentPath, "node_modules", packageName, "package.json");
     if (fs.existsSync(packageJsonPath)) {
       const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf-8"));
       if (packageJson.name === packageName) {
