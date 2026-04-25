@@ -29,6 +29,7 @@ from yinshi.services.runners import (
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["runners"])
+_RUNNER_BEARER_REQUIRED = "Runner bearer token is required"
 
 
 def _request_control_url(request: Request) -> str:
@@ -56,12 +57,12 @@ def _bearer_token(request: Request) -> str:
     """Extract a bearer token from a runner Authorization header."""
     authorization = request.headers.get("authorization")
     if authorization is None:
-        raise HTTPException(status_code=401, detail="Runner bearer token is required")
+        raise HTTPException(status_code=401, detail=_RUNNER_BEARER_REQUIRED)
     if not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Runner bearer token is required")
+        raise HTTPException(status_code=401, detail=_RUNNER_BEARER_REQUIRED)
     token = authorization.removeprefix("Bearer ").strip()
     if not token:
-        raise HTTPException(status_code=401, detail="Runner bearer token is required")
+        raise HTTPException(status_code=401, detail=_RUNNER_BEARER_REQUIRED)
     return token
 
 

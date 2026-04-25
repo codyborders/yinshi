@@ -33,6 +33,10 @@ function runnerEnvironmentText(registration: CloudRunnerRegistration): string {
     .join("\n");
 }
 
+function errorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error ? error.message : fallback;
+}
+
 export default function CloudRunnerSection() {
   const [runner, setRunner] = useState<CloudRunner | null>(null);
   const [registration, setRegistration] = useState<CloudRunnerRegistration | null>(null);
@@ -50,7 +54,7 @@ export default function CloudRunnerSection() {
       setRunner(loadedRunner);
       setError(null);
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : "Failed to load cloud runner");
+      setError(errorMessage(loadError, "Failed to load cloud runner"));
     } finally {
       setLoading(false);
     }
@@ -79,7 +83,7 @@ export default function CloudRunnerSection() {
       setRegistration(createdRegistration);
       setRunner(createdRegistration.runner);
     } catch (createError) {
-      setError(createError instanceof Error ? createError.message : "Failed to create cloud runner");
+      setError(errorMessage(createError, "Failed to create cloud runner"));
     } finally {
       setSaving(false);
     }
@@ -96,7 +100,7 @@ export default function CloudRunnerSection() {
       setRegistration(null);
       await loadRunner();
     } catch (revokeError) {
-      setError(revokeError instanceof Error ? revokeError.message : "Failed to revoke cloud runner");
+      setError(errorMessage(revokeError, "Failed to revoke cloud runner"));
     } finally {
       setRevoking(false);
     }
@@ -104,6 +108,7 @@ export default function CloudRunnerSection() {
 
   const status = runner?.status ?? "offline";
   const createButtonLabel = runner && runner.status !== "revoked" ? "Replace Runner" : "Create Token";
+  const statusLabel = loading ? "Loading" : runner?.status ?? "Not configured";
 
   return (
     <section className="mb-8 rounded-xl border border-gray-800 bg-gray-900/60 p-5">
@@ -117,7 +122,7 @@ export default function CloudRunnerSection() {
           </p>
         </div>
         <span className={`rounded-full border px-3 py-1 text-xs ${runnerStatusClass(status)}`}>
-          {loading ? "Loading" : runner ? runner.status : "Not configured"}
+          {statusLabel}
         </span>
       </div>
 

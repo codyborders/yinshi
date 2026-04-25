@@ -22,6 +22,7 @@ _DEFAULT_DATA_DIR = "/var/lib/yinshi"
 _DEFAULT_TOKEN_FILE = "/var/lib/yinshi/runner-token"
 _DEFAULT_HEARTBEAT_INTERVAL_S = 30.0
 _REQUEST_TIMEOUT_S = 15.0
+_REGISTRATION_TOKEN_ENV_PREFIX = "YINSHI_REGISTRATION_TOKEN="
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,17 +62,20 @@ def _env_float(name: str, default: float) -> float:
     return value
 
 
+def _env_path(name: str, default: str) -> Path:
+    """Read a required filesystem path from the environment."""
+    path_text = _env_text(name, default)
+    if path_text is None:
+        raise RuntimeError(f"{name} must not be empty")
+    return Path(path_text)
+
+
 def load_config() -> RunnerAgentConfig:
     """Build runner agent config from environment variables."""
     control_url = _env_text("YINSHI_CONTROL_URL", _DEFAULT_CONTROL_URL)
     assert control_url is not None, "default control URL must be non-empty"
-    runner_token_file = Path(_env_text("YINSHI_RUNNER_TOKEN_FILE", _DEFAULT_TOKEN_FILE) or "")
-    data_dir = Path(_env_text("YINSHI_RUNNER_DATA_DIR", _DEFAULT_DATA_DIR) or "")
-    if not str(runner_token_file):
-        raise RuntimeError("YINSHI_RUNNER_TOKEN_FILE must not be empty")
-    if not str(data_dir):
-        raise RuntimeError("YINSHI_RUNNER_DATA_DIR must not be empty")
-
+    runner_token_file = _env_path("YINSHI_RUNNER_TOKEN_FILE", _DEFAULT_TOKEN_FILE)
+    data_dir = _env_path("YINSHI_RUNNER_DATA_DIR", _DEFAULT_DATA_DIR)
     env_file_text = _env_text("YINSHI_RUNNER_ENV_FILE")
     env_file = Path(env_file_text) if env_file_text else None
     return RunnerAgentConfig(
@@ -138,7 +142,7 @@ def _scrub_registration_token(env_file: Path | None) -> None:
     if not env_file.exists():
         return
     lines = env_file.read_text(encoding="utf-8").splitlines()
-    filtered_lines = [line for line in lines if not line.startswith("YINSHI_REGISTRATION_TOKEN=")]
+    filtered_lines = [line for line in lines if not line.startswith(_REGISTRATION_TOKEN_ENV_PREFIX)]
     if filtered_lines == lines:
         return
     env_file.write_text("\n".join(filtered_lines) + "\n", encoding="utf-8")

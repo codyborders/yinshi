@@ -21,6 +21,14 @@ PI_CONFIG_CATEGORY_ORDER = (
 PI_CONFIG_CATEGORIES = frozenset(PI_CONFIG_CATEGORY_ORDER)
 
 
+def _strip_required_text(value: str, message: str) -> str:
+    """Trim a required string field and raise the caller's validation message."""
+    normalized_value = value.strip()
+    if not normalized_value:
+        raise ValueError(message)
+    return normalized_value
+
+
 class RepoCreate(BaseModel):
     """Request to import a repository."""
 
@@ -178,10 +186,7 @@ class CloudRunnerCreate(BaseModel):
     @classmethod
     def validate_non_blank_text(cls, value: str) -> str:
         """Reject blank runner setup fields after trimming whitespace."""
-        normalized_value = value.strip()
-        if not normalized_value:
-            raise ValueError("Runner setup fields must not be blank")
-        return normalized_value
+        return _strip_required_text(value, "Runner setup fields must not be blank")
 
 
 class CloudRunnerOut(BaseModel):
@@ -223,10 +228,7 @@ class RunnerRegisterIn(BaseModel):
     @classmethod
     def validate_runner_registration_text(cls, value: str) -> str:
         """Reject blank runner registration strings."""
-        normalized_value = value.strip()
-        if not normalized_value:
-            raise ValueError("Runner registration values must not be blank")
-        return normalized_value
+        return _strip_required_text(value, "Runner registration values must not be blank")
 
 
 class RunnerRegisterOut(BaseModel):
@@ -248,10 +250,7 @@ class RunnerHeartbeatIn(BaseModel):
     @classmethod
     def validate_runner_heartbeat_text(cls, value: str) -> str:
         """Reject blank runner heartbeat strings."""
-        normalized_value = value.strip()
-        if not normalized_value:
-            raise ValueError("Runner heartbeat values must not be blank")
-        return normalized_value
+        return _strip_required_text(value, "Runner heartbeat values must not be blank")
 
 
 class RunnerHeartbeatOut(BaseModel):

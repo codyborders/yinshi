@@ -14,6 +14,9 @@ from yinshi.exceptions import RunnerAuthenticationError, RunnerRegistrationError
 _REGISTRATION_TOKEN_TTL_MINUTES = 60
 _HEARTBEAT_ONLINE_WINDOW_SECONDS = 120
 _DEFAULT_RUNNER_DATA_DIR = "/var/lib/yinshi"
+_DEFAULT_RUNNER_TOKEN_FILE = f"{_DEFAULT_RUNNER_DATA_DIR}/runner-token"
+_DEFAULT_RUNNER_ENV_FILE = "/etc/yinshi-runner.env"
+_REGISTRATION_TOKEN_EXPIRED = "Runner registration token has expired"
 _DEFAULT_CAPABILITIES = {
     "posix_storage": True,
     "sqlite": True,
@@ -224,8 +227,8 @@ def create_runner_registration(
         "YINSHI_CONTROL_URL": normalized_control_url,
         "YINSHI_REGISTRATION_TOKEN": registration_token,
         "YINSHI_RUNNER_DATA_DIR": _DEFAULT_RUNNER_DATA_DIR,
-        "YINSHI_RUNNER_TOKEN_FILE": f"{_DEFAULT_RUNNER_DATA_DIR}/runner-token",
-        "YINSHI_RUNNER_ENV_FILE": "/etc/yinshi-runner.env",
+        "YINSHI_RUNNER_TOKEN_FILE": _DEFAULT_RUNNER_TOKEN_FILE,
+        "YINSHI_RUNNER_ENV_FILE": _DEFAULT_RUNNER_ENV_FILE,
     }
     return {
         "runner": _serialize_runner(row),
@@ -286,9 +289,9 @@ def register_runner(
 
         expires_at = _datetime_from_storage(row["registration_token_expires_at"])
         if expires_at is None:
-            raise RunnerRegistrationError("Runner registration token has expired")
+            raise RunnerRegistrationError(_REGISTRATION_TOKEN_EXPIRED)
         if expires_at <= _utc_now():
-            raise RunnerRegistrationError("Runner registration token has expired")
+            raise RunnerRegistrationError(_REGISTRATION_TOKEN_EXPIRED)
 
         db.execute(
             """
