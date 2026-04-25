@@ -195,6 +195,42 @@ def test_get_user_db_migrates_existing_user_db(tenant_env):
     assert "turn_status" in message_columns
 
 
+def test_sqlcipher_connection_uses_driver_row_factory(tenant_env, monkeypatch):
+    """SQLCipher connections must use the driver's Row type, not sqlite3.Row."""
+    from types import SimpleNamespace
+
+    from yinshi.tenant import _open_sqlcipher_connection
+
+    class FakeConnection:
+        def __init__(self) -> None:
+            self.row_factory = None
+            self.closed = False
+            self.statements: list[str] = []
+
+        def execute(self, statement: str):
+            self.statements.append(statement)
+            return SimpleNamespace(fetchone=lambda: (0,))
+
+        def close(self) -> None:
+            self.closed = True
+
+    fake_connection = FakeConnection()
+    fake_row_factory = object()
+    fake_module = SimpleNamespace(
+        connect=lambda _: fake_connection,
+        Row=fake_row_factory,
+        DatabaseError=RuntimeError,
+    )
+    monkeypatch.setattr("yinshi.tenant._load_sqlcipher_module", lambda: fake_module)
+
+    conn = _open_sqlcipher_connection(str(tenant_env["tmp_path"] / "cipher.db"), b"1" * 32)
+
+    assert conn is fake_connection
+    assert fake_connection.row_factory is fake_row_factory
+    assert any(statement.startswith("PRAGMA key") for statement in fake_connection.statements)
+    assert not fake_connection.closed
+
+
 def test_required_tenant_db_encryption_fails_without_sqlcipher(tenant_env, monkeypatch):
     """Required SQLCipher mode should fail closed when no SQLCipher driver is installed."""
     from yinshi.config import get_settings

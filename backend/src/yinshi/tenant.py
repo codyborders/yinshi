@@ -160,6 +160,9 @@ def _load_sqlcipher_module() -> ModuleType:
         if not hasattr(module, "connect"):
             import_errors.append(f"{module_name}: missing connect")
             continue
+        if not hasattr(module, "Row"):
+            import_errors.append(f"{module_name}: missing Row")
+            continue
         return module
     joined_errors = "; ".join(import_errors) or "no SQLCipher module candidates configured"
     raise RuntimeError(
@@ -192,15 +195,20 @@ def _open_sqlcipher_connection(db_path: str, sqlcipher_key: bytes) -> sqlite3.Co
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     sqlcipher_module = _load_sqlcipher_module()
     conn = cast(sqlite3.Connection, sqlcipher_module.connect(db_path))
-    conn.row_factory = sqlite3.Row
+    conn.row_factory = getattr(sqlcipher_module, "Row")
     # The key is derived binary material, converted to hex locally, and never
     # includes user-controlled SQL. SQLCipher requires PRAGMA key syntax.
     conn.execute(f"PRAGMA key = \"x'{sqlcipher_key.hex()}'\"")  # noqa: S608
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA busy_timeout = 5000")
+    sqlcipher_database_error = getattr(sqlcipher_module, "DatabaseError", sqlite3.DatabaseError)
+    if not isinstance(sqlcipher_database_error, type):
+        sqlcipher_database_error = sqlite3.DatabaseError
+    elif not issubclass(sqlcipher_database_error, Exception):
+        sqlcipher_database_error = sqlite3.DatabaseError
     try:
         conn.execute("SELECT count(*) FROM sqlite_master").fetchone()
-    except sqlite3.DatabaseError as exc:
+    except (sqlite3.DatabaseError, sqlcipher_database_error) as exc:
         conn.close()
         raise RuntimeError("Tenant database could not be opened with the configured key") from exc
     return conn
