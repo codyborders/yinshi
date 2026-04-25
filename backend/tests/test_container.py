@@ -11,7 +11,12 @@ import pytest
 
 from yinshi.api.stream import _remap_path
 from yinshi.exceptions import ContainerNotReadyError, ContainerStartError
-from yinshi.services.container import ContainerInfo, ContainerManager, ContainerMount
+from yinshi.services.container import (
+    _PODMAN_RUN_TIMEOUT_S,
+    ContainerInfo,
+    ContainerManager,
+    ContainerMount,
+)
 from yinshi.utils.paths import is_path_inside
 
 # ---------------------------------------------------------------------------
@@ -84,6 +89,7 @@ def _make_mock_process(
     """Build a mock asyncio.subprocess.Process."""
     proc = AsyncMock()
     proc.wait = AsyncMock(return_value=returncode)
+    proc.communicate = AsyncMock(return_value=(stdout.encode(), stderr.encode()))
     proc.stdout = AsyncMock()
     proc.stdout.read = AsyncMock(return_value=stdout.encode())
     proc.stderr = AsyncMock()
@@ -581,6 +587,67 @@ class TestContainerManager:
             await mgr.ensure_container(uid3, str(tmp_path / "data"))
 
     @pytest.mark.asyncio
+    async def test_max_container_count_allows_reusing_existing_container(self, tmp_path):
+        """Container quota should block only new containers, not reuse of an existing one."""
+        settings = _make_settings(
+            container_socket_base=str(tmp_path),
+            container_max_count=1,
+            container_idle_timeout_s=99999,
+        )
+        mgr = ContainerManager(settings=settings)
+        mgr._initialized = True
+        user_id = "a" * 32
+        mounts = mgr._default_mounts(str(tmp_path))
+        existing_info = ContainerInfo(
+            container_id="existing",
+            user_id=user_id,
+            socket_path="/tmp/socket",
+            mounts=mounts,
+            created_at=datetime.now(timezone.utc),
+            last_activity=datetime.now(timezone.utc),
+        )
+        mgr._containers[user_id] = existing_info
+        mgr._is_running = AsyncMock(return_value=True)
+
+        info = await mgr.ensure_container(user_id, str(tmp_path))
+
+        assert info is existing_info
+        assert mgr._is_running.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_initialize_is_serialized(self, tmp_path):
+        """Concurrent cold-starts should run Podman initialization once."""
+        settings = _make_settings(container_socket_base=str(tmp_path))
+        first_init_started = asyncio.Event()
+        release_first_init = asyncio.Event()
+        network_call_count = 0
+
+        async def _network_once() -> None:
+            nonlocal network_call_count
+            network_call_count += 1
+            first_init_started.set()
+            await release_first_init.wait()
+
+        mgr = ContainerManager(settings=settings)
+        mgr._verify_podman_available = AsyncMock(return_value=None)
+        mgr._ensure_network = AsyncMock(side_effect=_network_once)
+        mgr._ensure_image = AsyncMock(return_value=None)
+        mgr._cleanup_orphaned_containers = AsyncMock(return_value=None)
+
+        first_task = asyncio.create_task(mgr.initialize())
+        await first_init_started.wait()
+        second_task = asyncio.create_task(mgr.initialize())
+        await asyncio.sleep(0)
+        release_first_init.set()
+
+        await asyncio.gather(first_task, second_task)
+
+        assert network_call_count == 1
+        assert mgr._verify_podman_available.await_count == 1
+        assert mgr._cleanup_orphaned_containers.await_count == 1
+        assert mgr._initialized is True
+
+    @pytest.mark.asyncio
     async def test_orphaned_containers_cleaned_on_init(self, tmp_path):
         """S7: Orphaned containers should be removed on initialization."""
         settings = _make_settings(container_socket_base=str(tmp_path))
@@ -729,6 +796,8 @@ class TestContainerManager:
                 "asyncio.create_subprocess_exec", AsyncMock(side_effect=_side_effect)
             ) as mock_exec,
             patch("asyncio.open_unix_connection", _ready_socket_listener(socket_path)),
+            patch("os.getuid", return_value=1001),
+            patch("os.getgid", return_value=1002),
         ):
             mgr = ContainerManager(settings=settings)
             await mgr.ensure_container(user_id, data_dir)
@@ -748,20 +817,56 @@ class TestContainerManager:
         assert "--userns" in run_args
         assert "keep-id" in run_args
         assert "--user" in run_args
+        assert "1001:1002" in run_args
         assert "0:0" not in run_args
         assert "HOME=/tmp" in run_args
+
+    @pytest.mark.asyncio
+    async def test_run_podman_preserves_large_output(self, tmp_path):
+        """Podman JSON output should not be truncated by pipe reads."""
+        settings = _make_settings(container_socket_base=str(tmp_path))
+        large_stdout = "x" * (80 * 1024)
+        proc = _make_mock_process(stdout=large_stdout)
+
+        with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)):
+            mgr = ContainerManager(settings=settings)
+            _, stdout, _ = await mgr._run_podman("ps", "--format", "json")
+
+        assert stdout == large_stdout
+        assert proc.communicate.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_create_container_uses_extended_podman_run_timeout(self, tmp_path):
+        """Container creation should allow slow cold-starting rootless Podman runs."""
+        socket_base = str(tmp_path / "sockets")
+        settings = _make_settings(container_socket_base=socket_base)
+        user_id = "abcdef12345678901234567890abcdef"
+        data_dir = str(tmp_path / "data")
+        os.makedirs(data_dir, exist_ok=True)
+
+        mgr = ContainerManager(settings=settings)
+        mgr._run_podman = AsyncMock(return_value=(0, "container_123", ""))
+        mgr._wait_for_socket = AsyncMock(return_value=None)
+
+        await mgr._create_container(user_id, data_dir, mounts=())
+
+        run_call = mgr._run_podman.await_args
+        assert run_call is not None
+        assert run_call.args[0] == "run"
+        assert run_call.kwargs["timeout"] == _PODMAN_RUN_TIMEOUT_S
 
     @pytest.mark.asyncio
     async def test_run_podman_timeout_ignores_process_lookup_error(self, tmp_path):
         """Timeout cleanup should still raise ContainerStartError when Podman already exited."""
         settings = _make_settings(container_socket_base=str(tmp_path))
 
-        async def _wait_forever() -> int:
+        async def _communicate_forever() -> tuple[bytes, bytes]:
             await asyncio.sleep(60)
-            return 0
+            return b"", b""
 
         proc = AsyncMock()
-        proc.wait = AsyncMock(side_effect=_wait_forever)
+        proc.communicate = AsyncMock(side_effect=_communicate_forever)
+        proc.wait = AsyncMock(return_value=0)
         proc.stdout = AsyncMock()
         proc.stdout.read = AsyncMock(return_value=b"")
         proc.stderr = AsyncMock()

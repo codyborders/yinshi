@@ -22,12 +22,10 @@ async function fetchCommands(): Promise<SlashCommand[]> {
     );
     return payload.commands.map(toSlashCommand);
   } catch (error) {
-    // 503 from an unready sidecar and 404 from a missing config both mean
-    // "no commands right now"; surface as empty rather than a hard error.
-    if (
-      error instanceof ApiError &&
-      (error.status === 503 || error.status === 404)
-    ) {
+    // A missing Pi config has no imported commands. A 503 is different: the
+    // sidecar or tenant container is still warming up, so callers must retry
+    // rather than cache an empty palette for the rest of the browser session.
+    if (error instanceof ApiError && error.status === 404) {
       return [];
     }
     throw error;
@@ -36,12 +34,15 @@ async function fetchCommands(): Promise<SlashCommand[]> {
 
 export function getCachedPiCommands(): Promise<SlashCommand[]> {
   if (cachedPromise === null) {
-    cachedPromise = fetchCommands().catch((error) => {
-      // Clear the cached promise on failure so the next caller can retry;
-      // leaving a rejected promise cached would permanently break the palette.
-      cachedPromise = null;
+    const promise = fetchCommands().catch((error) => {
+      // Clear the cached promise on failure so the next caller can retry.
+      // Guard against stale in-flight requests clearing a newer cache entry.
+      if (cachedPromise === promise) {
+        cachedPromise = null;
+      }
       throw error;
     });
+    cachedPromise = promise;
   }
   return cachedPromise;
 }

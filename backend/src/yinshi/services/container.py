@@ -15,6 +15,7 @@ from yinshi.exceptions import ContainerNotReadyError, ContainerStartError
 logger = logging.getLogger(__name__)
 
 _SIDECAR_NET = "yinshi-sidecar-net"
+_PODMAN_RUN_TIMEOUT_S = 90.0
 _USER_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 
 if TYPE_CHECKING:
@@ -61,9 +62,9 @@ class ContainerManager:
         self._containers: dict[str, ContainerInfo] = {}
         self._locks: dict[str, asyncio.Lock] = {}
         self._global_lock = asyncio.Lock()
+        self._initialization_lock = asyncio.Lock()
         self._socket_poll_timeout_s: float = 10.0
         self._socket_poll_interval_s: float = 0.1
-        self._pipe_read_timeout_s: float = 1.0
         self._initialized = False
 
     @staticmethod
@@ -98,15 +99,18 @@ class ContainerManager:
         assert proc is not None, "create_subprocess_exec must return a process"
 
         try:
-            await asyncio.wait_for(proc.wait(), timeout=timeout)
+            stdout_data, stderr_data = await asyncio.wait_for(
+                proc.communicate(),
+                timeout=timeout,
+            )
         except asyncio.TimeoutError:
             await self._stop_process(proc)
             raise ContainerStartError(
                 f"Podman command timed out: podman {' '.join(args)}"
             ) from None
 
-        stdout = await self._read_process_pipe(proc.stdout)
-        stderr = await self._read_process_pipe(proc.stderr)
+        stdout = self._decode_process_output(stdout_data)
+        stderr = self._decode_process_output(stderr_data)
 
         returncode = proc.returncode
         if returncode is None:
@@ -117,25 +121,16 @@ class ContainerManager:
 
         return returncode, stdout, stderr
 
-    async def _read_process_pipe(
-        self,
-        stream: asyncio.StreamReader | None,
-    ) -> str:
-        """Read one subprocess pipe without waiting forever for inherited descriptors."""
-        if stream is None:
+    @staticmethod
+    def _decode_process_output(raw_data: bytes | str | None) -> str:
+        """Decode subprocess output without truncating Podman's JSON responses."""
+        if raw_data is None:
             return ""
-
-        try:
-            raw_data = await asyncio.wait_for(
-                stream.read(64 * 1024),
-                timeout=self._pipe_read_timeout_s,
-            )
-        except asyncio.TimeoutError:
-            return ""
-
+        if isinstance(raw_data, str):
+            return raw_data.strip()
         if not raw_data:
             return ""
-        return raw_data.decode().strip()
+        return raw_data.decode(errors="replace").strip()
 
     async def _stop_process(
         self,
@@ -165,12 +160,15 @@ class ContainerManager:
         """
         if self._initialized:
             return
-        self._ensure_socket_base_dir()
-        await self._verify_podman_available()
-        await self._ensure_network()
-        await self._ensure_image()
-        await self._cleanup_orphaned_containers()
-        self._initialized = True
+        async with self._initialization_lock:
+            if self._initialized:
+                return
+            self._ensure_socket_base_dir()
+            await self._verify_podman_available()
+            await self._ensure_network()
+            await self._ensure_image()
+            await self._cleanup_orphaned_containers()
+            self._initialized = True
 
     # -- Podman network -----------------------------------------------------
 
@@ -375,13 +373,6 @@ class ContainerManager:
         if not self._initialized:
             await self.initialize()
 
-        # Enforce max container count (0 = unlimited)
-        max_count = getattr(self._settings, "container_max_count", 0)
-        if max_count and len(self._containers) >= max_count:
-            await self.reap_idle()
-            if len(self._containers) >= max_count:
-                raise ContainerStartError("Maximum container limit reached")
-
         lock = await self._get_lock(user_id)
         async with lock:
             existing = self._containers.get(user_id)
@@ -400,7 +391,19 @@ class ContainerManager:
                     await self._remove_container(existing.container_id)
                     del self._containers[user_id]
 
+            await self._enforce_container_limit()
             return await self._create_container(user_id, data_dir, normalized_mounts)
+
+    async def _enforce_container_limit(self) -> None:
+        """Fail before creating a new container when the configured quota is full."""
+        max_count = getattr(self._settings, "container_max_count", 0)
+        if not max_count:
+            return
+        if len(self._containers) < max_count:
+            return
+        await self.reap_idle()
+        if len(self._containers) >= max_count:
+            raise ContainerStartError("Maximum container limit reached")
 
     def touch(self, user_id: str) -> None:
         """Update last activity timestamp for a user's container."""
@@ -609,6 +612,7 @@ class ContainerManager:
             "--label",
             f"yinshi.user_id={user_id}",
             s.container_image,
+            timeout=_PODMAN_RUN_TIMEOUT_S,
         )
 
         await self._wait_for_socket(socket_path)
