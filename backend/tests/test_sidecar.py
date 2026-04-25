@@ -116,10 +116,40 @@ async def test_sidecar_client_cancel():
 
 
 @pytest.mark.asyncio
+async def test_sidecar_client_get_runtime_version() -> None:
+    """get_runtime_version should validate the dedicated sidecar version response."""
+    from yinshi.services.sidecar import SidecarClient
+
+    client = SidecarClient()
+    client._connected = True
+    client._writer = MagicMock()
+    client._writer.drain = AsyncMock()
+    client._read_line = AsyncMock(
+        return_value={
+            "type": "version",
+            "package_name": "@mariozechner/pi-coding-agent",
+            "installed_version": "0.70.2",
+            "node_version": "v20.20.1",
+        }
+    )
+
+    payload = await client.get_runtime_version()
+
+    written = client._writer.write.call_args[0][0].decode()
+    msg = json.loads(written.strip())
+    assert msg == {"type": "version", "id": "version"}
+    assert payload == {
+        "package_name": "@mariozechner/pi-coding-agent",
+        "installed_version": "0.70.2",
+        "node_version": "v20.20.1",
+    }
+
+
+@pytest.mark.asyncio
 async def test_sidecar_not_connected_raises():
     """Operations on disconnected client should raise."""
-    from yinshi.services.sidecar import SidecarClient
     from yinshi.exceptions import SidecarNotConnectedError
+    from yinshi.services.sidecar import SidecarClient
 
     client = SidecarClient()
     with pytest.raises(SidecarNotConnectedError):
@@ -134,7 +164,7 @@ async def test_sidecar_connect_uses_large_line_limit(monkeypatch: pytest.MonkeyP
     exceed asyncio's default 64 KiB line limit. This test verifies that the Unix
     stream connection is created with an explicit higher limit.
     """
-    from yinshi.services.sidecar import SidecarClient, _SIDECAR_MESSAGE_LIMIT_BYTES
+    from yinshi.services.sidecar import _SIDECAR_MESSAGE_LIMIT_BYTES, SidecarClient
 
     recorded_kwargs: dict[str, object] = {}
 
@@ -142,9 +172,7 @@ async def test_sidecar_connect_uses_large_line_limit(monkeypatch: pytest.MonkeyP
         recorded_kwargs["path"] = path
         recorded_kwargs.update(kwargs)
         reader = AsyncMock()
-        reader.readline = AsyncMock(
-            return_value=b'{"type":"init_status","success":true}\n'
-        )
+        reader.readline = AsyncMock(return_value=b'{"type":"init_status","success":true}\n')
         writer = MagicMock()
         return reader, writer
 
@@ -187,9 +215,7 @@ async def test_sidecar_client_submit_oauth_flow_input() -> None:
     client._connected = True
     client._writer = MagicMock()
     client._writer.drain = AsyncMock()
-    client._read_line = AsyncMock(
-        return_value={"type": "oauth_submitted", "flow_id": "flow-1"}
-    )
+    client._read_line = AsyncMock(return_value={"type": "oauth_submitted", "flow_id": "flow-1"})
 
     await client.submit_oauth_flow_input("flow-1", "http://localhost:1455/auth/callback?code=abc")
 

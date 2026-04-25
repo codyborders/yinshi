@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Yinshi pi package update daily
+
+[Timer]
+OnCalendar=*-*-* 04:17:00 UTC
+RandomizedDelaySec=1h
+Persistent=true
+Unit=yinshi-pi-package-update.service
+
+[Install]
+WantedBy=timers.target

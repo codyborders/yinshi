@@ -25,6 +25,7 @@ from yinshi.models import (
     PiConfigCommandsOut,
     PiConfigImport,
     PiConfigOut,
+    PiReleaseNotesOut,
     ProviderConnectionCreate,
     ProviderConnectionOut,
 )
@@ -38,6 +39,7 @@ from yinshi.services.pi_config import (
     sync_pi_config,
     update_enabled_categories,
 )
+from yinshi.services.pi_releases import get_pi_release_notes
 from yinshi.services.provider_connections import (
     create_provider_connection,
     delete_provider_connection,
@@ -217,6 +219,13 @@ def get_pi_config_route(request: Request) -> dict[str, Any]:
     return config
 
 
+@router.get("/pi-release-notes", response_model=PiReleaseNotesOut)
+async def get_pi_release_notes_route(request: Request) -> dict[str, Any]:
+    """Return installed pi package metadata and recent upstream release notes."""
+    require_tenant(request)
+    return await get_pi_release_notes()
+
+
 _SIDECAR_UNAVAILABLE_DETAIL = "Agent environment temporarily unavailable"
 
 
@@ -264,7 +273,8 @@ async def _fetch_imported_commands(
     begin_tenant_container_activity(request, tenant)
     try:
         sidecar = await create_sidecar_connection(socket_path)
-        return await sidecar.list_imported_commands(agent_dir=agent_dir)
+        resources = await sidecar.list_imported_commands(agent_dir=agent_dir)
+        return {"commands": resources["commands"]}
     except (OSError, SidecarError, json.JSONDecodeError, asyncio.TimeoutError) as error:
         logger.warning(
             "pi-config/commands: sidecar call failed for user %s",

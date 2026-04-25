@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator
 
 from yinshi.model_catalog import DEFAULT_SESSION_MODEL, get_provider_metadata, normalize_model_ref
 
@@ -281,7 +281,7 @@ class ProviderConnectionCreate(BaseModel):
 
     @field_validator("auth_strategy")
     @classmethod
-    def validate_auth_strategy(cls, value: str, info) -> str:
+    def validate_auth_strategy(cls, value: str, info: ValidationInfo) -> str:
         """Require one of the provider's supported auth strategies."""
         normalized_value = value.strip()
         if not normalized_value:
@@ -297,7 +297,9 @@ class ProviderConnectionCreate(BaseModel):
 
     @field_validator("secret")
     @classmethod
-    def validate_secret(cls, value: str | dict[str, Any], info) -> str | dict[str, Any]:
+    def validate_secret(
+        cls, value: str | dict[str, Any], info: ValidationInfo
+    ) -> str | dict[str, Any]:
         """Match secret shape to the requested auth strategy."""
         auth_strategy = info.data.get("auth_strategy")
         if auth_strategy == "api_key":
@@ -436,3 +438,41 @@ class PiConfigCommandsOut(BaseModel):
     """
 
     commands: list[PiCommand] = Field(default_factory=list)
+
+
+class PiPackageUpdateStatusOut(BaseModel):
+    """Last recorded result from the daily pi package updater."""
+
+    checked_at: str | None = None
+    status: str | None = None
+    previous_version: str | None = None
+    current_version: str | None = None
+    latest_version: str | None = None
+    updated: bool | None = None
+    message: str | None = None
+
+
+class PiPackageReleaseOut(BaseModel):
+    """One upstream pi release note entry."""
+
+    tag_name: str
+    version: str
+    name: str
+    published_at: str | None = None
+    html_url: str
+    body_markdown: str
+
+
+class PiReleaseNotesOut(BaseModel):
+    """Runtime pi version plus recent upstream release notes."""
+
+    package_name: str
+    installed_version: str | None = None
+    latest_version: str | None = None
+    node_version: str | None = None
+    release_notes_url: str
+    update_schedule: str
+    update_status: PiPackageUpdateStatusOut | None = None
+    runtime_error: str | None = None
+    release_error: str | None = None
+    releases: list[PiPackageReleaseOut] = Field(default_factory=list)

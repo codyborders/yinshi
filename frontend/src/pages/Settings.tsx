@@ -10,6 +10,7 @@ import {
   type ProviderDescriptor,
 } from "../api/client";
 import PiConfigSection from "../components/PiConfigSection";
+import PiReleaseNotesSection from "../components/PiReleaseNotesSection";
 import { useAuth } from "../hooks/useAuth";
 import { useCatalog } from "../hooks/useCatalog";
 
@@ -419,8 +420,15 @@ function ProviderCard({
   );
 }
 
-export default function Settings() {
-  const { email } = useAuth();
+type SettingsTab = "providers" | "pi-config" | "pi-release-notes";
+
+const SETTINGS_TABS: Array<{ id: SettingsTab; label: string }> = [
+  { id: "providers", label: "Providers" },
+  { id: "pi-config", label: "Pi config" },
+  { id: "pi-release-notes", label: "Pi release notes" },
+];
+
+function ProvidersSection() {
   const { catalog, loading, error: catalogError } = useCatalog();
   const [connections, setConnections] = useState<ProviderConnection[]>([]);
   const [loadingConnections, setLoadingConnections] = useState(true);
@@ -454,6 +462,78 @@ export default function Settings() {
   }, [connections]);
 
   return (
+    <section aria-labelledby="providers-settings-heading">
+      <h2 id="providers-settings-heading" className="mb-4 text-lg font-semibold text-gray-200">
+        Providers
+      </h2>
+      <p className="mb-4 text-sm text-gray-400">
+        Yinshi does not provide shared model credits. Connect your own model
+        providers here before starting sessions. Secrets are encrypted at rest
+        and never shown again after saving.
+      </p>
+
+      {(loading || loadingConnections) && (
+        <div className="rounded border border-gray-700 bg-gray-800 px-4 py-3 text-sm text-gray-400">
+          Loading provider catalog...
+        </div>
+      )}
+
+      {(catalogError || connectionsError) && (
+        <div className="mb-4 rounded border border-red-900/50 bg-gray-800 px-4 py-3 text-sm text-red-400">
+          {catalogError || connectionsError}
+        </div>
+      )}
+
+      {catalog && (
+        <div className="grid gap-4 md:grid-cols-2">
+          {catalog.providers.map((provider) => (
+            <ProviderCard
+              key={provider.id}
+              provider={provider}
+              connection={connectionByProviderId.get(provider.id)}
+              onConnectionChange={loadConnections}
+            />
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function SettingsTabButton({
+  tab,
+  activeTab,
+  onSelect,
+}: {
+  tab: { id: SettingsTab; label: string };
+  activeTab: SettingsTab;
+  onSelect: (tab: SettingsTab) => void;
+}) {
+  const selected = activeTab === tab.id;
+  return (
+    <button
+      id={`settings-tab-${tab.id}`}
+      type="button"
+      role="tab"
+      aria-selected={selected}
+      aria-controls={`settings-panel-${tab.id}`}
+      onClick={() => onSelect(tab.id)}
+      className={`rounded-lg px-3 py-2 text-sm transition-colors ${
+        selected
+          ? "bg-gray-200 text-gray-950"
+          : "border border-gray-800 text-gray-300 hover:bg-gray-800"
+      }`}
+    >
+      {tab.label}
+    </button>
+  );
+}
+
+export default function Settings() {
+  const { email } = useAuth();
+  const [activeTab, setActiveTab] = useState<SettingsTab>("providers");
+
+  return (
     <div className="h-full overflow-y-auto">
       <div className="mx-auto max-w-5xl p-6 pb-12">
         <h1 className="mb-6 text-2xl font-bold text-gray-100">Settings</h1>
@@ -463,41 +543,26 @@ export default function Settings() {
           <p className="text-sm text-gray-400">{email}</p>
         </section>
 
-        <section>
-          <h2 className="mb-4 text-lg font-semibold text-gray-200">Providers</h2>
-          <p className="mb-4 text-sm text-gray-400">
-            Yinshi does not provide shared model credits. Connect your own model
-            providers here before starting sessions. Secrets are encrypted at rest
-            and never shown again after saving.
-          </p>
+        <div className="mb-6 flex flex-wrap gap-2" role="tablist" aria-label="Settings sections">
+          {SETTINGS_TABS.map((tab) => (
+            <SettingsTabButton
+              key={tab.id}
+              tab={tab}
+              activeTab={activeTab}
+              onSelect={setActiveTab}
+            />
+          ))}
+        </div>
 
-          {(loading || loadingConnections) && (
-            <div className="rounded border border-gray-700 bg-gray-800 px-4 py-3 text-sm text-gray-400">
-              Loading provider catalog...
-            </div>
-          )}
-
-          {(catalogError || connectionsError) && (
-            <div className="mb-4 rounded border border-red-900/50 bg-gray-800 px-4 py-3 text-sm text-red-400">
-              {catalogError || connectionsError}
-            </div>
-          )}
-
-          {catalog && (
-            <div className="grid gap-4 md:grid-cols-2">
-              {catalog.providers.map((provider) => (
-                <ProviderCard
-                  key={provider.id}
-                  provider={provider}
-                  connection={connectionByProviderId.get(provider.id)}
-                  onConnectionChange={loadConnections}
-                />
-              ))}
-            </div>
-          )}
-        </section>
-
-        <PiConfigSection />
+        <div
+          id={`settings-panel-${activeTab}`}
+          role="tabpanel"
+          aria-labelledby={`settings-tab-${activeTab}`}
+        >
+          {activeTab === "providers" ? <ProvidersSection /> : null}
+          {activeTab === "pi-config" ? <PiConfigSection /> : null}
+          {activeTab === "pi-release-notes" ? <PiReleaseNotesSection /> : null}
+        </div>
       </div>
     </div>
   );

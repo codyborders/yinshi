@@ -88,6 +88,12 @@ class Settings(BaseSettings):
     # Sidecar
     sidecar_socket_path: str = "/tmp/yinshi-sidecar.sock"
 
+    # Pi package update and release-note metadata
+    pi_package_name: str = "@mariozechner/pi-coding-agent"
+    pi_release_repository: str = "badlogic/pi-mono"
+    pi_update_status_path: str = "/opt/yinshi/.runtime/pi-package-update.json"
+    pi_update_schedule: str = "Daily around 04:17 UTC with up to 1 hour randomized delay"
+
     # CORS
     frontend_url: str = "http://localhost:5173"
 

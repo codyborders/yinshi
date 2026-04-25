@@ -25,6 +25,15 @@ class PiCommandsPayload(TypedDict):
 
     commands: list[PiCommandPayload]
 
+
+class PiRuntimeVersionPayload(TypedDict):
+    """Wire shape returned by the sidecar's version handler."""
+
+    package_name: str
+    installed_version: str
+    node_version: str
+
+
 logger = logging.getLogger(__name__)
 
 _SIDECAR_MESSAGE_LIMIT_BYTES = 1024 * 1024 * 8
@@ -296,6 +305,32 @@ class SidecarClient:
         if msg.get("type") != "catalog":
             raise SidecarError(f"Unexpected response type: {msg.get('type')}")
         return msg
+
+    async def get_runtime_version(self) -> PiRuntimeVersionPayload:
+        """Request the installed pi package version from the sidecar runtime."""
+        await self._send({"type": "version", "id": "version"})
+        msg = await self._read_line()
+        if msg is None:
+            raise SidecarError("Sidecar connection lost during version request")
+        if msg.get("type") == "error":
+            raise SidecarError(f"Version request failed: {msg.get('error', 'unknown')}")
+        if msg.get("type") != "version":
+            raise SidecarError(f"Unexpected response type: {msg.get('type')}")
+
+        package_name = msg.get("package_name")
+        installed_version = msg.get("installed_version")
+        node_version = msg.get("node_version")
+        if not isinstance(package_name, str) or not package_name:
+            raise SidecarError("Runtime package_name must be a non-empty string")
+        if not isinstance(installed_version, str) or not installed_version:
+            raise SidecarError("Runtime installed_version must be a non-empty string")
+        if not isinstance(node_version, str) or not node_version:
+            raise SidecarError("Runtime node_version must be a non-empty string")
+        return {
+            "package_name": package_name,
+            "installed_version": installed_version,
+            "node_version": node_version,
+        }
 
     async def list_imported_commands(
         self, *, agent_dir: str | None = None

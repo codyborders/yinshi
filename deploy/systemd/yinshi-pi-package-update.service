@@ -1,0 +1,11 @@
+[Unit]
+Description=Update Yinshi pi package to npm latest
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/yinshi
+Environment=YINSHI_APP_ROOT=/opt/yinshi
+Environment=YINSHI_SERVICE_USER=user
+ExecStart=/opt/yinshi/scripts/update-pi-package.sh --systemd-service

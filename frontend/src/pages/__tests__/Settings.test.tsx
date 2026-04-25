@@ -21,6 +21,10 @@ vi.mock("../../components/PiConfigSection", () => ({
   default: () => <div data-testid="pi-config-section" />,
 }));
 
+vi.mock("../../components/PiReleaseNotesSection", () => ({
+  default: () => <div data-testid="pi-release-notes-section" />,
+}));
+
 vi.mock("../../api/client", () => ({
   api: {
     get: (...args: unknown[]) => apiGetMock(...args),
@@ -124,5 +128,16 @@ describe("Settings", () => {
     expect(
       screen.getByText("Waiting for the provider to finish the OAuth flow."),
     ).toBeInTheDocument();
+  });
+
+  it("switches between settings tabs", () => {
+    render(<Settings />);
+
+    fireEvent.click(screen.getByRole("tab", { name: "Pi config" }));
+    expect(screen.getByTestId("pi-config-section")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("tab", { name: "Pi release notes" }));
+    expect(screen.getByTestId("pi-release-notes-section")).toBeInTheDocument();
+    expect(screen.queryByTestId("pi-config-section")).not.toBeInTheDocument();
   });
 });

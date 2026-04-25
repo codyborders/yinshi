@@ -190,7 +190,7 @@ def _normalize_connection_secret(
     if not secret:
         raise ValueError("OAuth secrets must not be empty")
     normalized_secret = {str(key): value for key, value in secret.items()}
-    return cast(dict[str, object], normalized_secret)
+    return normalized_secret
 
 
 def _encode_config(config: dict[str, object] | None) -> str:

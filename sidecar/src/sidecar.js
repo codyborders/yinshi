@@ -3,6 +3,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -22,6 +23,8 @@ import { HEALTH_CHECK_INTERVAL } from "./constants.js";
 import { createGitAwareBashTool } from "./git_auth.js";
 
 const __sidecarDir = path.dirname(fileURLToPath(import.meta.url));
+const require = createRequire(import.meta.url);
+const PI_PACKAGE_NAME = "@mariozechner/pi-coding-agent";
 const DEFAULT_MODEL_REF = "minimax/MiniMax-M2.7";
 const LEGACY_MODEL_ALIASES = new Map([
   ["haiku", "anthropic/claude-haiku-4-5-20251001"],
@@ -343,6 +346,41 @@ function getCatalog(agentDir) {
     default_model: DEFAULT_MODEL_REF,
     providers,
     models,
+  };
+}
+
+function findPackageJson(packageName) {
+  if (typeof packageName !== "string" || !packageName) {
+    throw new Error("packageName must be a non-empty string");
+  }
+  const entryPath = require.resolve(packageName);
+  let currentPath = path.dirname(entryPath);
+  while (true) {
+    const packageJsonPath = path.join(currentPath, "package.json");
+    if (fs.existsSync(packageJsonPath)) {
+      const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf-8"));
+      if (packageJson.name === packageName) {
+        return packageJson;
+      }
+    }
+    const parentPath = path.dirname(currentPath);
+    if (parentPath === currentPath) {
+      break;
+    }
+    currentPath = parentPath;
+  }
+  throw new Error(`Unable to locate package.json for ${packageName}`);
+}
+
+function getRuntimeVersion() {
+  const packageJson = findPackageJson(PI_PACKAGE_NAME);
+  if (typeof packageJson.version !== "string" || !packageJson.version) {
+    throw new Error(`${PI_PACKAGE_NAME} package.json is missing a version`);
+  }
+  return {
+    package_name: PI_PACKAGE_NAME,
+    installed_version: packageJson.version,
+    node_version: process.version,
   };
 }
 
@@ -783,6 +821,9 @@ export class YinshiSidecar {
       case "catalog":
         this.handleCatalog(id, socket, request.options || {});
         break;
+      case "version":
+        this.handleVersion(id, socket);
+        break;
       case "list_resources":
         void this.handleListResources(id, socket, request.options || {});
         break;
@@ -828,6 +869,22 @@ export class YinshiSidecar {
         id: id || "catalog",
         type: "error",
         error: err instanceof Error ? err.message : "Failed to build model catalog",
+      });
+    }
+  }
+
+  handleVersion(id, socket) {
+    try {
+      sendToSocket(socket, {
+        id: id || "version",
+        type: "version",
+        ...getRuntimeVersion(),
+      });
+    } catch (err) {
+      sendToSocket(socket, {
+        id: id || "version",
+        type: "error",
+        error: err instanceof Error ? err.message : "Failed to read pi package version",
       });
     }
   }

@@ -120,6 +120,38 @@ export interface PiConfigCommands {
   commands: PiCommand[];
 }
 
+export interface PiPackageUpdateStatus {
+  checked_at: string | null;
+  status: string | null;
+  previous_version: string | null;
+  current_version: string | null;
+  latest_version: string | null;
+  updated: boolean | null;
+  message: string | null;
+}
+
+export interface PiPackageRelease {
+  tag_name: string;
+  version: string;
+  name: string;
+  published_at: string | null;
+  html_url: string;
+  body_markdown: string;
+}
+
+export interface PiReleaseNotes {
+  package_name: string;
+  installed_version: string | null;
+  latest_version: string | null;
+  node_version: string | null;
+  release_notes_url: string;
+  update_schedule: string;
+  update_status: PiPackageUpdateStatus | null;
+  runtime_error: string | null;
+  release_error: string | null;
+  releases: PiPackageRelease[];
+}
+
 export interface Workspace {
   id: string;
   created_at: string;
