@@ -11,20 +11,97 @@ import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 
 logger = logging.getLogger(__name__)
 RUNNER_VERSION = "0.1.0"
+RunnerStorageProfile = Literal[
+    "aws_ebs_s3_files",
+    "archil_shared_files",
+    "archil_all_posix",
+]
 _DEFAULT_CONTROL_URL = "http://localhost:8000"
 _DEFAULT_DATA_DIR = "/var/lib/yinshi"
 _DEFAULT_SQLITE_DIR = f"{_DEFAULT_DATA_DIR}/sqlite"
 _DEFAULT_SHARED_FILES_DIR = "/mnt/yinshi-s3-files"
+_DEFAULT_ARCHIL_SHARED_FILES_DIR = "/mnt/archil/yinshi"
+_DEFAULT_ARCHIL_SQLITE_DIR = f"{_DEFAULT_ARCHIL_SHARED_FILES_DIR}/sqlite"
 _DEFAULT_TOKEN_FILE = "/var/lib/yinshi/runner-token"
 _DEFAULT_HEARTBEAT_INTERVAL_S = 30.0
 _REQUEST_TIMEOUT_S = 15.0
 _REGISTRATION_TOKEN_ENV_PREFIX = "YINSHI_REGISTRATION_TOKEN="
+_AWS_STORAGE_PROFILE: RunnerStorageProfile = "aws_ebs_s3_files"
+_ARCHIL_SHARED_FILES_PROFILE: RunnerStorageProfile = "archil_shared_files"
+_ARCHIL_ALL_POSIX_PROFILE: RunnerStorageProfile = "archil_all_posix"
+_STORAGE_ARCHIL = "archil"
+_STORAGE_RUNNER_EBS = "runner_ebs"
+_STORAGE_S3_FILES_OR_LOCAL_POSIX = "s3_files_or_local_posix"
+_STORAGE_S3_FILES_MOUNT = "s3_files_mount"
+_STORAGE_LOCAL_POSIX = "local_posix"
+
+
+@dataclass(frozen=True, slots=True)
+class RunnerStorageProfileSpec:
+    """Environment defaults and validation rules for one runner storage profile."""
+
+    value: RunnerStorageProfile
+    sqlite_storage: str
+    shared_files_storage: str
+    default_sqlite_dir: str
+    default_shared_files_dir: str
+    live_sqlite_on_shared_files: bool
+    experimental: bool
+    allow_sqlite_under_shared_files: bool
+    allowed_sqlite_storage: frozenset[str]
+    allowed_shared_files_storage: frozenset[str]
+
+
+_STORAGE_PROFILES: dict[RunnerStorageProfile, RunnerStorageProfileSpec] = {
+    _AWS_STORAGE_PROFILE: RunnerStorageProfileSpec(
+        value=_AWS_STORAGE_PROFILE,
+        sqlite_storage=_STORAGE_RUNNER_EBS,
+        shared_files_storage=_STORAGE_S3_FILES_OR_LOCAL_POSIX,
+        default_sqlite_dir=_DEFAULT_SQLITE_DIR,
+        default_shared_files_dir=_DEFAULT_SHARED_FILES_DIR,
+        live_sqlite_on_shared_files=False,
+        experimental=False,
+        allow_sqlite_under_shared_files=False,
+        allowed_sqlite_storage=frozenset({_STORAGE_RUNNER_EBS}),
+        allowed_shared_files_storage=frozenset(
+            {
+                _STORAGE_S3_FILES_OR_LOCAL_POSIX,
+                _STORAGE_S3_FILES_MOUNT,
+                _STORAGE_LOCAL_POSIX,
+            }
+        ),
+    ),
+    _ARCHIL_SHARED_FILES_PROFILE: RunnerStorageProfileSpec(
+        value=_ARCHIL_SHARED_FILES_PROFILE,
+        sqlite_storage=_STORAGE_RUNNER_EBS,
+        shared_files_storage=_STORAGE_ARCHIL,
+        default_sqlite_dir=_DEFAULT_SQLITE_DIR,
+        default_shared_files_dir=_DEFAULT_ARCHIL_SHARED_FILES_DIR,
+        live_sqlite_on_shared_files=False,
+        experimental=True,
+        allow_sqlite_under_shared_files=False,
+        allowed_sqlite_storage=frozenset({_STORAGE_RUNNER_EBS}),
+        allowed_shared_files_storage=frozenset({_STORAGE_ARCHIL}),
+    ),
+    _ARCHIL_ALL_POSIX_PROFILE: RunnerStorageProfileSpec(
+        value=_ARCHIL_ALL_POSIX_PROFILE,
+        sqlite_storage=_STORAGE_ARCHIL,
+        shared_files_storage=_STORAGE_ARCHIL,
+        default_sqlite_dir=_DEFAULT_ARCHIL_SQLITE_DIR,
+        default_shared_files_dir=_DEFAULT_ARCHIL_SHARED_FILES_DIR,
+        live_sqlite_on_shared_files=True,
+        experimental=True,
+        allow_sqlite_under_shared_files=True,
+        allowed_sqlite_storage=frozenset({_STORAGE_ARCHIL}),
+        allowed_shared_files_storage=frozenset({_STORAGE_ARCHIL}),
+    ),
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +114,9 @@ class RunnerAgentConfig:
     data_dir: Path
     sqlite_dir: Path
     shared_files_dir: Path
+    storage_profile: RunnerStorageProfile
+    sqlite_storage: str
+    shared_files_storage: str | None
     heartbeat_interval_s: float
     env_file: Path | None
 
@@ -79,14 +159,78 @@ def _env_path(name: str, default: str) -> Path:
     return path
 
 
+def _storage_profile_spec(storage_profile: str) -> RunnerStorageProfileSpec:
+    """Return storage profile metadata after validating the profile value."""
+    normalized_profile = storage_profile.strip()
+    if not normalized_profile:
+        raise RuntimeError("YINSHI_RUNNER_STORAGE_PROFILE must not be empty")
+    if normalized_profile not in _STORAGE_PROFILES:
+        raise RuntimeError(f"Unsupported YINSHI_RUNNER_STORAGE_PROFILE: {normalized_profile}")
+    return _STORAGE_PROFILES[normalized_profile]
+
+
+def _validate_storage_class(
+    *,
+    env_name: str,
+    value: str | None,
+    profile: RunnerStorageProfileSpec,
+    expected_value: str,
+    allowed_values: frozenset[str],
+    required: bool,
+) -> str | None:
+    """Validate one storage-class environment value against the selected profile."""
+    if value is None:
+        if required:
+            raise RuntimeError(f"{env_name} must be {expected_value} for {profile.value}")
+        return None
+    if value not in allowed_values:
+        allowed_text = ", ".join(sorted(allowed_values))
+        raise RuntimeError(f"{env_name} must be one of {allowed_text} for {profile.value}")
+    return value
+
+
+def _load_storage_profile() -> RunnerStorageProfileSpec:
+    """Read the selected runner storage profile from the environment."""
+    storage_profile = _env_text("YINSHI_RUNNER_STORAGE_PROFILE", _AWS_STORAGE_PROFILE)
+    assert storage_profile is not None, "default storage profile must be non-empty"
+    return _storage_profile_spec(storage_profile)
+
+
+def _requires_explicit_storage(profile: RunnerStorageProfileSpec) -> bool:
+    """Return whether a profile requires explicit Archil storage class evidence."""
+    return profile.value != _AWS_STORAGE_PROFILE
+
+
 def load_config() -> RunnerAgentConfig:
     """Build runner agent config from environment variables."""
     control_url = _env_text("YINSHI_CONTROL_URL", _DEFAULT_CONTROL_URL)
     assert control_url is not None, "default control URL must be non-empty"
+    profile = _load_storage_profile()
+    explicit_storage_required = _requires_explicit_storage(profile)
+    sqlite_storage = _validate_storage_class(
+        env_name="YINSHI_RUNNER_SQLITE_STORAGE",
+        value=_env_text("YINSHI_RUNNER_SQLITE_STORAGE", profile.sqlite_storage),
+        profile=profile,
+        expected_value=profile.sqlite_storage,
+        allowed_values=profile.allowed_sqlite_storage,
+        required=explicit_storage_required,
+    )
+    assert sqlite_storage is not None, "SQLite storage has a profile default"
+    shared_files_storage = _validate_storage_class(
+        env_name="YINSHI_RUNNER_SHARED_FILES_STORAGE",
+        value=_env_text("YINSHI_RUNNER_SHARED_FILES_STORAGE"),
+        profile=profile,
+        expected_value=profile.shared_files_storage,
+        allowed_values=profile.allowed_shared_files_storage,
+        required=explicit_storage_required,
+    )
     runner_token_file = _env_path("YINSHI_RUNNER_TOKEN_FILE", _DEFAULT_TOKEN_FILE)
     data_dir = _env_path("YINSHI_RUNNER_DATA_DIR", _DEFAULT_DATA_DIR)
-    sqlite_dir = _env_path("YINSHI_RUNNER_SQLITE_DIR", _DEFAULT_SQLITE_DIR)
-    shared_files_dir = _env_path("YINSHI_RUNNER_SHARED_FILES_DIR", _DEFAULT_SHARED_FILES_DIR)
+    sqlite_dir = _env_path("YINSHI_RUNNER_SQLITE_DIR", profile.default_sqlite_dir)
+    shared_files_dir = _env_path(
+        "YINSHI_RUNNER_SHARED_FILES_DIR",
+        profile.default_shared_files_dir,
+    )
     env_file_text = _env_text("YINSHI_RUNNER_ENV_FILE")
     env_file = Path(env_file_text) if env_file_text else None
     return RunnerAgentConfig(
@@ -96,6 +240,9 @@ def load_config() -> RunnerAgentConfig:
         data_dir=data_dir,
         sqlite_dir=sqlite_dir,
         shared_files_dir=shared_files_dir,
+        storage_profile=profile.value,
+        sqlite_storage=sqlite_storage,
+        shared_files_storage=shared_files_storage,
         heartbeat_interval_s=_env_float(
             "YINSHI_RUNNER_HEARTBEAT_INTERVAL_S",
             _DEFAULT_HEARTBEAT_INTERVAL_S,
@@ -120,24 +267,34 @@ def _probe_writable_directory(directory: Path, label: str) -> None:
 def _shared_files_storage(shared_files_dir: Path) -> str:
     """Describe whether the shared file path is a mounted filesystem."""
     if shared_files_dir.is_mount():
-        return "s3_files_mount"
-    return "local_posix"
+        return _STORAGE_S3_FILES_MOUNT
+    return _STORAGE_LOCAL_POSIX
 
 
-def _validate_storage_layout(config: RunnerAgentConfig) -> None:
-    """Reject layouts that would put live SQLite on the shared file mount."""
+def _validate_storage_layout(config: RunnerAgentConfig) -> RunnerStorageProfileSpec:
+    """Reject path layouts that violate the selected storage profile."""
+    profile = _storage_profile_spec(config.storage_profile)
+    if profile.allow_sqlite_under_shared_files:
+        return profile
     try:
         config.sqlite_dir.relative_to(config.shared_files_dir)
     except ValueError:
-        return
+        return profile
     raise RuntimeError(
         "YINSHI_RUNNER_SQLITE_DIR must not live under YINSHI_RUNNER_SHARED_FILES_DIR"
     )
 
 
+def _resolved_shared_files_storage(config: RunnerAgentConfig) -> str:
+    """Return explicit shared storage, or detect AWS mount/local storage."""
+    if config.shared_files_storage is not None:
+        return config.shared_files_storage
+    return _shared_files_storage(config.shared_files_dir)
+
+
 def _capabilities(config: RunnerAgentConfig) -> dict[str, Any]:
     """Return storage and execution capabilities advertised to the control plane."""
-    _validate_storage_layout(config)
+    profile = _validate_storage_layout(config)
     _probe_writable_directory(config.data_dir, "data")
     _probe_writable_directory(config.sqlite_dir, "sqlite")
     _probe_writable_directory(config.shared_files_dir, "shared files")
@@ -149,9 +306,11 @@ def _capabilities(config: RunnerAgentConfig) -> dict[str, Any]:
         "data_dir": str(config.data_dir),
         "sqlite_dir": str(config.sqlite_dir),
         "shared_files_dir": str(config.shared_files_dir),
-        "sqlite_storage": "runner_ebs",
-        "shared_files_storage": _shared_files_storage(config.shared_files_dir),
-        "live_sqlite_on_shared_files": False,
+        "storage_profile": profile.value,
+        "storage_profile_experimental": profile.experimental,
+        "sqlite_storage": config.sqlite_storage,
+        "shared_files_storage": _resolved_shared_files_storage(config),
+        "live_sqlite_on_shared_files": profile.live_sqlite_on_shared_files,
     }
 
 
@@ -196,6 +355,7 @@ def _runner_status_payload(config: RunnerAgentConfig) -> dict[str, Any]:
         "data_dir": str(config.data_dir),
         "sqlite_dir": str(config.sqlite_dir),
         "shared_files_dir": str(config.shared_files_dir),
+        "storage_profile": config.storage_profile,
     }
 
 
@@ -266,8 +426,12 @@ def main() -> None:
     )
     config = load_config()
     logger.info(
-        "Starting Yinshi cloud runner agent against %s with SQLite dir %s and shared files dir %s",
+        (
+            "Starting Yinshi cloud runner agent against %s with profile %s, "
+            "SQLite dir %s, and shared files dir %s"
+        ),
         config.control_url,
+        config.storage_profile,
         config.sqlite_dir,
         config.shared_files_dir,
     )

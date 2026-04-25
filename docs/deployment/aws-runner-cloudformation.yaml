@@ -9,6 +9,14 @@ Parameters:
     Type: String
     NoEcho: true
     Description: "One-time runner registration token generated in Yinshi settings."
+  RunnerStorageProfile:
+    Type: String
+    Default: aws_ebs_s3_files
+    AllowedValues:
+      - aws_ebs_s3_files
+      - archil_shared_files
+      - archil_all_posix
+    Description: "Storage profile from docs/deployment/runner-storage-options.md. AWS BYOC is supported; Archil profiles are experimental."
   VpcId:
     Type: AWS::EC2::VPC::Id
     Description: "VPC where the runner instance should run."
@@ -25,7 +33,7 @@ Parameters:
     Default: 80
     MinValue: 40
     MaxValue: 2048
-    Description: "Encrypted EBS root volume size. Live SQLite data lives under /var/lib/yinshi/sqlite."
+    Description: "Encrypted EBS root volume size. Required for runner token state and for SQLite in aws_ebs_s3_files or archil_shared_files."
   AmiId:
     Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
     Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
@@ -37,7 +45,8 @@ Parameters:
   SharedFilesMountCommand:
     Type: String
     Default: ""
-    Description: "Optional shell command that mounts S3 Files or another NFS filesystem at /mnt/yinshi-s3-files. Leave empty to use the local EBS-backed directory."
+    NoEcho: true
+    Description: "Optional profile-specific shell command that mounts S3 Files, Archil, NFS, or another POSIX filesystem at the profile shared path. Keep secrets in AWS Secrets Manager, SSM Parameter Store, or your own bootstrap code; do not paste long-lived secrets into this template."
 
 Resources:
   RunnerRole:
@@ -100,12 +109,40 @@ Resources:
           #!/bin/bash
           set -euo pipefail
 
+          RUNNER_STORAGE_PROFILE="${RunnerStorageProfile}"
+          RUNNER_DATA_DIR="/var/lib/yinshi"
+          case "$RUNNER_STORAGE_PROFILE" in
+            aws_ebs_s3_files)
+              RUNNER_SQLITE_DIR="/var/lib/yinshi/sqlite"
+              RUNNER_SHARED_FILES_DIR="/mnt/yinshi-s3-files"
+              RUNNER_SQLITE_STORAGE="runner_ebs"
+              RUNNER_SHARED_FILES_STORAGE="s3_files_or_local_posix"
+              ;;
+            archil_shared_files)
+              RUNNER_SQLITE_DIR="/var/lib/yinshi/sqlite"
+              RUNNER_SHARED_FILES_DIR="/mnt/archil/yinshi"
+              RUNNER_SQLITE_STORAGE="runner_ebs"
+              RUNNER_SHARED_FILES_STORAGE="archil"
+              ;;
+            archil_all_posix)
+              RUNNER_SQLITE_DIR="/mnt/archil/yinshi/sqlite"
+              RUNNER_SHARED_FILES_DIR="/mnt/archil/yinshi"
+              RUNNER_SQLITE_STORAGE="archil"
+              RUNNER_SHARED_FILES_STORAGE="archil"
+              ;;
+            *)
+              echo "Unsupported RunnerStorageProfile: $RUNNER_STORAGE_PROFILE" >&2
+              exit 1
+              ;;
+          esac
+
           dnf update -y
           dnf install -y git podman python3 python3-pip nfs-utils
 
-          mkdir -p /var/lib/yinshi/sqlite /mnt/yinshi-s3-files /opt/yinshi-runner
-          chmod 700 /var/lib/yinshi /var/lib/yinshi/sqlite
-          chmod 755 /mnt/yinshi-s3-files
+          mkdir -p "$RUNNER_DATA_DIR" "$RUNNER_SQLITE_DIR" "$RUNNER_SHARED_FILES_DIR" /opt/yinshi-runner
+          chmod 700 "$RUNNER_DATA_DIR"
+          chmod 700 "$RUNNER_SQLITE_DIR"
+          chmod 755 "$RUNNER_SHARED_FILES_DIR"
 
           cat >/tmp/yinshi-shared-files-mount.sh <<'MOUNT'
           ${SharedFilesMountCommand}
@@ -113,18 +150,28 @@ Resources:
           if grep -q '[^[:space:]]' /tmp/yinshi-shared-files-mount.sh; then
             bash /tmp/yinshi-shared-files-mount.sh
           fi
-          mkdir -p /mnt/yinshi-s3-files/repos /mnt/yinshi-s3-files/worktrees /mnt/yinshi-s3-files/pi-config /mnt/yinshi-s3-files/sessions /mnt/yinshi-s3-files/artifacts /mnt/yinshi-s3-files/db-backups
+          mkdir -p "$RUNNER_SQLITE_DIR"
+          mkdir -p \
+            "$RUNNER_SHARED_FILES_DIR/repos" \
+            "$RUNNER_SHARED_FILES_DIR/worktrees" \
+            "$RUNNER_SHARED_FILES_DIR/pi-config" \
+            "$RUNNER_SHARED_FILES_DIR/sessions" \
+            "$RUNNER_SHARED_FILES_DIR/artifacts" \
+            "$RUNNER_SHARED_FILES_DIR/db-backups"
 
           python3 -m venv /opt/yinshi-runner/venv
           /opt/yinshi-runner/venv/bin/python -m pip install --upgrade pip wheel
           ${PackageInstallCommand}
 
-          cat >/etc/yinshi-runner.env <<'ENV'
+          cat >/etc/yinshi-runner.env <<ENV
           YINSHI_CONTROL_URL=${YinshiControlUrl}
           YINSHI_REGISTRATION_TOKEN=${RegistrationToken}
-          YINSHI_RUNNER_DATA_DIR=/var/lib/yinshi
-          YINSHI_RUNNER_SQLITE_DIR=/var/lib/yinshi/sqlite
-          YINSHI_RUNNER_SHARED_FILES_DIR=/mnt/yinshi-s3-files
+          YINSHI_RUNNER_STORAGE_PROFILE=$RUNNER_STORAGE_PROFILE
+          YINSHI_RUNNER_SQLITE_STORAGE=$RUNNER_SQLITE_STORAGE
+          YINSHI_RUNNER_SHARED_FILES_STORAGE=$RUNNER_SHARED_FILES_STORAGE
+          YINSHI_RUNNER_DATA_DIR=$RUNNER_DATA_DIR
+          YINSHI_RUNNER_SQLITE_DIR=$RUNNER_SQLITE_DIR
+          YINSHI_RUNNER_SHARED_FILES_DIR=$RUNNER_SHARED_FILES_DIR
           YINSHI_RUNNER_TOKEN_FILE=/var/lib/yinshi/runner-token
           YINSHI_RUNNER_ENV_FILE=/etc/yinshi-runner.env
           ENV
@@ -159,3 +206,6 @@ Outputs:
   RunnerSecurityGroupId:
     Description: "Outbound-only security group assigned to the runner."
     Value: !Ref RunnerSecurityGroup
+  RunnerStorageProfile:
+    Description: "Storage profile configured for the runner."
+    Value: !Ref RunnerStorageProfile

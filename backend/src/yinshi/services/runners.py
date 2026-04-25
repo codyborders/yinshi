@@ -5,29 +5,105 @@ from __future__ import annotations
 import hashlib
 import json
 import secrets
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import PurePosixPath
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from yinshi.db import get_control_db
 from yinshi.exceptions import RunnerAuthenticationError, RunnerRegistrationError
+
+RunnerStorageProfile = Literal[
+    "aws_ebs_s3_files",
+    "archil_shared_files",
+    "archil_all_posix",
+]
 
 _REGISTRATION_TOKEN_TTL_MINUTES = 60
 _HEARTBEAT_ONLINE_WINDOW_SECONDS = 120
 _DEFAULT_RUNNER_DATA_DIR = "/var/lib/yinshi"
 _DEFAULT_SQLITE_DIR = f"{_DEFAULT_RUNNER_DATA_DIR}/sqlite"
 _DEFAULT_SHARED_FILES_DIR = "/mnt/yinshi-s3-files"
+_DEFAULT_ARCHIL_SHARED_FILES_DIR = "/mnt/archil/yinshi"
+_DEFAULT_ARCHIL_SQLITE_DIR = f"{_DEFAULT_ARCHIL_SHARED_FILES_DIR}/sqlite"
 _DEFAULT_RUNNER_TOKEN_FILE = f"{_DEFAULT_RUNNER_DATA_DIR}/runner-token"
 _DEFAULT_RUNNER_ENV_FILE = "/etc/yinshi-runner.env"
 _REGISTRATION_TOKEN_EXPIRED = "Runner registration token has expired"
-_DEFAULT_CAPABILITIES = {
+_AWS_STORAGE_PROFILE: RunnerStorageProfile = "aws_ebs_s3_files"
+_ARCHIL_SHARED_FILES_PROFILE: RunnerStorageProfile = "archil_shared_files"
+_ARCHIL_ALL_POSIX_PROFILE: RunnerStorageProfile = "archil_all_posix"
+_STORAGE_ARCHIL = "archil"
+_STORAGE_RUNNER_EBS = "runner_ebs"
+_STORAGE_S3_FILES_OR_LOCAL_POSIX = "s3_files_or_local_posix"
+_STORAGE_S3_FILES_MOUNT = "s3_files_mount"
+_STORAGE_LOCAL_POSIX = "local_posix"
+_BASE_CAPABILITIES = {
     "posix_storage": True,
     "sqlite": True,
     "git_worktrees": True,
     "pi_sidecar": True,
-    "sqlite_storage": "runner_ebs",
-    "shared_files_storage": "s3_files_or_local_posix",
-    "live_sqlite_on_shared_files": False,
+}
+
+
+@dataclass(frozen=True, slots=True)
+class RunnerStorageProfileSpec:
+    """Validation and default path facts for one runner storage profile."""
+
+    value: RunnerStorageProfile
+    sqlite_storage: str
+    shared_files_storage: str
+    default_sqlite_dir: str
+    default_shared_files_dir: str
+    live_sqlite_on_shared_files: bool
+    experimental: bool
+    allow_sqlite_under_shared_files: bool
+    allowed_sqlite_storage: frozenset[str]
+    allowed_shared_files_storage: frozenset[str]
+
+
+_STORAGE_PROFILES: dict[RunnerStorageProfile, RunnerStorageProfileSpec] = {
+    _AWS_STORAGE_PROFILE: RunnerStorageProfileSpec(
+        value=_AWS_STORAGE_PROFILE,
+        sqlite_storage=_STORAGE_RUNNER_EBS,
+        shared_files_storage=_STORAGE_S3_FILES_OR_LOCAL_POSIX,
+        default_sqlite_dir=_DEFAULT_SQLITE_DIR,
+        default_shared_files_dir=_DEFAULT_SHARED_FILES_DIR,
+        live_sqlite_on_shared_files=False,
+        experimental=False,
+        allow_sqlite_under_shared_files=False,
+        allowed_sqlite_storage=frozenset({_STORAGE_RUNNER_EBS}),
+        allowed_shared_files_storage=frozenset(
+            {
+                _STORAGE_S3_FILES_OR_LOCAL_POSIX,
+                _STORAGE_S3_FILES_MOUNT,
+                _STORAGE_LOCAL_POSIX,
+            }
+        ),
+    ),
+    _ARCHIL_SHARED_FILES_PROFILE: RunnerStorageProfileSpec(
+        value=_ARCHIL_SHARED_FILES_PROFILE,
+        sqlite_storage=_STORAGE_RUNNER_EBS,
+        shared_files_storage=_STORAGE_ARCHIL,
+        default_sqlite_dir=_DEFAULT_SQLITE_DIR,
+        default_shared_files_dir=_DEFAULT_ARCHIL_SHARED_FILES_DIR,
+        live_sqlite_on_shared_files=False,
+        experimental=True,
+        allow_sqlite_under_shared_files=False,
+        allowed_sqlite_storage=frozenset({_STORAGE_RUNNER_EBS}),
+        allowed_shared_files_storage=frozenset({_STORAGE_ARCHIL}),
+    ),
+    _ARCHIL_ALL_POSIX_PROFILE: RunnerStorageProfileSpec(
+        value=_ARCHIL_ALL_POSIX_PROFILE,
+        sqlite_storage=_STORAGE_ARCHIL,
+        shared_files_storage=_STORAGE_ARCHIL,
+        default_sqlite_dir=_DEFAULT_ARCHIL_SQLITE_DIR,
+        default_shared_files_dir=_DEFAULT_ARCHIL_SHARED_FILES_DIR,
+        live_sqlite_on_shared_files=True,
+        experimental=True,
+        allow_sqlite_under_shared_files=True,
+        allowed_sqlite_storage=frozenset({_STORAGE_ARCHIL}),
+        allowed_shared_files_storage=frozenset({_STORAGE_ARCHIL}),
+    ),
 }
 
 
@@ -49,6 +125,35 @@ def _require_non_empty_text(value: str, name: str) -> str:
     if not normalized_value:
         raise ValueError(f"{name} must not be empty")
     return normalized_value
+
+
+def _optional_capability_text(capabilities: dict[str, Any], key: str) -> str | None:
+    """Return one optional string capability after rejecting malformed values."""
+    value = capabilities.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"{key} capability must be a string")
+    normalized_value = value.strip()
+    if not normalized_value:
+        return None
+    return normalized_value
+
+
+def _storage_profile_spec(storage_profile: str) -> RunnerStorageProfileSpec:
+    """Return profile metadata after validating the stable profile value."""
+    normalized_profile = _require_non_empty_text(storage_profile, "storage_profile")
+    if normalized_profile not in _STORAGE_PROFILES:
+        raise ValueError(f"Unsupported runner storage_profile: {normalized_profile}")
+    return _STORAGE_PROFILES[normalized_profile]
+
+
+def _storage_profile_from_capabilities(capabilities: dict[str, Any]) -> RunnerStorageProfile:
+    """Read a persisted storage profile, defaulting prerelease rows to AWS BYOC."""
+    storage_profile = _optional_capability_text(capabilities, "storage_profile")
+    if storage_profile is None:
+        return _AWS_STORAGE_PROFILE
+    return _storage_profile_spec(storage_profile).value
 
 
 def _require_storage_path(value: str, name: str) -> PurePosixPath:
@@ -132,37 +237,123 @@ def _decode_capabilities(capabilities_json: object) -> dict[str, Any]:
     return cast(dict[str, Any], payload)
 
 
+def _validated_storage_class(
+    capabilities: dict[str, Any],
+    *,
+    key: str,
+    profile: RunnerStorageProfileSpec,
+    expected_value: str,
+    allowed_values: frozenset[str],
+    required: bool,
+) -> str:
+    """Return a canonical storage-class string for one profile-bound capability."""
+    requested_value = _optional_capability_text(capabilities, key)
+    if requested_value is None:
+        if required:
+            raise ValueError(f"{key} must be {expected_value} for {profile.value}")
+        return expected_value
+    if requested_value not in allowed_values:
+        allowed_text = ", ".join(sorted(allowed_values))
+        raise ValueError(f"{key} must be one of {allowed_text} for {profile.value}")
+    return requested_value
+
+
+def _profile_requires_explicit_storage(profile: RunnerStorageProfileSpec) -> bool:
+    """Return whether a profile needs explicit Archil storage declarations."""
+    return profile.value != _AWS_STORAGE_PROFILE
+
+
 def _storage_capabilities(
     capabilities: dict[str, Any],
     *,
     data_dir: str,
     sqlite_dir: str | None,
     shared_files_dir: str | None,
+    storage_profile: str,
 ) -> dict[str, Any]:
-    """Merge runner storage paths with default BYOC storage capabilities."""
+    """Merge runner facts with profile defaults and profile-aware path checks."""
+    if not isinstance(capabilities, dict):
+        raise TypeError("capabilities must be a dictionary")
+
+    profile = _storage_profile_spec(storage_profile)
     normalized_data_dir = _require_storage_path(data_dir, "data_dir")
     normalized_sqlite_dir = _require_storage_path(
-        sqlite_dir or _DEFAULT_SQLITE_DIR,
+        sqlite_dir or profile.default_sqlite_dir,
         "sqlite_dir",
     )
     normalized_shared_files_dir = _require_storage_path(
-        shared_files_dir or _DEFAULT_SHARED_FILES_DIR,
+        shared_files_dir or profile.default_shared_files_dir,
         "shared_files_dir",
     )
-    if _path_contains(normalized_shared_files_dir, normalized_sqlite_dir):
-        raise ValueError("sqlite_dir must not live under shared_files_dir")
+    if not profile.allow_sqlite_under_shared_files:
+        if _path_contains(normalized_shared_files_dir, normalized_sqlite_dir):
+            raise ValueError("sqlite_dir must not live under shared_files_dir")
 
-    merged_capabilities = {**_DEFAULT_CAPABILITIES, **capabilities}
+    explicit_storage_required = _profile_requires_explicit_storage(profile)
+    sqlite_storage = _validated_storage_class(
+        capabilities,
+        key="sqlite_storage",
+        profile=profile,
+        expected_value=profile.sqlite_storage,
+        allowed_values=profile.allowed_sqlite_storage,
+        required=explicit_storage_required,
+    )
+    shared_files_storage = _validated_storage_class(
+        capabilities,
+        key="shared_files_storage",
+        profile=profile,
+        expected_value=profile.shared_files_storage,
+        allowed_values=profile.allowed_shared_files_storage,
+        required=explicit_storage_required,
+    )
+
+    merged_capabilities = {**_BASE_CAPABILITIES, **capabilities}
     merged_capabilities.update(
         {
             "data_dir": str(normalized_data_dir),
             "sqlite_dir": str(normalized_sqlite_dir),
             "shared_files_dir": str(normalized_shared_files_dir),
-            "sqlite_storage": "runner_ebs",
-            "live_sqlite_on_shared_files": False,
+            "storage_profile": profile.value,
+            "storage_profile_experimental": profile.experimental,
+            "sqlite_storage": sqlite_storage,
+            "shared_files_storage": shared_files_storage,
+            "live_sqlite_on_shared_files": profile.live_sqlite_on_shared_files,
         }
     )
     return merged_capabilities
+
+
+def _serialized_capabilities(capabilities_json: object) -> dict[str, Any]:
+    """Return capabilities with profile defaults filled for legacy rows."""
+    capabilities = _decode_capabilities(capabilities_json)
+    storage_profile = _storage_profile_from_capabilities(capabilities)
+    profile = _storage_profile_spec(storage_profile)
+    data_dir = _optional_capability_text(capabilities, "data_dir") or _DEFAULT_RUNNER_DATA_DIR
+    sqlite_dir = _optional_capability_text(capabilities, "sqlite_dir") or profile.default_sqlite_dir
+    shared_files_dir = (
+        _optional_capability_text(capabilities, "shared_files_dir")
+        or profile.default_shared_files_dir
+    )
+    return _storage_capabilities(
+        capabilities,
+        data_dir=data_dir,
+        sqlite_dir=sqlite_dir,
+        shared_files_dir=shared_files_dir,
+        storage_profile=storage_profile,
+    )
+
+
+def _requested_profile_matches(
+    *,
+    requested_profile: str,
+    stored_capabilities: dict[str, Any],
+) -> RunnerStorageProfile:
+    """Return the stored profile, rejecting runner attempts to change it."""
+    stored_profile = _storage_profile_from_capabilities(stored_capabilities)
+    supplied_profile = _storage_profile_spec(requested_profile).value
+    if supplied_profile != stored_profile:
+        raise ValueError("storage_profile must match requested runner profile")
+    return stored_profile
 
 
 def _display_status(row: Any, *, now: datetime | None = None) -> str:
@@ -197,7 +388,7 @@ def _serialize_runner(row: Any) -> dict[str, Any]:
         "registered_at": row["registered_at"],
         "last_heartbeat_at": row["last_heartbeat_at"],
         "runner_version": row["runner_version"],
-        "capabilities": _decode_capabilities(row["capabilities_json"]),
+        "capabilities": _serialized_capabilities(row["capabilities_json"]),
         "data_dir": row["data_dir"],
     }
 
@@ -215,12 +406,34 @@ def get_runner_for_user(user_id: str) -> dict[str, Any] | None:
     return _serialize_runner(row)
 
 
+def _runner_environment(
+    *,
+    control_url: str,
+    registration_token: str,
+    profile: RunnerStorageProfileSpec,
+) -> dict[str, str]:
+    """Return the systemd environment values needed to bootstrap one runner."""
+    return {
+        "YINSHI_CONTROL_URL": control_url,
+        "YINSHI_REGISTRATION_TOKEN": registration_token,
+        "YINSHI_RUNNER_STORAGE_PROFILE": profile.value,
+        "YINSHI_RUNNER_SQLITE_STORAGE": profile.sqlite_storage,
+        "YINSHI_RUNNER_SHARED_FILES_STORAGE": profile.shared_files_storage,
+        "YINSHI_RUNNER_DATA_DIR": _DEFAULT_RUNNER_DATA_DIR,
+        "YINSHI_RUNNER_SQLITE_DIR": profile.default_sqlite_dir,
+        "YINSHI_RUNNER_SHARED_FILES_DIR": profile.default_shared_files_dir,
+        "YINSHI_RUNNER_TOKEN_FILE": _DEFAULT_RUNNER_TOKEN_FILE,
+        "YINSHI_RUNNER_ENV_FILE": _DEFAULT_RUNNER_ENV_FILE,
+    }
+
+
 def create_runner_registration(
     user_id: str,
     *,
     name: str,
     cloud_provider: str,
     region: str,
+    storage_profile: str,
     control_url: str,
 ) -> dict[str, Any]:
     """Create or rotate a one-time runner registration token for a user."""
@@ -229,6 +442,7 @@ def create_runner_registration(
     normalized_provider = _require_non_empty_text(cloud_provider, "cloud_provider")
     normalized_region = _require_non_empty_text(region, "region")
     normalized_control_url = _require_non_empty_text(control_url, "control_url").rstrip("/")
+    profile = _storage_profile_spec(storage_profile)
     if normalized_provider != "aws":
         raise ValueError("Only AWS runners are supported")
 
@@ -236,12 +450,16 @@ def create_runner_registration(
     registration_token_hash = _hash_token(registration_token)
     expires_at = _utc_now() + timedelta(minutes=_REGISTRATION_TOKEN_TTL_MINUTES)
     expires_at_text = _datetime_to_storage(expires_at)
-    empty_capabilities = _capabilities_json(
+    pending_capabilities = _capabilities_json(
         _storage_capabilities(
-            {},
+            {
+                "sqlite_storage": profile.sqlite_storage,
+                "shared_files_storage": profile.shared_files_storage,
+            },
             data_dir=_DEFAULT_RUNNER_DATA_DIR,
-            sqlite_dir=_DEFAULT_SQLITE_DIR,
-            shared_files_dir=_DEFAULT_SHARED_FILES_DIR,
+            sqlite_dir=profile.default_sqlite_dir,
+            shared_files_dir=profile.default_shared_files_dir,
+            storage_profile=profile.value,
         )
     )
 
@@ -277,7 +495,7 @@ def create_runner_registration(
                 normalized_region,
                 registration_token_hash,
                 expires_at_text,
-                empty_capabilities,
+                pending_capabilities,
             ),
         )
         db.commit()
@@ -287,21 +505,16 @@ def create_runner_registration(
         ).fetchone()
 
     assert row is not None, "runner row must exist after registration upsert"
-    environment = {
-        "YINSHI_CONTROL_URL": normalized_control_url,
-        "YINSHI_REGISTRATION_TOKEN": registration_token,
-        "YINSHI_RUNNER_DATA_DIR": _DEFAULT_RUNNER_DATA_DIR,
-        "YINSHI_RUNNER_SQLITE_DIR": _DEFAULT_SQLITE_DIR,
-        "YINSHI_RUNNER_SHARED_FILES_DIR": _DEFAULT_SHARED_FILES_DIR,
-        "YINSHI_RUNNER_TOKEN_FILE": _DEFAULT_RUNNER_TOKEN_FILE,
-        "YINSHI_RUNNER_ENV_FILE": _DEFAULT_RUNNER_ENV_FILE,
-    }
     return {
         "runner": _serialize_runner(row),
         "registration_token": registration_token,
         "registration_token_expires_at": expires_at_text,
         "control_url": normalized_control_url,
-        "environment": environment,
+        "environment": _runner_environment(
+            control_url=normalized_control_url,
+            registration_token=registration_token,
+            profile=profile,
+        ),
     }
 
 
@@ -334,19 +547,11 @@ def register_runner(
     data_dir: str,
     sqlite_dir: str | None,
     shared_files_dir: str | None,
+    storage_profile: str,
 ) -> dict[str, Any]:
     """Consume a one-time registration token and issue a runner bearer token."""
     token_hash = _hash_token(registration_token)
     normalized_version = _require_non_empty_text(runner_version, "runner_version")
-    normalized_data_dir = str(_require_storage_path(data_dir, "data_dir"))
-    capabilities_text = _capabilities_json(
-        _storage_capabilities(
-            capabilities,
-            data_dir=normalized_data_dir,
-            sqlite_dir=sqlite_dir,
-            shared_files_dir=shared_files_dir,
-        )
-    )
     now_text = _datetime_to_storage(_utc_now())
     runner_token = _new_token()
     runner_token_hash = _hash_token(runner_token)
@@ -367,6 +572,21 @@ def register_runner(
             raise RunnerRegistrationError(_REGISTRATION_TOKEN_EXPIRED)
         if expires_at <= _utc_now():
             raise RunnerRegistrationError(_REGISTRATION_TOKEN_EXPIRED)
+
+        stored_capabilities = _decode_capabilities(row["capabilities_json"])
+        stored_profile = _requested_profile_matches(
+            requested_profile=storage_profile,
+            stored_capabilities=stored_capabilities,
+        )
+        merged_capabilities = _storage_capabilities(
+            capabilities,
+            data_dir=data_dir,
+            sqlite_dir=sqlite_dir,
+            shared_files_dir=shared_files_dir,
+            storage_profile=stored_profile,
+        )
+        capabilities_text = _capabilities_json(merged_capabilities)
+        normalized_data_dir = str(merged_capabilities["data_dir"])
 
         db.execute(
             """
@@ -409,19 +629,11 @@ def record_runner_heartbeat(
     data_dir: str,
     sqlite_dir: str | None,
     shared_files_dir: str | None,
+    storage_profile: str,
 ) -> dict[str, Any]:
     """Record a heartbeat from a registered runner bearer token."""
     token_hash = _hash_token(runner_token)
     normalized_version = _require_non_empty_text(runner_version, "runner_version")
-    normalized_data_dir = str(_require_storage_path(data_dir, "data_dir"))
-    capabilities_text = _capabilities_json(
-        _storage_capabilities(
-            capabilities,
-            data_dir=normalized_data_dir,
-            sqlite_dir=sqlite_dir,
-            shared_files_dir=shared_files_dir,
-        )
-    )
     now_text = _datetime_to_storage(_utc_now())
 
     with get_control_db() as db:
@@ -434,6 +646,21 @@ def record_runner_heartbeat(
         ).fetchone()
         if row is None:
             raise RunnerAuthenticationError("Runner token is invalid")
+
+        stored_capabilities = _decode_capabilities(row["capabilities_json"])
+        stored_profile = _requested_profile_matches(
+            requested_profile=storage_profile,
+            stored_capabilities=stored_capabilities,
+        )
+        merged_capabilities = _storage_capabilities(
+            capabilities,
+            data_dir=data_dir,
+            sqlite_dir=sqlite_dir,
+            shared_files_dir=shared_files_dir,
+            storage_profile=stored_profile,
+        )
+        capabilities_text = _capabilities_json(merged_capabilities)
+        normalized_data_dir = str(merged_capabilities["data_dir"])
 
         db.execute(
             """

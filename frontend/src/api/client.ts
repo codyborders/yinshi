@@ -73,6 +73,10 @@ export interface ProviderConnection {
 }
 
 export type CloudRunnerStatus = "pending" | "online" | "offline" | "revoked";
+export type RunnerStorageProfile =
+  | "aws_ebs_s3_files"
+  | "archil_shared_files"
+  | "archil_all_posix";
 
 export interface CloudRunner {
   id: string;

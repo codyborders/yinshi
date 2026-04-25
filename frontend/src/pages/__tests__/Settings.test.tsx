@@ -39,6 +39,7 @@ import Settings from "../Settings";
 
 describe("Settings", () => {
   beforeEach(() => {
+    vi.clearAllMocks();
     useAuthMock.mockReturnValue({ email: "tester@example.com" });
     useCatalogMock.mockReturnValue({
       catalog: {
@@ -152,7 +153,23 @@ describe("Settings", () => {
     expect(screen.queryByTestId("pi-config-section")).not.toBeInTheDocument();
   });
 
-  it("creates a cloud runner registration token", async () => {
+  it("shows all runner storage choices without creating hosted tokens", async () => {
+    render(<Settings />);
+    fireEvent.click(screen.getByRole("tab", { name: "Cloud runner" }));
+
+    await waitFor(() => {
+      expect(apiGetMock).toHaveBeenCalledWith("/api/settings/runner");
+    });
+
+    expect(screen.getByRole("radio", { name: /Hosted Yinshi/ })).toBeChecked();
+    expect(screen.getByRole("radio", { name: /AWS BYOC: EBS plus S3 Files/ })).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: /Archil shared-files mode/ })).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: /Archil all-POSIX mode/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Create Token" })).not.toBeInTheDocument();
+    expect(apiPostMock).not.toHaveBeenCalledWith("/api/settings/runner", expect.anything());
+  });
+
+  it("creates an AWS BYOC runner registration token", async () => {
     apiPostMock.mockImplementation((path: string) => {
       if (path === "/api/settings/runner") {
         return Promise.resolve({
@@ -168,6 +185,7 @@ describe("Settings", () => {
             last_heartbeat_at: null,
             runner_version: null,
             capabilities: {
+              storage_profile: "aws_ebs_s3_files",
               sqlite_storage: "runner_ebs",
               shared_files_storage: "s3_files_mount",
             },
@@ -179,6 +197,9 @@ describe("Settings", () => {
           environment: {
             YINSHI_CONTROL_URL: "https://yinshi.example.com",
             YINSHI_REGISTRATION_TOKEN: "registration-token",
+            YINSHI_RUNNER_STORAGE_PROFILE: "aws_ebs_s3_files",
+            YINSHI_RUNNER_SQLITE_STORAGE: "runner_ebs",
+            YINSHI_RUNNER_SHARED_FILES_STORAGE: "s3_files_or_local_posix",
             YINSHI_RUNNER_DATA_DIR: "/var/lib/yinshi",
             YINSHI_RUNNER_SQLITE_DIR: "/var/lib/yinshi/sqlite",
             YINSHI_RUNNER_SHARED_FILES_DIR: "/mnt/yinshi-s3-files",
@@ -195,6 +216,7 @@ describe("Settings", () => {
       expect(apiGetMock).toHaveBeenCalledWith("/api/settings/runner");
     });
 
+    fireEvent.click(screen.getByRole("radio", { name: /AWS BYOC: EBS plus S3 Files/ }));
     fireEvent.click(screen.getByRole("button", { name: "Create Token" }));
 
     await waitFor(() => {
@@ -202,6 +224,7 @@ describe("Settings", () => {
         name: "AWS runner",
         cloud_provider: "aws",
         region: "us-east-1",
+        storage_profile: "aws_ebs_s3_files",
       });
     });
 
@@ -209,6 +232,125 @@ describe("Settings", () => {
     expect(screen.getByText("Runner EBS")).toBeInTheDocument();
     expect(screen.getByText("S3 Files mount")).toBeInTheDocument();
     expect(screen.getByDisplayValue(/YINSHI_REGISTRATION_TOKEN=registration-token/)).toBeInTheDocument();
+    expect(screen.getByDisplayValue(/YINSHI_RUNNER_STORAGE_PROFILE=aws_ebs_s3_files/)).toBeInTheDocument();
     expect(screen.getByDisplayValue(/YINSHI_RUNNER_SQLITE_DIR=\/var\/lib\/yinshi\/sqlite/)).toBeInTheDocument();
+  });
+
+  it("creates an Archil shared-files runner with warning copy", async () => {
+    apiPostMock.mockImplementation((path: string) => {
+      if (path === "/api/settings/runner") {
+        return Promise.resolve({
+          runner: {
+            id: "runner-archil-shared",
+            created_at: "2026-04-25T00:00:00+00:00",
+            updated_at: "2026-04-25T00:00:00+00:00",
+            name: "AWS runner",
+            cloud_provider: "aws",
+            region: "us-east-1",
+            status: "pending",
+            registered_at: null,
+            last_heartbeat_at: null,
+            runner_version: null,
+            capabilities: {
+              storage_profile: "archil_shared_files",
+              sqlite_storage: "runner_ebs",
+              shared_files_storage: "archil",
+            },
+            data_dir: null,
+          },
+          registration_token: "registration-token",
+          registration_token_expires_at: "2026-04-25T01:00:00+00:00",
+          control_url: "https://yinshi.example.com",
+          environment: {
+            YINSHI_CONTROL_URL: "https://yinshi.example.com",
+            YINSHI_REGISTRATION_TOKEN: "registration-token",
+            YINSHI_RUNNER_STORAGE_PROFILE: "archil_shared_files",
+            YINSHI_RUNNER_SQLITE_STORAGE: "runner_ebs",
+            YINSHI_RUNNER_SHARED_FILES_STORAGE: "archil",
+            YINSHI_RUNNER_SQLITE_DIR: "/var/lib/yinshi/sqlite",
+            YINSHI_RUNNER_SHARED_FILES_DIR: "/mnt/archil/yinshi",
+          },
+        });
+      }
+      throw new Error(`Unexpected POST path: ${path}`);
+    });
+
+    render(<Settings />);
+    fireEvent.click(screen.getByRole("tab", { name: "Cloud runner" }));
+    await waitFor(() => expect(apiGetMock).toHaveBeenCalledWith("/api/settings/runner"));
+
+    fireEvent.click(screen.getByRole("radio", { name: /Archil shared-files mode/ }));
+    expect(screen.getByText(/user-owned backing bucket/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Create Token" }));
+
+    await waitFor(() => {
+      expect(apiPostMock).toHaveBeenCalledWith("/api/settings/runner", {
+        name: "AWS runner",
+        cloud_provider: "aws",
+        region: "us-east-1",
+        storage_profile: "archil_shared_files",
+      });
+    });
+    expect(screen.getByText("Archil POSIX")).toBeInTheDocument();
+    expect(screen.getByDisplayValue(/YINSHI_RUNNER_STORAGE_PROFILE=archil_shared_files/)).toBeInTheDocument();
+  });
+
+  it("creates an Archil all-POSIX runner with stronger warning copy", async () => {
+    apiPostMock.mockImplementation((path: string) => {
+      if (path === "/api/settings/runner") {
+        return Promise.resolve({
+          runner: {
+            id: "runner-archil-all-posix",
+            created_at: "2026-04-25T00:00:00+00:00",
+            updated_at: "2026-04-25T00:00:00+00:00",
+            name: "AWS runner",
+            cloud_provider: "aws",
+            region: "us-east-1",
+            status: "pending",
+            registered_at: null,
+            last_heartbeat_at: null,
+            runner_version: null,
+            capabilities: {
+              storage_profile: "archil_all_posix",
+              sqlite_storage: "archil",
+              shared_files_storage: "archil",
+            },
+            data_dir: null,
+          },
+          registration_token: "registration-token",
+          registration_token_expires_at: "2026-04-25T01:00:00+00:00",
+          control_url: "https://yinshi.example.com",
+          environment: {
+            YINSHI_CONTROL_URL: "https://yinshi.example.com",
+            YINSHI_REGISTRATION_TOKEN: "registration-token",
+            YINSHI_RUNNER_STORAGE_PROFILE: "archil_all_posix",
+            YINSHI_RUNNER_SQLITE_STORAGE: "archil",
+            YINSHI_RUNNER_SHARED_FILES_STORAGE: "archil",
+            YINSHI_RUNNER_SQLITE_DIR: "/mnt/archil/yinshi/sqlite",
+            YINSHI_RUNNER_SHARED_FILES_DIR: "/mnt/archil/yinshi",
+          },
+        });
+      }
+      throw new Error(`Unexpected POST path: ${path}`);
+    });
+
+    render(<Settings />);
+    fireEvent.click(screen.getByRole("tab", { name: "Cloud runner" }));
+    await waitFor(() => expect(apiGetMock).toHaveBeenCalledWith("/api/settings/runner"));
+
+    fireEvent.click(screen.getByRole("radio", { name: /Archil all-POSIX mode/ }));
+    expect(screen.getByText(/Strong warning: live SQLite on Archil/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Create Token" }));
+
+    await waitFor(() => {
+      expect(apiPostMock).toHaveBeenCalledWith("/api/settings/runner", {
+        name: "AWS runner",
+        cloud_provider: "aws",
+        region: "us-east-1",
+        storage_profile: "archil_all_posix",
+      });
+    });
+    expect(screen.getByText("Archil all-POSIX")).toBeInTheDocument();
+    expect(screen.getByDisplayValue(/YINSHI_RUNNER_SQLITE_DIR=\/mnt\/archil\/yinshi\/sqlite/)).toBeInTheDocument();
   });
 });

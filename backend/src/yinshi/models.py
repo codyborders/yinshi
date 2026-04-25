@@ -170,6 +170,12 @@ class WSCancel(BaseModel):
 
 # --- Multi-tenant models ---
 
+RunnerStorageProfile = Literal[
+    "aws_ebs_s3_files",
+    "archil_shared_files",
+    "archil_all_posix",
+]
+
 
 class UserOut(BaseModel):
     """User account response (from control plane)."""
@@ -188,6 +194,7 @@ class CloudRunnerCreate(BaseModel):
     name: str = Field("AWS runner", min_length=1, max_length=120)
     cloud_provider: Literal["aws"] = "aws"
     region: str = Field("us-east-1", min_length=1, max_length=64)
+    storage_profile: RunnerStorageProfile = "aws_ebs_s3_files"
 
     @field_validator("name", "region")
     @classmethod
@@ -232,6 +239,7 @@ class RunnerRegisterIn(BaseModel):
     data_dir: str = Field(..., min_length=1, max_length=4096)
     sqlite_dir: str | None = Field(None, min_length=1, max_length=4096)
     shared_files_dir: str | None = Field(None, min_length=1, max_length=4096)
+    storage_profile: RunnerStorageProfile = "aws_ebs_s3_files"
 
     @field_validator("registration_token", "runner_version", "data_dir")
     @classmethod
@@ -262,6 +270,7 @@ class RunnerHeartbeatIn(BaseModel):
     data_dir: str = Field(..., min_length=1, max_length=4096)
     sqlite_dir: str | None = Field(None, min_length=1, max_length=4096)
     shared_files_dir: str | None = Field(None, min_length=1, max_length=4096)
+    storage_profile: RunnerStorageProfile = "aws_ebs_s3_files"
 
     @field_validator("runner_version", "data_dir")
     @classmethod

@@ -95,6 +95,7 @@ def create_cloud_runner(
             name=body.name,
             cloud_provider=body.cloud_provider,
             region=body.region,
+            storage_profile=body.storage_profile,
             control_url=_request_control_url(request),
         )
     except (TypeError, ValueError) as error:
@@ -123,6 +124,7 @@ def register_cloud_runner(body: RunnerRegisterIn, request: Request) -> dict[str,
             data_dir=body.data_dir,
             sqlite_dir=body.sqlite_dir,
             shared_files_dir=body.shared_files_dir,
+            storage_profile=body.storage_profile,
         )
     except RunnerRegistrationError as error:
         raise HTTPException(status_code=401, detail=str(error)) from error
@@ -146,6 +148,7 @@ def heartbeat_cloud_runner(body: RunnerHeartbeatIn, request: Request) -> dict[st
             data_dir=body.data_dir,
             sqlite_dir=body.sqlite_dir,
             shared_files_dir=body.shared_files_dir,
+            storage_profile=body.storage_profile,
         )
     except RunnerAuthenticationError as error:
         raise HTTPException(status_code=401, detail=str(error)) from error
