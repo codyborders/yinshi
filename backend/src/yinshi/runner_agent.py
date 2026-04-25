@@ -188,17 +188,24 @@ def _scrub_registration_token(env_file: Path | None) -> None:
     env_file.chmod(0o600)
 
 
+def _runner_status_payload(config: RunnerAgentConfig) -> dict[str, Any]:
+    """Build the runner status fields shared by registration and heartbeats."""
+    return {
+        "runner_version": RUNNER_VERSION,
+        "capabilities": _capabilities(config),
+        "data_dir": str(config.data_dir),
+        "sqlite_dir": str(config.sqlite_dir),
+        "shared_files_dir": str(config.shared_files_dir),
+    }
+
+
 async def _register(config: RunnerAgentConfig, client: httpx.AsyncClient) -> str:
     """Register this runner and return the issued bearer token."""
     if config.registration_token is None:
         raise RuntimeError("YINSHI_REGISTRATION_TOKEN is required until a runner token file exists")
     payload = {
         "registration_token": config.registration_token,
-        "runner_version": RUNNER_VERSION,
-        "capabilities": _capabilities(config),
-        "data_dir": str(config.data_dir),
-        "sqlite_dir": str(config.sqlite_dir),
-        "shared_files_dir": str(config.shared_files_dir),
+        **_runner_status_payload(config),
     }
     response = await client.post("/runner/register", json=payload)
     response.raise_for_status()
@@ -218,13 +225,7 @@ async def _heartbeat(
     runner_token: str,
 ) -> None:
     """Send one heartbeat to the control plane."""
-    payload = {
-        "runner_version": RUNNER_VERSION,
-        "capabilities": _capabilities(config),
-        "data_dir": str(config.data_dir),
-        "sqlite_dir": str(config.sqlite_dir),
-        "shared_files_dir": str(config.shared_files_dir),
-    }
+    payload = _runner_status_payload(config)
     response = await client.post(
         "/runner/heartbeat",
         json=payload,

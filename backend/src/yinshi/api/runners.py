@@ -32,19 +32,23 @@ router = APIRouter(tags=["runners"])
 _RUNNER_BEARER_REQUIRED = "Runner bearer token is required"
 
 
+def _forwarded_header_value(value: str | None, fallback: str) -> str:
+    """Return the first proxy header value, or the request-derived fallback."""
+    if value is None:
+        return fallback
+    return value.split(",", maxsplit=1)[0].strip()
+
+
 def _request_control_url(request: Request) -> str:
     """Return the externally visible API base URL for runner callbacks."""
-    forwarded_proto = request.headers.get("x-forwarded-proto")
-    forwarded_host = request.headers.get("x-forwarded-host")
-    if forwarded_proto is not None:
-        normalized_proto = forwarded_proto.split(",", maxsplit=1)[0].strip()
-    else:
-        normalized_proto = request.url.scheme
-
-    if forwarded_host is not None:
-        normalized_host = forwarded_host.split(",", maxsplit=1)[0].strip()
-    else:
-        normalized_host = request.url.netloc
+    normalized_proto = _forwarded_header_value(
+        request.headers.get("x-forwarded-proto"),
+        request.url.scheme,
+    )
+    normalized_host = _forwarded_header_value(
+        request.headers.get("x-forwarded-host"),
+        request.url.netloc,
+    )
 
     if not normalized_proto:
         raise HTTPException(status_code=400, detail="Could not determine control URL scheme")

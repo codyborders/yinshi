@@ -42,20 +42,15 @@ function runnerCapability(runner: CloudRunner, key: string, fallback: string): s
   return typeof value === "string" && value ? value : fallback;
 }
 
+const STORAGE_LABELS: Record<string, string> = {
+  local_posix: "Local POSIX",
+  runner_ebs: "Runner EBS",
+  s3_files_mount: "S3 Files mount",
+  s3_files_or_local_posix: "S3 Files or local POSIX",
+};
+
 function storageLabel(value: string): string {
-  if (value === "runner_ebs") {
-    return "Runner EBS";
-  }
-  if (value === "s3_files_mount") {
-    return "S3 Files mount";
-  }
-  if (value === "local_posix") {
-    return "Local POSIX";
-  }
-  if (value === "s3_files_or_local_posix") {
-    return "S3 Files or local POSIX";
-  }
-  return value;
+  return STORAGE_LABELS[value] ?? value;
 }
 
 export default function CloudRunnerSection() {

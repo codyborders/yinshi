@@ -162,8 +162,6 @@ def _storage_capabilities(
             "live_sqlite_on_shared_files": False,
         }
     )
-    if "shared_files_storage" not in capabilities:
-        merged_capabilities["shared_files_storage"] = "s3_files_or_local_posix"
     return merged_capabilities
 
 
