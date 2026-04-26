@@ -165,6 +165,15 @@ describe("Settings", () => {
     expect(screen.getByRole("radio", { name: /AWS BYOC: EBS plus S3 Files/ })).toBeInTheDocument();
     expect(screen.getByRole("radio", { name: /Archil shared-files mode/ })).toBeInTheDocument();
     expect(screen.getByRole("radio", { name: /Archil all-POSIX mode/ })).toBeInTheDocument();
+    screen.getAllByText("Supported").forEach((badge) => {
+      expect(badge).toHaveClass("text-emerald-950");
+    });
+    screen.getAllByText("Experimental").forEach((badge) => {
+      expect(badge).toHaveClass("text-amber-950");
+    });
+    expect(screen.getByText(/not certified full Git and Pi workloads/)).toHaveClass(
+      "text-amber-950",
+    );
     expect(screen.queryByRole("button", { name: "Create Token" })).not.toBeInTheDocument();
     expect(apiPostMock).not.toHaveBeenCalledWith("/api/settings/runner", expect.anything());
   });

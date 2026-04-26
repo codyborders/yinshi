@@ -88,14 +88,14 @@ const STORAGE_LABELS: Record<string, string> = {
 
 const RUNNER_STATUS_CLASSES: Record<CloudRunnerStatus, string> = {
   offline: "border-gray-600 bg-gray-800 text-gray-300",
-  online: "border-green-500/40 bg-green-500/10 text-green-300",
-  pending: "border-yellow-500/40 bg-yellow-500/10 text-yellow-200",
-  revoked: "border-red-500/40 bg-red-500/10 text-red-300",
+  online: "border-emerald-700/60 bg-emerald-100/80 text-emerald-950",
+  pending: "border-amber-700/60 bg-amber-100/80 text-amber-950",
+  revoked: "border-red-700/60 bg-red-100/80 text-red-950",
 };
 
 const OPTION_STATUS_CLASSES: Record<RunnerSetupOption["status"], string> = {
-  Experimental: "border-yellow-500/40 bg-yellow-500/10 text-yellow-200",
-  Supported: "border-green-500/40 bg-green-500/10 text-green-300",
+  Experimental: "border-amber-700/60 bg-amber-100/80 text-amber-950",
+  Supported: "border-emerald-700/60 bg-emerald-100/80 text-emerald-950",
 };
 
 function formatTimestamp(value: string | null): string {
@@ -203,7 +203,7 @@ function CloudRunnerOptionCard({
             {option.runnerBacked ? "Runner-backed" : "No runner required"}
           </div>
         </div>
-        <span className={`rounded-full border px-2 py-0.5 text-[11px] ${statusClass}`}>
+        <span className={`rounded-full border px-2 py-0.5 text-xs font-medium ${statusClass}`}>
           {option.status}
         </span>
       </div>
@@ -214,7 +214,7 @@ function CloudRunnerOptionCard({
         ))}
       </ul>
       {option.warning ? (
-        <p className="mt-3 rounded border border-yellow-600/30 bg-yellow-500/10 px-3 py-2 text-xs text-yellow-100">
+        <p className="mt-3 rounded border border-amber-700/50 bg-amber-100/80 px-3 py-2 text-xs text-amber-950">
           {option.warning}
         </p>
       ) : null}
