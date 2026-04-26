@@ -455,7 +455,7 @@ class ContainerManager:
                     del self._containers[user_id]
 
             await self._enforce_container_limit()
-            return await self._create_container(user_id, data_dir, normalized_mounts)
+            return await self._create_container(user_id, normalized_mounts)
 
     async def _enforce_container_limit(self) -> None:
         """Fail before creating a new container when the configured quota is full."""
@@ -623,7 +623,6 @@ class ContainerManager:
     async def _create_container(
         self,
         user_id: str,
-        data_dir: str,
         mounts: tuple[ContainerMount, ...],
     ) -> ContainerInfo:
         """Start a new sidecar container for a user."""
@@ -634,7 +633,6 @@ class ContainerManager:
         self._prepare_socket_dir(socket_dir, socket_path)
         self._remove_stale_file(cidfile_path, "container cidfile")
 
-        del data_dir
         cpus = str(s.container_cpu_quota / 100000)
         mount_args: list[str] = []
         for mount in mounts:

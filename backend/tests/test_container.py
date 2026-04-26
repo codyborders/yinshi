@@ -862,15 +862,12 @@ class TestContainerManager:
         socket_base = str(tmp_path / "sockets")
         settings = _make_settings(container_socket_base=socket_base)
         user_id = "abcdef12345678901234567890abcdef"
-        data_dir = str(tmp_path / "data")
-        os.makedirs(data_dir, exist_ok=True)
-
         mgr = ContainerManager(settings=settings)
         cidfile_path = os.path.join(socket_base, user_id, "container.cid")
         mgr._run_podman_waiting_for_exit = AsyncMock(return_value=(0, "container_123", ""))
         mgr._wait_for_socket = AsyncMock(return_value=None)
 
-        await mgr._create_container(user_id, data_dir, mounts=())
+        await mgr._create_container(user_id, mounts=())
 
         run_call = mgr._run_podman_waiting_for_exit.await_args
         assert run_call is not None
@@ -885,8 +882,6 @@ class TestContainerManager:
         socket_base = str(tmp_path / "sockets")
         settings = _make_settings(container_socket_base=socket_base)
         user_id = "abcdef12345678901234567890abcdef"
-        data_dir = str(tmp_path / "data")
-        os.makedirs(data_dir, exist_ok=True)
         container_id = "detached_container_123"
 
         async def _communicate_forever() -> tuple[bytes, bytes]:
@@ -909,7 +904,7 @@ class TestContainerManager:
             mgr = ContainerManager(settings=settings)
             mgr._wait_for_socket = AsyncMock(return_value=None)
 
-            info = await mgr._create_container(user_id, data_dir, mounts=())
+            info = await mgr._create_container(user_id, mounts=())
 
         assert info.container_id == container_id
         assert run_process is not None
