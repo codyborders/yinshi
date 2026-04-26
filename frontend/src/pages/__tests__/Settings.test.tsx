@@ -169,6 +169,41 @@ describe("Settings", () => {
     expect(apiPostMock).not.toHaveBeenCalledWith("/api/settings/runner", expect.anything());
   });
 
+  it("uses offline badge styling when the API returns an unknown runner status", async () => {
+    apiGetMock.mockImplementation((path: string) => {
+      if (path === "/api/settings/connections") {
+        return Promise.resolve([]);
+      }
+      if (path === "/api/settings/runner") {
+        return Promise.resolve({
+          id: "runner-degraded",
+          created_at: "2026-04-25T00:00:00+00:00",
+          updated_at: "2026-04-25T00:00:00+00:00",
+          name: "Unexpected status runner",
+          cloud_provider: "aws",
+          region: "us-east-1",
+          status: "degraded",
+          registered_at: "2026-04-25T00:00:00+00:00",
+          last_heartbeat_at: null,
+          runner_version: "0.1.0",
+          capabilities: {
+            storage_profile: "aws_ebs_s3_files",
+            sqlite_storage: "runner_ebs",
+            shared_files_storage: "s3_files_mount",
+          },
+          data_dir: "/var/lib/yinshi",
+        });
+      }
+      throw new Error(`Unexpected GET path: ${path}`);
+    });
+
+    render(<Settings />);
+    fireEvent.click(screen.getByRole("tab", { name: "Cloud runner" }));
+
+    const statusBadge = await screen.findByText("degraded");
+    expect(statusBadge).toHaveClass("border-gray-600", "bg-gray-800", "text-gray-300");
+  });
+
   it("creates an AWS BYOC runner registration token", async () => {
     apiPostMock.mockImplementation((path: string) => {
       if (path === "/api/settings/runner") {

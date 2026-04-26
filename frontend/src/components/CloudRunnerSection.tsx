@@ -105,12 +105,15 @@ function formatTimestamp(value: string | null): string {
   return new Date(value).toLocaleString();
 }
 
-function runnerStatusClass(status: CloudRunnerStatus): string {
-  return RUNNER_STATUS_CLASSES[status];
+function isCloudRunnerStatus(value: string): value is CloudRunnerStatus {
+  return Object.prototype.hasOwnProperty.call(RUNNER_STATUS_CLASSES, value);
 }
 
-function optionStatusClass(status: RunnerSetupOption["status"]): string {
-  return OPTION_STATUS_CLASSES[status];
+function runnerStatusClass(status: string): string {
+  if (isCloudRunnerStatus(status)) {
+    return RUNNER_STATUS_CLASSES[status];
+  }
+  return RUNNER_STATUS_CLASSES.offline;
 }
 
 function runnerEnvironmentText(registration: CloudRunnerRegistration): string {
@@ -188,6 +191,7 @@ function CloudRunnerOptionCard({
   onSelect: (optionId: RunnerOptionId) => void;
 }) {
   const isSelected = option.id === selectedOption;
+  const statusClass = OPTION_STATUS_CLASSES[option.status];
 
   return (
     <label className={optionCardClass(isSelected)}>
@@ -206,7 +210,7 @@ function CloudRunnerOptionCard({
             {option.runnerBacked ? "Runner-backed" : "No runner required"}
           </div>
         </div>
-        <span className={`rounded-full border px-2 py-0.5 text-[11px] ${optionStatusClass(option.status)}`}>
+        <span className={`rounded-full border px-2 py-0.5 text-[11px] ${statusClass}`}>
           {option.status}
         </span>
       </div>

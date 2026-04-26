@@ -49,6 +49,7 @@ class RunnerStorageProfileSpec:
     value: RunnerStorageProfile
     sqlite_storage: str
     shared_files_storage: str
+    requires_explicit_storage: bool
     default_sqlite_dir: str
     default_shared_files_dir: str
     live_sqlite_on_shared_files: bool
@@ -63,6 +64,7 @@ _STORAGE_PROFILES: dict[RunnerStorageProfile, RunnerStorageProfileSpec] = {
         value=_AWS_STORAGE_PROFILE,
         sqlite_storage=_STORAGE_RUNNER_EBS,
         shared_files_storage=_STORAGE_S3_FILES_OR_LOCAL_POSIX,
+        requires_explicit_storage=False,
         default_sqlite_dir=_DEFAULT_SQLITE_DIR,
         default_shared_files_dir=_DEFAULT_SHARED_FILES_DIR,
         live_sqlite_on_shared_files=False,
@@ -81,6 +83,7 @@ _STORAGE_PROFILES: dict[RunnerStorageProfile, RunnerStorageProfileSpec] = {
         value=_ARCHIL_SHARED_FILES_PROFILE,
         sqlite_storage=_STORAGE_RUNNER_EBS,
         shared_files_storage=_STORAGE_ARCHIL,
+        requires_explicit_storage=True,
         default_sqlite_dir=_DEFAULT_SQLITE_DIR,
         default_shared_files_dir=_DEFAULT_ARCHIL_SHARED_FILES_DIR,
         live_sqlite_on_shared_files=False,
@@ -93,6 +96,7 @@ _STORAGE_PROFILES: dict[RunnerStorageProfile, RunnerStorageProfileSpec] = {
         value=_ARCHIL_ALL_POSIX_PROFILE,
         sqlite_storage=_STORAGE_ARCHIL,
         shared_files_storage=_STORAGE_ARCHIL,
+        requires_explicit_storage=True,
         default_sqlite_dir=_DEFAULT_ARCHIL_SQLITE_DIR,
         default_shared_files_dir=_DEFAULT_ARCHIL_SHARED_FILES_DIR,
         live_sqlite_on_shared_files=True,
@@ -201,7 +205,7 @@ def load_config() -> RunnerAgentConfig:
     control_url = _env_text("YINSHI_CONTROL_URL", _DEFAULT_CONTROL_URL)
     assert control_url is not None, "default control URL must be non-empty"
     profile = _load_storage_profile()
-    explicit_storage_required = profile.value != _AWS_STORAGE_PROFILE
+    explicit_storage_required = profile.requires_explicit_storage
     sqlite_storage = _validate_storage_class(
         env_name="YINSHI_RUNNER_SQLITE_STORAGE",
         value=_env_text("YINSHI_RUNNER_SQLITE_STORAGE", profile.sqlite_storage),

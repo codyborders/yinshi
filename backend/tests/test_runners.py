@@ -232,6 +232,37 @@ def test_cloud_runner_rejects_unsupported_storage_profile(auth_client: TestClien
     assert response.status_code == 422
 
 
+def test_archil_profile_registration_requires_explicit_storage(auth_client: TestClient) -> None:
+    """Archil profiles require runner-provided storage class evidence."""
+    create_response = auth_client.post(
+        "/api/settings/runner",
+        json={
+            "name": "Archil shared files runner",
+            "cloud_provider": "aws",
+            "region": "us-east-1",
+            "storage_profile": "archil_shared_files",
+        },
+    )
+    assert create_response.status_code == 201
+
+    register_response = auth_client.post(
+        "/runner/register",
+        json={
+            "registration_token": create_response.json()["registration_token"],
+            "runner_version": "0.1.0",
+            "capabilities": {},
+            "data_dir": "/var/lib/yinshi",
+            "sqlite_dir": "/var/lib/yinshi/sqlite",
+            "shared_files_dir": "/mnt/archil/yinshi",
+            "storage_profile": "archil_shared_files",
+        },
+    )
+    assert register_response.status_code == 400
+    assert register_response.json()["detail"] == (
+        "sqlite_storage must be runner_ebs for archil_shared_files"
+    )
+
+
 def test_archil_shared_files_registers_with_ebs_sqlite(auth_client: TestClient) -> None:
     """Archil shared-files mode keeps live SQLite on runner EBS."""
     create_response = auth_client.post(

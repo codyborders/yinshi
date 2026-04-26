@@ -52,6 +52,7 @@ class RunnerStorageProfileSpec:
     value: RunnerStorageProfile
     sqlite_storage: str
     shared_files_storage: str
+    requires_explicit_storage: bool
     default_sqlite_dir: str
     default_shared_files_dir: str
     live_sqlite_on_shared_files: bool
@@ -66,6 +67,7 @@ _STORAGE_PROFILES: dict[RunnerStorageProfile, RunnerStorageProfileSpec] = {
         value=_AWS_STORAGE_PROFILE,
         sqlite_storage=_STORAGE_RUNNER_EBS,
         shared_files_storage=_STORAGE_S3_FILES_OR_LOCAL_POSIX,
+        requires_explicit_storage=False,
         default_sqlite_dir=_DEFAULT_SQLITE_DIR,
         default_shared_files_dir=_DEFAULT_SHARED_FILES_DIR,
         live_sqlite_on_shared_files=False,
@@ -84,6 +86,7 @@ _STORAGE_PROFILES: dict[RunnerStorageProfile, RunnerStorageProfileSpec] = {
         value=_ARCHIL_SHARED_FILES_PROFILE,
         sqlite_storage=_STORAGE_RUNNER_EBS,
         shared_files_storage=_STORAGE_ARCHIL,
+        requires_explicit_storage=True,
         default_sqlite_dir=_DEFAULT_SQLITE_DIR,
         default_shared_files_dir=_DEFAULT_ARCHIL_SHARED_FILES_DIR,
         live_sqlite_on_shared_files=False,
@@ -96,6 +99,7 @@ _STORAGE_PROFILES: dict[RunnerStorageProfile, RunnerStorageProfileSpec] = {
         value=_ARCHIL_ALL_POSIX_PROFILE,
         sqlite_storage=_STORAGE_ARCHIL,
         shared_files_storage=_STORAGE_ARCHIL,
+        requires_explicit_storage=True,
         default_sqlite_dir=_DEFAULT_ARCHIL_SQLITE_DIR,
         default_shared_files_dir=_DEFAULT_ARCHIL_SHARED_FILES_DIR,
         live_sqlite_on_shared_files=True,
@@ -284,7 +288,7 @@ def _storage_capabilities(
         if _path_contains(normalized_shared_files_dir, normalized_sqlite_dir):
             raise ValueError("sqlite_dir must not live under shared_files_dir")
 
-    explicit_storage_required = profile.value != _AWS_STORAGE_PROFILE
+    explicit_storage_required = profile.requires_explicit_storage
     sqlite_storage = _validated_storage_class(
         capabilities,
         key="sqlite_storage",
