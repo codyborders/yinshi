@@ -1,0 +1,75 @@
+<skill name="napkin-session" location="/Users/user/.pi/agent/skills/napkin-session/SKILL.md">
+References are relative to /Users/user/.pi/agent/skills/napkin-session.
+
+# Napkin Session Capture
+
+Automatically captures session context to the napkin vault at `~/.napkin`.
+
+## Session Context Format
+
+```yaml
+---
+date: YYYY-MM-DD
+started: HH:MM
+project: project-name
+path: /absolute/path
+---
+
+# Session: YYYY-MM-DD HH:MM
+
+**Project**: project-name
+**Path**: `/path`
+**Git**: owner/repo (branch)
+
+## Session Goals
+<!-- What are you working on today? -->
+
+## Notes
+<!-- Important discoveries, decisions, code -->
+
+## Next Steps
+<!-- Follow-up work -->
+```
+
+## Usage
+
+### Start of Session
+```bash
+~/.napkin/.scripts/session-capture.sh
+```
+
+### During Work
+```bash
+napkin daily append "## 10:30 AM - Working on auth"
+napkin create "decisions/auth-strategy" --content "..."
+```
+
+### End of Session
+```bash
+napkin daily prepend "## End Summary\n- Completed: ...\n- Next: ..."
+```
+
+## Vault Structure
+
+```
+~/.napkin/
+├── daily/YYYY-MM-DD.md      # Daily notes
+├── projects/[name].md       # Project context
+├── decisions/              # ADRs
+├── architecture/           # System docs
+└── guides/                # How-tos
+```
+
+## Commands
+
+| Command | Purpose |
+|---------|---------|
+| `napkin daily today` | Today's note |
+| `napkin daily append "text"` | Add to daily |
+| `napkin create "Note" --path decisions` | Create ADR |
+| `napkin search "query"` | Find notes |
+</skill>
+
+---
+
+Let's fix that.

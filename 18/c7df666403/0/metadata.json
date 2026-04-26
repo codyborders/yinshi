@@ -1,0 +1,50 @@
+{
+  "cli_version": "dev",
+  "checkpoint_id": "18c7df666403",
+  "session_id": "019dca44-48f2-738e-833f-d9466d4d6ca2",
+  "strategy": "manual-commit",
+  "created_at": "2026-04-26T16:38:10.892709Z",
+  "branch": "main",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "backend/src/yinshi/services/sidecar_runtime.py",
+    "backend/tests/test_sidecar_runtime.py"
+  ],
+  "agent": "Pi",
+  "model": "openai-codex/gpt-5.5",
+  "turn_id": "b7f311fd2c12",
+  "token_usage": {
+    "input_tokens": 2520585,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 61721600,
+    "output_tokens": 163039,
+    "api_call_count": 641
+  },
+  "session_metrics": {
+    "turn_count": 1
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-04-26T16:38:10.781276Z",
+    "agent_lines": 118,
+    "agent_removed": 13,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 118,
+    "total_lines_changed": 131,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 289,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        "code_reviews/2026-04-25-1616-code-review.md": 289
+      }
+    }
+  ]
+}
