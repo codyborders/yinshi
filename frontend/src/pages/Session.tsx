@@ -29,6 +29,9 @@ export default function Session() {
   const [loadingHistory, setLoadingHistory] = useState(true);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [updatingModel, setUpdatingModel] = useState(false);
+  const [selectedModelOverride, setSelectedModelOverride] = useState<
+    string | null
+  >(null);
   const [thinkingEnabled, setThinkingEnabled] = useState(true);
   const [hasThinkingOverride, setHasThinkingOverride] = useState(false);
 
@@ -89,6 +92,7 @@ export default function Session() {
   }, [id]);
 
   useEffect(() => {
+    setSelectedModelOverride(null);
     setThinkingEnabled(true);
     setHasThinkingOverride(false);
   }, [id]);
@@ -144,7 +148,9 @@ export default function Session() {
         return false;
       }
       if (!connectedProviderIds.has(resolvedModelOption.provider)) {
-        const providerLabel = providerLabelById.get(resolvedModelOption.provider) || resolvedModelOption.provider;
+        const providerLabel =
+          providerLabelById.get(resolvedModelOption.provider) ||
+          resolvedModelOption.provider;
         if (announce) {
           addSystemMessage(
             `Model ${describeSessionModel(resolvedModelOption.ref, catalog.models)} requires a ${providerLabel} connection in Settings.`,
@@ -280,14 +286,20 @@ export default function Session() {
     }
 
     models.sort((leftModel, rightModel) => {
-      const leftConnectionRank = connectedProviderIds.has(leftModel.provider) ? 0 : 1;
-      const rightConnectionRank = connectedProviderIds.has(rightModel.provider) ? 0 : 1;
+      const leftConnectionRank = connectedProviderIds.has(leftModel.provider)
+        ? 0
+        : 1;
+      const rightConnectionRank = connectedProviderIds.has(rightModel.provider)
+        ? 0
+        : 1;
       if (leftConnectionRank !== rightConnectionRank) {
         return leftConnectionRank - rightConnectionRank;
       }
 
-      const leftProviderLabel = providerLabelById.get(leftModel.provider) || leftModel.provider;
-      const rightProviderLabel = providerLabelById.get(rightModel.provider) || rightModel.provider;
+      const leftProviderLabel =
+        providerLabelById.get(leftModel.provider) || leftModel.provider;
+      const rightProviderLabel =
+        providerLabelById.get(rightModel.provider) || rightModel.provider;
       const providerComparison = leftProviderLabel.localeCompare(rightProviderLabel);
       if (providerComparison !== 0) {
         return providerComparison;
@@ -301,8 +313,12 @@ export default function Session() {
       providerLabelById,
     };
   }, [catalog]);
-  const selectedModelOption = getSessionModelOption(sessionModel, catalogModels);
-  const selectedModelValue = selectedModelOption?.ref || sessionModel;
+  const selectedModelRef = selectedModelOverride ?? sessionModel;
+  const selectedModelOption = getSessionModelOption(
+    selectedModelRef,
+    catalogModels,
+  );
+  const selectedModelValue = selectedModelOption?.ref || selectedModelRef;
   const selectedProviderLabel = selectedModelOption
     ? providerLabelById.get(selectedModelOption.provider) || selectedModelOption.provider
     : null;
@@ -314,13 +330,33 @@ export default function Session() {
     ? thinkingEnabled
     : undefined;
 
+  const handleModelChange = useCallback(
+    (requestedModel: string) => {
+      setSelectedModelOverride(requestedModel);
+      void updateSessionModel(requestedModel, false).then((updated) => {
+        setSelectedModelOverride((currentModel) =>
+          currentModel === requestedModel ? null : currentModel,
+        );
+        if (!updated) {
+          addSystemMessage("Failed to update model.");
+        }
+      });
+    },
+    [addSystemMessage, updateSessionModel],
+  );
+
   const handleSend = useCallback(
     async (prompt: string) => {
-      // The model selector persists directly to the session, so prompt
-      // submission should keep using the backend's session model.
-      await sendPrompt(prompt, undefined, thinkingOverride);
+      // If the user starts a prompt while the model save is still in flight,
+      // include the selected model in this prompt so the run does not fall back
+      // to the previously persisted session model.
+      await sendPrompt(
+        prompt,
+        selectedModelOverride ?? undefined,
+        thinkingOverride,
+      );
     },
-    [sendPrompt, thinkingOverride],
+    [selectedModelOverride, sendPrompt, thinkingOverride],
   );
 
   return (
@@ -344,7 +380,7 @@ export default function Session() {
             value={selectedModelValue}
             disabled={streaming || updatingModel || loadingCatalog}
             onChange={(event) => {
-              void updateSessionModel(event.target.value, false);
+              handleModelChange(event.target.value);
             }}
             className="rounded-lg border border-gray-800 bg-gray-900 px-2 py-1 text-xs text-gray-300 outline-none focus:border-blue-500 disabled:cursor-not-allowed disabled:opacity-60"
           >
@@ -372,7 +408,9 @@ export default function Session() {
               disabled={streaming || !canOverrideThinking}
               onClick={() => {
                 setHasThinkingOverride(true);
-                setThinkingEnabled((currentThinkingEnabled) => !currentThinkingEnabled);
+                setThinkingEnabled(
+                  (currentThinkingEnabled) => !currentThinkingEnabled,
+                );
               }}
               className={`flex items-center gap-1 rounded px-2 py-1 text-xs transition-colors ${
                 streaming || !canOverrideThinking

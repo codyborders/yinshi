@@ -1,6 +1,14 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import "@testing-library/jest-dom/vitest";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const apiGetMock = vi.fn();
 const apiPatchMock = vi.fn();
@@ -55,6 +63,10 @@ function renderSession() {
 }
 
 describe("Session", () => {
+  afterEach(() => {
+    cleanup();
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     sendPromptMock.mockResolvedValue(undefined);
@@ -114,13 +126,101 @@ describe("Session", () => {
     renderSession();
 
     await waitFor(() => {
-      expect(screen.getByRole("button", { name: "Send Prompt" })).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: "Send Prompt" }),
+      ).toBeInTheDocument();
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Send Prompt" }));
 
     await waitFor(() => {
       expect(sendPromptMock).toHaveBeenCalledWith("Ship it", undefined, undefined);
+    });
+  });
+
+  it("uses a newly selected model for prompts while the save is still pending", async () => {
+    let resolvePatch: (value: { model: string }) => void = () => {};
+    apiPatchMock.mockReturnValue(
+      new Promise<{ model: string }>((resolve) => {
+        resolvePatch = resolve;
+      }),
+    );
+    useCatalogMock.mockReturnValue({
+      catalog: {
+        default_model: "minimax/MiniMax-M2.7",
+        providers: [
+          {
+            id: "minimax",
+            label: "MiniMax",
+            auth_strategies: ["api_key"],
+            setup_fields: [],
+            docs_url: "https://example.com/minimax",
+            connected: true,
+            model_count: 1,
+          },
+          {
+            id: "openai",
+            label: "OpenAI",
+            auth_strategies: ["api_key"],
+            setup_fields: [],
+            docs_url: "https://example.com/openai",
+            connected: true,
+            model_count: 1,
+          },
+        ],
+        models: [
+          {
+            ref: "minimax/MiniMax-M2.7",
+            provider: "minimax",
+            id: "MiniMax-M2.7",
+            label: "MiniMax M2.7",
+            api: "responses",
+            reasoning: true,
+            inputs: ["text"],
+            context_window: 1000,
+            max_tokens: 1000,
+          },
+          {
+            ref: "openai/gpt-4.1",
+            provider: "openai",
+            id: "gpt-4.1",
+            label: "GPT-4.1",
+            api: "responses",
+            reasoning: false,
+            inputs: ["text"],
+            context_window: 1000,
+            max_tokens: 1000,
+          },
+        ],
+      },
+      loading: false,
+    });
+    apiGetMock.mockImplementation((path: string) => {
+      if (path === "/api/sessions/session-123/messages") {
+        return Promise.resolve([]);
+      }
+      if (path === "/api/sessions/session-123") {
+        return Promise.resolve({ model: "minimax/MiniMax-M2.7" });
+      }
+      throw new Error(`Unexpected GET path: ${path}`);
+    });
+
+    renderSession();
+
+    const modelSelect = await screen.findByLabelText("Model");
+    fireEvent.change(modelSelect, { target: { value: "openai/gpt-4.1" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send Prompt" }));
+
+    await waitFor(() => {
+      expect(sendPromptMock).toHaveBeenCalledWith(
+        "Ship it",
+        "openai/gpt-4.1",
+        undefined,
+      );
+    });
+
+    await act(async () => {
+      resolvePatch({ model: "openai/gpt-4.1" });
     });
   });
 
@@ -171,7 +271,10 @@ describe("Session", () => {
 
     await waitFor(() => {
       expect(thinkingButton).toBeDisabled();
-      expect(thinkingButton).toHaveAttribute("title", "This model does not support thinking");
+      expect(thinkingButton).toHaveAttribute(
+        "title",
+        "This model does not support thinking",
+      );
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Send Prompt" }));
