@@ -1361,6 +1361,82 @@ def test_prompt_enables_reasoning_with_pi_thinking_level(
     mock_sidecar.get_catalog.assert_awaited_once()
 
 
+def test_prompt_forwards_explicit_thinking_level(
+    client: TestClient,
+    session_id: str,
+) -> None:
+    """A named thinking level should reach Pi settings unchanged when supported."""
+    from yinshi.api.stream import ExecutionContext
+
+    async def fake_query(
+        sid,
+        prompt,
+        model=None,
+        cwd=None,
+        provider_auth=None,
+        provider_config=None,
+        agent_dir=None,
+        settings_payload=None,
+    ):
+        del sid, prompt, model, cwd, provider_auth, provider_config, agent_dir
+        assert settings_payload == {"defaultThinkingLevel": "xhigh"}
+        yield {
+            "type": "message",
+            "data": {"type": "result", "usage": {}},
+        }
+
+    mock_sidecar = make_mock_sidecar(fake_query)
+    mock_sidecar.get_catalog = AsyncMock(
+        return_value={
+            "models": [
+                {
+                    "ref": "minimax/MiniMax-M2.7",
+                    "reasoning": True,
+                    "thinking_levels": [
+                        "off",
+                        "minimal",
+                        "low",
+                        "medium",
+                        "high",
+                        "xhigh",
+                    ],
+                }
+            ]
+        }
+    )
+
+    with (
+        patch(
+            "yinshi.api.stream.create_sidecar_connection",
+            return_value=mock_sidecar,
+        ),
+        patch(
+            "yinshi.api.stream._resolve_execution_context",
+            new=AsyncMock(
+                return_value=ExecutionContext(
+                    sidecar_socket=None,
+                    effective_cwd="/tmp",
+                    key_source="platform",
+                    provider="test-provider",
+                    provider_auth=None,
+                    provider_config=None,
+                    model_ref="minimax/MiniMax-M2.7",
+                )
+            ),
+        ),
+    ):
+        response = client.post(
+            f"/api/sessions/{session_id}/prompt",
+            json={"prompt": "say hello", "thinking": "xhigh"},
+        )
+
+    assert response.status_code == 200
+    assert mock_sidecar.warmup.call_args.kwargs["settings_payload"] == {
+        "defaultThinkingLevel": "xhigh",
+    }
+    mock_sidecar.get_catalog.assert_awaited_once()
+
+
 def test_prompt_ignores_thinking_override_for_non_reasoning_model(
     client: TestClient,
     session_id: str,

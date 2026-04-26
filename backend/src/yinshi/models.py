@@ -322,6 +322,7 @@ class ModelDescriptorOut(BaseModel):
     label: str
     api: str
     reasoning: bool
+    thinking_levels: list[str] = Field(default_factory=list)
     inputs: list[str]
     context_window: int
     max_tokens: int

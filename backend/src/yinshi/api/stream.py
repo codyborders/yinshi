@@ -5,14 +5,13 @@ Tests: test_prompt_session_not_found, test_prompt_streams_sidecar_events,
        test_cancel_no_active_stream in tests/test_api.py
 """
 
-import asyncio
 import json
 import logging
 import sqlite3
 import uuid
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -55,9 +54,20 @@ router = APIRouter()
 # Batch DB writes every N chunks to reduce I/O
 _PERSIST_BATCH_SIZE = 10
 _STORED_TURN_SCHEMA = "yinshi.assistant_turn.v1"
-_THINKING_LEVEL_DEFAULT = "medium"
-_THINKING_LEVEL_OFF = "off"
-_THINKING_LEVELS = frozenset({"off", "minimal", "low", "medium", "high", "xhigh"})
+ThinkingLevel = Literal["off", "minimal", "low", "medium", "high", "xhigh"]
+
+_THINKING_LEVEL_DEFAULT: ThinkingLevel = "medium"
+_THINKING_LEVEL_OFF: ThinkingLevel = "off"
+_THINKING_LEVEL_ORDER: tuple[ThinkingLevel, ...] = (
+    "off",
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+)
+_THINKING_LEVELS = frozenset(_THINKING_LEVEL_ORDER)
+_STANDARD_THINKING_LEVELS = _THINKING_LEVEL_ORDER[:-1]
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,7 +89,23 @@ class ExecutionContext:
 class PromptRequest(BaseModel):
     prompt: str = Field(..., max_length=100_000)
     model: str | None = None
-    thinking: bool | None = None
+    thinking: ThinkingLevel | None = None
+
+    @field_validator("thinking", mode="before")
+    @classmethod
+    def validate_thinking(cls, value: object) -> str | None:
+        """Normalize legacy booleans and explicit thinking levels."""
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            return _THINKING_LEVEL_DEFAULT if value else _THINKING_LEVEL_OFF
+        if not isinstance(value, str):
+            raise ValueError("thinking must be a valid thinking level")
+        normalized_value = value.strip().lower()
+        if normalized_value in _THINKING_LEVELS:
+            return normalized_value
+        valid_levels = ", ".join(_THINKING_LEVEL_ORDER)
+        raise ValueError(f"thinking must be one of {valid_levels}")
 
     @field_validator("model")
     @classmethod
@@ -90,11 +116,37 @@ class PromptRequest(BaseModel):
         return normalize_model_ref(value)
 
 
-def _catalog_reasoning_support(
+def _catalog_model_thinking_levels(
+    model_payload: dict[str, Any],
+) -> tuple[ThinkingLevel, ...] | None:
+    """Return model-specific thinking levels from one catalog row."""
+    raw_levels = model_payload.get("thinking_levels")
+    if isinstance(raw_levels, list):
+        thinking_levels: list[ThinkingLevel] = []
+        for raw_level in raw_levels:
+            if raw_level not in _THINKING_LEVELS:
+                continue
+            level = cast(ThinkingLevel, raw_level)
+            if level not in thinking_levels:
+                thinking_levels.append(level)
+        if thinking_levels:
+            if _THINKING_LEVEL_OFF not in thinking_levels:
+                thinking_levels.insert(0, _THINKING_LEVEL_OFF)
+            return tuple(thinking_levels)
+
+    reasoning_value = model_payload.get("reasoning")
+    if isinstance(reasoning_value, bool):
+        if reasoning_value:
+            return _STANDARD_THINKING_LEVELS
+        return (_THINKING_LEVEL_OFF,)
+    return None
+
+
+def _catalog_thinking_levels(
     catalog_payload: dict[str, Any],
     model_ref: str,
-) -> bool | None:
-    """Return whether one catalog model supports reasoning."""
+) -> tuple[ThinkingLevel, ...] | None:
+    """Return available thinking levels for one catalog model."""
     if not isinstance(catalog_payload, dict):
         raise TypeError("catalog_payload must be a dictionary")
     if not isinstance(model_ref, str):
@@ -113,38 +165,53 @@ def _catalog_reasoning_support(
         if model_payload.get("ref") != normalized_model_ref:
             continue
 
-        reasoning_value = model_payload.get("reasoning")
-        if isinstance(reasoning_value, bool):
-            return reasoning_value
-        logger.warning("Catalog reasoning flag missing for model %s", normalized_model_ref)
-        return None
+        thinking_levels = _catalog_model_thinking_levels(model_payload)
+        if thinking_levels is None:
+            logger.warning(
+                "Catalog thinking metadata missing for model %s",
+                normalized_model_ref,
+            )
+        return thinking_levels
 
     logger.warning("Catalog entry missing for model %s", normalized_model_ref)
     return None
 
 
+def _clamp_thinking_level(
+    requested_level: ThinkingLevel,
+    available_levels: tuple[ThinkingLevel, ...],
+) -> ThinkingLevel:
+    """Clamp one requested thinking level to model-supported levels."""
+    if requested_level in available_levels:
+        return requested_level
+    available_level_set = set(available_levels)
+    requested_index = _THINKING_LEVEL_ORDER.index(requested_level)
+
+    for candidate in _THINKING_LEVEL_ORDER[requested_index:]:
+        if candidate in available_level_set:
+            return candidate
+    for candidate in reversed(_THINKING_LEVEL_ORDER[:requested_index]):
+        if candidate in available_level_set:
+            return candidate
+    return available_levels[0] if available_levels else _THINKING_LEVEL_OFF
+
+
 def _build_effective_settings(
     settings_payload: dict[str, object] | None,
-    thinking_override: bool | None,
-    reasoning_supported: bool | None,
+    thinking_override: ThinkingLevel | None,
+    available_levels: tuple[ThinkingLevel, ...] | None,
 ) -> dict[str, object] | None:
-    """Merge one prompt-scoped thinking override into Pi-compatible settings."""
+    """Merge one prompt-scoped thinking level into Pi-compatible settings."""
     if thinking_override is None:
         return settings_payload
-    if reasoning_supported is False:
+    if available_levels == (_THINKING_LEVEL_OFF,):
         return settings_payload
 
     effective_settings = dict(settings_payload or {})
-    current_level = effective_settings.get("defaultThinkingLevel")
-    if thinking_override:
-        if (
-            not isinstance(current_level, str)
-            or current_level not in _THINKING_LEVELS
-            or current_level == _THINKING_LEVEL_OFF
-        ):
-            effective_settings["defaultThinkingLevel"] = _THINKING_LEVEL_DEFAULT
-    else:
-        effective_settings["defaultThinkingLevel"] = _THINKING_LEVEL_OFF
+    effective_level = thinking_override
+    if available_levels is not None:
+        effective_level = _clamp_thinking_level(thinking_override, available_levels)
+    effective_settings["defaultThinkingLevel"] = effective_level
     return effective_settings
 
 
@@ -603,14 +670,14 @@ async def prompt_session(
             sidecar = await create_sidecar_connection(context.sidecar_socket)
             await coordinator.register(session_id, sidecar)
 
-            reasoning_supported: bool | None = None
+            available_thinking_levels: tuple[ThinkingLevel, ...] | None = None
             if body.thinking is not None:
                 catalog_payload = await sidecar.get_catalog(agent_dir=context.agent_dir)
-                reasoning_supported = _catalog_reasoning_support(
+                available_thinking_levels = _catalog_thinking_levels(
                     catalog_payload,
                     context.model_ref or model,
                 )
-                if reasoning_supported is False:
+                if available_thinking_levels == (_THINKING_LEVEL_OFF,):
                     logger.info(
                         "Ignoring thinking override for non-reasoning model: "
                         "session=%s model=%s",
@@ -621,7 +688,7 @@ async def prompt_session(
             effective_settings = _build_effective_settings(
                 context.settings_payload,
                 body.thinking,
-                reasoning_supported,
+                available_thinking_levels,
             )
 
             await sidecar.warmup(

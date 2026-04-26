@@ -16,6 +16,7 @@ import {
   createReadTool,
   createWriteTool,
 } from "@mariozechner/pi-coding-agent";
+import { supportsXhigh } from "@mariozechner/pi-ai";
 import { getOAuthProvider } from "@mariozechner/pi-ai/oauth";
 
 import { HEALTH_CHECK_INTERVAL } from "./constants.js";
@@ -26,14 +27,9 @@ const PI_PACKAGE_NAME = "@mariozechner/pi-coding-agent";
 const DEFAULT_MODEL_REF = "minimax/MiniMax-M2.7";
 const DEFAULT_THINKING_LEVEL = "medium";
 const OFF_THINKING_LEVEL = "off";
-const THINKING_LEVELS = new Set([
-  "off",
-  "minimal",
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-]);
+const STANDARD_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high"];
+const XHIGH_THINKING_LEVELS = [...STANDARD_THINKING_LEVELS, "xhigh"];
+const THINKING_LEVELS = new Set(XHIGH_THINKING_LEVELS);
 const LEGACY_MODEL_ALIASES = new Map([
   ["haiku", "anthropic/claude-haiku-4-5-20251001"],
   ["minimax", DEFAULT_MODEL_REF],
@@ -371,6 +367,13 @@ function createModelRegistry(providerAuth, agentDir) {
   return { authStorage, registry };
 }
 
+function getThinkingLevels(model) {
+  if (!model.reasoning) {
+    return [OFF_THINKING_LEVEL];
+  }
+  return supportsXhigh(model) ? XHIGH_THINKING_LEVELS : STANDARD_THINKING_LEVELS;
+}
+
 function toCatalogModel(model) {
   return {
     ref: `${model.provider}/${model.id}`,
@@ -379,6 +382,7 @@ function toCatalogModel(model) {
     label: model.name,
     api: model.api,
     reasoning: Boolean(model.reasoning),
+    thinking_levels: getThinkingLevels(model),
     inputs: [...model.input],
     context_window: model.contextWindow,
     max_tokens: model.maxTokens,

@@ -1,7 +1,14 @@
-import type { ModelDescriptor } from "../api/client";
+import type { ModelDescriptor, ThinkingLevel } from "../api/client";
 
 export const DEFAULT_SESSION_MODEL = "minimax/MiniMax-M2.7";
 
+export const STANDARD_THINKING_LEVELS: ThinkingLevel[] = [
+  "off",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+];
 const LEGACY_MODEL_ALIASES = new Map<string, string>([
   ["haiku", "anthropic/claude-haiku-4-5-20251001"],
   ["minimax", DEFAULT_SESSION_MODEL],
@@ -68,7 +75,8 @@ export function resolveSessionModelKey(
     return matchingModels[0]?.ref || null;
   }
 
-  const normalizedPreferredProviderIds = normalizePreferredProviderIds(preferredProviderIds);
+  const normalizedPreferredProviderIds =
+    normalizePreferredProviderIds(preferredProviderIds);
   if (normalizedPreferredProviderIds.size === 0) {
     return null;
   }
@@ -100,11 +108,34 @@ export function formatSessionModelOptionLabel(
   providerLabel: string | undefined,
   connected: boolean,
 ): string {
-  const normalizedProviderLabel = typeof providerLabel === "string" && providerLabel.trim()
-    ? providerLabel.trim()
-    : model.provider;
+  const normalizedProviderLabel =
+    typeof providerLabel === "string" && providerLabel.trim()
+      ? providerLabel.trim()
+      : model.provider;
   const connectionSuffix = connected ? "" : " (not connected)";
   return `${normalizedProviderLabel} - ${model.label}${connectionSuffix}`;
+}
+
+export function getModelThinkingLevels(
+  model: ModelDescriptor | null,
+): ThinkingLevel[] {
+  if (!model) {
+    return ["off"];
+  }
+  if (!model.reasoning) {
+    return ["off"];
+  }
+  if (model.thinking_levels?.length) {
+    return model.thinking_levels;
+  }
+  return STANDARD_THINKING_LEVELS;
+}
+
+export function formatThinkingLevelLabel(level: ThinkingLevel): string {
+  if (level === "xhigh") {
+    return "XHigh";
+  }
+  return level.charAt(0).toUpperCase() + level.slice(1);
 }
 
 export function getSessionModelLabel(
@@ -129,7 +160,9 @@ export function describeSessionModel(
   return `**${matchingModel.label}** (\`${matchingModel.ref}\`)`;
 }
 
-export function availableSessionModelsMarkdown(models: ModelDescriptor[]): string {
+export function availableSessionModelsMarkdown(
+  models: ModelDescriptor[],
+): string {
   return models
     .map((model) => `- **${model.label}** (\`${model.ref}\`)`)
     .join("\n");

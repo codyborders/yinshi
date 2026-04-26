@@ -45,6 +45,7 @@ const minimaxModel = {
   label: "MiniMax M2.7",
   api: "responses",
   reasoning: true,
+  thinking_levels: ["off", "minimal", "low", "medium", "high"],
   inputs: ["text"],
   context_window: 1000,
   max_tokens: 1000,
@@ -57,6 +58,7 @@ const openaiModel = {
   label: "GPT-4.1",
   api: "responses",
   reasoning: false,
+  thinking_levels: ["off"],
   inputs: ["text"],
   context_window: 1000,
   max_tokens: 1000,
@@ -106,8 +108,8 @@ function mockCatalog({
   models = [minimaxModel],
 }: {
   defaultModel?: string;
-  providers?: typeof minimaxProvider[];
-  models?: typeof minimaxModel[];
+  providers?: (typeof minimaxProvider)[];
+  models?: (typeof minimaxModel)[];
 } = {}) {
   useCatalogMock.mockReturnValue({
     catalog: {
@@ -229,13 +231,11 @@ describe("Session", () => {
 
     renderSession();
 
-    const thinkingButton = await screen.findByRole("button", {
-      name: "Thinking",
-    });
+    const thinkingSelect = await screen.findByLabelText("Thinking");
 
     await waitFor(() => {
-      expect(thinkingButton).toBeDisabled();
-      expect(thinkingButton).toHaveAttribute(
+      expect(thinkingSelect).toBeDisabled();
+      expect(thinkingSelect).toHaveAttribute(
         "title",
         "This model does not support thinking",
       );
@@ -252,62 +252,83 @@ describe("Session", () => {
     });
   });
 
-  it("forwards an explicit thinking override for reasoning models", async () => {
+  it("forwards an explicit thinking level for reasoning models", async () => {
     mockCatalog();
     mockSessionApi({ model: minimaxModel.ref });
 
     renderSession();
 
-    const thinkingButton = await screen.findByRole("button", {
-      name: "Thinking",
-    });
-    fireEvent.click(thinkingButton);
+    const thinkingSelect = await screen.findByLabelText("Thinking");
+    fireEvent.change(thinkingSelect, { target: { value: "high" } });
     fireEvent.click(screen.getByRole("button", { name: "Send Prompt" }));
 
     await waitFor(() => {
-      expect(sendPromptMock).toHaveBeenCalledWith("Ship it", undefined, false);
+      expect(sendPromptMock).toHaveBeenCalledWith("Ship it", undefined, "high");
     });
+  });
+
+  it("shows every thinking level advertised by the selected model", async () => {
+    mockCatalog({
+      models: [
+        {
+          ...minimaxModel,
+          thinking_levels: ["off", "minimal", "low", "medium", "high", "xhigh"],
+        },
+      ],
+    });
+    mockSessionApi({ model: minimaxModel.ref });
+
+    renderSession();
+
+    const thinkingSelect = await screen.findByLabelText("Thinking");
+
+    expect(thinkingSelect).toHaveTextContent("Model default");
+    expect(thinkingSelect).toHaveTextContent("Off");
+    expect(thinkingSelect).toHaveTextContent("Minimal");
+    expect(thinkingSelect).toHaveTextContent("Low");
+    expect(thinkingSelect).toHaveTextContent("Medium");
+    expect(thinkingSelect).toHaveTextContent("High");
+    expect(thinkingSelect).toHaveTextContent("XHigh");
   });
 
   it("reconstructs assistant trace blocks from stored full messages", async () => {
     mockCatalog();
-    mockSessionApi(
-      { model: minimaxModel.ref },
-      [
-        {
-          id: "message-1",
-          created_at: "2026-04-26T00:00:00Z",
-          session_id: "session-123",
-          role: "assistant",
-          content: "Done",
-          full_message: JSON.stringify({
-            schema: "yinshi.assistant_turn.v1",
-            events: [
-              {
-                type: "assistant",
-                message: { content: [{ type: "thinking", thinking: "Inspect." }] },
+    mockSessionApi({ model: minimaxModel.ref }, [
+      {
+        id: "message-1",
+        created_at: "2026-04-26T00:00:00Z",
+        session_id: "session-123",
+        role: "assistant",
+        content: "Done",
+        full_message: JSON.stringify({
+          schema: "yinshi.assistant_turn.v1",
+          events: [
+            {
+              type: "assistant",
+              message: {
+                content: [{ type: "thinking", thinking: "Inspect." }],
               },
-              {
-                type: "tool_use",
-                id: "tool-1",
-                name: "read",
-                input: { path: "README.md" },
-              },
-              {
-                type: "tool_result",
-                tool_use_id: "tool-1",
-                content: "# Test",
-              },
-              {
-                type: "assistant",
-                message: { content: [{ type: "text", text: "Done" }] },
-              },
-              { type: "result" },
-            ],
-          }),
-        },
-      ],
-    );
+            },
+            {
+              type: "tool_use",
+              id: "tool-1",
+              name: "read",
+              input: { path: "README.md" },
+            },
+            {
+              type: "tool_result",
+              tool_use_id: "tool-1",
+              content: "# Test",
+            },
+            {
+              type: "assistant",
+              message: { content: [{ type: "text", text: "Done" }] },
+            },
+            { type: "result" },
+          ],
+        }),
+      },
+    ]);
 
     renderSession();
 

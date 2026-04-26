@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
-import { api, type Message } from "../api/client";
+import { api, type Message, type ThinkingLevel } from "../api/client";
 import ChatView from "../components/ChatView";
 import { useAgentStream, type ChatMessage } from "../hooks/useAgentStream";
 import { useCatalog } from "../hooks/useCatalog";
@@ -10,6 +10,8 @@ import {
   availableSessionModelsMarkdown,
   describeSessionModel,
   formatSessionModelOptionLabel,
+  formatThinkingLevelLabel,
+  getModelThinkingLevels,
   getSessionModelOption,
   resolveSessionModelKey,
 } from "../models/sessionModels";
@@ -33,8 +35,8 @@ export default function Session() {
   const [pendingModelSelection, setPendingModelSelection] = useState<
     string | null
   >(null);
-  const [thinkingEnabled, setThinkingEnabled] = useState(true);
-  const [hasThinkingOverride, setHasThinkingOverride] = useState(false);
+  const [thinkingOverride, setThinkingOverride] =
+    useState<ThinkingLevel | null>(null);
 
   // Load existing message history
   useEffect(() => {
@@ -104,8 +106,7 @@ export default function Session() {
 
   useEffect(() => {
     setPendingModelSelection(null);
-    setThinkingEnabled(true);
-    setHasThinkingOverride(false);
+    setThinkingOverride(null);
   }, [id]);
 
   const addSystemMessage = useCallback(
@@ -135,7 +136,9 @@ export default function Session() {
           .map((provider) => provider.id),
       );
       const providerLabelById = new Map(
-        catalog.providers.map((provider) => [provider.id, provider.label] as const),
+        catalog.providers.map(
+          (provider) => [provider.id, provider.label] as const,
+        ),
       );
       const resolvedModel = resolveSessionModelKey(
         requestedModel,
@@ -151,7 +154,10 @@ export default function Session() {
         }
         return false;
       }
-      const resolvedModelOption = getSessionModelOption(resolvedModel, catalog.models);
+      const resolvedModelOption = getSessionModelOption(
+        resolvedModel,
+        catalog.models,
+      );
       if (!resolvedModelOption) {
         if (announce) {
           addSystemMessage("Failed to resolve the requested model.");
@@ -280,50 +286,50 @@ export default function Session() {
     ],
   );
 
-  const {
-    catalogModels,
-    connectedProviderIds,
-    providerLabelById,
-  } = useMemo(() => {
-    const connectedProviderIds = new Set<string>();
-    const providerLabelById = new Map<string, string>();
-    const models = [...(catalog?.models || [])];
+  const { catalogModels, connectedProviderIds, providerLabelById } =
+    useMemo(() => {
+      const connectedProviderIds = new Set<string>();
+      const providerLabelById = new Map<string, string>();
+      const models = [...(catalog?.models || [])];
 
-    for (const provider of catalog?.providers || []) {
-      providerLabelById.set(provider.id, provider.label);
-      if (provider.connected) {
-        connectedProviderIds.add(provider.id);
-      }
-    }
-
-    models.sort((leftModel, rightModel) => {
-      const leftConnectionRank = connectedProviderIds.has(leftModel.provider)
-        ? 0
-        : 1;
-      const rightConnectionRank = connectedProviderIds.has(rightModel.provider)
-        ? 0
-        : 1;
-      if (leftConnectionRank !== rightConnectionRank) {
-        return leftConnectionRank - rightConnectionRank;
+      for (const provider of catalog?.providers || []) {
+        providerLabelById.set(provider.id, provider.label);
+        if (provider.connected) {
+          connectedProviderIds.add(provider.id);
+        }
       }
 
-      const leftProviderLabel =
-        providerLabelById.get(leftModel.provider) || leftModel.provider;
-      const rightProviderLabel =
-        providerLabelById.get(rightModel.provider) || rightModel.provider;
-      const providerComparison = leftProviderLabel.localeCompare(rightProviderLabel);
-      if (providerComparison !== 0) {
-        return providerComparison;
-      }
-      return leftModel.label.localeCompare(rightModel.label);
-    });
+      models.sort((leftModel, rightModel) => {
+        const leftConnectionRank = connectedProviderIds.has(leftModel.provider)
+          ? 0
+          : 1;
+        const rightConnectionRank = connectedProviderIds.has(
+          rightModel.provider,
+        )
+          ? 0
+          : 1;
+        if (leftConnectionRank !== rightConnectionRank) {
+          return leftConnectionRank - rightConnectionRank;
+        }
 
-    return {
-      catalogModels: models,
-      connectedProviderIds,
-      providerLabelById,
-    };
-  }, [catalog]);
+        const leftProviderLabel =
+          providerLabelById.get(leftModel.provider) || leftModel.provider;
+        const rightProviderLabel =
+          providerLabelById.get(rightModel.provider) || rightModel.provider;
+        const providerComparison =
+          leftProviderLabel.localeCompare(rightProviderLabel);
+        if (providerComparison !== 0) {
+          return providerComparison;
+        }
+        return leftModel.label.localeCompare(rightModel.label);
+      });
+
+      return {
+        catalogModels: models,
+        connectedProviderIds,
+        providerLabelById,
+      };
+    }, [catalog]);
   const selectedModelRef = pendingModelSelection ?? sessionModel;
   const selectedModelOption = getSessionModelOption(
     selectedModelRef,
@@ -337,9 +343,16 @@ export default function Session() {
   const selectedModelRequiresConnection = selectedModelOption
     ? !connectedProviderIds.has(selectedModelOption.provider)
     : false;
-  const canOverrideThinking = selectedModelOption?.reasoning === true;
-  const thinkingOverride = canOverrideThinking && hasThinkingOverride
-    ? thinkingEnabled
+  const availableThinkingLevels = getModelThinkingLevels(selectedModelOption);
+  const canOverrideThinking = availableThinkingLevels.some(
+    (level) => level !== "off",
+  );
+  const selectedThinkingOverride =
+    thinkingOverride && availableThinkingLevels.includes(thinkingOverride)
+      ? thinkingOverride
+      : null;
+  const promptThinkingOverride = canOverrideThinking
+    ? (selectedThinkingOverride ?? undefined)
     : undefined;
 
   const handleModelChange = useCallback(
@@ -365,10 +378,10 @@ export default function Session() {
       await sendPrompt(
         prompt,
         pendingModelSelection ?? undefined,
-        thinkingOverride,
+        promptThinkingOverride,
       );
     },
-    [pendingModelSelection, sendPrompt, thinkingOverride],
+    [pendingModelSelection, promptThinkingOverride, sendPrompt],
   );
 
   return (
@@ -413,50 +426,36 @@ export default function Session() {
               </option>
             ))}
           </select>
-          {/* Thinking toggle */}
-          <div className="flex items-center gap-1">
-            <button
-              type="button"
-              disabled={streaming || !canOverrideThinking}
-              onClick={() => {
-                setHasThinkingOverride(true);
-                setThinkingEnabled(
-                  (currentThinkingEnabled) => !currentThinkingEnabled,
-                );
-              }}
-              className={`flex items-center gap-1 rounded px-2 py-1 text-xs transition-colors ${
-                streaming || !canOverrideThinking
-                  ? "cursor-not-allowed opacity-40"
-                  : thinkingEnabled
-                    ? "bg-purple-900/50 text-purple-300 hover:bg-purple-900/70"
-                    : "bg-gray-800 text-gray-500 hover:bg-gray-700"
-              }`}
-              title={
-                !canOverrideThinking
-                  ? "This model does not support thinking"
-                  : !hasThinkingOverride
-                    ? "Using the model default thinking setting - click to set an explicit override"
-                  : thinkingEnabled
-                    ? "Thinking enabled - click to disable"
-                    : "Thinking disabled - click to enable"
-              }
-            >
-              <svg
-                className="h-3 w-3"
-                fill="none"
-                viewBox="0 0 24 24"
-                stroke="currentColor"
-                strokeWidth={2}
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"
-                />
-              </svg>
-              <span>Thinking</span>
-            </button>
-          </div>
+          <label
+            htmlFor="thinking-level"
+            className="hidden text-xs text-gray-500 sm:block"
+          >
+            Thinking
+          </label>
+          <select
+            id="thinking-level"
+            value={selectedThinkingOverride ?? "default"}
+            disabled={streaming || !canOverrideThinking}
+            onChange={(event) => {
+              const value = event.target.value;
+              setThinkingOverride(
+                value === "default" ? null : (value as ThinkingLevel),
+              );
+            }}
+            className="rounded-lg border border-gray-800 bg-gray-900 px-2 py-1 text-xs text-gray-300 outline-none focus:border-blue-500 disabled:cursor-not-allowed disabled:opacity-40"
+            title={
+              canOverrideThinking
+                ? "Select a thinking level for the next prompt"
+                : "This model does not support thinking"
+            }
+          >
+            <option value="default">Model default</option>
+            {availableThinkingLevels.map((level) => (
+              <option key={level} value={level}>
+                {formatThinkingLevelLabel(level)}
+              </option>
+            ))}
+          </select>
         </div>
         {streaming && (
           <div className="flex items-center gap-2">
@@ -476,7 +475,9 @@ export default function Session() {
           <div className="flex h-full flex-col">
             {selectedModelRequiresConnection && selectedProviderLabel && (
               <div className="mx-4 mt-4 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-200">
-                Selected model requires a {selectedProviderLabel} connection. Pick a connected provider from the model list or add {selectedProviderLabel} in Settings.
+                Selected model requires a {selectedProviderLabel} connection.
+                Pick a connected provider from the model list or add{" "}
+                {selectedProviderLabel} in Settings.
               </div>
             )}
             {historyError && (

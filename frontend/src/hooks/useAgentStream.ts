@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from "react";
-import { cancelSession, streamPrompt } from "../api/client";
+import { cancelSession, streamPrompt, type ThinkingLevel } from "../api/client";
 import {
   applyTurnEventToBlocks,
   blocksToContent,
@@ -33,11 +33,11 @@ export function useAgentStream(sessionId: string | undefined) {
   const queuedPromptRef = useRef<{
     prompt: string;
     model?: string;
-    thinking?: boolean;
+    thinking?: ThinkingLevel;
   } | null>(null);
 
   const startPrompt = useCallback(
-    async (prompt: string, model?: string, thinking?: boolean) => {
+    async (prompt: string, model?: string, thinking?: ThinkingLevel) => {
       if (!sessionId) return;
       const normalizedPrompt = prompt.trim();
       if (!normalizedPrompt) return;
@@ -165,7 +165,7 @@ export function useAgentStream(sessionId: string | undefined) {
   }, [sessionId, runState]);
 
   const sendPrompt = useCallback(
-    async (prompt: string, model?: string, thinking?: boolean) => {
+    async (prompt: string, model?: string, thinking?: ThinkingLevel) => {
       if (!sessionId) return;
       const normalizedPrompt = prompt.trim();
       if (!normalizedPrompt) return;

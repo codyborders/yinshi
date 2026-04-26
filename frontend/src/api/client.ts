@@ -41,6 +41,14 @@ export interface ProviderDescriptor {
   model_count: number;
 }
 
+export type ThinkingLevel =
+  | "off"
+  | "minimal"
+  | "low"
+  | "medium"
+  | "high"
+  | "xhigh";
+
 export interface ModelDescriptor {
   ref: string;
   provider: string;
@@ -48,6 +56,7 @@ export interface ModelDescriptor {
   label: string;
   api: string;
   reasoning: boolean;
+  thinking_levels?: ThinkingLevel[];
   inputs: string[];
   context_window: number;
   max_tokens: number;
@@ -237,7 +246,9 @@ export class ApiError extends Error {
   }
 }
 
-function _normalizeErrorPayload(payload: unknown): StructuredApiErrorPayload | null {
+function _normalizeErrorPayload(
+  payload: unknown,
+): StructuredApiErrorPayload | null {
   if (!payload || typeof payload !== "object") {
     return null;
   }
@@ -278,7 +289,12 @@ async function _readApiError(response: Response): Promise<ApiError> {
     if (normalized?.message) {
       return new ApiError(response.status, normalized.message, normalized);
     }
-    if (payload && typeof payload === "object" && "detail" in payload && typeof payload.detail === "string") {
+    if (
+      payload &&
+      typeof payload === "object" &&
+      "detail" in payload &&
+      typeof payload.detail === "string"
+    ) {
       return new ApiError(response.status, payload.detail);
     }
   }
@@ -294,7 +310,10 @@ async function request<T>(
 ): Promise<T> {
   const opts: RequestInit = {
     method,
-    headers: { "Content-Type": "application/json", "X-Requested-With": "XMLHttpRequest" },
+    headers: {
+      "Content-Type": "application/json",
+      "X-Requested-With": "XMLHttpRequest",
+    },
     credentials: "include",
   };
   if (body !== undefined) {
@@ -326,7 +345,10 @@ export const api = {
       body: form,
     });
     if (!response.ok) {
-      if (response.status === 401 && window.location.pathname.startsWith("/app")) {
+      if (
+        response.status === 401 &&
+        window.location.pathname.startsWith("/app")
+      ) {
         window.location.href = "/";
       }
       throw await _readApiError(response);
@@ -335,7 +357,10 @@ export const api = {
   },
 };
 
-export async function pollAuthFlow(provider: string, flowId: string): Promise<ProviderAuthStatus> {
+export async function pollAuthFlow(
+  provider: string,
+  flowId: string,
+): Promise<ProviderAuthStatus> {
   return request<ProviderAuthStatus>(
     "GET",
     `/auth/providers/${provider}/callback?flow_id=${encodeURIComponent(flowId)}`,
@@ -359,10 +384,30 @@ export async function submitAuthFlowInput(
 
 export type SSEEvent =
   | { type: "assistant"; message: { content: ContentBlock[] } }
-  | { type: "tool_use"; name: string; tool_name?: string; id?: string; input: unknown }
-  | { type: "tool_result"; tool_use_id: string; content: string | ContentBlock[] | unknown; is_error?: boolean }
+  | {
+      type: "tool_use";
+      name: string;
+      tool_name?: string;
+      id?: string;
+      input: unknown;
+    }
+  | {
+      type: "tool_result";
+      tool_use_id: string;
+      content: string | ContentBlock[] | unknown;
+      is_error?: boolean;
+    }
   | { type: "content_block_start"; content_block: ContentBlock; index?: number }
-  | { type: "content_block_delta"; delta: { type: string; text?: string; partial_json?: string; thinking?: string }; index?: number }
+  | {
+      type: "content_block_delta";
+      delta: {
+        type: string;
+        text?: string;
+        partial_json?: string;
+        thinking?: string;
+      };
+      index?: number;
+    }
   | { type: "content_block_stop"; index?: number }
   | { type: "message_start"; message?: unknown }
   | { type: "message_delta"; delta?: unknown }
@@ -396,12 +441,15 @@ export async function* streamPrompt(
   sessionId: string,
   prompt: string,
   model?: string,
-  thinking?: boolean,
+  thinking?: ThinkingLevel,
   signal?: AbortSignal,
 ): AsyncGenerator<SSEEvent> {
   const res = await fetch(`/api/sessions/${sessionId}/prompt`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", "X-Requested-With": "XMLHttpRequest" },
+    headers: {
+      "Content-Type": "application/json",
+      "X-Requested-With": "XMLHttpRequest",
+    },
     credentials: "include",
     body: JSON.stringify({ prompt, model, thinking }),
     signal,
@@ -449,5 +497,8 @@ export async function* streamPrompt(
 }
 
 export async function cancelSession(sessionId: string): Promise<void> {
-  await request<{ status: string }>("POST", `/api/sessions/${sessionId}/cancel`);
+  await request<{ status: string }>(
+    "POST",
+    `/api/sessions/${sessionId}/cancel`,
+  );
 }
