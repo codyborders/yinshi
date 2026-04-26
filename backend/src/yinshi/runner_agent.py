@@ -205,14 +205,13 @@ def load_config() -> RunnerAgentConfig:
     control_url = _env_text("YINSHI_CONTROL_URL", _DEFAULT_CONTROL_URL)
     assert control_url is not None, "default control URL must be non-empty"
     profile = _load_storage_profile()
-    explicit_storage_required = profile.requires_explicit_storage
     sqlite_storage = _validate_storage_class(
         env_name="YINSHI_RUNNER_SQLITE_STORAGE",
         value=_env_text("YINSHI_RUNNER_SQLITE_STORAGE", profile.sqlite_storage),
         profile=profile,
         expected_value=profile.sqlite_storage,
         allowed_values=profile.allowed_sqlite_storage,
-        required=explicit_storage_required,
+        required=profile.requires_explicit_storage,
     )
     assert sqlite_storage is not None, "SQLite storage has a profile default"
     shared_files_storage = _validate_storage_class(
@@ -221,7 +220,7 @@ def load_config() -> RunnerAgentConfig:
         profile=profile,
         expected_value=profile.shared_files_storage,
         allowed_values=profile.allowed_shared_files_storage,
-        required=explicit_storage_required,
+        required=profile.requires_explicit_storage,
     )
     runner_token_file = _env_path("YINSHI_RUNNER_TOKEN_FILE", _DEFAULT_TOKEN_FILE)
     data_dir = _env_path("YINSHI_RUNNER_DATA_DIR", _DEFAULT_DATA_DIR)

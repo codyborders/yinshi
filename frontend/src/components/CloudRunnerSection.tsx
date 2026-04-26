@@ -105,15 +105,8 @@ function formatTimestamp(value: string | null): string {
   return new Date(value).toLocaleString();
 }
 
-function isCloudRunnerStatus(value: string): value is CloudRunnerStatus {
-  return Object.prototype.hasOwnProperty.call(RUNNER_STATUS_CLASSES, value);
-}
-
 function runnerStatusClass(status: string): string {
-  if (isCloudRunnerStatus(status)) {
-    return RUNNER_STATUS_CLASSES[status];
-  }
-  return RUNNER_STATUS_CLASSES.offline;
+  return RUNNER_STATUS_CLASSES[status as CloudRunnerStatus] ?? RUNNER_STATUS_CLASSES.offline;
 }
 
 function runnerEnvironmentText(registration: CloudRunnerRegistration): string {

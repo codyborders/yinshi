@@ -288,14 +288,13 @@ def _storage_capabilities(
         if _path_contains(normalized_shared_files_dir, normalized_sqlite_dir):
             raise ValueError("sqlite_dir must not live under shared_files_dir")
 
-    explicit_storage_required = profile.requires_explicit_storage
     sqlite_storage = _validated_storage_class(
         capabilities,
         key="sqlite_storage",
         profile=profile,
         expected_value=profile.sqlite_storage,
         allowed_values=profile.allowed_sqlite_storage,
-        required=explicit_storage_required,
+        required=profile.requires_explicit_storage,
     )
     shared_files_storage = _validated_storage_class(
         capabilities,
@@ -303,7 +302,7 @@ def _storage_capabilities(
         profile=profile,
         expected_value=profile.shared_files_storage,
         allowed_values=profile.allowed_shared_files_storage,
-        required=explicit_storage_required,
+        required=profile.requires_explicit_storage,
     )
 
     merged_capabilities = {**_BASE_CAPABILITIES, **capabilities}
