@@ -1208,7 +1208,10 @@ export class YinshiSidecar {
     const sessionOptions = {
       cwd,
       model,
-      tools: createYinshiCodingTools(cwd, gitAuth),
+      // The SDK's `tools` option is an allow-list of tool names. Pass Yinshi's
+      // tool implementations as `customTools` so they replace the built-ins
+      // while keeping read/bash/edit/write active for the model.
+      customTools: createYinshiCodingTools(cwd, gitAuth),
       sessionManager: SessionManager.inMemory(),
       settingsManager,
       authStorage: sessionAuth,
