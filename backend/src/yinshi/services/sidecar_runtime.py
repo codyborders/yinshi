@@ -81,6 +81,35 @@ def _resolve_agent_dir_for_runtime(
     return remap_path_for_container(normalized_agent_dir, data_dir)
 
 
+def _append_runtime_mount(
+    mounts: list[ContainerMount],
+    mounts_by_target: dict[str, ContainerMount],
+    *,
+    source_path: str,
+    target_path: str,
+    read_only: bool,
+) -> None:
+    """Append one mount while preventing ambiguous target overlays."""
+    if not os.path.isabs(source_path):
+        raise ValueError("source_path must be absolute")
+    if not os.path.isabs(target_path):
+        raise ValueError("target_path must be absolute")
+
+    mount = ContainerMount(
+        source_path=source_path,
+        target_path=target_path,
+        read_only=read_only,
+    )
+    existing_mount = mounts_by_target.get(target_path)
+    if existing_mount is not None:
+        if existing_mount == mount:
+            return
+        raise ContainerStartError("Sidecar mount targets must be unique")
+
+    mounts.append(mount)
+    mounts_by_target[target_path] = mount
+
+
 def _container_mounts_for_runtime(
     tenant: TenantContext,
     *,
@@ -90,27 +119,40 @@ def _container_mounts_for_runtime(
 ) -> tuple[ContainerMount, ...]:
     """Build the narrow mount set required by one sidecar operation."""
     mounts: list[ContainerMount] = []
-    mounted_sources: set[str] = set()
-    for source_path, read_only in (
-        (repo_root_path, False),
-        (workspace_path, False),
-        (agent_dir, True),
+    mounts_by_target: dict[str, ContainerMount] = {}
+    for source_path, read_only, mount_at_host_path in (
+        (repo_root_path, False, True),
+        (workspace_path, False, False),
+        (agent_dir, True, False),
     ):
         if source_path is None:
             continue
         normalized_source_path = os.path.realpath(source_path)
-        if normalized_source_path in mounted_sources:
-            continue
         if not is_path_inside(normalized_source_path, tenant.data_dir):
-            raise ContainerStartError("Sidecar mount path is outside tenant data")
-        mounts.append(
-            ContainerMount(
+            message = "Sidecar mount path is outside tenant data"
+            raise ContainerStartError(message)
+        _append_runtime_mount(
+            mounts,
+            mounts_by_target,
+            source_path=normalized_source_path,
+            target_path=remap_path_for_container(
+                normalized_source_path,
+                tenant.data_dir,
+            ),
+            read_only=read_only,
+        )
+        if mount_at_host_path:
+            # Git worktrees store absolute gitdir pointers into the repo's
+            # metadata. Mounting the repo at that same absolute path lets Git
+            # resolve those pointers inside the sidecar while cwd stays in
+            # /data.
+            _append_runtime_mount(
+                mounts,
+                mounts_by_target,
                 source_path=normalized_source_path,
-                target_path=remap_path_for_container(normalized_source_path, tenant.data_dir),
+                target_path=normalized_source_path,
                 read_only=read_only,
             )
-        )
-        mounted_sources.add(normalized_source_path)
     return tuple(mounts)
 
 
