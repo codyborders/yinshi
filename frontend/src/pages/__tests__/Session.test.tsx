@@ -18,6 +18,50 @@ const setMessagesMock = vi.fn();
 const useCatalogMock = vi.fn();
 const useAgentStreamMock = vi.fn();
 
+const minimaxProvider = {
+  id: "minimax",
+  label: "MiniMax",
+  auth_strategies: ["api_key"],
+  setup_fields: [],
+  docs_url: "https://example.com/minimax",
+  connected: true,
+  model_count: 1,
+};
+
+const openaiProvider = {
+  id: "openai",
+  label: "OpenAI",
+  auth_strategies: ["api_key"],
+  setup_fields: [],
+  docs_url: "https://example.com/openai",
+  connected: true,
+  model_count: 1,
+};
+
+const minimaxModel = {
+  ref: "minimax/MiniMax-M2.7",
+  provider: "minimax",
+  id: "MiniMax-M2.7",
+  label: "MiniMax M2.7",
+  api: "responses",
+  reasoning: true,
+  inputs: ["text"],
+  context_window: 1000,
+  max_tokens: 1000,
+};
+
+const openaiModel = {
+  ref: "openai/gpt-4.1",
+  provider: "openai",
+  id: "gpt-4.1",
+  label: "GPT-4.1",
+  api: "responses",
+  reasoning: false,
+  inputs: ["text"],
+  context_window: 1000,
+  max_tokens: 1000,
+};
+
 vi.mock("../../api/client", () => ({
   api: {
     get: (...args: unknown[]) => apiGetMock(...args),
@@ -26,7 +70,11 @@ vi.mock("../../api/client", () => ({
 }));
 
 vi.mock("../../components/ChatView", () => ({
-  default: ({ onSend }: { onSend: (prompt: string) => void | Promise<void> }) => (
+  default: ({
+    onSend,
+  }: {
+    onSend: (prompt: string) => void | Promise<void>;
+  }) => (
     <button
       type="button"
       onClick={() => {
@@ -51,6 +99,39 @@ vi.mock("../../hooks/usePiCommands", () => ({
 }));
 
 import Session from "../Session";
+
+function mockCatalog({
+  defaultModel = minimaxModel.ref,
+  providers = [minimaxProvider],
+  models = [minimaxModel],
+}: {
+  defaultModel?: string;
+  providers?: typeof minimaxProvider[];
+  models?: typeof minimaxModel[];
+} = {}) {
+  useCatalogMock.mockReturnValue({
+    catalog: {
+      default_model: defaultModel,
+      providers,
+      models,
+    },
+    loading: false,
+  });
+}
+
+function mockSessionApi(
+  sessionMetadata: { model: string } | Promise<{ model: string }>,
+) {
+  apiGetMock.mockImplementation((path: string) => {
+    if (path === "/api/sessions/session-123/messages") {
+      return Promise.resolve([]);
+    }
+    if (path === "/api/sessions/session-123") {
+      return Promise.resolve(sessionMetadata);
+    }
+    throw new Error(`Unexpected GET path: ${path}`);
+  });
+}
 
 function renderSession() {
   return render(
@@ -78,50 +159,13 @@ describe("Session", () => {
       streaming: false,
       setMessages: setMessagesMock,
     });
-    apiPatchMock.mockResolvedValue({ model: "minimax/MiniMax-M2.7" });
+    apiPatchMock.mockResolvedValue({ model: minimaxModel.ref });
   });
 
   it("does not override the persisted model or thinking settings before the user changes them", async () => {
     const pendingSessionPromise = new Promise<{ model: string }>(() => {});
-    useCatalogMock.mockReturnValue({
-      catalog: {
-        default_model: "minimax/MiniMax-M2.7",
-        providers: [
-          {
-            id: "minimax",
-            label: "MiniMax",
-            auth_strategies: ["api_key"],
-            setup_fields: [],
-            docs_url: "https://example.com/minimax",
-            connected: true,
-            model_count: 1,
-          },
-        ],
-        models: [
-          {
-            ref: "minimax/MiniMax-M2.7",
-            provider: "minimax",
-            id: "MiniMax-M2.7",
-            label: "MiniMax M2.7",
-            api: "responses",
-            reasoning: true,
-            inputs: ["text"],
-            context_window: 1000,
-            max_tokens: 1000,
-          },
-        ],
-      },
-      loading: false,
-    });
-    apiGetMock.mockImplementation((path: string) => {
-      if (path === "/api/sessions/session-123/messages") {
-        return Promise.resolve([]);
-      }
-      if (path === "/api/sessions/session-123") {
-        return pendingSessionPromise;
-      }
-      throw new Error(`Unexpected GET path: ${path}`);
-    });
+    mockCatalog();
+    mockSessionApi(pendingSessionPromise);
 
     renderSession();
 
@@ -134,7 +178,11 @@ describe("Session", () => {
     fireEvent.click(screen.getByRole("button", { name: "Send Prompt" }));
 
     await waitFor(() => {
-      expect(sendPromptMock).toHaveBeenCalledWith("Ship it", undefined, undefined);
+      expect(sendPromptMock).toHaveBeenCalledWith(
+        "Ship it",
+        undefined,
+        undefined,
+      );
     });
   });
 
@@ -145,129 +193,44 @@ describe("Session", () => {
         resolvePatch = resolve;
       }),
     );
-    useCatalogMock.mockReturnValue({
-      catalog: {
-        default_model: "minimax/MiniMax-M2.7",
-        providers: [
-          {
-            id: "minimax",
-            label: "MiniMax",
-            auth_strategies: ["api_key"],
-            setup_fields: [],
-            docs_url: "https://example.com/minimax",
-            connected: true,
-            model_count: 1,
-          },
-          {
-            id: "openai",
-            label: "OpenAI",
-            auth_strategies: ["api_key"],
-            setup_fields: [],
-            docs_url: "https://example.com/openai",
-            connected: true,
-            model_count: 1,
-          },
-        ],
-        models: [
-          {
-            ref: "minimax/MiniMax-M2.7",
-            provider: "minimax",
-            id: "MiniMax-M2.7",
-            label: "MiniMax M2.7",
-            api: "responses",
-            reasoning: true,
-            inputs: ["text"],
-            context_window: 1000,
-            max_tokens: 1000,
-          },
-          {
-            ref: "openai/gpt-4.1",
-            provider: "openai",
-            id: "gpt-4.1",
-            label: "GPT-4.1",
-            api: "responses",
-            reasoning: false,
-            inputs: ["text"],
-            context_window: 1000,
-            max_tokens: 1000,
-          },
-        ],
-      },
-      loading: false,
+    mockCatalog({
+      providers: [minimaxProvider, openaiProvider],
+      models: [minimaxModel, openaiModel],
     });
-    apiGetMock.mockImplementation((path: string) => {
-      if (path === "/api/sessions/session-123/messages") {
-        return Promise.resolve([]);
-      }
-      if (path === "/api/sessions/session-123") {
-        return Promise.resolve({ model: "minimax/MiniMax-M2.7" });
-      }
-      throw new Error(`Unexpected GET path: ${path}`);
-    });
+    mockSessionApi({ model: minimaxModel.ref });
 
     renderSession();
 
     const modelSelect = await screen.findByLabelText("Model");
-    fireEvent.change(modelSelect, { target: { value: "openai/gpt-4.1" } });
+    fireEvent.change(modelSelect, { target: { value: openaiModel.ref } });
     fireEvent.click(screen.getByRole("button", { name: "Send Prompt" }));
 
     await waitFor(() => {
       expect(sendPromptMock).toHaveBeenCalledWith(
         "Ship it",
-        "openai/gpt-4.1",
+        openaiModel.ref,
         undefined,
       );
     });
 
     await act(async () => {
-      resolvePatch({ model: "openai/gpt-4.1" });
+      resolvePatch({ model: openaiModel.ref });
     });
   });
 
   it("omits the thinking override for models that do not support reasoning", async () => {
-    useCatalogMock.mockReturnValue({
-      catalog: {
-        default_model: "openai/gpt-4.1",
-        providers: [
-          {
-            id: "openai",
-            label: "OpenAI",
-            auth_strategies: ["api_key"],
-            setup_fields: [],
-            docs_url: "https://example.com/openai",
-            connected: true,
-            model_count: 1,
-          },
-        ],
-        models: [
-          {
-            ref: "openai/gpt-4.1",
-            provider: "openai",
-            id: "gpt-4.1",
-            label: "GPT-4.1",
-            api: "responses",
-            reasoning: false,
-            inputs: ["text"],
-            context_window: 1000,
-            max_tokens: 1000,
-          },
-        ],
-      },
-      loading: false,
+    mockCatalog({
+      defaultModel: openaiModel.ref,
+      providers: [openaiProvider],
+      models: [openaiModel],
     });
-    apiGetMock.mockImplementation((path: string) => {
-      if (path === "/api/sessions/session-123/messages") {
-        return Promise.resolve([]);
-      }
-      if (path === "/api/sessions/session-123") {
-        return Promise.resolve({ model: "openai/gpt-4.1" });
-      }
-      throw new Error(`Unexpected GET path: ${path}`);
-    });
+    mockSessionApi({ model: openaiModel.ref });
 
     renderSession();
 
-    const thinkingButton = await screen.findByRole("button", { name: "Thinking" });
+    const thinkingButton = await screen.findByRole("button", {
+      name: "Thinking",
+    });
 
     await waitFor(() => {
       expect(thinkingButton).toBeDisabled();
@@ -280,54 +243,23 @@ describe("Session", () => {
     fireEvent.click(screen.getByRole("button", { name: "Send Prompt" }));
 
     await waitFor(() => {
-      expect(sendPromptMock).toHaveBeenCalledWith("Ship it", undefined, undefined);
+      expect(sendPromptMock).toHaveBeenCalledWith(
+        "Ship it",
+        undefined,
+        undefined,
+      );
     });
   });
 
   it("forwards an explicit thinking override for reasoning models", async () => {
-    useCatalogMock.mockReturnValue({
-      catalog: {
-        default_model: "minimax/MiniMax-M2.7",
-        providers: [
-          {
-            id: "minimax",
-            label: "MiniMax",
-            auth_strategies: ["api_key"],
-            setup_fields: [],
-            docs_url: "https://example.com/minimax",
-            connected: true,
-            model_count: 1,
-          },
-        ],
-        models: [
-          {
-            ref: "minimax/MiniMax-M2.7",
-            provider: "minimax",
-            id: "MiniMax-M2.7",
-            label: "MiniMax M2.7",
-            api: "responses",
-            reasoning: true,
-            inputs: ["text"],
-            context_window: 1000,
-            max_tokens: 1000,
-          },
-        ],
-      },
-      loading: false,
-    });
-    apiGetMock.mockImplementation((path: string) => {
-      if (path === "/api/sessions/session-123/messages") {
-        return Promise.resolve([]);
-      }
-      if (path === "/api/sessions/session-123") {
-        return Promise.resolve({ model: "minimax/MiniMax-M2.7" });
-      }
-      throw new Error(`Unexpected GET path: ${path}`);
-    });
+    mockCatalog();
+    mockSessionApi({ model: minimaxModel.ref });
 
     renderSession();
 
-    const thinkingButton = await screen.findByRole("button", { name: "Thinking" });
+    const thinkingButton = await screen.findByRole("button", {
+      name: "Thinking",
+    });
     fireEvent.click(thinkingButton);
     fireEvent.click(screen.getByRole("button", { name: "Send Prompt" }));
 

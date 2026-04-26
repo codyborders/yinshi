@@ -29,7 +29,7 @@ export default function Session() {
   const [loadingHistory, setLoadingHistory] = useState(true);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [updatingModel, setUpdatingModel] = useState(false);
-  const [selectedModelOverride, setSelectedModelOverride] = useState<
+  const [pendingModelSelection, setPendingModelSelection] = useState<
     string | null
   >(null);
   const [thinkingEnabled, setThinkingEnabled] = useState(true);
@@ -92,7 +92,7 @@ export default function Session() {
   }, [id]);
 
   useEffect(() => {
-    setSelectedModelOverride(null);
+    setPendingModelSelection(null);
     setThinkingEnabled(true);
     setHasThinkingOverride(false);
   }, [id]);
@@ -313,14 +313,15 @@ export default function Session() {
       providerLabelById,
     };
   }, [catalog]);
-  const selectedModelRef = selectedModelOverride ?? sessionModel;
+  const selectedModelRef = pendingModelSelection ?? sessionModel;
   const selectedModelOption = getSessionModelOption(
     selectedModelRef,
     catalogModels,
   );
   const selectedModelValue = selectedModelOption?.ref || selectedModelRef;
   const selectedProviderLabel = selectedModelOption
-    ? providerLabelById.get(selectedModelOption.provider) || selectedModelOption.provider
+    ? providerLabelById.get(selectedModelOption.provider) ||
+      selectedModelOption.provider
     : null;
   const selectedModelRequiresConnection = selectedModelOption
     ? !connectedProviderIds.has(selectedModelOption.provider)
@@ -332,9 +333,9 @@ export default function Session() {
 
   const handleModelChange = useCallback(
     (requestedModel: string) => {
-      setSelectedModelOverride(requestedModel);
+      setPendingModelSelection(requestedModel);
       void updateSessionModel(requestedModel, false).then((updated) => {
-        setSelectedModelOverride((currentModel) =>
+        setPendingModelSelection((currentModel) =>
           currentModel === requestedModel ? null : currentModel,
         );
         if (!updated) {
@@ -352,11 +353,11 @@ export default function Session() {
       // to the previously persisted session model.
       await sendPrompt(
         prompt,
-        selectedModelOverride ?? undefined,
+        pendingModelSelection ?? undefined,
         thinkingOverride,
       );
     },
-    [selectedModelOverride, sendPrompt, thinkingOverride],
+    [pendingModelSelection, sendPrompt, thinkingOverride],
   );
 
   return (
