@@ -99,6 +99,19 @@ def _make_mock_process(
     return proc
 
 
+def _write_detached_run_outputs(args, kwargs, container_id: str) -> None:
+    """Write Podman's detached-run id to the mocked stdout and cidfile outputs."""
+    stdout_target = kwargs.get("stdout")
+    if hasattr(stdout_target, "write"):
+        stdout_target.write(container_id.encode())
+        stdout_target.flush()
+
+    if "--cidfile" in args:
+        cidfile_index = args.index("--cidfile") + 1
+        cidfile_path = args[cidfile_index]
+        Path(cidfile_path).write_text(container_id, encoding="utf-8")
+
+
 def _podman_router(routes: dict[str, AsyncMock]) -> AsyncMock:
     """Return an async side_effect that dispatches by podman subcommand.
 
@@ -176,7 +189,8 @@ class TestContainerManager:
         def _run_side_effect(*args, **kwargs):
             subcmd = args[1] if len(args) > 1 else ""
             if subcmd == "run":
-                # Simulate socket file appearing after container start
+                # Simulate socket file appearing after container start.
+                _write_detached_run_outputs(args, kwargs, container_id)
                 os.makedirs(socket_dir, exist_ok=True)
                 with open(os.path.join(socket_dir, "sidecar.sock"), "w") as f:
                     f.write("")
@@ -261,6 +275,7 @@ class TestContainerManager:
             if subcmd == "rm":
                 return _make_mock_process(returncode=0)
             if subcmd == "run":
+                _write_detached_run_outputs(args, kwargs, new_container_id)
                 os.makedirs(socket_dir, exist_ok=True)
                 with open(os.path.join(socket_dir, "sidecar.sock"), "w") as f:
                     f.write("")
@@ -495,7 +510,8 @@ class TestContainerManager:
         def _side_effect(*args, **kwargs):
             subcmd = args[1] if len(args) > 1 else ""
             if subcmd == "run":
-                # Container starts but socket never appears
+                # Container starts but socket never appears.
+                _write_detached_run_outputs(args, kwargs, container_id)
                 return _make_mock_process(stdout=container_id)
             if subcmd == "network":
                 return _make_mock_process(returncode=0)
@@ -691,7 +707,8 @@ class TestContainerManager:
         def _side_effect(*args, **kwargs):
             subcmd = args[1] if len(args) > 1 else ""
             if subcmd == "run":
-                # Socket dir is created by _create_container before podman run
+                # Socket dir is created by _create_container before podman run.
+                _write_detached_run_outputs(args, kwargs, container_id)
                 with open(os.path.join(socket_dir, "sidecar.sock"), "w") as f:
                     f.write("")
                 return _make_mock_process(stdout=container_id)
@@ -731,10 +748,12 @@ class TestContainerManager:
         def _side_effect(*args, **kwargs):
             subcmd = args[1] if len(args) > 1 else ""
             if subcmd == "run":
+                container_id = "narrow_container_123"
+                _write_detached_run_outputs(args, kwargs, container_id)
                 os.makedirs(socket_dir, exist_ok=True)
                 with open(os.path.join(socket_dir, "sidecar.sock"), "w") as f:
                     f.write("")
-                return _make_mock_process(stdout="narrow_container_123")
+                return _make_mock_process(stdout=container_id)
             if subcmd == "network":
                 return _make_mock_process(returncode=0)
             if subcmd == "ps":
@@ -780,10 +799,12 @@ class TestContainerManager:
         def _side_effect(*args, **kwargs):
             subcmd = args[1] if len(args) > 1 else ""
             if subcmd == "run":
+                container_id = "sec_container_123"
+                _write_detached_run_outputs(args, kwargs, container_id)
                 os.makedirs(socket_dir, exist_ok=True)
                 with open(os.path.join(socket_dir, "sidecar.sock"), "w") as f:
                     f.write("")
-                return _make_mock_process(stdout="sec_container_123")
+                return _make_mock_process(stdout=container_id)
             if subcmd == "network":
                 return _make_mock_process(returncode=0)
             if subcmd == "ps":
@@ -845,15 +866,55 @@ class TestContainerManager:
         os.makedirs(data_dir, exist_ok=True)
 
         mgr = ContainerManager(settings=settings)
-        mgr._run_podman = AsyncMock(return_value=(0, "container_123", ""))
+        cidfile_path = os.path.join(socket_base, user_id, "container.cid")
+        mgr._run_podman_waiting_for_exit = AsyncMock(return_value=(0, "container_123", ""))
         mgr._wait_for_socket = AsyncMock(return_value=None)
 
         await mgr._create_container(user_id, data_dir, mounts=())
 
-        run_call = mgr._run_podman.await_args
+        run_call = mgr._run_podman_waiting_for_exit.await_args
         assert run_call is not None
         assert run_call.args[0] == "run"
+        assert "--cidfile" in run_call.args
+        assert cidfile_path in run_call.args
         assert run_call.kwargs["timeout"] == _PODMAN_RUN_TIMEOUT_S
+
+    @pytest.mark.asyncio
+    async def test_create_container_does_not_wait_on_detached_run_pipe_eof(self, tmp_path):
+        """Detached Podman run should finish when the Podman CLI exits, not when pipes close."""
+        socket_base = str(tmp_path / "sockets")
+        settings = _make_settings(container_socket_base=socket_base)
+        user_id = "abcdef12345678901234567890abcdef"
+        data_dir = str(tmp_path / "data")
+        os.makedirs(data_dir, exist_ok=True)
+        container_id = "detached_container_123"
+
+        async def _communicate_forever() -> tuple[bytes, bytes]:
+            await asyncio.sleep(60)
+            return b"", b""
+
+        run_process = None
+
+        def _side_effect(*args, **kwargs):
+            nonlocal run_process
+            subcmd = args[1] if len(args) > 1 else ""
+            if subcmd == "run":
+                _write_detached_run_outputs(args, kwargs, container_id)
+                run_process = _make_mock_process(stdout=container_id)
+                run_process.communicate = AsyncMock(side_effect=_communicate_forever)
+                return run_process
+            return _make_mock_process()
+
+        with patch("asyncio.create_subprocess_exec", AsyncMock(side_effect=_side_effect)):
+            mgr = ContainerManager(settings=settings)
+            mgr._wait_for_socket = AsyncMock(return_value=None)
+
+            info = await mgr._create_container(user_id, data_dir, mounts=())
+
+        assert info.container_id == container_id
+        assert run_process is not None
+        assert run_process.wait.await_count == 1
+        assert run_process.communicate.await_count == 0
 
     @pytest.mark.asyncio
     async def test_run_podman_timeout_ignores_process_lookup_error(self, tmp_path):

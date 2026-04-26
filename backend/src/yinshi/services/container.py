@@ -5,10 +5,11 @@ import json
 import logging
 import os
 import re
+import tempfile
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING
+from typing import IO, TYPE_CHECKING, Any
 
 from yinshi.exceptions import ContainerNotReadyError, ContainerStartError
 
@@ -85,18 +86,11 @@ class ContainerManager:
         Raises ``ContainerStartError`` when *check* is True and the
         command exits non-zero, or when the binary is missing / times out.
         """
-        proc: asyncio.subprocess.Process | None = None
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                self._podman_bin,
-                *args,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-        except FileNotFoundError:
-            raise ContainerStartError("podman binary not found") from None
-
-        assert proc is not None, "create_subprocess_exec must return a process"
+        proc = await self._start_podman_process(
+            *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
 
         try:
             stdout_data, stderr_data = await asyncio.wait_for(
@@ -109,15 +103,84 @@ class ContainerManager:
                 f"Podman command timed out: podman {' '.join(args)}"
             ) from None
 
-        stdout = self._decode_process_output(stdout_data)
-        stderr = self._decode_process_output(stderr_data)
+        return self._checked_podman_result(
+            args,
+            proc.returncode,
+            self._decode_process_output(stdout_data),
+            self._decode_process_output(stderr_data),
+            check=check,
+        )
 
-        returncode = proc.returncode
+    async def _run_podman_waiting_for_exit(
+        self,
+        *args: str,
+        check: bool = True,
+        timeout: float = 30.0,
+    ) -> tuple[int, str, str]:
+        """Execute Podman and wait on process exit instead of pipe EOF.
+
+        Detached ``podman run`` can leave the captured pipes open in the
+        spawned container monitor on some rootless runtimes. Waiting for the
+        Podman process exit avoids turning a successful detached start into a
+        false timeout while still preserving stdout and stderr for failures.
+        """
+        with tempfile.TemporaryFile() as stdout_file, tempfile.TemporaryFile() as stderr_file:
+            proc = await self._start_podman_process(
+                *args,
+                stdout=stdout_file,
+                stderr=stderr_file,
+            )
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=timeout)
+            except asyncio.TimeoutError:
+                await self._stop_process(proc)
+                raise ContainerStartError(
+                    f"Podman command timed out: podman {' '.join(args)}"
+                ) from None
+
+            stdout_file.seek(0)
+            stderr_file.seek(0)
+            stdout = self._decode_process_output(stdout_file.read())
+            stderr = self._decode_process_output(stderr_file.read())
+
+        return self._checked_podman_result(args, proc.returncode, stdout, stderr, check=check)
+
+    async def _start_podman_process(
+        self,
+        *args: str,
+        stdout: int | IO[Any] | None,
+        stderr: int | IO[Any] | None,
+    ) -> asyncio.subprocess.Process:
+        """Start one Podman subprocess with explicit output destinations."""
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                self._podman_bin,
+                *args,
+                stdout=stdout,
+                stderr=stderr,
+            )
+        except FileNotFoundError:
+            raise ContainerStartError("podman binary not found") from None
+
+        assert proc is not None, "create_subprocess_exec must return a process"
+        return proc
+
+    def _checked_podman_result(
+        self,
+        args: tuple[str, ...],
+        returncode: int | None,
+        stdout: str,
+        stderr: str,
+        *,
+        check: bool,
+    ) -> tuple[int, str, str]:
+        """Validate one completed Podman process result."""
         if returncode is None:
             raise ContainerStartError("Podman process exited without a return code")
 
-        if check and returncode != 0:
-            raise ContainerStartError(f"podman {args[0]} failed: {stderr}")
+        if check:
+            if returncode != 0:
+                raise ContainerStartError(f"podman {args[0]} failed: {stderr}")
 
         return returncode, stdout, stderr
 
@@ -567,7 +630,9 @@ class ContainerManager:
         s = self._settings
         socket_dir = os.path.join(s.container_socket_base, user_id)
         socket_path = os.path.join(socket_dir, "sidecar.sock")
+        cidfile_path = os.path.join(socket_dir, "container.cid")
         self._prepare_socket_dir(socket_dir, socket_path)
+        self._remove_stale_file(cidfile_path, "container cidfile")
 
         del data_dir
         cpus = str(s.container_cpu_quota / 100000)
@@ -578,10 +643,12 @@ class ContainerManager:
         runtime_uid = os.getuid()
         runtime_gid = os.getgid()
 
-        _, container_id, _ = await self._run_podman(
+        _, container_id, _ = await self._run_podman_waiting_for_exit(
             "run",
             "-d",
             "--replace",
+            "--cidfile",
+            cidfile_path,
             "--name",
             f"yinshi-sidecar-{user_id}",
             "--userns",
@@ -614,6 +681,7 @@ class ContainerManager:
             s.container_image,
             timeout=_PODMAN_RUN_TIMEOUT_S,
         )
+        container_id = self._resolve_created_container_id(container_id, cidfile_path)
 
         await self._wait_for_socket(socket_path)
 
@@ -668,6 +736,27 @@ class ContainerManager:
             f"Sidecar socket not ready after {self._socket_poll_timeout_s}s"
         )
 
+    def _resolve_created_container_id(self, stdout: str, cidfile_path: str) -> str:
+        """Return the created container id from Podman stdout or its cidfile."""
+        if not isinstance(stdout, str):
+            raise TypeError("stdout must be a string")
+        if not isinstance(cidfile_path, str):
+            raise TypeError("cidfile_path must be a string")
+
+        normalized_stdout = stdout.strip()
+        if normalized_stdout:
+            return normalized_stdout
+
+        try:
+            with open(cidfile_path, encoding="utf-8") as cidfile:
+                container_id = cidfile.read().strip()
+        except OSError as exc:
+            raise ContainerStartError("podman run did not report a container id") from exc
+
+        if not container_id:
+            raise ContainerStartError("podman run did not report a container id")
+        return container_id
+
     def _prepare_socket_dir(self, socket_dir: str, socket_path: str) -> None:
         """Create one user socket directory and remove any stale socket file."""
         if not isinstance(socket_dir, str):
@@ -692,6 +781,29 @@ class ContainerManager:
             raise ContainerStartError(
                 f"Failed to prepare socket directory for user container: {normalized_socket_dir}"
             ) from exc
+
+    def _remove_stale_file(self, path: str, description: str) -> None:
+        """Remove one stale filesystem entry before container creation."""
+        if not isinstance(path, str):
+            raise TypeError("path must be a string")
+        if not isinstance(description, str):
+            raise TypeError("description must be a string")
+        normalized_path = path.strip()
+        if not normalized_path:
+            raise ValueError("path must not be empty")
+        normalized_description = description.strip()
+        if not normalized_description:
+            raise ValueError("description must not be empty")
+
+        try:
+            if os.path.lexists(normalized_path):
+                if os.path.isdir(normalized_path):
+                    raise ContainerStartError(
+                        f"{normalized_description} path must not be a directory"
+                    )
+                os.unlink(normalized_path)
+        except OSError as exc:
+            raise ContainerStartError(f"Failed to remove stale {normalized_description}") from exc
 
     def _container_is_reapable(
         self,
