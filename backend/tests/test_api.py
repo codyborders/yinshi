@@ -1,5 +1,6 @@
 """Tests for REST API endpoints including SSE streaming."""
 
+import json
 import sqlite3
 import subprocess
 from collections import namedtuple
@@ -1155,6 +1156,27 @@ def test_prompt_streams_sidecar_events(client: TestClient, session_id: str) -> N
             "type": "message",
             "data": {
                 "type": "assistant",
+                "message": {"content": [{"type": "thinking", "thinking": "Need inspect."}]},
+            },
+        }
+        yield {
+            "type": "message",
+            "data": {
+                "type": "tool_use",
+                "id": "tool-1",
+                "name": "read",
+                "input": {"path": "README.md"},
+            },
+        }
+        yield {
+            "type": "tool_result",
+            "tool_use_id": "tool-1",
+            "content": "# Test",
+        }
+        yield {
+            "type": "message",
+            "data": {
+                "type": "assistant",
                 "message": {"content": [{"type": "text", "text": "Hello world"}]},
             },
         }
@@ -1178,6 +1200,8 @@ def test_prompt_streams_sidecar_events(client: TestClient, session_id: str) -> N
     events = parse_sse_events(resp.text)
     types = [e.get("type") for e in events]
     assert "assistant" in types
+    assert "tool_use" in types
+    assert "tool_result" in types
     assert "result" in types
 
     # Verify user + assistant messages persisted
@@ -1185,6 +1209,17 @@ def test_prompt_streams_sidecar_events(client: TestClient, session_id: str) -> N
     roles = [m["role"] for m in msgs]
     assert "user" in roles
     assert "assistant" in roles
+    assistant_message = next(message for message in msgs if message["role"] == "assistant")
+    stored_turn = json.loads(assistant_message["full_message"])
+    assert stored_turn["schema"] == "yinshi.assistant_turn.v1"
+    assert [event["type"] for event in stored_turn["events"]] == [
+        "assistant",
+        "tool_use",
+        "tool_result",
+        "assistant",
+        "result",
+    ]
+    assert assistant_message["content"] == "Hello world"
 
 
 def test_prompt_forwards_explicit_thinking_override_for_reasoning_model(
@@ -1205,7 +1240,7 @@ def test_prompt_forwards_explicit_thinking_override_for_reasoning_model(
         settings_payload=None,
     ):
         del sid, prompt, model, cwd, provider_auth, provider_config, agent_dir
-        assert settings_payload == {"mode": "quiet", "thinking": False}
+        assert settings_payload == {"mode": "quiet", "defaultThinkingLevel": "off"}
         yield {
             "type": "message",
             "data": {"type": "result", "usage": {}},
@@ -1252,7 +1287,76 @@ def test_prompt_forwards_explicit_thinking_override_for_reasoning_model(
     assert response.status_code == 200
     assert mock_sidecar.warmup.call_args.kwargs["settings_payload"] == {
         "mode": "quiet",
-        "thinking": False,
+        "defaultThinkingLevel": "off",
+    }
+    mock_sidecar.get_catalog.assert_awaited_once()
+
+
+def test_prompt_enables_reasoning_with_pi_thinking_level(
+    client: TestClient,
+    session_id: str,
+) -> None:
+    """A positive thinking override should set a Pi thinking level."""
+    from yinshi.api.stream import ExecutionContext
+
+    async def fake_query(
+        sid,
+        prompt,
+        model=None,
+        cwd=None,
+        provider_auth=None,
+        provider_config=None,
+        agent_dir=None,
+        settings_payload=None,
+    ):
+        del sid, prompt, model, cwd, provider_auth, provider_config, agent_dir
+        assert settings_payload == {"defaultThinkingLevel": "medium"}
+        yield {
+            "type": "message",
+            "data": {"type": "result", "usage": {}},
+        }
+
+    mock_sidecar = make_mock_sidecar(fake_query)
+    mock_sidecar.get_catalog = AsyncMock(
+        return_value={
+            "models": [
+                {
+                    "ref": "minimax/MiniMax-M2.7",
+                    "reasoning": True,
+                }
+            ]
+        }
+    )
+
+    with (
+        patch(
+            "yinshi.api.stream.create_sidecar_connection",
+            return_value=mock_sidecar,
+        ),
+        patch(
+            "yinshi.api.stream._resolve_execution_context",
+            new=AsyncMock(
+                return_value=ExecutionContext(
+                    sidecar_socket=None,
+                    effective_cwd="/tmp",
+                    key_source="platform",
+                    provider="test-provider",
+                    provider_auth=None,
+                    provider_config=None,
+                    settings_payload={"defaultThinkingLevel": "off"},
+                    model_ref="minimax/MiniMax-M2.7",
+                )
+            ),
+        ),
+    ):
+        response = client.post(
+            f"/api/sessions/{session_id}/prompt",
+            json={"prompt": "say hello", "thinking": True},
+        )
+
+    assert response.status_code == 200
+    assert mock_sidecar.warmup.call_args.kwargs["settings_payload"] == {
+        "defaultThinkingLevel": "medium",
     }
     mock_sidecar.get_catalog.assert_awaited_once()
 

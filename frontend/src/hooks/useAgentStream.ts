@@ -1,16 +1,13 @@
 import { useCallback, useRef, useState } from "react";
-import { cancelSession, streamPrompt, type SSEEvent } from "../api/client";
+import { cancelSession, streamPrompt } from "../api/client";
+import {
+  applyTurnEventToBlocks,
+  blocksToContent,
+  type TurnBlock,
+  type TurnStatus,
+} from "../utils/turnEvents";
 
-export interface TurnBlock {
-  id: string;
-  type: "text" | "thinking" | "tool_use" | "error";
-  text?: string;
-  toolName?: string;
-  toolInput?: unknown;
-  toolId?: string;
-  toolOutput?: string;
-  toolError?: boolean;
-}
+export type { TurnBlock } from "../utils/turnEvents";
 
 export interface ChatMessage {
   id: string;
@@ -18,7 +15,7 @@ export interface ChatMessage {
   content: string;
   blocks: TurnBlock[];
   streaming?: boolean;
-  turnStatus?: "completed" | "cancelled" | "failed";
+  turnStatus?: TurnStatus;
   timestamp: number;
 }
 
@@ -27,23 +24,17 @@ function nextId(): string {
   return `msg-${Date.now()}-${++messageIdCounter}`;
 }
 
-/** Append text to the last block if it matches type, otherwise create a new block. */
-function appendOrCreate(blocks: TurnBlock[], type: "text" | "thinking", text: string) {
-  const last = blocks[blocks.length - 1];
-  if (last && last.type === type) {
-    last.text = (last.text || "") + text;
-  } else {
-    blocks.push({ id: nextId(), type, text });
-  }
-}
-
 export type RunState = "idle" | "running" | "stopping";
 
 export function useAgentStream(sessionId: string | undefined) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [runState, setRunState] = useState<RunState>("idle");
   const abortRef = useRef<AbortController | null>(null);
-  const queuedPromptRef = useRef<{ prompt: string; model?: string; thinking?: boolean } | null>(null);
+  const queuedPromptRef = useRef<{
+    prompt: string;
+    model?: string;
+    thinking?: boolean;
+  } | null>(null);
   // Track if the current run was cancelled by user (not an error)
   const wasCancelledRef = useRef(false);
 
@@ -72,13 +63,10 @@ export function useAgentStream(sessionId: string | undefined) {
       const turnId = nextId();
       const blocks: TurnBlock[] = [];
       let rafId: number | null = null;
-      let turnStatus: "completed" | "cancelled" | "failed" = "completed";
+      let turnStatus: TurnStatus = "completed";
 
       function upsertTurn(done = false) {
-        const allText = blocks
-          .filter((b) => b.type === "text")
-          .map((b) => b.text || "")
-          .join("");
+        const allText = blocksToContent(blocks);
         const snapshot = blocks.map((b) => ({ ...b }));
 
         setMessages((prev) => {
@@ -123,127 +111,20 @@ export function useAgentStream(sessionId: string | undefined) {
           thinking,
           controller.signal,
         )) {
-          if (event.type === "error") {
-            blocks.push({ id: nextId(), type: "error", text: event.error });
-            turnStatus = "failed";
+          const applyResult = applyTurnEventToBlocks(blocks, event, nextId);
+          if (applyResult.status) {
+            turnStatus = applyResult.status;
+            if (applyResult.status === "cancelled") {
+              wasCancelledRef.current = true;
+            }
             scheduleUpsert(true);
-            break;
+            if (applyResult.status !== "completed" || event.type === "result") {
+              break;
+            }
+            continue;
           }
-
-          if (event.type === "cancelled") {
-            turnStatus = "cancelled";
-            wasCancelledRef.current = true;
-            scheduleUpsert(true);
-            break;
-          }
-
-          if (event.type === "assistant") {
-            for (const block of event.message?.content ?? []) {
-              if (block.type === "text" && block.text) {
-                appendOrCreate(blocks, "text", block.text);
-              } else if (
-                block.type === "thinking" &&
-                (block.thinking || block.text)
-              ) {
-                appendOrCreate(blocks, "thinking", block.thinking || block.text || "");
-              } else if (block.type === "tool_use") {
-                blocks.push({
-                  id: block.id || nextId(),
-                  type: "tool_use",
-                  toolName: block.name || "unknown",
-                  toolInput: block.input,
-                  toolId: block.id,
-                });
-              }
-            }
+          if (applyResult.changed) {
             scheduleUpsert();
-          } else if (event.type === "tool_use") {
-            blocks.push({
-              id: event.id || nextId(),
-              type: "tool_use",
-              toolName: event.name || "unknown",
-              toolInput: event.input,
-              toolId: event.id,
-            });
-            scheduleUpsert();
-          } else if (
-            (event as Record<string, unknown>).type === "content_block_start"
-          ) {
-            const ev = event as Record<string, unknown>;
-            const cb = ev.content_block as Record<string, unknown> | undefined;
-            if (cb?.type === "tool_use" && cb.name) {
-              blocks.push({
-                id: (cb.id as string) || nextId(),
-                type: "tool_use",
-                toolName: cb.name as string,
-                toolInput: cb.input,
-                toolId: cb.id as string,
-              });
-              scheduleUpsert();
-            } else if (cb?.type === "thinking") {
-              blocks.push({
-                id: nextId(),
-                type: "thinking",
-                text: (cb.thinking as string) || "",
-              });
-              scheduleUpsert();
-            }
-          } else if (
-            (event as Record<string, unknown>).type === "content_block_delta"
-          ) {
-            const ev = event as Record<string, unknown>;
-            const delta = ev.delta as Record<string, unknown> | undefined;
-            if (delta?.type === "text_delta" && delta.text) {
-              appendOrCreate(blocks, "text", delta.text as string);
-              scheduleUpsert();
-            } else if (delta?.type === "input_json_delta") {
-              const last = blocks[blocks.length - 1];
-              if (last && last.type === "tool_use") {
-                const partial = (delta.partial_json as string) || "";
-                last.toolInput =
-                  ((last.toolInput as string) || "") + partial;
-              }
-              scheduleUpsert();
-            } else if (delta?.type === "thinking_delta" && delta.thinking) {
-              appendOrCreate(blocks, "thinking", delta.thinking as string);
-              scheduleUpsert();
-            }
-          } else if (
-            (event as Record<string, unknown>).type === "content_block_stop"
-          ) {
-            const last = blocks[blocks.length - 1];
-            if (
-              last &&
-              last.type === "tool_use" &&
-              typeof last.toolInput === "string"
-            ) {
-              try {
-                last.toolInput = JSON.parse(last.toolInput);
-              } catch {
-                /* keep as string */
-              }
-            }
-            scheduleUpsert();
-          } else if (event.type === "tool_result") {
-            const output =
-              typeof event.content === "string"
-                ? event.content
-                : JSON.stringify(event.content, null, 2);
-            const matching = blocks.find(
-              (b) =>
-                b.type === "tool_use" && b.toolId === event.tool_use_id,
-            );
-            if (matching) {
-              matching.toolOutput = output;
-              matching.toolError = event.is_error;
-            }
-            scheduleUpsert();
-          } else if (
-            event.type === "result" ||
-            (event as Record<string, unknown>).type === "message_stop"
-          ) {
-            turnStatus = wasCancelledRef.current ? "cancelled" : "completed";
-            scheduleUpsert(true);
           }
         }
       } catch (e) {
@@ -266,7 +147,11 @@ export function useAgentStream(sessionId: string | undefined) {
 
         // Always replay a queued steering prompt once the active run finishes.
         if (queuedPrompt) {
-          void startPrompt(queuedPrompt.prompt, queuedPrompt.model, queuedPrompt.thinking);
+          void startPrompt(
+            queuedPrompt.prompt,
+            queuedPrompt.model,
+            queuedPrompt.thinking,
+          );
         }
       }
     },

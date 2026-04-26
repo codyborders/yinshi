@@ -121,10 +121,11 @@ function mockCatalog({
 
 function mockSessionApi(
   sessionMetadata: { model: string } | Promise<{ model: string }>,
+  messages: unknown[] = [],
 ) {
   apiGetMock.mockImplementation((path: string) => {
     if (path === "/api/sessions/session-123/messages") {
-      return Promise.resolve([]);
+      return Promise.resolve(messages);
     }
     if (path === "/api/sessions/session-123") {
       return Promise.resolve(sessionMetadata);
@@ -266,5 +267,71 @@ describe("Session", () => {
     await waitFor(() => {
       expect(sendPromptMock).toHaveBeenCalledWith("Ship it", undefined, false);
     });
+  });
+
+  it("reconstructs assistant trace blocks from stored full messages", async () => {
+    mockCatalog();
+    mockSessionApi(
+      { model: minimaxModel.ref },
+      [
+        {
+          id: "message-1",
+          created_at: "2026-04-26T00:00:00Z",
+          session_id: "session-123",
+          role: "assistant",
+          content: "Done",
+          full_message: JSON.stringify({
+            schema: "yinshi.assistant_turn.v1",
+            events: [
+              {
+                type: "assistant",
+                message: { content: [{ type: "thinking", thinking: "Inspect." }] },
+              },
+              {
+                type: "tool_use",
+                id: "tool-1",
+                name: "read",
+                input: { path: "README.md" },
+              },
+              {
+                type: "tool_result",
+                tool_use_id: "tool-1",
+                content: "# Test",
+              },
+              {
+                type: "assistant",
+                message: { content: [{ type: "text", text: "Done" }] },
+              },
+              { type: "result" },
+            ],
+          }),
+        },
+      ],
+    );
+
+    renderSession();
+
+    await waitFor(() => {
+      expect(setMessagesMock).toHaveBeenCalled();
+    });
+    const mappedMessages = setMessagesMock.mock.calls[0]?.[0];
+
+    expect(mappedMessages).toMatchObject([
+      {
+        id: "message-1",
+        role: "assistant",
+        content: "Done",
+        blocks: [
+          { type: "thinking", text: "Inspect." },
+          {
+            type: "tool_use",
+            toolName: "read",
+            toolInput: { path: "README.md" },
+            toolOutput: "# Test",
+          },
+          { type: "text", text: "Done" },
+        ],
+      },
+    ]);
   });
 });

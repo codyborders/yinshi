@@ -13,6 +13,7 @@ import {
   getSessionModelOption,
   resolveSessionModelKey,
 } from "../models/sessionModels";
+import { parseStoredTurnBlocks } from "../utils/turnEvents";
 
 let cmdIdCounter = 0;
 function nextCmdId(): string {
@@ -46,13 +47,23 @@ export default function Session() {
           `/api/sessions/${id}/messages`,
         );
         if (cancelled) return;
-        const mapped: ChatMessage[] = history.map((m) => ({
-          id: m.id,
-          role: m.role as ChatMessage["role"],
-          content: m.content || "",
-          blocks: [],
-          timestamp: new Date(m.created_at).getTime(),
-        }));
+        const mapped: ChatMessage[] = history.map((m) => {
+          let blockIndex = 0;
+          const blocks =
+            m.role === "assistant"
+              ? parseStoredTurnBlocks(
+                  m.full_message,
+                  () => `${m.id}-block-${++blockIndex}`,
+                )
+              : [];
+          return {
+            id: m.id,
+            role: m.role as ChatMessage["role"],
+            content: m.content || "",
+            blocks,
+            timestamp: new Date(m.created_at).getTime(),
+          };
+        });
         setMessages(mapped);
         setHistoryError(null);
       } catch (error) {

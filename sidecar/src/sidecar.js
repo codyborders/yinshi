@@ -24,6 +24,16 @@ import { createGitAwareBashTool } from "./git_auth.js";
 const __sidecarDir = path.dirname(fileURLToPath(import.meta.url));
 const PI_PACKAGE_NAME = "@mariozechner/pi-coding-agent";
 const DEFAULT_MODEL_REF = "minimax/MiniMax-M2.7";
+const DEFAULT_THINKING_LEVEL = "medium";
+const OFF_THINKING_LEVEL = "off";
+const THINKING_LEVELS = new Set([
+  "off",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+]);
 const LEGACY_MODEL_ALIASES = new Map([
   ["haiku", "anthropic/claude-haiku-4-5-20251001"],
   ["minimax", DEFAULT_MODEL_REF],
@@ -48,7 +58,59 @@ function normalizeImportedSettings(importedSettings) {
   if (typeof importedSettings !== "object" || Array.isArray(importedSettings)) {
     throw new Error("Imported settings must be an object");
   }
-  return importedSettings;
+
+  const normalizedSettings = { ...importedSettings };
+  if (Object.prototype.hasOwnProperty.call(normalizedSettings, "thinking")) {
+    const thinkingOverride = normalizedSettings.thinking;
+    if (typeof thinkingOverride !== "boolean") {
+      throw new Error("Imported thinking override must be a boolean");
+    }
+    delete normalizedSettings.thinking;
+    if (thinkingOverride) {
+      const requestedLevel = normalizedSettings.defaultThinkingLevel;
+      if (
+        !THINKING_LEVELS.has(requestedLevel)
+        || requestedLevel === OFF_THINKING_LEVEL
+      ) {
+        normalizedSettings.defaultThinkingLevel = DEFAULT_THINKING_LEVEL;
+      }
+    } else {
+      normalizedSettings.defaultThinkingLevel = OFF_THINKING_LEVEL;
+    }
+  }
+  return normalizedSettings;
+}
+
+function stringifyToolContent(content) {
+  if (typeof content === "string") {
+    return content;
+  }
+  if (!content || typeof content !== "object") {
+    return String(content ?? "");
+  }
+  if (content.type === "text" && typeof content.text === "string") {
+    return content.text;
+  }
+  if (content.type === "image") {
+    return "[image]";
+  }
+  return JSON.stringify(content);
+}
+
+function stringifyToolResult(result) {
+  if (result === null || result === undefined) {
+    return "";
+  }
+  if (typeof result === "string") {
+    return result;
+  }
+  if (typeof result !== "object") {
+    return String(result);
+  }
+  if (Array.isArray(result.content)) {
+    return result.content.map(stringifyToolContent).filter(Boolean).join("\n");
+  }
+  return JSON.stringify(result, null, 2);
 }
 
 function normalizeModelLookup(modelKey) {
@@ -1142,7 +1204,6 @@ export class YinshiSidecar {
     const sessionOptions = {
       cwd,
       model,
-      thinkingLevel: "off",
       tools: createYinshiCodingTools(cwd, gitAuth),
       sessionManager: SessionManager.inMemory(),
       settingsManager,
@@ -1206,6 +1267,7 @@ export class YinshiSidecar {
         providerAuth,
         providerConfig,
         gitAuth,
+        importedSettings,
         unsubscribe: null,
         cancelRequested: false,
       });
@@ -1233,7 +1295,16 @@ export class YinshiSidecar {
       const authChanged = JSON.stringify(entry?.providerAuth || null) !== JSON.stringify(providerAuth);
       const configChanged = JSON.stringify(entry?.providerConfig || null) !== JSON.stringify(providerConfig);
       const gitAuthChanged = JSON.stringify(entry?.gitAuth || null) !== JSON.stringify(gitAuth);
-      if (!entry || entry.modelRef !== modelRef || authChanged || configChanged || gitAuthChanged) {
+      const settingsChanged = JSON.stringify(entry?.importedSettings || null)
+        !== JSON.stringify(importedSettings);
+      if (
+        !entry
+        || entry.modelRef !== modelRef
+        || authChanged
+        || configChanged
+        || gitAuthChanged
+        || settingsChanged
+      ) {
         if (entry) {
           if (entry.unsubscribe) {
             entry.unsubscribe();
@@ -1259,6 +1330,7 @@ export class YinshiSidecar {
           providerAuth,
           providerConfig,
           gitAuth,
+          importedSettings,
           unsubscribe: null,
           cancelRequested: false,
         };
@@ -1297,6 +1369,19 @@ export class YinshiSidecar {
                   },
                 },
               });
+            } else if (assistantEvent.type === "thinking_delta") {
+              sendToSocket(socket, {
+                id: sessionId,
+                type: "message",
+                data: {
+                  type: "assistant",
+                  message: {
+                    content: [
+                      { type: "thinking", thinking: assistantEvent.delta },
+                    ],
+                  },
+                },
+              });
             }
             break;
           }
@@ -1306,9 +1391,28 @@ export class YinshiSidecar {
               type: "message",
               data: {
                 type: "tool_use",
+                id: event.toolCallId,
                 toolName: event.toolName,
                 toolInput: event.args,
               },
+            });
+            break;
+          case "tool_execution_update":
+            sendToSocket(socket, {
+              id: sessionId,
+              type: "tool_result",
+              tool_use_id: event.toolCallId,
+              content: stringifyToolResult(event.partialResult),
+              partial: true,
+            });
+            break;
+          case "tool_execution_end":
+            sendToSocket(socket, {
+              id: sessionId,
+              type: "tool_result",
+              tool_use_id: event.toolCallId,
+              content: stringifyToolResult(event.result),
+              is_error: event.isError === true,
             });
             break;
           case "turn_end":

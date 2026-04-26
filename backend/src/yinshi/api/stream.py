@@ -54,6 +54,10 @@ router = APIRouter()
 
 # Batch DB writes every N chunks to reduce I/O
 _PERSIST_BATCH_SIZE = 10
+_STORED_TURN_SCHEMA = "yinshi.assistant_turn.v1"
+_THINKING_LEVEL_DEFAULT = "medium"
+_THINKING_LEVEL_OFF = "off"
+_THINKING_LEVELS = frozenset({"off", "minimal", "low", "medium", "high", "xhigh"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,15 +128,47 @@ def _build_effective_settings(
     thinking_override: bool | None,
     reasoning_supported: bool | None,
 ) -> dict[str, object] | None:
-    """Merge one prompt-scoped thinking override into the sidecar settings."""
+    """Merge one prompt-scoped thinking override into Pi-compatible settings."""
     if thinking_override is None:
         return settings_payload
     if reasoning_supported is False:
         return settings_payload
 
     effective_settings = dict(settings_payload or {})
-    effective_settings["thinking"] = thinking_override
+    current_level = effective_settings.get("defaultThinkingLevel")
+    if thinking_override:
+        if (
+            not isinstance(current_level, str)
+            or current_level not in _THINKING_LEVELS
+            or current_level == _THINKING_LEVEL_OFF
+        ):
+            effective_settings["defaultThinkingLevel"] = _THINKING_LEVEL_DEFAULT
+    else:
+        effective_settings["defaultThinkingLevel"] = _THINKING_LEVEL_OFF
     return effective_settings
+
+
+def _stored_turn_event(event: dict[str, Any]) -> dict[str, Any]:
+    """Return one JSON-safe turn event for persisted assistant history."""
+    if not isinstance(event, dict):
+        raise TypeError("event must be a dictionary")
+    event_type = event.get("type")
+    if not isinstance(event_type, str):
+        raise ValueError("event type must be a string")
+    safe_event = json.loads(json.dumps(event))
+    assert isinstance(safe_event, dict), "serialized event must remain an object"
+    return cast(dict[str, Any], safe_event)
+
+
+def _serialize_stored_turn(events: list[dict[str, Any]]) -> str | None:
+    """Serialize turn events using an explicit replay schema."""
+    if not events:
+        return None
+    payload = {
+        "schema": _STORED_TURN_SCHEMA,
+        "events": events,
+    }
+    return json.dumps(payload)
 
 
 _FILLER_PREFIXES = [
@@ -559,6 +595,7 @@ async def prompt_session(
         usage_data: dict[str, Any] = {}
         result_provider = context.provider or ""
         turn_status = "completed"
+        turn_events: list[dict[str, Any]] = []
 
         begin_tenant_container_activity(request, tenant)
 
@@ -612,6 +649,8 @@ async def prompt_session(
                 settings_payload=effective_settings,
             ):
                 event_type = event.get("type")
+                if not isinstance(event_type, str):
+                    raise SidecarError("Sidecar event type must be a string")
                 logger.debug(
                     "Sidecar event: type=%s keys=%s",
                     event_type,
@@ -620,20 +659,34 @@ async def prompt_session(
 
                 if event_type == "cancelled":
                     turn_status = "cancelled"
-                    yield f"data: {json.dumps({'type': 'cancelled', 'reason': 'user_stop'})}\n\n"
+                    cancel_event = {"type": "cancelled", "reason": "user_stop"}
+                    turn_events.append(_stored_turn_event(cancel_event))
+                    yield f"data: {json.dumps(cancel_event)}\n\n"
                     break
 
                 if event_type == "message":
                     data = event.get("data", {})
-                    logger.debug("SSE data: type=%s keys=%s", data.get("type"), list(data.keys()))
+                    if not isinstance(data, dict):
+                        raise SidecarError("Sidecar message event must contain object data")
+                    logger.debug(
+                        "SSE data: type=%s keys=%s",
+                        data.get("type"),
+                        list(data.keys()),
+                    )
+                    turn_events.append(_stored_turn_event(data))
 
                     # Extract assistant text for persistence
                     if data.get("type") == "assistant":
-                        content_blocks = data.get("message", {}).get("content", [])
+                        message_payload = data.get("message", {})
+                        if not isinstance(message_payload, dict):
+                            raise SidecarError("Assistant event message payload must be an object")
+                        content_blocks = message_payload.get("content", [])
+                        if not isinstance(content_blocks, list):
+                            raise SidecarError("Assistant event content must be a list")
                         for block in content_blocks:
                             if isinstance(block, dict) and block.get("type") == "text":
                                 text = block.get("text", "")
-                                if text:
+                                if isinstance(text, str) and text:
                                     accumulated += text
                                     chunk_count += 1
 
@@ -659,8 +712,15 @@ async def prompt_session(
 
                     # On result, capture usage and finalize with full_message
                     if data.get("type") == "result":
-                        usage_data = data.get("usage", {})
-                        result_provider = data.get("provider", result_provider)
+                        usage_payload = data.get("usage", {})
+                        usage_data = usage_payload if isinstance(usage_payload, dict) else {}
+                        provider_payload = data.get("provider")
+                        if isinstance(provider_payload, str):
+                            result_provider = provider_payload
+                        stored_turn = _serialize_stored_turn(turn_events)
+                        assert (
+                            stored_turn is not None
+                        ), "result event must be present in stored turn"
                         # Ensure an assistant message row exists even for
                         # short responses (< batch size) or tool-only turns.
                         with get_db_for_request(request) as db:
@@ -675,8 +735,11 @@ async def prompt_session(
                                     (assistant_msg_id, session_id, accumulated, turn_id),
                                 )
                             db.execute(
-                                "UPDATE messages SET full_message = ?, turn_status = ? WHERE id = ?",
-                                (json.dumps(event), turn_status, assistant_msg_id),
+                                (
+                                    "UPDATE messages SET full_message = ?, "
+                                    "turn_status = ? WHERE id = ?"
+                                ),
+                                (stored_turn, turn_status, assistant_msg_id),
                             )
                             db.commit()
 
@@ -685,14 +748,18 @@ async def prompt_session(
 
                 elif event_type == "error":
                     turn_status = "failed"
-                    error_msg = event.get("error", "Unknown sidecar error")
-                    yield f"data: {json.dumps({'type': 'error', 'error': error_msg})}\n\n"
+                    error_value = event.get("error", "Unknown sidecar error")
+                    error_msg = error_value if isinstance(error_value, str) else str(error_value)
+                    error_event = {"type": "error", "error": error_msg}
+                    turn_events.append(_stored_turn_event(error_event))
+                    yield f"data: {json.dumps(error_event)}\n\n"
 
                 else:
                     # Forward any other event types (content_block_start, tool_use, etc.)
+                    turn_events.append(_stored_turn_event(event))
                     yield f"data: {json.dumps(event)}\n\n"
 
-        except (ConnectionError, OSError, GitError, SidecarError) as e:
+        except (ConnectionError, OSError, GitError, SidecarError, TypeError, ValueError) as e:
             logger.error(
                 "Sidecar error: session=%s turn_id=%s error=%s",
                 session_id,
@@ -704,23 +771,39 @@ async def prompt_session(
                 "type": "error",
                 "error": "An internal error occurred",
             }
+            turn_events.append(_stored_turn_event(error_event))
             yield f"data: {json.dumps(error_event)}\n\n"
             turn_status = "failed"
 
         finally:
             with get_db_for_request(request) as db:
-                # Save any unsaved partial content
-                if accumulated and assistant_msg_id is None:
+                stored_turn = _serialize_stored_turn(turn_events)
+                if assistant_msg_id is None:
+                    if accumulated or stored_turn is not None:
+                        assistant_msg_id = uuid.uuid4().hex
+                        db.execute(
+                            (
+                                "INSERT INTO messages "
+                                "(id, session_id, role, content, full_message, "
+                                "turn_id, turn_status) "
+                                "VALUES (?, ?, 'assistant', ?, ?, ?, ?)"
+                            ),
+                            (
+                                assistant_msg_id,
+                                session_id,
+                                accumulated,
+                                stored_turn,
+                                turn_id,
+                                turn_status,
+                            ),
+                        )
+                else:
                     db.execute(
-                        "INSERT INTO messages (session_id, role, content, turn_id, turn_status) "
-                        "VALUES (?, 'assistant', ?, ?, ?)",
-                        (session_id, accumulated, turn_id, turn_status),
-                    )
-                elif accumulated and assistant_msg_id:
-                    # Final flush of accumulated content
-                    db.execute(
-                        "UPDATE messages SET content = ?, turn_status = ? WHERE id = ?",
-                        (accumulated, turn_status, assistant_msg_id),
+                        (
+                            "UPDATE messages SET content = ?, full_message = ?, "
+                            "turn_status = ? WHERE id = ?"
+                        ),
+                        (accumulated, stored_turn, turn_status, assistant_msg_id),
                     )
                 # Reset session status
                 db.execute(
