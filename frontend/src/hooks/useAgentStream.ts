@@ -35,8 +35,6 @@ export function useAgentStream(sessionId: string | undefined) {
     model?: string;
     thinking?: boolean;
   } | null>(null);
-  // Track if the current run was cancelled by user (not an error)
-  const wasCancelledRef = useRef(false);
 
   const startPrompt = useCallback(
     async (prompt: string, model?: string, thinking?: boolean) => {
@@ -58,7 +56,6 @@ export function useAgentStream(sessionId: string | undefined) {
       setRunState("running");
       const controller = new AbortController();
       abortRef.current = controller;
-      wasCancelledRef.current = false;
 
       const turnId = nextId();
       const blocks: TurnBlock[] = [];
@@ -114,9 +111,6 @@ export function useAgentStream(sessionId: string | undefined) {
           const applyResult = applyTurnEventToBlocks(blocks, event, nextId);
           if (applyResult.status) {
             turnStatus = applyResult.status;
-            if (applyResult.status === "cancelled") {
-              wasCancelledRef.current = true;
-            }
             scheduleUpsert(true);
             if (applyResult.status !== "completed" || event.type === "result") {
               break;
