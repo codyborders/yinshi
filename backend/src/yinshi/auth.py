@@ -228,11 +228,6 @@ def auth_disabled() -> bool:
     )
 
 
-def _auth_disabled() -> bool:
-    """Check if authentication is disabled."""
-    return auth_disabled()
-
-
 def _resolve_tenant_from_user_id(user_id: str) -> TenantContext | None:
     """Resolve TenantContext from a user_id in the control DB."""
     with get_control_db() as db:
@@ -261,7 +256,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         # Skip auth if explicitly disabled
-        if _auth_disabled():
+        if auth_disabled():
             return await call_next(request)
 
         # Allow open paths

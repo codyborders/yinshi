@@ -26,6 +26,29 @@ function nextCmdId(): string {
 const INSPECTOR_WIDTH_DEFAULT = 420;
 const INSPECTOR_WIDTH_MIN = 320;
 const INSPECTOR_WIDTH_MAX = 760;
+const DESKTOP_INSPECTOR_QUERY = "(min-width: 1024px)";
+
+function useMediaQuery(query: string): boolean {
+  const [matches, setMatches] = useState(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+      return false;
+    }
+    return window.matchMedia(query).matches;
+  });
+
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+      return;
+    }
+    const mediaQuery = window.matchMedia(query);
+    const updateMatches = () => setMatches(mediaQuery.matches);
+    updateMatches();
+    mediaQuery.addEventListener("change", updateMatches);
+    return () => mediaQuery.removeEventListener("change", updateMatches);
+  }, [query]);
+
+  return matches;
+}
 
 function storedInspectorWidth(): number {
   const raw = sessionStorage.getItem("yinshi-inspector-width");
@@ -55,6 +78,7 @@ export default function Session() {
   const [workspacePanelOpen, setWorkspacePanelOpen] = useState(false);
   const [inspectorWidth, setInspectorWidth] = useState(storedInspectorWidth);
   const [fileRefreshKey, setFileRefreshKey] = useState(0);
+  const isDesktopInspectorVisible = useMediaQuery(DESKTOP_INSPECTOR_QUERY);
   const wasStreamingRef = useRef(false);
 
   // Load existing message history
@@ -558,18 +582,18 @@ export default function Session() {
             </div>
           )}
         </main>
-        {workspaceId && (
+        {workspaceId && isDesktopInspectorVisible && (
           <>
             <div
               role="separator"
               aria-label="Resize workspace panel"
               onPointerDown={beginInspectorResize}
-              className="hidden w-1.5 cursor-col-resize border-x border-gray-800 bg-gray-900 hover:bg-blue-500/40 lg:block"
+              className="w-1.5 cursor-col-resize border-x border-gray-800 bg-gray-900 hover:bg-blue-500/40"
             />
             <WorkspaceInspector
               workspaceId={workspaceId}
               refreshKey={fileRefreshKey}
-              className="hidden lg:flex"
+              className="flex"
               style={{ width: inspectorWidth }}
             />
           </>
@@ -588,7 +612,11 @@ export default function Session() {
                 Close
               </button>
             </div>
-            <WorkspaceInspector workspaceId={workspaceId} refreshKey={fileRefreshKey} className="flex-1" />
+            <WorkspaceInspector
+              workspaceId={workspaceId}
+              refreshKey={fileRefreshKey}
+              className="flex-1"
+            />
           </div>
         </div>
       )}

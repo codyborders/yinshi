@@ -6,7 +6,7 @@ import path from "node:path";
 import test from "node:test";
 import * as pty from "node-pty";
 
-import { YinshiSidecar } from "../src/sidecar.js";
+import { YinshiSidecar, buildTerminalEnvironment } from "../src/sidecar.js";
 
 function nextMessage(socket, timeoutMs = 3000) {
   return new Promise((resolve, reject) => {
@@ -62,6 +62,23 @@ function ptyAvailable() {
   }
 }
 
+test("terminal environment uses an explicit allowlist", () => {
+  process.env.YINSHI_TERMINAL_SECRET = "terminal-secret-must-not-leak";
+  process.env.NPM_CONFIG_PREFIX = "/home/yinshi/.npm-global";
+  try {
+    const environment = buildTerminalEnvironment("/data/workspace", "/bin/bash");
+
+    assert.equal(environment.YINSHI_TERMINAL_SECRET, undefined);
+    assert.equal(environment.NPM_CONFIG_PREFIX, "/home/yinshi/.npm-global");
+    assert.equal(environment.PWD, "/data/workspace");
+    assert.equal(environment.SHELL, "/bin/bash");
+    assert.equal(environment.TERM, "xterm-256color");
+  } finally {
+    delete process.env.YINSHI_TERMINAL_SECRET;
+    delete process.env.NPM_CONFIG_PREFIX;
+  }
+});
+
 test("terminal attach starts a PTY and streams output", async (t) => {
   if (!ptyAvailable()) {
     t.skip("node-pty cannot spawn on this host runtime");
@@ -69,7 +86,9 @@ test("terminal attach starts a PTY and streams output", async (t) => {
   }
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "yinshi-terminal-test-"));
   const socketPath = path.join(tempDir, "sidecar.sock");
+  const terminalId = "a".repeat(32);
   process.env.SIDECAR_SOCKET_PATH = socketPath;
+  process.env.YINSHI_TERMINAL_SECRET = "terminal-secret-must-not-leak";
   const sidecar = new YinshiSidecar();
   await sidecar.start();
 
@@ -80,9 +99,9 @@ test("terminal attach starts a PTY and streams output", async (t) => {
 
     send(socket, {
       type: "terminal_attach",
-      id: "a".repeat(32),
+      id: terminalId,
       options: {
-        workspaceId: "a".repeat(32),
+        workspaceId: terminalId,
         cwd: tempDir,
         cols: 80,
         rows: 24,
@@ -95,7 +114,7 @@ test("terminal attach starts a PTY and streams output", async (t) => {
 
     send(socket, {
       type: "terminal_input",
-      id: "a".repeat(32),
+      id: terminalId,
       data: "printf YINSHI_TERMINAL_TEST\\n\n",
     });
 
@@ -108,9 +127,30 @@ test("terminal attach starts a PTY and streams output", async (t) => {
       }
     }
     assert.equal(sawOutput, true);
+
+    send(socket, {
+      type: "terminal_input",
+      id: terminalId,
+      data: "env | grep YINSHI_TERMINAL_SECRET || printf NO_SECRET\\n\n",
+    });
+
+    let sawNoSecret = false;
+    for (let index = 0; index < 10; index += 1) {
+      const message = await nextMessage(socket);
+      if (message.type !== "terminal_data") {
+        continue;
+      }
+      assert.equal(message.data.includes("terminal-secret-must-not-leak"), false);
+      if (message.data.includes("NO_SECRET")) {
+        sawNoSecret = true;
+        break;
+      }
+    }
+    assert.equal(sawNoSecret, true);
   } finally {
     socket.destroy();
     sidecar.cleanup();
+    delete process.env.YINSHI_TERMINAL_SECRET;
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
 });

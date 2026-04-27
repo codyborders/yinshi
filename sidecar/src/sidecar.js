@@ -40,6 +40,19 @@ const LEGACY_MODEL_ALIASES = new Map([
   ["opus", "anthropic/claude-opus-4-20250514"],
   ["sonnet", "anthropic/claude-sonnet-4-20250514"],
 ]);
+const TERMINAL_ENVIRONMENT_KEYS = [
+  "HOME",
+  "LANG",
+  "LC_ALL",
+  "LOGNAME",
+  "NPM_CONFIG_PREFIX",
+  "PATH",
+  "PIPX_BIN_DIR",
+  "PIPX_HOME",
+  "TZ",
+  "USER",
+  "YINSHI_WORKSPACE_ID",
+];
 
 function sendToSocket(socket, message) {
   if (socket.destroyed) {
@@ -86,6 +99,22 @@ function normalizeTerminalCwd(value) {
     throw new Error("terminal cwd does not exist");
   }
   return normalized;
+}
+
+export function buildTerminalEnvironment(cwd, shell) {
+  const terminalEnvironment = {};
+  for (const key of TERMINAL_ENVIRONMENT_KEYS) {
+    if (process.env[key]) {
+      terminalEnvironment[key] = process.env[key];
+    }
+  }
+  terminalEnvironment.HOME = terminalEnvironment.HOME || "/home/yinshi";
+  terminalEnvironment.PATH = terminalEnvironment.PATH || "/usr/local/bin:/usr/bin:/bin";
+  terminalEnvironment.SHELL = shell;
+  terminalEnvironment.TERM = "xterm-256color";
+  terminalEnvironment.COLORTERM = "truecolor";
+  terminalEnvironment.PWD = cwd;
+  return terminalEnvironment;
 }
 
 function appendTerminalScrollback(entry, data) {
@@ -883,12 +912,7 @@ export class YinshiSidecar {
     const rows = normalizePositiveInteger(options.rows, 30, 5, 120);
     const scrollbackLines = normalizePositiveInteger(options.scrollbackLines, 1000, 100, 5000);
     const shell = process.env.SHELL || "/bin/bash";
-    const terminalEnvironment = {
-      ...process.env,
-      TERM: "xterm-256color",
-      COLORTERM: "truecolor",
-      PWD: cwd,
-    };
+    const terminalEnvironment = buildTerminalEnvironment(cwd, shell);
     const terminal = pty.spawn(shell, ["-l"], {
       name: "xterm-256color",
       cols,

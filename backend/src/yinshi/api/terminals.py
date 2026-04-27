@@ -5,25 +5,25 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import sqlite3
 from typing import Any, cast
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from yinshi.auth import auth_disabled, resolve_tenant_from_session_token
 from yinshi.config import get_settings
-from yinshi.exceptions import ContainerNotReadyError, ContainerStartError, GitError
+from yinshi.exceptions import (
+    ContainerNotReadyError,
+    ContainerStartError,
+    GitError,
+    WorkspaceNotFoundError,
+)
 from yinshi.services.sidecar_runtime import (
-    begin_tenant_container_activity,
-    end_tenant_container_activity,
-    protect_tenant_container,
     remap_path_for_container,
     resolve_tenant_sidecar_context,
+    tenant_container_activity,
 )
-from yinshi.services.workspace import ensure_workspace_checkout_for_tenant
-from yinshi.services.workspace_files import ensure_secret_guardrails
+from yinshi.services.workspace_runtime_paths import prepare_tenant_workspace_runtime_paths
 from yinshi.tenant import TenantContext, get_user_db
-from yinshi.utils.paths import is_path_inside
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -57,16 +57,6 @@ def _tenant_from_websocket(websocket: WebSocket) -> TenantContext | None:
     if not token:
         return None
     return resolve_tenant_from_session_token(token)
-
-
-def _workspace_row(db: sqlite3.Connection, workspace_id: str) -> sqlite3.Row | None:
-    """Return the workspace row needed to start a terminal."""
-    row = db.execute(
-        "SELECT w.id, w.path, w.repo_id, r.root_path, r.agents_md "
-        "FROM workspaces w JOIN repos r ON w.repo_id = r.id WHERE w.id = ?",
-        (workspace_id,),
-    ).fetchone()
-    return cast(sqlite3.Row | None, row)
 
 
 async def _send_sidecar(
@@ -169,29 +159,23 @@ async def workspace_terminal(websocket: WebSocket, workspace_id: str) -> None:
 
     try:
         with get_user_db(tenant) as db:
-            await ensure_workspace_checkout_for_tenant(db, tenant, workspace_id)
-            row = _workspace_row(db, workspace_id)
-            if row is None:
-                await websocket.close(code=_TERMINAL_CLOSE_POLICY)
-                return
-            workspace_path = str(row["path"])
-            repo_root_path = str(row["root_path"])
-            agents_md = row["agents_md"] if "agents_md" in row.keys() else None
-            ensure_secret_guardrails(repo_root_path)
+            paths = await prepare_tenant_workspace_runtime_paths(db, tenant, workspace_id)
+    except (PermissionError, WorkspaceNotFoundError, TypeError, ValueError):
+        await websocket.close(code=_TERMINAL_CLOSE_POLICY)
+        return
     except (GitError, OSError):
         logger.exception("Failed to prepare terminal workspace: workspace=%s", workspace_id)
         await websocket.close(code=_TERMINAL_CLOSE_UNAVAILABLE)
         return
 
-    if not is_path_inside(workspace_path, tenant.data_dir):
-        await websocket.close(code=_TERMINAL_CLOSE_POLICY)
-        return
+    workspace_path = paths.workspace_path
+    repo_root_path = paths.repo_root_path
 
     try:
         runtime = await resolve_tenant_sidecar_context(
             cast(Any, websocket),
             tenant,
-            repo_agents_md=agents_md,
+            repo_agents_md=paths.agents_md,
             repo_root_path=repo_root_path,
             workspace_path=workspace_path,
             workspace_id=workspace_id,
@@ -213,40 +197,46 @@ async def workspace_terminal(websocket: WebSocket, workspace_id: str) -> None:
 
     terminal_id = runtime.runtime_id or workspace_id
     await websocket.accept()
-    begin_tenant_container_activity(cast(Any, websocket), tenant, runtime_id=runtime.runtime_id)
     logger.info("Terminal attached: workspace=%s", workspace_id)
 
     reader: asyncio.StreamReader | None = None
     writer: asyncio.StreamWriter | None = None
     try:
-        reader, writer = await asyncio.open_unix_connection(runtime.socket_path)
-        init_message = await _read_sidecar(reader)
-        if init_message is not None and init_message.get("type") != "init_status":
-            await websocket.send_json(init_message)
+        async with tenant_container_activity(
+            cast(Any, websocket),
+            tenant,
+            runtime_id=runtime.runtime_id,
+            protect_lease_key=f"terminal:{workspace_id}",
+            protect_timeout_s=settings.terminal_keepalive_s,
+        ):
+            reader, writer = await asyncio.open_unix_connection(runtime.socket_path)
+            init_message = await _read_sidecar(reader)
+            if init_message is not None and init_message.get("type") != "init_status":
+                await websocket.send_json(init_message)
 
-        attach_options = {
-            "workspaceId": terminal_id,
-            "cwd": effective_cwd,
-            "cols": 100,
-            "rows": 30,
-            "scrollbackLines": settings.terminal_scrollback_lines,
-        }
-        await _send_sidecar(
-            writer,
-            {"type": "terminal_attach", "id": terminal_id, "options": attach_options},
-        )
-        browser_task = asyncio.create_task(
-            _proxy_browser_to_sidecar(websocket, writer, terminal_id, attach_options)
-        )
-        sidecar_task = asyncio.create_task(_proxy_sidecar_to_browser(websocket, reader))
-        done, pending = await asyncio.wait(
-            {browser_task, sidecar_task},
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-        for task in pending:
-            task.cancel()
-        for task in done:
-            task.result()
+            attach_options = {
+                "workspaceId": terminal_id,
+                "cwd": effective_cwd,
+                "cols": 100,
+                "rows": 30,
+                "scrollbackLines": settings.terminal_scrollback_lines,
+            }
+            await _send_sidecar(
+                writer,
+                {"type": "terminal_attach", "id": terminal_id, "options": attach_options},
+            )
+            browser_task = asyncio.create_task(
+                _proxy_browser_to_sidecar(websocket, writer, terminal_id, attach_options)
+            )
+            sidecar_task = asyncio.create_task(_proxy_sidecar_to_browser(websocket, reader))
+            done, pending = await asyncio.wait(
+                {browser_task, sidecar_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for task in pending:
+                task.cancel()
+            for task in done:
+                task.result()
     except WebSocketDisconnect:
         logger.info("Terminal detached: workspace=%s", workspace_id)
     except (ConnectionError, OSError, ValueError, json.JSONDecodeError):
@@ -256,14 +246,6 @@ async def workspace_terminal(websocket: WebSocket, workspace_id: str) -> None:
         except RuntimeError:
             pass
     finally:
-        end_tenant_container_activity(cast(Any, websocket), tenant, runtime_id=runtime.runtime_id)
-        protect_tenant_container(
-            cast(Any, websocket),
-            tenant,
-            lease_key=f"terminal:{workspace_id}",
-            timeout_s=settings.terminal_keepalive_s,
-            runtime_id=runtime.runtime_id,
-        )
         if writer is not None:
             try:
                 await _send_sidecar(writer, {"type": "terminal_detach", "id": terminal_id})

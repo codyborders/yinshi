@@ -19,7 +19,8 @@ RUN apt-get update && \
       unzip && \
     rm -rf /var/lib/apt/lists/*
 
-RUN useradd -m -s /bin/bash agent
+COPY bin/git /usr/local/bin/git
+RUN chmod 0755 /usr/local/bin/git && useradd -m -s /bin/bash agent
 
 WORKDIR /app
 COPY package.json package-lock.json ./

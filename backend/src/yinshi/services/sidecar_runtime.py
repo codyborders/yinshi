@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import hashlib
-import inspect
 import os
 import re
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
 from fastapi import Request
@@ -281,16 +282,12 @@ async def resolve_tenant_sidecar_context(
             workspace_path=workspace_path,
             workspace_id=runtime_id,
         )
-    ensure_container = container_manager.ensure_container
-    ensure_parameters = inspect.signature(ensure_container).parameters
-    container_kwargs: dict[str, object] = {"mounts": container_mounts}
-    if runtime_id is not None and "runtime_id" in ensure_parameters:
-        container_kwargs["runtime_id"] = runtime_id
-        container_kwargs["environment"] = workspace_runtime_environment(runtime_id)
-    container_info = await ensure_container(
+    container_info = await container_manager.ensure_container(
         tenant.user_id,
         tenant.data_dir,
-        **container_kwargs,
+        mounts=container_mounts,
+        runtime_id=runtime_id,
+        environment=workspace_runtime_environment(runtime_id),
     )
     return TenantSidecarContext(
         socket_path=container_info.socket_path,
@@ -306,17 +303,41 @@ def _call_container_method(
     *args: object,
     runtime_id: str | None = None,
 ) -> None:
-    """Call a container manager method with runtime_id when supported."""
+    """Call a container manager lifecycle method for one runtime."""
     if not callable(method):
         return
-    if runtime_id is None:
-        method(user_id, *args)
-        return
-    method_parameters = inspect.signature(method).parameters
-    if "runtime_id" in method_parameters:
-        method(user_id, *args, runtime_id=runtime_id)
-        return
-    method(user_id, *args)
+    method(user_id, *args, runtime_id=runtime_id)
+
+
+@asynccontextmanager
+async def tenant_container_activity(
+    request: Request,
+    tenant: TenantContext | None,
+    *,
+    runtime_id: str | None = None,
+    protect_lease_key: str | None = None,
+    protect_timeout_s: int | None = None,
+) -> AsyncIterator[None]:
+    """Mark a container busy, then optionally keep it alive after work ends."""
+    if protect_lease_key is not None and protect_timeout_s is None:
+        raise ValueError("protect_timeout_s is required when protect_lease_key is set")
+    if protect_timeout_s is not None and protect_timeout_s < 0:
+        raise ValueError("protect_timeout_s must not be negative")
+
+    begin_tenant_container_activity(request, tenant, runtime_id=runtime_id)
+    try:
+        yield
+    finally:
+        end_tenant_container_activity(request, tenant, runtime_id=runtime_id)
+        if protect_lease_key is not None:
+            assert protect_timeout_s is not None, "protect timeout must be validated"
+            protect_tenant_container(
+                request,
+                tenant,
+                lease_key=protect_lease_key,
+                timeout_s=protect_timeout_s,
+                runtime_id=runtime_id,
+            )
 
 
 def touch_tenant_container(

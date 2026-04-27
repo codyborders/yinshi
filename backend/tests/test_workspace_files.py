@@ -92,6 +92,35 @@ def test_workspace_file_preview_rejects_env_and_path_traversal(
     assert traversal_response.status_code == 400
 
 
+def test_workspace_file_preview_rejects_tenant_path_outside_storage(
+    auth_client: TestClient,
+    git_repo: str,
+    tmp_path: Path,
+) -> None:
+    """Tenant file APIs should reject workspace rows that point outside tenant storage."""
+    workspace = _create_workspace(auth_client, git_repo)
+    outside_path = tmp_path / "outside-workspace"
+    outside_path.mkdir()
+    (outside_path / "README.md").write_text("# Outside\n", encoding="utf-8")
+
+    from yinshi.tenant import get_user_db
+
+    tenant = getattr(auth_client, "yinshi_tenant")
+    with get_user_db(tenant) as db:
+        db.execute(
+            "UPDATE workspaces SET path = ? WHERE id = ?",
+            (str(outside_path), workspace["id"]),
+        )
+        db.commit()
+
+    response = auth_client.get(
+        f"/api/workspaces/{workspace['id']}/files/preview",
+        params={"path": "README.md"},
+    )
+
+    assert response.status_code == 403
+
+
 def test_workspace_creation_installs_env_git_guardrails(
     noauth_client: TestClient,
     git_repo: str,
@@ -102,11 +131,14 @@ def test_workspace_creation_installs_env_git_guardrails(
     repo_path = Path(git_repo)
     exclude_text = (repo_path / ".git" / "info" / "exclude").read_text(encoding="utf-8")
     hook_path = repo_path / ".git" / "hooks" / "pre-commit"
+    push_hook_path = repo_path / ".git" / "hooks" / "pre-push"
     hook_text = hook_path.read_text(encoding="utf-8")
+    push_hook_text = push_hook_path.read_text(encoding="utf-8")
 
     assert ".env" in exclude_text
     assert ".env.*" in exclude_text
     assert "Yinshi secret commit guard" in hook_text
+    assert "Yinshi secret push guard" in push_hook_text
 
     (workspace_path / ".env").write_text("TOKEN=secret\n", encoding="utf-8")
     subprocess.run(["git", "add", "-f", ".env"], cwd=workspace_path, check=True)

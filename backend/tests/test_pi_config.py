@@ -37,13 +37,16 @@ def _activate_container_runtime() -> None:
             self,
             user_id: str,
             data_dir: str,
+            *,
             mounts: object | None = None,
+            runtime_id: str | None = None,
+            environment: object | None = None,
         ) -> SimpleNamespace:
-            del user_id, data_dir, mounts
+            del user_id, data_dir, mounts, runtime_id, environment
             return SimpleNamespace(socket_path="/tmp/test-tenant-sidecar.sock")
 
-        def touch(self, user_id: str) -> None:
-            del user_id
+        def touch(self, user_id: str, *, runtime_id: str | None = None) -> None:
+            del user_id, runtime_id
 
         async def destroy_all(self) -> None:
             return None

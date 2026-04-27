@@ -22,6 +22,7 @@ type ViewerMode = "preview" | "diff" | "edit";
 interface WorkspaceInspectorProps {
   workspaceId: string;
   refreshKey: number;
+  active?: boolean;
   className?: string;
   style?: CSSProperties;
 }
@@ -29,6 +30,7 @@ interface WorkspaceInspectorProps {
 const TERMINAL_HEIGHT_DEFAULT = 260;
 const TERMINAL_HEIGHT_MIN = 140;
 const TERMINAL_HEIGHT_MAX = 620;
+const FILE_STATUS_REFRESH_MS = 15000;
 
 function storedTerminalHeight(): number {
   const raw = sessionStorage.getItem("yinshi-terminal-height");
@@ -232,12 +234,12 @@ function FileViewer({
   );
 }
 
-function TerminalPane({ workspaceId }: { workspaceId: string }) {
+function TerminalPane({ workspaceId, active }: { workspaceId: string; active: boolean }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
-  const [status, setStatus] = useState("Connecting...");
+  const [status, setStatus] = useState(active ? "Connecting..." : "Paused");
 
   const fit = useCallback(() => {
     const terminal = terminalRef.current;
@@ -255,8 +257,14 @@ function TerminalPane({ workspaceId }: { workspaceId: string }) {
   }, []);
 
   useEffect(() => {
+    if (!active) {
+      setStatus("Paused");
+      return;
+    }
+
     const container = containerRef.current;
     if (!container) return;
+    setStatus("Connecting...");
 
     const terminal = new Terminal({
       cursorBlink: true,
@@ -323,7 +331,7 @@ function TerminalPane({ workspaceId }: { workspaceId: string }) {
       fitRef.current = null;
       socketRef.current = null;
     };
-  }, [fit, workspaceId]);
+  }, [active, fit, workspaceId]);
 
   const restart = useCallback(() => {
     const socket = socketRef.current;
@@ -350,7 +358,7 @@ function TerminalPane({ workspaceId }: { workspaceId: string }) {
   );
 }
 
-export default function WorkspaceInspector({ workspaceId, refreshKey, className = "", style }: WorkspaceInspectorProps) {
+export default function WorkspaceInspector({ workspaceId, refreshKey, active = true, className = "", style }: WorkspaceInspectorProps) {
   const [tab, setTab] = useState<InspectorTab>("files");
   const [files, setFiles] = useState<WorkspaceFileNode[]>([]);
   const [changes, setChanges] = useState<WorkspaceChangedFile[]>([]);
@@ -360,6 +368,7 @@ export default function WorkspaceInspector({ workspaceId, refreshKey, className 
   const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
+    if (!active) return;
     try {
       const [treeResponse, changedResponse] = await Promise.all([
         api.get<{ files: WorkspaceFileNode[] }>(`/api/workspaces/${workspaceId}/files/tree`),
@@ -371,25 +380,39 @@ export default function WorkspaceInspector({ workspaceId, refreshKey, className 
     } catch (apiError) {
       setError(apiError instanceof Error ? apiError.message : "Failed to load workspace files");
     }
-  }, [workspaceId]);
+  }, [active, workspaceId]);
+
+  const refreshChanges = useCallback(async () => {
+    if (!active) return;
+    try {
+      const changedResponse = await api.get<{ files: WorkspaceChangedFile[] }>(
+        `/api/workspaces/${workspaceId}/files/changed`,
+      );
+      setChanges(changedResponse.files);
+      setError(null);
+    } catch (apiError) {
+      setError(apiError instanceof Error ? apiError.message : "Failed to load workspace changes");
+    }
+  }, [active, workspaceId]);
 
   useEffect(() => {
     void refresh();
   }, [refresh, refreshKey]);
 
   useEffect(() => {
+    if (!active) return;
     const interval = window.setInterval(() => {
       if (document.visibilityState === "visible") {
-        void refresh();
+        void refreshChanges();
       }
-    }, 5000);
+    }, FILE_STATUS_REFRESH_MS);
     const onFocus = () => void refresh();
     window.addEventListener("focus", onFocus);
     return () => {
       window.clearInterval(interval);
       window.removeEventListener("focus", onFocus);
     };
-  }, [refresh]);
+  }, [active, refresh, refreshChanges]);
 
   const beginTerminalResize = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -488,7 +511,7 @@ export default function WorkspaceInspector({ workspaceId, refreshKey, className 
         className="h-1.5 cursor-row-resize border-y border-gray-800 bg-gray-800/80 hover:bg-blue-500/40"
       />
       <div style={{ height: terminalHeight }} className="shrink-0">
-        <TerminalPane workspaceId={workspaceId} />
+        <TerminalPane workspaceId={workspaceId} active={active} />
       </div>
     </aside>
   );

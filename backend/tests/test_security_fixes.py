@@ -1,5 +1,9 @@
 """Tests for security fixes identified in code review."""
 
+import asyncio
+import json
+from types import SimpleNamespace
+
 import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
@@ -64,6 +68,133 @@ def test_terminal_websocket_rejects_untrusted_origin(auth_client: TestClient) ->
             pass
 
     assert disconnect.value.code == 1008
+
+
+def test_terminal_websocket_attaches_authenticated_workspace(
+    auth_client: TestClient,
+    git_repo: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Terminal WebSocket should attach through auth, runtime startup, and cleanup."""
+
+    class FakeReader:
+        """Provide sidecar JSON lines to the terminal proxy."""
+
+        def __init__(self) -> None:
+            self._lines: asyncio.Queue[bytes] = asyncio.Queue()
+            self._lines.put_nowait(b'{"type":"init_status"}\n')
+            self._lines.put_nowait(b'{"type":"terminal_ready","replay":""}\n')
+
+        async def readline(self) -> bytes:
+            return await self._lines.get()
+
+    class FakeWriter:
+        """Capture terminal messages sent to the sidecar."""
+
+        def __init__(self) -> None:
+            self.messages: list[dict[str, object]] = []
+
+        def write(self, data: bytes) -> None:
+            self.messages.append(json.loads(data.decode("utf-8")))
+
+        async def drain(self) -> None:
+            return None
+
+        def close(self) -> None:
+            return None
+
+        async def wait_closed(self) -> None:
+            return None
+
+    class FakeContainerManager:
+        """Record lifecycle calls made by the terminal endpoint."""
+
+        def __init__(self) -> None:
+            self.ensure_calls: list[dict[str, object]] = []
+            self.begin_calls: list[str | None] = []
+            self.end_calls: list[str | None] = []
+            self.protect_calls: list[tuple[str, int, str | None]] = []
+
+        async def ensure_container(
+            self,
+            user_id: str,
+            data_dir: str,
+            *,
+            mounts: object | None = None,
+            runtime_id: str | None = None,
+            environment: dict[str, str] | None = None,
+        ) -> SimpleNamespace:
+            self.ensure_calls.append(
+                {
+                    "user_id": user_id,
+                    "data_dir": data_dir,
+                    "mounts": mounts,
+                    "runtime_id": runtime_id,
+                    "environment": environment,
+                }
+            )
+            return SimpleNamespace(socket_path="/tmp/fake-yinshi-sidecar.sock")
+
+        def begin_activity(self, user_id: str, *, runtime_id: str | None = None) -> None:
+            del user_id
+            self.begin_calls.append(runtime_id)
+
+        def end_activity(self, user_id: str, *, runtime_id: str | None = None) -> None:
+            del user_id
+            self.end_calls.append(runtime_id)
+
+        def protect(
+            self,
+            user_id: str,
+            lease_key: str,
+            timeout_s: int,
+            *,
+            runtime_id: str | None = None,
+        ) -> None:
+            del user_id
+            self.protect_calls.append((lease_key, timeout_s, runtime_id))
+
+        async def destroy_all(self) -> None:
+            return None
+
+    from yinshi.config import get_settings
+    from yinshi.main import app
+
+    settings = get_settings()
+    settings.container_enabled = True
+    container_manager = FakeContainerManager()
+    app.state.container_manager = container_manager
+    writer = FakeWriter()
+
+    async def fake_open_unix_connection(socket_path: str) -> tuple[FakeReader, FakeWriter]:
+        assert socket_path == "/tmp/fake-yinshi-sidecar.sock"
+        return FakeReader(), writer
+
+    import yinshi.api.terminals as terminals
+
+    monkeypatch.setattr(terminals.asyncio, "open_unix_connection", fake_open_unix_connection)
+    repo = auth_client.post("/api/repos", json={"name": "test", "local_path": git_repo}).json()
+    workspace = auth_client.post(f"/api/repos/{repo['id']}/workspaces", json={}).json()
+
+    with auth_client.websocket_connect(
+        f"/api/workspaces/{workspace['id']}/terminal",
+        headers={"Origin": settings.frontend_url},
+    ) as websocket:
+        assert websocket.receive_json()["type"] == "terminal_ready"
+        websocket.send_json({"type": "input", "data": "pwd\n"})
+        websocket.send_json({"type": "ping"})
+        assert websocket.receive_json() == {"type": "pong"}
+
+    sent_types = [message["type"] for message in writer.messages]
+    assert "terminal_attach" in sent_types
+    assert "terminal_input" in sent_types
+    assert "terminal_detach" in sent_types
+    assert container_manager.ensure_calls[0]["runtime_id"] == workspace["id"]
+    assert container_manager.begin_calls == [workspace["id"]]
+    assert container_manager.end_calls == [workspace["id"]]
+    assert container_manager.protect_calls == [
+        (f"terminal:{workspace['id']}", settings.terminal_keepalive_s, workspace["id"])
+    ]
 
 
 # --- SEC-H3: Sessions PATCH must use _UPDATABLE_COLUMNS guard ---

@@ -46,6 +46,20 @@ _MAX_TEXT_BYTES = 512 * 1024
 _GUARDRAIL_MARKER = "# Yinshi secret guardrails"
 _GUARDRAIL_PATTERNS = (".env", ".env.*")
 _PRE_COMMIT_MARKER = "# Yinshi secret commit guard"
+_PRE_PUSH_MARKER = "# Yinshi secret push guard"
+_SECRET_PATH_GREP = "grep -E '(^|/)\\.env(\\..*)?$' >/dev/null"
+_PRE_COMMIT_GUARD = f"""{_PRE_COMMIT_MARKER}
+if git diff --cached --name-only --diff-filter=ACM | {_SECRET_PATH_GREP}; then
+  echo 'Yinshi blocks committing .env files. Move secrets out of Git.' >&2
+  exit 1
+fi
+"""
+_PRE_PUSH_GUARD = f"""{_PRE_PUSH_MARKER}
+if git ls-files | {_SECRET_PATH_GREP}; then
+  echo 'Yinshi blocks pushing tracked .env files. Move secrets out of Git.' >&2
+  exit 1
+fi
+"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,6 +80,15 @@ class ChangedFile:
     status: str
     kind: ChangeKind
     original_path: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _VisibleDirectoryEntry:
+    """One lstat-classified child entry safe to include in the UI tree."""
+
+    path: Path
+    relative_path: str
+    node_type: FileNodeType
 
 
 def _workspace_root(workspace_path: str) -> Path:
@@ -156,6 +179,42 @@ def file_tree_to_dicts(nodes: tuple[FileNode, ...]) -> list[dict[str, object]]:
     return [_node_to_dict(node) for node in nodes]
 
 
+def _visible_directory_entries(
+    directory_path: Path, root: Path
+) -> tuple[_VisibleDirectoryEntry, ...]:
+    """Return visible child entries without following symlinks."""
+    entries: list[_VisibleDirectoryEntry] = []
+    for child in directory_path.iterdir():
+        try:
+            relative_path = child.relative_to(root).as_posix()
+        except ValueError:
+            continue
+        if not _is_visible_relative_path(relative_path):
+            continue
+        try:
+            child_stat = child.lstat()
+        except OSError:
+            continue
+        if stat.S_ISLNK(child_stat.st_mode):
+            continue
+        if stat.S_ISDIR(child_stat.st_mode):
+            node_type: FileNodeType = "directory"
+        elif stat.S_ISREG(child_stat.st_mode):
+            node_type = "file"
+        else:
+            continue
+        entries.append(
+            _VisibleDirectoryEntry(
+                path=child,
+                relative_path=relative_path,
+                node_type=node_type,
+            )
+        )
+    return tuple(
+        sorted(entries, key=lambda entry: (entry.node_type == "file", entry.path.name.lower()))
+    )
+
+
 def build_file_tree(workspace_path: str) -> tuple[FileNode, ...]:
     """Build a bounded visible file tree for one workspace."""
     root = _workspace_root(workspace_path)
@@ -164,37 +223,23 @@ def build_file_tree(workspace_path: str) -> tuple[FileNode, ...]:
     def build_directory(directory_path: Path) -> tuple[FileNode, ...]:
         nonlocal entry_count
         children: list[FileNode] = []
-        for child in sorted(
-            directory_path.iterdir(), key=lambda item: (item.is_file(), item.name.lower())
-        ):
+        for entry in _visible_directory_entries(directory_path, root):
             if entry_count >= _MAX_TREE_ENTRIES:
                 break
-            try:
-                relative_path = child.relative_to(root).as_posix()
-            except ValueError:
-                continue
-            if not _is_visible_relative_path(relative_path):
-                continue
-            try:
-                child_stat = child.lstat()
-            except OSError:
-                continue
-            if stat.S_ISLNK(child_stat.st_mode):
-                continue
             entry_count += 1
-            if child.is_dir():
+            if entry.node_type == "directory":
                 children.append(
                     FileNode(
-                        name=child.name,
-                        path=relative_path,
+                        name=entry.path.name,
+                        path=entry.relative_path,
                         type="directory",
-                        children=build_directory(child),
+                        children=build_directory(entry.path),
                     )
                 )
-            elif child.is_file():
-                children.append(FileNode(name=child.name, path=relative_path, type="file"))
             else:
-                continue
+                children.append(
+                    FileNode(name=entry.path.name, path=entry.relative_path, type="file")
+                )
         return tuple(children)
 
     return build_directory(root)
@@ -308,16 +353,33 @@ def write_text_file(workspace_path: str, relative_path: str, content: str) -> No
     file_path.write_text(content, encoding="utf-8")
 
 
+async def _changed_file_for_path(root: Path, display_path: str) -> ChangedFile | None:
+    """Return Git status for one path without scanning the whole worktree."""
+    process = await asyncio.create_subprocess_exec(
+        "git",
+        "-C",
+        str(root),
+        "status",
+        "--porcelain=v1",
+        "-z",
+        "--untracked-files=all",
+        "--",
+        display_path,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await process.communicate()
+    if process.returncode != 0:
+        raise GitError(stderr.decode("utf-8", errors="replace") or "git status failed")
+    return next(iter(_parse_porcelain_z(stdout)), None)
+
+
 async def diff_file(workspace_path: str, relative_path: str) -> str:
     """Return a Git diff for one visible file path."""
     root = _workspace_root(workspace_path)
     file_path = validate_visible_relative_path(workspace_path, relative_path)
     display_path = file_path.relative_to(root).as_posix()
-    changes = await changed_files(workspace_path)
-    matching_change = next(
-        (change for change in changes if change.path == display_path),
-        None,
-    )
+    matching_change = await _changed_file_for_path(root, display_path)
     if matching_change is not None and matching_change.kind == "untracked":
         content = read_text_file(workspace_path, display_path)
         added_lines = [f"+{line}" for line in content.splitlines()]
@@ -338,6 +400,20 @@ async def diff_file(workspace_path: str, relative_path: str) -> str:
     if process.returncode != 0:
         raise GitError(stderr.decode("utf-8", errors="replace") or "git diff failed")
     return stdout.decode("utf-8", errors="replace")
+
+
+def _install_secret_hook_guard(hook_path: Path, marker: str, guard_script: str) -> None:
+    """Install a secret guard before any existing hook body can exit."""
+    existing_hook = hook_path.read_text(encoding="utf-8") if hook_path.exists() else "#!/bin/sh\n"
+    if marker not in existing_hook:
+        if existing_hook.startswith("#!"):
+            shebang, separator, remainder = existing_hook.partition("\n")
+            existing_body = remainder if separator else ""
+            updated_hook = shebang + "\n" + guard_script + existing_body
+        else:
+            updated_hook = "#!/bin/sh\n" + guard_script + existing_hook
+        hook_path.write_text(updated_hook, encoding="utf-8")
+    hook_path.chmod(hook_path.stat().st_mode | stat.S_IXUSR)
 
 
 def ensure_secret_guardrails(repo_root_path: str) -> None:
@@ -366,19 +442,5 @@ def ensure_secret_guardrails(repo_root_path: str) -> None:
 
     hooks_dir = git_dir / "hooks"
     hooks_dir.mkdir(parents=True, exist_ok=True)
-    hook_path = hooks_dir / "pre-commit"
-    existing_hook = hook_path.read_text(encoding="utf-8") if hook_path.exists() else "#!/bin/sh\n"
-    if _PRE_COMMIT_MARKER not in existing_hook:
-        suffix = "" if existing_hook.endswith("\n") else "\n"
-        hook_path.write_text(
-            existing_hook
-            + suffix
-            + _PRE_COMMIT_MARKER
-            + "\n"
-            + "if git diff --cached --name-only --diff-filter=ACM | grep -E '(^|/)\\.env(\\..*)?$' >/dev/null; then\n"
-            + "  echo 'Yinshi blocks committing .env files. Move secrets out of Git.' >&2\n"
-            + "  exit 1\n"
-            + "fi\n",
-            encoding="utf-8",
-        )
-    hook_path.chmod(hook_path.stat().st_mode | stat.S_IXUSR)
+    _install_secret_hook_guard(hooks_dir / "pre-commit", _PRE_COMMIT_MARKER, _PRE_COMMIT_GUARD)
+    _install_secret_hook_guard(hooks_dir / "pre-push", _PRE_PUSH_MARKER, _PRE_PUSH_GUARD)
