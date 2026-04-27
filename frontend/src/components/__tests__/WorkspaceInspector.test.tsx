@@ -2,6 +2,9 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+const WORKSPACE_ID = "workspace-1";
+const WORKSPACE_TERMINAL_URL = `ws://test.local/api/workspaces/${WORKSPACE_ID}/terminal`;
+
 const apiGetMock = vi.fn();
 const terminalResetMock = vi.fn();
 
@@ -109,7 +112,7 @@ describe("WorkspaceInspector terminal", () => {
   });
 
   it("reconnects when Restart is clicked after the terminal socket closes", async () => {
-    render(<WorkspaceInspector workspaceId="workspace-1" refreshKey={0} />);
+    render(<WorkspaceInspector workspaceId={WORKSPACE_ID} refreshKey={0} />);
 
     await waitFor(() => {
       expect(FakeWebSocket.instances).toHaveLength(1);
@@ -124,7 +127,7 @@ describe("WorkspaceInspector terminal", () => {
       expect(FakeWebSocket.instances).toHaveLength(2);
     });
     expect(terminalResetMock).toHaveBeenCalled();
-    expect(FakeWebSocket.instances[1].url).toBe("ws://test.local/api/workspaces/workspace-1/terminal");
+    expect(FakeWebSocket.instances[1].url).toBe(WORKSPACE_TERMINAL_URL);
     expect(screen.getByText("Connecting...")).toBeInTheDocument();
   });
 });

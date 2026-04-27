@@ -80,6 +80,16 @@ function send(socket, message) {
   socket.write(`${JSON.stringify(message)}\n`);
 }
 
+function terminalOptions(terminalId, cwd) {
+  return {
+    workspaceId: terminalId,
+    cwd,
+    cols: 80,
+    rows: 24,
+    scrollbackLines: 100,
+  };
+}
+
 function ptyAvailable() {
   try {
     const terminal = pty.spawn(process.execPath, ["--version"], {
@@ -163,13 +173,7 @@ test("terminal attach starts a PTY and streams output", async (t) => {
     send(socket, {
       type: "terminal_attach",
       id: terminalId,
-      options: {
-        workspaceId: terminalId,
-        cwd: tempDir,
-        cols: 80,
-        rows: 24,
-        scrollbackLines: 100,
-      },
+      options: terminalOptions(terminalId, tempDir),
     });
     const ready = await nextTerminalReady(reader);
     assert.equal(ready.cwd, tempDir);
@@ -205,13 +209,7 @@ test("terminal attach starts a PTY and streams output", async (t) => {
     send(socket, {
       type: "terminal_restart",
       id: terminalId,
-      options: {
-        workspaceId: terminalId,
-        cwd: tempDir,
-        cols: 80,
-        rows: 24,
-        scrollbackLines: 100,
-      },
+      options: terminalOptions(terminalId, tempDir),
     });
     await nextTerminalReady(reader, { rejectTerminalExit: true });
     send(socket, {

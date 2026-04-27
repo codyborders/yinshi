@@ -346,12 +346,10 @@ function TerminalPane({ workspaceId, active }: { workspaceId: string; active: bo
       socket.send(JSON.stringify({ type: "restart" }));
       return;
     }
-    if (socket?.readyState === WebSocket.CONNECTING) {
-      setStatus("Connecting...");
-      return;
-    }
     setStatus("Connecting...");
-    setConnectionVersion((value) => value + 1);
+    if (socket?.readyState !== WebSocket.CONNECTING) {
+      setConnectionVersion((value) => value + 1);
+    }
   }, []);
 
   return (

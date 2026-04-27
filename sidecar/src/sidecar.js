@@ -1005,12 +1005,12 @@ export class YinshiSidecar {
     );
   }
 
-  killTerminal(id, options = {}) {
+  killTerminal(id, { suppressExitEvent = false } = {}) {
     const entry = this.activeTerminals.get(id);
     if (!entry) {
       return;
     }
-    entry.suppressExitEvent = Boolean(options.suppressExitEvent);
+    entry.suppressExitEvent = Boolean(suppressExitEvent);
     entry.terminal.kill();
     this.activeTerminals.delete(id);
   }
