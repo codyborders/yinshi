@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
+import * as pty from "node-pty";
 
 import {
   createAgentSession,
@@ -45,6 +46,64 @@ function sendToSocket(socket, message) {
     return;
   }
   socket.write(`${JSON.stringify(message)}\n`);
+}
+
+function normalizePositiveInteger(value, fallback, minValue, maxValue) {
+  const numericValue = Number(value);
+  if (!Number.isFinite(numericValue)) {
+    return fallback;
+  }
+  const integerValue = Math.trunc(numericValue);
+  if (integerValue < minValue) {
+    return minValue;
+  }
+  if (integerValue > maxValue) {
+    return maxValue;
+  }
+  return integerValue;
+}
+
+function normalizeTerminalId(value) {
+  if (typeof value !== "string") {
+    throw new Error("terminal workspaceId must be a string");
+  }
+  const normalized = value.trim();
+  if (!/^[0-9a-f]{32}$/.test(normalized)) {
+    throw new Error("terminal workspaceId must be a 32-character hex string");
+  }
+  return normalized;
+}
+
+function normalizeTerminalCwd(value) {
+  if (typeof value !== "string") {
+    throw new Error("terminal cwd must be a string");
+  }
+  const normalized = value.trim();
+  if (!path.isAbsolute(normalized)) {
+    throw new Error("terminal cwd must be absolute");
+  }
+  if (!fs.existsSync(normalized)) {
+    throw new Error("terminal cwd does not exist");
+  }
+  return normalized;
+}
+
+function appendTerminalScrollback(entry, data) {
+  if (typeof data !== "string" || data.length === 0) {
+    return;
+  }
+  entry.scrollback += data;
+  if (entry.scrollback.length > entry.scrollbackLimitBytes) {
+    entry.scrollback = entry.scrollback.slice(-entry.scrollbackLimitBytes);
+  }
+}
+
+function sendTerminalError(socket, id, err, fallback) {
+  sendToSocket(socket, {
+    id: id || "terminal",
+    type: "error",
+    error: err instanceof Error ? err.message : fallback,
+  });
 }
 
 function normalizeImportedSettings(importedSettings) {
@@ -777,6 +836,7 @@ export class YinshiSidecar {
   constructor() {
     this.activeSessions = new Map();
     this.activeOAuthFlows = new Map();
+    this.activeTerminals = new Map();
     this.socketPath = process.env.SIDECAR_SOCKET_PATH || "/tmp/yinshi-sidecar.sock";
     this.server = net.createServer((socket) => this.handleConnection(socket));
     this.healthCheckInterval = null;
@@ -817,6 +877,114 @@ export class YinshiSidecar {
     }
   }
 
+  createTerminalEntry(id, options) {
+    const cwd = normalizeTerminalCwd(options.cwd);
+    const cols = normalizePositiveInteger(options.cols, 100, 20, 300);
+    const rows = normalizePositiveInteger(options.rows, 30, 5, 120);
+    const scrollbackLines = normalizePositiveInteger(options.scrollbackLines, 1000, 100, 5000);
+    const shell = process.env.SHELL || "/bin/bash";
+    const terminalEnvironment = {
+      ...process.env,
+      TERM: "xterm-256color",
+      COLORTERM: "truecolor",
+      PWD: cwd,
+    };
+    const terminal = pty.spawn(shell, ["-l"], {
+      name: "xterm-256color",
+      cols,
+      rows,
+      cwd,
+      env: terminalEnvironment,
+    });
+    const entry = {
+      id,
+      cwd,
+      terminal,
+      sockets: new Set(),
+      scrollback: "",
+      scrollbackLimitBytes: scrollbackLines * 200,
+    };
+    terminal.onData((data) => {
+      appendTerminalScrollback(entry, data);
+      for (const subscriber of entry.sockets) {
+        sendToSocket(subscriber, { id, type: "terminal_data", data });
+      }
+    });
+    terminal.onExit(({ exitCode, signal }) => {
+      for (const subscriber of entry.sockets) {
+        sendToSocket(subscriber, {
+          id,
+          type: "terminal_exit",
+          exit_code: exitCode,
+          signal,
+        });
+      }
+      this.activeTerminals.delete(id);
+    });
+    this.activeTerminals.set(id, entry);
+    return entry;
+  }
+
+  terminalEntry(id, options, restart = false) {
+    if (restart) {
+      this.killTerminal(id);
+    }
+    const existing = this.activeTerminals.get(id);
+    if (existing) {
+      return existing;
+    }
+    return this.createTerminalEntry(id, options);
+  }
+
+  attachTerminal(id, socket, options, restart = false) {
+    const entry = this.terminalEntry(id, options, restart);
+    entry.sockets.add(socket);
+    sendToSocket(socket, {
+      id,
+      type: "terminal_ready",
+      cwd: entry.cwd,
+      pid: entry.terminal.pid,
+      replay: entry.scrollback,
+    });
+  }
+
+  detachTerminalSocket(socket) {
+    for (const entry of this.activeTerminals.values()) {
+      entry.sockets.delete(socket);
+    }
+  }
+
+  writeTerminal(id, data) {
+    const entry = this.activeTerminals.get(id);
+    if (!entry) {
+      throw new Error("Terminal is not running");
+    }
+    if (typeof data !== "string") {
+      throw new Error("terminal input data must be a string");
+    }
+    entry.terminal.write(data);
+  }
+
+  resizeTerminal(id, cols, rows) {
+    const entry = this.activeTerminals.get(id);
+    if (!entry) {
+      throw new Error("Terminal is not running");
+    }
+    entry.terminal.resize(
+      normalizePositiveInteger(cols, 100, 20, 300),
+      normalizePositiveInteger(rows, 30, 5, 120),
+    );
+  }
+
+  killTerminal(id) {
+    const entry = this.activeTerminals.get(id);
+    if (!entry) {
+      return;
+    }
+    entry.terminal.kill();
+    this.activeTerminals.delete(id);
+  }
+
   async start() {
     this.cleanup();
 
@@ -825,7 +993,7 @@ export class YinshiSidecar {
         console.log(`SOCKET_PATH=${this.socketPath}`);
         this.healthCheckInterval = setInterval(() => {
           console.log(
-            `[sidecar] Health: ${this.activeSessions.size} session(s), ${this.activeOAuthFlows.size} auth flow(s)`,
+            `[sidecar] Health: ${this.activeSessions.size} session(s), ${this.activeOAuthFlows.size} auth flow(s), ${this.activeTerminals.size} terminal(s)`,
           );
         }, HEALTH_CHECK_INTERVAL);
         resolve();
@@ -855,7 +1023,10 @@ export class YinshiSidecar {
       }
     });
     socket.on("error", (err) => console.error("[sidecar] Socket error:", err.message));
-    socket.on("close", () => console.log("[sidecar] Connection closed"));
+    socket.on("close", () => {
+      this.detachTerminalSocket(socket);
+      console.log("[sidecar] Connection closed");
+    });
   }
 
   handleData(data, socket) {
@@ -906,6 +1077,25 @@ export class YinshiSidecar {
       case "ping":
         sendToSocket(socket, { type: "pong" });
         break;
+      case "terminal_attach":
+        this.handleTerminalAttach(id, socket, request.options || {});
+        break;
+      case "terminal_detach":
+        this.detachTerminalSocket(socket);
+        sendToSocket(socket, { id: id || "terminal", type: "terminal_detached" });
+        break;
+      case "terminal_input":
+        this.handleTerminalInput(id, socket, request.data);
+        break;
+      case "terminal_kill":
+        this.handleTerminalKill(id, socket);
+        break;
+      case "terminal_resize":
+        this.handleTerminalResize(id, socket, request.cols, request.rows);
+        break;
+      case "terminal_restart":
+        this.handleTerminalAttach(id, socket, request.options || {}, true);
+        break;
       case "query":
         void this.processQuery(id, socket, request.prompt, request.options || {});
         break;
@@ -917,6 +1107,43 @@ export class YinshiSidecar {
         break;
       default:
         sendToSocket(socket, { id: id || "unknown", type: "error", error: `Unknown request type: ${type}` });
+    }
+  }
+
+  handleTerminalAttach(id, socket, options, restart = false) {
+    try {
+      const terminalId = normalizeTerminalId(options.workspaceId || id);
+      this.attachTerminal(terminalId, socket, options, restart);
+    } catch (err) {
+      sendTerminalError(socket, id, err, "Failed to attach terminal");
+    }
+  }
+
+  handleTerminalInput(id, socket, data) {
+    try {
+      const terminalId = normalizeTerminalId(id);
+      this.writeTerminal(terminalId, data);
+    } catch (err) {
+      sendTerminalError(socket, id, err, "Failed to write terminal input");
+    }
+  }
+
+  handleTerminalResize(id, socket, cols, rows) {
+    try {
+      const terminalId = normalizeTerminalId(id);
+      this.resizeTerminal(terminalId, cols, rows);
+    } catch (err) {
+      sendTerminalError(socket, id, err, "Failed to resize terminal");
+    }
+  }
+
+  handleTerminalKill(id, socket) {
+    try {
+      const terminalId = normalizeTerminalId(id);
+      this.killTerminal(terminalId);
+      sendToSocket(socket, { id: terminalId, type: "terminal_killed" });
+    } catch (err) {
+      sendTerminalError(socket, id, err, "Failed to kill terminal");
     }
   }
 
@@ -1541,6 +1768,14 @@ export class YinshiSidecar {
     }
     this.activeSessions.clear();
     this.activeOAuthFlows.clear();
+    for (const [, entry] of this.activeTerminals) {
+      try {
+        entry.terminal.kill();
+      } catch {
+        // ignore cleanup races
+      }
+    }
+    this.activeTerminals.clear();
 
     if (this.healthCheckInterval) {
       clearInterval(this.healthCheckInterval);

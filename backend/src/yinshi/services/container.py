@@ -34,12 +34,14 @@ class ContainerMount:
 
 @dataclass
 class ContainerInfo:
-    """Tracks a running per-user sidecar container."""
+    """Tracks one sidecar container runtime."""
 
     container_id: str
     user_id: str
     socket_path: str
     mounts: tuple[ContainerMount, ...] = field(default_factory=tuple)
+    runtime_id: str | None = None
+    environment: tuple[tuple[str, str], ...] = field(default_factory=lambda: (("HOME", "/tmp"),))
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     last_activity: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     active_request_count: int = 0
@@ -366,6 +368,36 @@ class ContainerManager:
                 self._locks[user_id] = asyncio.Lock()
             return self._locks[user_id]
 
+    def _container_key(self, user_id: str, runtime_id: str | None = None) -> str:
+        """Return the in-memory key for one user or workspace runtime."""
+        if not isinstance(user_id, str):
+            raise TypeError("user_id must be a string")
+        normalized_user_id = user_id.strip()
+        if not normalized_user_id:
+            raise ValueError("user_id must not be empty")
+        if runtime_id is None:
+            return normalized_user_id
+        if not isinstance(runtime_id, str):
+            raise TypeError("runtime_id must be a string or None")
+        normalized_runtime_id = runtime_id.strip()
+        if not normalized_runtime_id:
+            raise ValueError("runtime_id must not be empty when provided")
+        if not re.match(r"^[0-9a-f]{32}$", normalized_runtime_id):
+            raise ValueError(f"Invalid runtime_id format: {runtime_id!r}")
+        return f"{normalized_user_id}:{normalized_runtime_id}"
+
+    def _socket_dir(self, user_id: str, runtime_id: str | None = None) -> str:
+        """Return the host socket directory for one sidecar runtime."""
+        if runtime_id is None:
+            return os.path.join(self._settings.container_socket_base, user_id)
+        return os.path.join(self._settings.container_socket_base, user_id, runtime_id)
+
+    def _container_name(self, user_id: str, runtime_id: str | None = None) -> str:
+        """Return a Podman-safe, stable container name for one runtime."""
+        if runtime_id is None:
+            return f"yinshi-sidecar-{user_id}"
+        return f"yinshi-sidecar-{user_id[:12]}-{runtime_id}"
+
     def _default_mounts(self, data_dir: str) -> tuple[ContainerMount, ...]:
         """Return the legacy tenant-data mount for compatibility paths."""
         real_data_dir = os.path.realpath(data_dir)
@@ -410,6 +442,29 @@ class ContainerManager:
             )
         return tuple(sorted(normalized_mounts, key=lambda value: value.target_path))
 
+    def _normalize_environment(
+        self,
+        environment: dict[str, str] | None,
+    ) -> tuple[tuple[str, str], ...]:
+        """Validate and normalize environment variables for one runtime."""
+        if environment is None:
+            return (("HOME", "/tmp"),)
+        normalized_environment: list[tuple[str, str]] = []
+        for key, value in environment.items():
+            if not isinstance(key, str):
+                raise TypeError("environment keys must be strings")
+            if not isinstance(value, str):
+                raise TypeError("environment values must be strings")
+            normalized_key = key.strip()
+            if not normalized_key:
+                raise ValueError("environment keys must not be empty")
+            if "=" in normalized_key or "\x00" in normalized_key:
+                raise ValueError("environment keys must not contain '=' or NUL")
+            if "\x00" in value:
+                raise ValueError("environment values must not contain NUL")
+            normalized_environment.append((normalized_key, value))
+        return tuple(sorted(normalized_environment, key=lambda item: item[0]))
+
     def _container_has_busy_state(self, info: ContainerInfo) -> bool:
         """Return whether a container is unsafe to replace for mount changes."""
         if info.active_request_count > 0:
@@ -423,39 +478,52 @@ class ContainerManager:
         user_id: str,
         data_dir: str,
         mounts: tuple[ContainerMount, ...] | None = None,
+        *,
+        runtime_id: str | None = None,
+        environment: dict[str, str] | None = None,
     ) -> ContainerInfo:
-        """Get or create a sidecar container for a user.
+        """Get or create a sidecar container for a user or workspace runtime.
 
         Raises ``ValueError`` if *user_id* is not a valid 32-char hex string.
         Raises ``ContainerStartError`` if the max container limit is reached.
         """
         if not _USER_ID_RE.match(user_id):
             raise ValueError(f"Invalid user_id format: {user_id!r}")
+        container_key = self._container_key(user_id, runtime_id)
         normalized_mounts = self._normalize_mounts(data_dir, mounts)
+        normalized_environment = self._normalize_environment(environment)
 
         if not self._initialized:
             await self.initialize()
 
-        lock = await self._get_lock(user_id)
+        lock = await self._get_lock(container_key)
         async with lock:
-            existing = self._containers.get(user_id)
+            existing = self._containers.get(container_key)
             if existing:
                 if await self._is_running(existing.container_id):
-                    if existing.mounts == normalized_mounts:
+                    if (
+                        existing.mounts == normalized_mounts
+                        and existing.environment == normalized_environment
+                    ):
                         existing.last_activity = datetime.now(timezone.utc)
                         return existing
                     if self._container_has_busy_state(existing):
                         raise ContainerStartError(
-                            "Existing sidecar container is busy with a different mount set"
+                            "Existing sidecar container is busy with a different runtime configuration"
                         )
                     await self._remove_container(existing.container_id)
-                    del self._containers[user_id]
+                    del self._containers[container_key]
                 else:
                     await self._remove_container(existing.container_id)
-                    del self._containers[user_id]
+                    del self._containers[container_key]
 
             await self._enforce_container_limit()
-            return await self._create_container(user_id, normalized_mounts)
+            return await self._create_container(
+                user_id,
+                normalized_mounts,
+                runtime_id=runtime_id,
+                environment=normalized_environment,
+            )
 
     async def _enforce_container_limit(self) -> None:
         """Fail before creating a new container when the configured quota is full."""
@@ -468,55 +536,48 @@ class ContainerManager:
         if len(self._containers) >= max_count:
             raise ContainerStartError("Maximum container limit reached")
 
-    def touch(self, user_id: str) -> None:
-        """Update last activity timestamp for a user's container."""
-        info = self._containers.get(user_id)
+    def touch(self, user_id: str, *, runtime_id: str | None = None) -> None:
+        """Update last activity timestamp for a runtime container."""
+        info = self._containers.get(self._container_key(user_id, runtime_id))
         if info:
             info.last_activity = self._now()
 
-    def begin_activity(self, user_id: str) -> None:
+    def begin_activity(self, user_id: str, *, runtime_id: str | None = None) -> None:
         """Mark a container as busy for the lifetime of one request."""
-        if not isinstance(user_id, str):
-            raise TypeError("user_id must be a string")
-        normalized_user_id = user_id.strip()
-        if not normalized_user_id:
-            raise ValueError("user_id must not be empty")
-
-        info = self._containers.get(normalized_user_id)
+        container_key = self._container_key(user_id, runtime_id)
+        info = self._containers.get(container_key)
         if info is None:
-            logger.warning("Cannot mark activity for missing container: %s", normalized_user_id[:8])
+            logger.warning("Cannot mark activity for missing container: %s", container_key[:41])
             return
         info.active_request_count += 1
         info.last_activity = self._now()
 
-    def end_activity(self, user_id: str) -> None:
-        """Release one active request marker for a user's container."""
-        if not isinstance(user_id, str):
-            raise TypeError("user_id must be a string")
-        normalized_user_id = user_id.strip()
-        if not normalized_user_id:
-            raise ValueError("user_id must not be empty")
-
-        info = self._containers.get(normalized_user_id)
+    def end_activity(self, user_id: str, *, runtime_id: str | None = None) -> None:
+        """Release one active request marker for a runtime container."""
+        container_key = self._container_key(user_id, runtime_id)
+        info = self._containers.get(container_key)
         if info is None:
-            logger.warning("Cannot end activity for missing container: %s", normalized_user_id[:8])
+            logger.warning("Cannot end activity for missing container: %s", container_key[:41])
             return
         if info.active_request_count == 0:
             logger.warning(
                 "Cannot end activity for container %s without a matching begin",
-                normalized_user_id[:8],
+                container_key[:41],
             )
             return
         info.active_request_count -= 1
         info.last_activity = self._now()
 
-    def protect(self, user_id: str, lease_key: str, timeout_s: int) -> None:
+    def protect(
+        self,
+        user_id: str,
+        lease_key: str,
+        timeout_s: int,
+        *,
+        runtime_id: str | None = None,
+    ) -> None:
         """Keep one container alive for a named long-lived operation."""
-        if not isinstance(user_id, str):
-            raise TypeError("user_id must be a string")
-        normalized_user_id = user_id.strip()
-        if not normalized_user_id:
-            raise ValueError("user_id must not be empty")
+        container_key = self._container_key(user_id, runtime_id)
         if not isinstance(lease_key, str):
             raise TypeError("lease_key must be a string")
         normalized_lease_key = lease_key.strip()
@@ -527,56 +588,59 @@ class ContainerManager:
         if timeout_s <= 0:
             raise ValueError("timeout_s must be positive")
 
-        info = self._containers.get(normalized_user_id)
+        info = self._containers.get(container_key)
         if info is None:
-            logger.warning("Cannot protect missing container: %s", normalized_user_id[:8])
+            logger.warning("Cannot protect missing container: %s", container_key[:41])
             return
         info.protected_operation_deadlines[normalized_lease_key] = self._now() + timedelta(
             seconds=timeout_s
         )
         info.last_activity = self._now()
 
-    def unprotect(self, user_id: str, lease_key: str) -> None:
-        """Remove one named long-lived operation lease from a user's container."""
-        if not isinstance(user_id, str):
-            raise TypeError("user_id must be a string")
-        normalized_user_id = user_id.strip()
-        if not normalized_user_id:
-            raise ValueError("user_id must not be empty")
+    def unprotect(
+        self,
+        user_id: str,
+        lease_key: str,
+        *,
+        runtime_id: str | None = None,
+    ) -> None:
+        """Remove one named long-lived operation lease from a runtime container."""
+        container_key = self._container_key(user_id, runtime_id)
         if not isinstance(lease_key, str):
             raise TypeError("lease_key must be a string")
         normalized_lease_key = lease_key.strip()
         if not normalized_lease_key:
             raise ValueError("lease_key must not be empty")
 
-        info = self._containers.get(normalized_user_id)
+        info = self._containers.get(container_key)
         if info is None:
-            logger.warning("Cannot unprotect missing container: %s", normalized_user_id[:8])
+            logger.warning("Cannot unprotect missing container: %s", container_key[:41])
             return
         info.protected_operation_deadlines.pop(normalized_lease_key, None)
         info.last_activity = self._now()
 
-    async def destroy_container(self, user_id: str) -> None:
-        """Stop and remove a user's container."""
-        info = self._containers.pop(user_id, None)
-        self._locks.pop(user_id, None)
+    async def destroy_container(self, user_id: str, *, runtime_id: str | None = None) -> None:
+        """Stop and remove a user's runtime container."""
+        container_key = self._container_key(user_id, runtime_id)
+        info = self._containers.pop(container_key, None)
+        self._locks.pop(container_key, None)
         if not info:
             return
         await self._remove_container(info.container_id)
-        logger.info("Destroyed container for user %s", user_id[:8])
+        logger.info("Destroyed container runtime %s", container_key[:41])
 
     async def reap_idle(self) -> int:
         """Destroy containers that have been idle past the timeout."""
         timeout = self._settings.container_idle_timeout_s
         cutoff = self._now()
-        idle_users = [
-            uid
-            for uid, info in self._containers.items()
+        idle_keys = [
+            container_key
+            for container_key, info in self._containers.items()
             if self._container_is_reapable(info, cutoff, timeout)
         ]
-        for uid in idle_users:
-            await self.destroy_container(uid)
-        return len(idle_users)
+        for container_key in idle_keys:
+            await self._destroy_container_by_key(container_key)
+        return len(idle_keys)
 
     async def run_reaper(self) -> None:
         """Background task that periodically reaps idle containers."""
@@ -591,10 +655,19 @@ class ContainerManager:
 
     async def destroy_all(self) -> None:
         """Destroy all managed containers (shutdown hook)."""
-        user_ids = list(self._containers.keys())
-        for uid in user_ids:
-            await self.destroy_container(uid)
+        container_keys = list(self._containers.keys())
+        for container_key in container_keys:
+            await self._destroy_container_by_key(container_key)
         logger.info("All sidecar containers destroyed")
+
+    async def _destroy_container_by_key(self, container_key: str) -> None:
+        """Stop and remove one runtime container by its internal key."""
+        info = self._containers.pop(container_key, None)
+        self._locks.pop(container_key, None)
+        if info is None:
+            return
+        await self._remove_container(info.container_id)
+        logger.info("Destroyed container runtime %s", container_key[:41])
 
     # -- Internal helpers ---------------------------------------------------
 
@@ -624,10 +697,14 @@ class ContainerManager:
         self,
         user_id: str,
         mounts: tuple[ContainerMount, ...],
+        *,
+        runtime_id: str | None = None,
+        environment: tuple[tuple[str, str], ...] = (),
     ) -> ContainerInfo:
-        """Start a new sidecar container for a user."""
+        """Start a new sidecar container for a user or workspace runtime."""
         s = self._settings
-        socket_dir = os.path.join(s.container_socket_base, user_id)
+        container_key = self._container_key(user_id, runtime_id)
+        socket_dir = self._socket_dir(user_id, runtime_id)
         socket_path = os.path.join(socket_dir, "sidecar.sock")
         cidfile_path = os.path.join(socket_dir, "container.cid")
         self._prepare_socket_dir(socket_dir, socket_path)
@@ -640,6 +717,9 @@ class ContainerManager:
             mount_args.extend(["-v", f"{mount.source_path}:{mount.target_path}:{mode}"])
         runtime_uid = os.getuid()
         runtime_gid = os.getgid()
+        env_args = ["--env", "SIDECAR_SOCKET_PATH=/run/sidecar/sidecar.sock"]
+        for key, value in environment or (("HOME", "/tmp"),):
+            env_args.extend(["--env", f"{key}={value}"])
 
         _, container_id, _ = await self._run_podman_waiting_for_exit(
             "run",
@@ -648,15 +728,12 @@ class ContainerManager:
             "--cidfile",
             cidfile_path,
             "--name",
-            f"yinshi-sidecar-{user_id}",
+            self._container_name(user_id, runtime_id),
             "--userns",
             "keep-id",
             "--user",
             f"{runtime_uid}:{runtime_gid}",
-            "--env",
-            "SIDECAR_SOCKET_PATH=/run/sidecar/sidecar.sock",
-            "--env",
-            "HOME=/tmp",
+            *env_args,
             "-v",
             f"{socket_dir}:/run/sidecar:rw",
             *mount_args,
@@ -676,6 +753,8 @@ class ContainerManager:
             "ALL",
             "--label",
             f"yinshi.user_id={user_id}",
+            "--label",
+            f"yinshi.runtime_id={runtime_id or ''}",
             s.container_image,
             timeout=_PODMAN_RUN_TIMEOUT_S,
         )
@@ -688,12 +767,14 @@ class ContainerManager:
             user_id=user_id,
             socket_path=socket_path,
             mounts=mounts,
+            runtime_id=runtime_id,
+            environment=environment or (("HOME", "/tmp"),),
         )
-        self._containers[user_id] = info
+        self._containers[container_key] = info
         logger.info(
-            "Started container %s for user %s",
+            "Started container %s for runtime %s",
             container_id[:12],
-            user_id[:8],
+            container_key[:41],
         )
         return info
 

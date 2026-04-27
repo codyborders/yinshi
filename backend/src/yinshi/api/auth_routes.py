@@ -46,7 +46,7 @@ from yinshi.services.sidecar_runtime import (
     touch_tenant_container,
 )
 from yinshi.services.workspace import relink_github_repos_for_tenant
-from yinshi.tenant import get_user_db
+from yinshi.tenant import TenantContext, get_user_db
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -153,7 +153,7 @@ async def _refresh_connected_github_repos(
 async def _resolve_provider_sidecar_socket(
     request: Request,
     user_id: str,
-) -> tuple[object | None, str | None]:
+) -> tuple[TenantContext | None, str | None]:
     """Resolve the tenant record plus socket path for provider-auth sidecar calls."""
     if not isinstance(user_id, str):
         raise TypeError("user_id must be a string")

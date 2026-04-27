@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
+import inspect
 import os
+import re
 from dataclasses import dataclass
 
 from fastapi import Request
@@ -22,6 +25,18 @@ class TenantSidecarContext:
     socket_path: str | None
     agent_dir: str | None
     settings_payload: dict[str, object] | None
+    runtime_id: str | None = None
+
+
+_WORKSPACE_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+_WORKSPACE_HOME_TARGET = "/home/yinshi"
+_WORKSPACE_PATH = (
+    f"{_WORKSPACE_HOME_TARGET}/bin:"
+    f"{_WORKSPACE_HOME_TARGET}/.local/bin:"
+    f"{_WORKSPACE_HOME_TARGET}/.npm-global/bin:"
+    "/app/node_modules/.bin:"
+    "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+)
 
 
 def remap_path_for_container(
@@ -81,6 +96,52 @@ def _resolve_agent_dir_for_runtime(
     return remap_path_for_container(normalized_agent_dir, data_dir)
 
 
+def _workspace_runtime_id(workspace_id: str | None) -> str | None:
+    """Return stable container id for one workspace, or None for legacy runtime."""
+    if workspace_id is None:
+        return None
+    if not isinstance(workspace_id, str):
+        raise TypeError("workspace_id must be a string or None")
+    normalized_workspace_id = workspace_id.strip()
+    if not normalized_workspace_id:
+        raise ValueError("workspace_id must not be empty when provided")
+    if _WORKSPACE_ID_RE.match(normalized_workspace_id):
+        return normalized_workspace_id
+    return hashlib.sha256(normalized_workspace_id.encode("utf-8")).hexdigest()[:32]
+
+
+def _workspace_home_source(tenant: TenantContext, workspace_id: str) -> str:
+    """Return and create the persistent host home for one workspace runtime."""
+    normalized_workspace_id = _workspace_runtime_id(workspace_id)
+    assert normalized_workspace_id is not None, "workspace_id must be normalized"
+    home_path = os.path.join(
+        tenant.data_dir,
+        "runtime",
+        "workspaces",
+        normalized_workspace_id,
+        "home",
+    )
+    os.makedirs(home_path, mode=0o700, exist_ok=True)
+    for subdirectory in ("bin", ".local/bin", ".npm-global/bin"):
+        os.makedirs(os.path.join(home_path, subdirectory), mode=0o700, exist_ok=True)
+    return os.path.realpath(home_path)
+
+
+def workspace_runtime_environment(workspace_id: str | None) -> dict[str, str] | None:
+    """Return container environment variables for a workspace runtime."""
+    normalized_workspace_id = _workspace_runtime_id(workspace_id)
+    if normalized_workspace_id is None:
+        return None
+    return {
+        "HOME": _WORKSPACE_HOME_TARGET,
+        "PATH": _WORKSPACE_PATH,
+        "NPM_CONFIG_PREFIX": f"{_WORKSPACE_HOME_TARGET}/.npm-global",
+        "PIPX_HOME": f"{_WORKSPACE_HOME_TARGET}/.local/pipx",
+        "PIPX_BIN_DIR": f"{_WORKSPACE_HOME_TARGET}/.local/bin",
+        "YINSHI_WORKSPACE_ID": normalized_workspace_id,
+    }
+
+
 def _append_runtime_mount(
     mounts: list[ContainerMount],
     mounts_by_target: dict[str, ContainerMount],
@@ -116,10 +177,21 @@ def _container_mounts_for_runtime(
     agent_dir: str | None,
     repo_root_path: str | None,
     workspace_path: str | None,
+    workspace_id: str | None,
 ) -> tuple[ContainerMount, ...]:
     """Build the narrow mount set required by one sidecar operation."""
     mounts: list[ContainerMount] = []
     mounts_by_target: dict[str, ContainerMount] = {}
+    normalized_workspace_id = _workspace_runtime_id(workspace_id)
+    if normalized_workspace_id is not None:
+        _append_runtime_mount(
+            mounts,
+            mounts_by_target,
+            source_path=_workspace_home_source(tenant, normalized_workspace_id),
+            target_path=_WORKSPACE_HOME_TARGET,
+            read_only=False,
+        )
+
     for source_path, read_only, mount_at_host_path in (
         (repo_root_path, False, True),
         (workspace_path, False, False),
@@ -163,6 +235,7 @@ async def resolve_tenant_sidecar_context(
     repo_agents_md: str | None = None,
     repo_root_path: str | None = None,
     workspace_path: str | None = None,
+    workspace_id: str | None = None,
 ) -> TenantSidecarContext:
     """Resolve the socket path and Pi runtime inputs for one request."""
     if tenant is None:
@@ -180,6 +253,7 @@ async def resolve_tenant_sidecar_context(
         repo_agents_md=repo_agents_md,
     )
     narrow_mounts = settings.container_mount_mode == "narrow"
+    runtime_id = _workspace_runtime_id(workspace_id)
     runtime_agent_dir = _resolve_agent_dir_for_runtime(
         runtime_inputs.agent_dir,
         tenant.data_dir,
@@ -191,6 +265,7 @@ async def resolve_tenant_sidecar_context(
             socket_path=None,
             agent_dir=runtime_agent_dir,
             settings_payload=runtime_inputs.settings_payload,
+            runtime_id=runtime_id,
         )
 
     container_manager = getattr(request.app.state, "container_manager", None)
@@ -204,47 +279,93 @@ async def resolve_tenant_sidecar_context(
             agent_dir=runtime_inputs.agent_dir,
             repo_root_path=repo_root_path,
             workspace_path=workspace_path,
+            workspace_id=runtime_id,
         )
-    container_info = await container_manager.ensure_container(
+    ensure_container = container_manager.ensure_container
+    ensure_parameters = inspect.signature(ensure_container).parameters
+    container_kwargs: dict[str, object] = {"mounts": container_mounts}
+    if runtime_id is not None and "runtime_id" in ensure_parameters:
+        container_kwargs["runtime_id"] = runtime_id
+        container_kwargs["environment"] = workspace_runtime_environment(runtime_id)
+    container_info = await ensure_container(
         tenant.user_id,
         tenant.data_dir,
-        mounts=container_mounts,
+        **container_kwargs,
     )
     return TenantSidecarContext(
         socket_path=container_info.socket_path,
         agent_dir=runtime_agent_dir,
         settings_payload=runtime_inputs.settings_payload,
+        runtime_id=runtime_id,
     )
 
 
-def touch_tenant_container(request: Request, tenant: TenantContext | None) -> None:
+def _call_container_method(
+    method: object,
+    user_id: str,
+    *args: object,
+    runtime_id: str | None = None,
+) -> None:
+    """Call a container manager method with runtime_id when supported."""
+    if not callable(method):
+        return
+    if runtime_id is None:
+        method(user_id, *args)
+        return
+    method_parameters = inspect.signature(method).parameters
+    if "runtime_id" in method_parameters:
+        method(user_id, *args, runtime_id=runtime_id)
+        return
+    method(user_id, *args)
+
+
+def touch_tenant_container(
+    request: Request,
+    tenant: TenantContext | None,
+    *,
+    runtime_id: str | None = None,
+) -> None:
     """Mark one tenant container as recently used when container mode is active."""
     container_manager, user_id = _tenant_container_manager(request, tenant)
     if container_manager is None or user_id is None:
         return
-    touch = getattr(container_manager, "touch", None)
-    if callable(touch):
-        touch(user_id)
+    _call_container_method(
+        getattr(container_manager, "touch", None), user_id, runtime_id=runtime_id
+    )
 
 
-def begin_tenant_container_activity(request: Request, tenant: TenantContext | None) -> None:
+def begin_tenant_container_activity(
+    request: Request,
+    tenant: TenantContext | None,
+    *,
+    runtime_id: str | None = None,
+) -> None:
     """Mark one tenant container as busy for the duration of a request step."""
     container_manager, user_id = _tenant_container_manager(request, tenant)
     if container_manager is None or user_id is None:
         return
-    begin_activity = getattr(container_manager, "begin_activity", None)
-    if callable(begin_activity):
-        begin_activity(user_id)
+    _call_container_method(
+        getattr(container_manager, "begin_activity", None),
+        user_id,
+        runtime_id=runtime_id,
+    )
 
 
-def end_tenant_container_activity(request: Request, tenant: TenantContext | None) -> None:
+def end_tenant_container_activity(
+    request: Request,
+    tenant: TenantContext | None,
+    *,
+    runtime_id: str | None = None,
+) -> None:
     """Release one in-flight request marker from a tenant container."""
     container_manager, user_id = _tenant_container_manager(request, tenant)
     if container_manager is None or user_id is None:
         return
-    end_activity = getattr(container_manager, "end_activity", None)
-    if callable(end_activity):
-        end_activity(user_id)
+    _call_container_method(
+        getattr(container_manager, "end_activity", None),
+        user_id,
+        runtime_id=runtime_id,
+    )
 
 
 def protect_tenant_container(
@@ -253,14 +374,19 @@ def protect_tenant_container(
     *,
     lease_key: str,
     timeout_s: int,
+    runtime_id: str | None = None,
 ) -> None:
     """Keep one tenant container alive for a named long-lived operation."""
     container_manager, user_id = _tenant_container_manager(request, tenant)
     if container_manager is None or user_id is None:
         return
-    protect = getattr(container_manager, "protect", None)
-    if callable(protect):
-        protect(user_id, lease_key, timeout_s)
+    _call_container_method(
+        getattr(container_manager, "protect", None),
+        user_id,
+        lease_key,
+        timeout_s,
+        runtime_id=runtime_id,
+    )
 
 
 def release_tenant_container(
@@ -268,14 +394,18 @@ def release_tenant_container(
     tenant: TenantContext | None,
     *,
     lease_key: str,
+    runtime_id: str | None = None,
 ) -> None:
     """Remove one named long-lived keepalive lease from a tenant container."""
     container_manager, user_id = _tenant_container_manager(request, tenant)
     if container_manager is None or user_id is None:
         return
-    unprotect = getattr(container_manager, "unprotect", None)
-    if callable(unprotect):
-        unprotect(user_id, lease_key)
+    _call_container_method(
+        getattr(container_manager, "unprotect", None),
+        user_id,
+        lease_key,
+        runtime_id=runtime_id,
+    )
 
 
 def _tenant_container_manager(

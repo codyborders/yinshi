@@ -221,6 +221,20 @@ export interface Message {
   turn_status: string | null;
 }
 
+export interface WorkspaceFileNode {
+  name: string;
+  path: string;
+  type: "file" | "directory";
+  children: WorkspaceFileNode[];
+}
+
+export interface WorkspaceChangedFile {
+  path: string;
+  status: string;
+  kind: "added" | "copied" | "deleted" | "modified" | "renamed" | "untracked" | "unknown";
+  original_path: string | null;
+}
+
 interface StructuredApiErrorPayload {
   code?: string;
   message?: string;
@@ -334,6 +348,7 @@ export const api = {
   get: <T>(path: string) => request<T>("GET", path),
   post: <T>(path: string, body?: unknown) => request<T>("POST", path, body),
   patch: <T>(path: string, body?: unknown) => request<T>("PATCH", path, body),
+  put: <T>(path: string, body?: unknown) => request<T>("PUT", path, body),
   delete: (path: string) => request<void>("DELETE", path),
   upload: async <T>(path: string, file: File): Promise<T> => {
     const form = new FormData();
@@ -494,6 +509,11 @@ export async function* streamPrompt(
   } finally {
     reader.releaseLock();
   }
+}
+
+export function workspaceTerminalUrl(workspaceId: string): string {
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  return `${protocol}//${window.location.host}/api/workspaces/${workspaceId}/terminal`;
 }
 
 export async function cancelSession(sessionId: string): Promise<void> {

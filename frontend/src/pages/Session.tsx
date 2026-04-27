@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { useParams } from "react-router-dom";
 import { api, type Message, type ThinkingLevel } from "../api/client";
 import ChatView from "../components/ChatView";
+import WorkspaceInspector from "../components/WorkspaceInspector";
 import { useAgentStream, type ChatMessage } from "../hooks/useAgentStream";
 import { useCatalog } from "../hooks/useCatalog";
 import { usePiCommands } from "../hooks/usePiCommands";
@@ -22,6 +23,19 @@ function nextCmdId(): string {
   return `cmd-${Date.now()}-${++cmdIdCounter}`;
 }
 
+const INSPECTOR_WIDTH_DEFAULT = 420;
+const INSPECTOR_WIDTH_MIN = 320;
+const INSPECTOR_WIDTH_MAX = 760;
+
+function storedInspectorWidth(): number {
+  const raw = sessionStorage.getItem("yinshi-inspector-width");
+  const value = Number(raw);
+  if (Number.isFinite(value)) {
+    return Math.min(INSPECTOR_WIDTH_MAX, Math.max(INSPECTOR_WIDTH_MIN, value));
+  }
+  return INSPECTOR_WIDTH_DEFAULT;
+}
+
 export default function Session() {
   const { id } = useParams<{ id: string }>();
   const { messages, sendPrompt, cancel, streaming, setMessages } =
@@ -37,6 +51,11 @@ export default function Session() {
   >(null);
   const [thinkingOverride, setThinkingOverride] =
     useState<ThinkingLevel | null>(null);
+  const [workspaceId, setWorkspaceId] = useState<string | null>(null);
+  const [workspacePanelOpen, setWorkspacePanelOpen] = useState(false);
+  const [inspectorWidth, setInspectorWidth] = useState(storedInspectorWidth);
+  const [fileRefreshKey, setFileRefreshKey] = useState(0);
+  const wasStreamingRef = useRef(false);
 
   // Load existing message history
   useEffect(() => {
@@ -90,9 +109,10 @@ export default function Session() {
 
     async function loadSession() {
       try {
-        const session = await api.get<{ model: string }>(`/api/sessions/${id}`);
+        const session = await api.get<{ model: string; workspace_id: string }>(`/api/sessions/${id}`);
         if (cancelled) return;
         setSessionModel(session.model);
+        setWorkspaceId(session.workspace_id);
       } catch (error) {
         console.error(`Failed to load session metadata for ${id}`, error);
       }
@@ -108,6 +128,13 @@ export default function Session() {
     setPendingModelSelection(null);
     setThinkingOverride(null);
   }, [id]);
+
+  useEffect(() => {
+    if (wasStreamingRef.current && !streaming) {
+      setFileRefreshKey((value) => value + 1);
+    }
+    wasStreamingRef.current = streaming;
+  }, [streaming]);
 
   const addSystemMessage = useCallback(
     (content: string) => {
@@ -384,6 +411,29 @@ export default function Session() {
     [pendingModelSelection, promptThinkingOverride, sendPrompt],
   );
 
+  const beginInspectorResize = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      event.currentTarget.setPointerCapture(event.pointerId);
+      const startX = event.clientX;
+      const startWidth = inspectorWidth;
+      const onMove = (moveEvent: PointerEvent) => {
+        const nextWidth = Math.min(
+          INSPECTOR_WIDTH_MAX,
+          Math.max(INSPECTOR_WIDTH_MIN, startWidth - (moveEvent.clientX - startX)),
+        );
+        setInspectorWidth(nextWidth);
+        sessionStorage.setItem("yinshi-inspector-width", String(nextWidth));
+      };
+      const onUp = () => {
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+      };
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+    },
+    [inspectorWidth],
+  );
+
   return (
     <>
       {/* Header */}
@@ -393,6 +443,15 @@ export default function Session() {
             Session {id?.slice(0, 8)}
           </div>
         </div>
+        {workspaceId && (
+          <button
+            type="button"
+            onClick={() => setWorkspacePanelOpen(true)}
+            className="rounded-lg border border-gray-800 px-3 py-1 text-xs text-gray-300 hover:border-gray-700 hover:bg-gray-900 lg:hidden"
+          >
+            Workspace
+          </button>
+        )}
         <div className="flex items-center gap-2">
           <label
             htmlFor="session-model"
@@ -465,39 +524,74 @@ export default function Session() {
         )}
       </header>
 
-      {/* Chat */}
-      <div className="flex-1 overflow-hidden">
-        {loadingHistory ? (
-          <div className="flex h-full items-center justify-center">
-            <div className="h-6 w-6 animate-spin rounded-full border-2 border-blue-500 border-t-transparent" />
-          </div>
-        ) : (
-          <div className="flex h-full flex-col">
-            {selectedModelRequiresConnection && selectedProviderLabel && (
-              <div className="mx-4 mt-4 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-200">
-                Selected model requires a {selectedProviderLabel} connection.
-                Pick a connected provider from the model list or add{" "}
-                {selectedProviderLabel} in Settings.
-              </div>
-            )}
-            {historyError && (
-              <div className="mx-4 mt-4 rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-300">
-                {historyError}
-              </div>
-            )}
-            <div className="flex-1 overflow-hidden">
-              <ChatView
-                messages={messages}
-                streaming={streaming}
-                onSend={handleSend}
-                onCancel={cancel}
-                onCommand={handleCommand}
-                piCommands={piCommands}
-              />
+      {/* Workspace */}
+      <div className="flex min-h-0 flex-1 overflow-hidden">
+        <main className="min-w-0 flex-1 overflow-hidden">
+          {loadingHistory ? (
+            <div className="flex h-full items-center justify-center">
+              <div className="h-6 w-6 animate-spin rounded-full border-2 border-blue-500 border-t-transparent" />
             </div>
-          </div>
+          ) : (
+            <div className="flex h-full flex-col">
+              {selectedModelRequiresConnection && selectedProviderLabel && (
+                <div className="mx-4 mt-4 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-200">
+                  Selected model requires a {selectedProviderLabel} connection.
+                  Pick a connected provider from the model list or add{" "}
+                  {selectedProviderLabel} in Settings.
+                </div>
+              )}
+              {historyError && (
+                <div className="mx-4 mt-4 rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-300">
+                  {historyError}
+                </div>
+              )}
+              <div className="flex-1 overflow-hidden">
+                <ChatView
+                  messages={messages}
+                  streaming={streaming}
+                  onSend={handleSend}
+                  onCancel={cancel}
+                  onCommand={handleCommand}
+                  piCommands={piCommands}
+                />
+              </div>
+            </div>
+          )}
+        </main>
+        {workspaceId && (
+          <>
+            <div
+              role="separator"
+              aria-label="Resize workspace panel"
+              onPointerDown={beginInspectorResize}
+              className="hidden w-1.5 cursor-col-resize border-x border-gray-800 bg-gray-900 hover:bg-blue-500/40 lg:block"
+            />
+            <WorkspaceInspector
+              workspaceId={workspaceId}
+              refreshKey={fileRefreshKey}
+              className="hidden lg:flex"
+              style={{ width: inspectorWidth }}
+            />
+          </>
         )}
       </div>
+      {workspaceId && workspacePanelOpen && (
+        <div className="fixed inset-0 z-50 bg-gray-950 lg:hidden">
+          <div className="flex h-full min-h-0 flex-col">
+            <div className="flex items-center justify-between border-b border-gray-800 px-4 py-3">
+              <div className="text-sm font-medium text-gray-100">Workspace</div>
+              <button
+                type="button"
+                onClick={() => setWorkspacePanelOpen(false)}
+                className="rounded-lg border border-gray-800 px-3 py-1 text-xs text-gray-300"
+              >
+                Close
+              </button>
+            </div>
+            <WorkspaceInspector workspaceId={workspaceId} refreshKey={fileRefreshKey} className="flex-1" />
+          </div>
+        </div>
+      )}
     </>
   );
 }

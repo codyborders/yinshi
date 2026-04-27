@@ -1,6 +1,8 @@
 """Tests for security fixes identified in code review."""
 
+import pytest
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
 # --- SEC-C1: WebSocket auth bypass removal ---
 
@@ -37,6 +39,31 @@ def test_websocket_header_does_not_bypass_auth(tmp_path, monkeypatch):
         assert resp.status_code == 401
 
     get_settings.cache_clear()
+
+
+def test_terminal_websocket_rejects_missing_session_cookie(auth_client: TestClient) -> None:
+    """Terminal WebSocket must not rely on HTTP middleware for authentication."""
+    auth_client.cookies.clear()
+    with pytest.raises(WebSocketDisconnect) as disconnect:
+        with auth_client.websocket_connect(
+            "/api/workspaces/" + "a" * 32 + "/terminal",
+            headers={"Origin": "http://localhost:5173"},
+        ):
+            pass
+
+    assert disconnect.value.code == 1008
+
+
+def test_terminal_websocket_rejects_untrusted_origin(auth_client: TestClient) -> None:
+    """Terminal WebSocket should reject cross-site browser origins before startup."""
+    with pytest.raises(WebSocketDisconnect) as disconnect:
+        with auth_client.websocket_connect(
+            "/api/workspaces/" + "a" * 32 + "/terminal",
+            headers={"Origin": "https://evil.example"},
+        ):
+            pass
+
+    assert disconnect.value.code == 1008
 
 
 # --- SEC-H3: Sessions PATCH must use _UPDATABLE_COLUMNS guard ---

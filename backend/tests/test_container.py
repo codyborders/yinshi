@@ -786,6 +786,63 @@ class TestContainerManager:
         assert f"{data_dir.resolve()}:/data:rw" not in run_args
 
     @pytest.mark.asyncio
+    async def test_ensure_container_uses_workspace_runtime_identity(self, tmp_path):
+        """Workspace runtimes should use separate sockets, names, labels, and env."""
+        socket_base = str(tmp_path / "sockets")
+        settings = _make_settings(container_socket_base=socket_base)
+        user_id = "abcdef12345678901234567890abcdef"
+        runtime_id = "b" * 32
+        data_dir = tmp_path / "data"
+        workspace_dir = data_dir / "repos" / "repo1" / ".worktrees" / "branch"
+        workspace_dir.mkdir(parents=True)
+        socket_dir = Path(socket_base) / user_id / runtime_id
+        container_id = "workspace_runtime_123"
+
+        def _side_effect(*args, **kwargs):
+            subcmd = args[1] if len(args) > 1 else ""
+            if subcmd == "run":
+                _write_detached_run_outputs(args, kwargs, container_id)
+                socket_dir.mkdir(parents=True, exist_ok=True)
+                (socket_dir / "sidecar.sock").write_text("", encoding="utf-8")
+                return _make_mock_process(stdout=container_id)
+            if subcmd == "network":
+                return _make_mock_process(returncode=0)
+            if subcmd == "ps":
+                return _make_mock_process(stdout="[]")
+            return _make_mock_process()
+
+        socket_path = str(socket_dir / "sidecar.sock")
+        with (
+            patch(
+                "asyncio.create_subprocess_exec", AsyncMock(side_effect=_side_effect)
+            ) as mock_exec,
+            patch("asyncio.open_unix_connection", _ready_socket_listener(socket_path)),
+        ):
+            mgr = ContainerManager(settings=settings)
+            info = await mgr.ensure_container(
+                user_id,
+                str(data_dir),
+                mounts=(
+                    ContainerMount(
+                        source_path=str(workspace_dir),
+                        target_path="/workspace",
+                        read_only=False,
+                    ),
+                ),
+                runtime_id=runtime_id,
+                environment={"HOME": "/home/yinshi", "PATH": "/home/yinshi/bin:/usr/bin"},
+            )
+
+        run_call = next(call for call in mock_exec.call_args_list if call.args[1] == "run")
+        run_args = run_call.args
+        assert info.runtime_id == runtime_id
+        assert info.socket_path == socket_path
+        assert f"yinshi-sidecar-{user_id[:12]}-{runtime_id}" in run_args
+        assert f"yinshi.runtime_id={runtime_id}" in run_args
+        assert "HOME=/home/yinshi" in run_args
+        assert "PATH=/home/yinshi/bin:/usr/bin" in run_args
+
+    @pytest.mark.asyncio
     async def test_run_podman_security_flags(self, tmp_path):
         """Verify podman run is called with correct security flags."""
         socket_base = str(tmp_path / "sockets")

@@ -26,6 +26,7 @@ from yinshi.services.git import (
     validate_local_repo,
 )
 from yinshi.services.github_app import normalize_github_remote, resolve_github_clone_access
+from yinshi.services.workspace_files import ensure_secret_guardrails
 from yinshi.tenant import TenantContext
 from yinshi.utils.paths import is_path_inside
 
@@ -233,8 +234,7 @@ async def ensure_repo_checkout_for_tenant(
         )
         remote_was_updated = await _sync_repo_checkout_remote(repo_path, refreshed_remote_url)
         metadata_changed = (
-            refreshed_remote_url != remote_url
-            or refreshed_installation_id != installation_id
+            refreshed_remote_url != remote_url or refreshed_installation_id != installation_id
         )
         if not remote_was_updated and not metadata_changed:
             return dict(repo)
@@ -373,6 +373,7 @@ async def create_workspace_for_repo(
             base_ref = None
 
     await create_worktree(repo_path, worktree_dir, branch, base_ref=base_ref)
+    ensure_secret_guardrails(repo_path)
 
     cursor = db.execute(
         """INSERT INTO workspaces (repo_id, name, branch, path, state)

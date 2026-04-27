@@ -120,6 +120,10 @@ class Settings(BaseSettings):
     container_socket_base: str = "/var/run/yinshi"
     container_mount_mode: str = "narrow"
 
+    # Browser terminal runtime controls
+    terminal_keepalive_s: int = 7200
+    terminal_scrollback_lines: int = 1000
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "case_sensitive": False}
 
     @property
@@ -248,6 +252,10 @@ def _validate_settings(settings: Settings) -> None:
 
     if settings.container_mount_mode not in {"narrow", "tenant-data"}:
         raise RuntimeError("CONTAINER_MOUNT_MODE must be either narrow or tenant-data")
+    if settings.terminal_keepalive_s < 300:
+        raise RuntimeError("TERMINAL_KEEPALIVE_S must be at least 300 seconds")
+    if settings.terminal_scrollback_lines < 100:
+        raise RuntimeError("TERMINAL_SCROLLBACK_LINES must be at least 100")
 
 
 @lru_cache()

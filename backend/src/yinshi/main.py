@@ -4,6 +4,7 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from typing import Any, cast
 
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -24,6 +25,8 @@ from yinshi.api import (
     sessions,
     settings,
     stream,
+    terminals,
+    workspace_files,
     workspaces,
 )
 from yinshi.auth import AuthMiddleware, setup_oauth
@@ -123,7 +126,7 @@ app = FastAPI(
     openapi_url="/openapi.json" if app_settings.debug else None,
 )
 app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_exception_handler(RateLimitExceeded, cast(Any, _rate_limit_exceeded_handler))
 
 # CORS
 _cors_origins = [app_settings.frontend_url]
@@ -150,7 +153,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["Content-Type", "X-Requested-With"],
 )
 
@@ -162,6 +165,8 @@ app.include_router(github.router)
 app.include_router(repos.router)
 app.include_router(runners.router)
 app.include_router(workspaces.router)
+app.include_router(workspace_files.router)
+app.include_router(terminals.router)
 app.include_router(sessions.router)
 app.include_router(stream.router)
 app.include_router(settings.router)

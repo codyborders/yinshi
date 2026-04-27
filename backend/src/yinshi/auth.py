@@ -3,6 +3,7 @@
 import logging
 import sqlite3
 import uuid
+from typing import cast
 
 from authlib.integrations.starlette_client import OAuth
 from fastapi import Request, Response
@@ -157,7 +158,7 @@ def _load_auth_session_row(user_id: str, auth_session_id: str) -> sqlite3.Row | 
             "SELECT id, revoked_at FROM auth_sessions WHERE id = ? AND user_id = ?",
             (normalized_auth_session_id, normalized_user_id),
         ).fetchone()
-    return row
+    return cast(sqlite3.Row | None, row)
 
 
 def revoke_auth_session(user_id: str, auth_session_id: str) -> None:
@@ -206,12 +207,30 @@ def verify_session_token(token: str) -> str | None:
     return session_identity[0]
 
 
-def _auth_disabled() -> bool:
+def resolve_tenant_from_session_token(token: str) -> TenantContext | None:
+    """Return the tenant identified by a signed browser session token."""
+    if not isinstance(token, str):
+        raise TypeError("token must be a string")
+    normalized_token = token.strip()
+    if not normalized_token:
+        raise ValueError("token must not be empty")
+    user_id = verify_session_token(normalized_token)
+    if user_id is None:
+        return None
+    return _resolve_tenant_from_user_id(user_id)
+
+
+def auth_disabled() -> bool:
     """Check if authentication is disabled."""
     settings = get_settings()
     return settings.disable_auth or (
         not settings.google_client_id and not settings.github_client_id
     )
+
+
+def _auth_disabled() -> bool:
+    """Check if authentication is disabled."""
+    return auth_disabled()
 
 
 def _resolve_tenant_from_user_id(user_id: str) -> TenantContext | None:

@@ -84,6 +84,7 @@ class ExecutionContext:
     agent_dir: str | None = None
     settings_payload: dict[str, object] | None = None
     model_ref: str = ""
+    runtime_id: str | None = None
 
 
 class PromptRequest(BaseModel):
@@ -437,6 +438,7 @@ async def _resolve_execution_context(
     request: Request,
     tenant: Any,
     runtime_session_id: str,
+    workspace_id: str,
     workspace_path: str,
     model: str,
     repo_root_path: str | None = None,
@@ -455,6 +457,7 @@ async def _resolve_execution_context(
             provider_config=None,
             git_auth=None,
             model_ref=model,
+            runtime_id=None,
         )
 
     _validate_workspace_path(tenant, workspace_path)
@@ -467,6 +470,7 @@ async def _resolve_execution_context(
             repo_agents_md=agents_md,
             repo_root_path=repo_root_path,
             workspace_path=workspace_path,
+            workspace_id=workspace_id,
         )
     except (ContainerStartError, ContainerNotReadyError):
         logger.exception("Container start failed for user %s", tenant.user_id[:8])
@@ -489,7 +493,11 @@ async def _resolve_execution_context(
             ) from exc
 
     sidecar_tmp = None
-    begin_tenant_container_activity(request, tenant)
+    begin_tenant_container_activity(
+        request,
+        tenant,
+        runtime_id=tenant_sidecar_context.runtime_id,
+    )
     try:
         sidecar_tmp = await create_sidecar_connection(sidecar_socket)
         resolved = await sidecar_tmp.resolve_model(model, agent_dir=agent_dir)
@@ -542,7 +550,11 @@ async def _resolve_execution_context(
     except KeyNotFoundError as exc:
         raise HTTPException(status_code=402, detail=str(exc)) from exc
     finally:
-        end_tenant_container_activity(request, tenant)
+        end_tenant_container_activity(
+            request,
+            tenant,
+            runtime_id=tenant_sidecar_context.runtime_id,
+        )
         if sidecar_tmp is not None:
             await sidecar_tmp.disconnect()
 
@@ -557,6 +569,7 @@ async def _resolve_execution_context(
         agent_dir=agent_dir,
         settings_payload=settings_payload,
         model_ref=resolved_model_ref,
+        runtime_id=tenant_sidecar_context.runtime_id,
     )
 
 
@@ -626,6 +639,7 @@ async def prompt_session(
             request,
             tenant,
             session_id,
+            session["workspace_id"],
             workspace_path,
             model,
             repo_root_path=(
@@ -664,7 +678,7 @@ async def prompt_session(
         turn_status = "completed"
         turn_events: list[dict[str, Any]] = []
 
-        begin_tenant_container_activity(request, tenant)
+        begin_tenant_container_activity(request, tenant, runtime_id=context.runtime_id)
 
         try:
             sidecar = await create_sidecar_connection(context.sidecar_socket)
@@ -894,8 +908,8 @@ async def prompt_session(
                     logger.exception("Failed to record usage: session=%s", session_id)
 
             # Keep container alive after activity
-            end_tenant_container_activity(request, tenant)
-            touch_tenant_container(request, tenant)
+            end_tenant_container_activity(request, tenant, runtime_id=context.runtime_id)
+            touch_tenant_container(request, tenant, runtime_id=context.runtime_id)
 
             await coordinator.release(session_id)
             if sidecar:
