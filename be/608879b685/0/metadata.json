@@ -1,0 +1,39 @@
+{
+  "cli_version": "dev",
+  "checkpoint_id": "be608879b685",
+  "session_id": "019dcf4d-085e-7405-a765-1d705ff83498",
+  "strategy": "manual-commit",
+  "created_at": "2026-04-27T19:24:30.970045Z",
+  "branch": "main",
+  "checkpoints_count": 2,
+  "files_touched": [],
+  "agent": "Pi",
+  "model": "openai-codex/gpt-5.5",
+  "turn_id": "c3a7eb1a989d",
+  "token_usage": {
+    "input_tokens": 3758190,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 99447296,
+    "output_tokens": 256435,
+    "api_call_count": 792
+  },
+  "session_metrics": {
+    "turn_count": 39
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 3,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 630,
+      "agent_lines_removed": 0
+    }
+  ]
+}
