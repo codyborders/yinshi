@@ -130,10 +130,10 @@ function terminalTheme(): ITheme {
     : LIGHT_TERMINAL_ANSI_COLORS;
   return {
     ...ansiColors,
-    background: themeVariableColor("--gray-950", "#f7f0e3"),
+    background: themeVariableColor("--gray-900", "#f0e6d3"),
     foreground: themeVariableColor("--gray-200", "#2d2520"),
     cursor: TERMINAL_ACCENT_COLOR,
-    cursorAccent: themeVariableColor("--gray-950", "#f7f0e3"),
+    cursorAccent: themeVariableColor("--gray-900", "#f0e6d3"),
     selectionBackground: TERMINAL_SELECTION_BACKGROUND,
     selectionForeground: themeVariableColor("--gray-50", "#0f0c09"),
     selectionInactiveBackground: themeVariableColor("--gray-600", "rgba(168, 148, 120, 0.24)", 0.24),
@@ -455,7 +455,7 @@ function TerminalPane({ workspaceId, active }: { workspaceId: string; active: bo
   }, []);
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-gray-950">
+    <div className="flex h-full min-h-0 flex-col bg-gray-900">
       <div className="flex items-center justify-between border-b border-gray-800 px-3 py-2">
         <div className="text-xs font-medium text-gray-300">Terminal</div>
         <div className="flex items-center gap-2">

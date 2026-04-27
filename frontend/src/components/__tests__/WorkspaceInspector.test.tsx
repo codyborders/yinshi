@@ -7,9 +7,9 @@ const WORKSPACE_TERMINAL_URL = `ws://test.local/api/workspaces/${WORKSPACE_ID}/t
 const TERMINAL_RECONNECT_DELAY_MS = 2000;
 const TERMINAL_TEMPORARY_FAILURE_CLOSE_CODE = 1011;
 
-const LIGHT_TERMINAL_BACKGROUND = "rgb(247, 240, 227)";
+const LIGHT_TERMINAL_BACKGROUND = "rgb(240, 230, 211)";
 const LIGHT_TERMINAL_FOREGROUND = "rgb(45, 37, 32)";
-const DARK_TERMINAL_BACKGROUND = "rgb(15, 12, 9)";
+const DARK_TERMINAL_BACKGROUND = "rgb(26, 20, 16)";
 const DARK_TERMINAL_FOREGROUND = "rgb(224, 209, 184)";
 const TERMINAL_CURSOR = "#c23b22";
 
@@ -124,7 +124,7 @@ async function waitForWebSocketCount(count: number): Promise<void> {
 
 function setTerminalThemeVariables(background: string, foreground: string): void {
   const rootStyle = document.documentElement.style;
-  rootStyle.setProperty("--gray-950", background);
+  rootStyle.setProperty("--gray-900", background);
   rootStyle.setProperty("--gray-200", foreground);
   rootStyle.setProperty("--gray-50", foreground);
   rootStyle.setProperty("--gray-600", foreground);
@@ -144,7 +144,7 @@ describe("WorkspaceInspector terminal", () => {
     FakeWebSocket.instances = [];
     terminalInstances.length = 0;
     apiGetMock.mockResolvedValue({ files: [] });
-    setTerminalThemeVariables("247 240 227", "45 37 32");
+    setTerminalThemeVariables("240 230 211", "45 37 32");
     vi.stubGlobal("WebSocket", FakeWebSocket);
     vi.stubGlobal("ResizeObserver", FakeResizeObserver);
   });
@@ -177,7 +177,7 @@ describe("WorkspaceInspector terminal", () => {
       cursor: TERMINAL_CURSOR,
     });
 
-    setTerminalThemeVariables("15 12 9", "224 209 184");
+    setTerminalThemeVariables("26 20 16", "224 209 184");
     document.documentElement.classList.add("dark");
 
     await waitFor(() => {
