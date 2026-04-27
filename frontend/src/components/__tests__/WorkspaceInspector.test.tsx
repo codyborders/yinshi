@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const WORKSPACE_ID = "workspace-1";
@@ -81,9 +81,11 @@ class FakeWebSocket extends EventTarget {
     this.readyState = FakeWebSocket.CLOSED;
   }
 
-  closeFromServer(): void {
+  closeFromServer(code = 1006): void {
     this.readyState = FakeWebSocket.CLOSED;
-    this.dispatchEvent(new Event("close"));
+    const event = new Event("close") as Event & { code: number };
+    Object.defineProperty(event, "code", { value: code });
+    this.dispatchEvent(event);
   }
 }
 
@@ -118,9 +120,11 @@ describe("WorkspaceInspector terminal", () => {
       expect(FakeWebSocket.instances).toHaveLength(1);
     });
 
-    FakeWebSocket.instances[0].closeFromServer();
+    act(() => {
+      FakeWebSocket.instances[0].closeFromServer();
+    });
 
-    expect(await screen.findByText("Disconnected")).toBeInTheDocument();
+    expect(screen.getByText("Disconnected. Retrying...")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Restart" }));
 
     await waitFor(() => {
@@ -129,5 +133,30 @@ describe("WorkspaceInspector terminal", () => {
     expect(terminalResetMock).toHaveBeenCalled();
     expect(FakeWebSocket.instances[1].url).toBe(WORKSPACE_TERMINAL_URL);
     expect(screen.getByText("Connecting...")).toBeInTheDocument();
+  });
+
+  it("automatically retries when the terminal runtime is temporarily unavailable", async () => {
+    render(<WorkspaceInspector workspaceId={WORKSPACE_ID} refreshKey={0} />);
+
+    await waitFor(() => {
+      expect(FakeWebSocket.instances).toHaveLength(1);
+    });
+
+    vi.useFakeTimers();
+    try {
+      act(() => {
+        FakeWebSocket.instances[0].closeFromServer(1011);
+      });
+
+      expect(screen.getByText("Terminal unavailable. Retrying...")).toBeInTheDocument();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2000);
+      });
+
+      expect(FakeWebSocket.instances).toHaveLength(2);
+      expect(FakeWebSocket.instances[1].url).toBe(WORKSPACE_TERMINAL_URL);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

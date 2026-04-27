@@ -31,6 +31,7 @@ const TERMINAL_HEIGHT_DEFAULT = 260;
 const TERMINAL_HEIGHT_MIN = 140;
 const TERMINAL_HEIGHT_MAX = 620;
 const FILE_STATUS_REFRESH_MS = 15000;
+const TERMINAL_RECONNECT_DELAY_MS = 2000;
 
 function storedTerminalHeight(): number {
   const raw = sessionStorage.getItem("yinshi-terminal-height");
@@ -287,8 +288,18 @@ function TerminalPane({ workspaceId, active }: { workspaceId: string; active: bo
     const socket = new WebSocket(workspaceTerminalUrl(workspaceId));
     socketRef.current = socket;
     let disposed = false;
+    let reconnectTimer: number | null = null;
     const showStatus = (nextStatus: string) => {
       if (!disposed) setStatus(nextStatus);
+    };
+    const reconnect = (nextStatus: string) => {
+      if (disposed) return;
+      setStatus(nextStatus);
+      reconnectTimer = window.setTimeout(() => {
+        if (!disposed) {
+          setConnectionVersion((value) => value + 1);
+        }
+      }, TERMINAL_RECONNECT_DELAY_MS);
     };
     const disposable = terminal.onData((data) => {
       if (socket.readyState === WebSocket.OPEN) {
@@ -320,7 +331,13 @@ function TerminalPane({ workspaceId, active }: { workspaceId: string; active: bo
         showStatus("Received malformed terminal event");
       }
     });
-    socket.addEventListener("close", () => showStatus("Disconnected"));
+    socket.addEventListener("close", (event) => {
+      if (event.code === 1008) {
+        showStatus("Terminal access denied");
+        return;
+      }
+      reconnect(event.code === 1011 ? "Terminal unavailable. Retrying..." : "Disconnected. Retrying...");
+    });
     socket.addEventListener("error", () => showStatus("Terminal connection failed"));
 
     const observer = new ResizeObserver(() => fit());
@@ -329,6 +346,9 @@ function TerminalPane({ workspaceId, active }: { workspaceId: string; active: bo
 
     return () => {
       disposed = true;
+      if (reconnectTimer !== null) {
+        window.clearTimeout(reconnectTimer);
+      }
       observer.disconnect();
       disposable.dispose();
       socket.close();
