@@ -240,6 +240,7 @@ function TerminalPane({ workspaceId, active }: { workspaceId: string; active: bo
   const fitRef = useRef<FitAddon | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
   const [status, setStatus] = useState(active ? "Connecting..." : "Paused");
+  const [connectionVersion, setConnectionVersion] = useState(0);
 
   const fit = useCallback(() => {
     const terminal = terminalRef.current;
@@ -285,6 +286,10 @@ function TerminalPane({ workspaceId, active }: { workspaceId: string; active: bo
 
     const socket = new WebSocket(workspaceTerminalUrl(workspaceId));
     socketRef.current = socket;
+    let disposed = false;
+    const showStatus = (nextStatus: string) => {
+      if (!disposed) setStatus(nextStatus);
+    };
     const disposable = terminal.onData((data) => {
       if (socket.readyState === WebSocket.OPEN) {
         socket.send(JSON.stringify({ type: "input", data }));
@@ -292,7 +297,7 @@ function TerminalPane({ workspaceId, active }: { workspaceId: string; active: bo
     });
 
     socket.addEventListener("open", () => {
-      setStatus("Connected");
+      showStatus("Connected");
       fit();
     });
     socket.addEventListener("message", (event) => {
@@ -302,27 +307,28 @@ function TerminalPane({ workspaceId, active }: { workspaceId: string; active: bo
           if (typeof message.replay === "string" && message.replay) {
             terminal.write(message.replay);
           }
-          setStatus("Connected");
+          showStatus("Connected");
           fit();
         } else if (message.type === "terminal_data" && typeof message.data === "string") {
           terminal.write(message.data);
         } else if (message.type === "terminal_exit") {
-          setStatus("Shell exited. Restart to open a new terminal.");
+          showStatus("Shell exited. Restart to open a new terminal.");
         } else if (message.type === "error") {
-          setStatus(typeof message.error === "string" ? message.error : "Terminal error");
+          showStatus(typeof message.error === "string" ? message.error : "Terminal error");
         }
       } catch {
-        setStatus("Received malformed terminal event");
+        showStatus("Received malformed terminal event");
       }
     });
-    socket.addEventListener("close", () => setStatus("Disconnected"));
-    socket.addEventListener("error", () => setStatus("Terminal connection failed"));
+    socket.addEventListener("close", () => showStatus("Disconnected"));
+    socket.addEventListener("error", () => showStatus("Terminal connection failed"));
 
     const observer = new ResizeObserver(() => fit());
     observer.observe(container);
     window.setTimeout(fit, 0);
 
     return () => {
+      disposed = true;
       observer.disconnect();
       disposable.dispose();
       socket.close();
@@ -331,15 +337,21 @@ function TerminalPane({ workspaceId, active }: { workspaceId: string; active: bo
       fitRef.current = null;
       socketRef.current = null;
     };
-  }, [active, fit, workspaceId]);
+  }, [active, connectionVersion, fit, workspaceId]);
 
   const restart = useCallback(() => {
     const socket = socketRef.current;
-    const terminal = terminalRef.current;
-    terminal?.reset();
+    terminalRef.current?.reset();
     if (socket?.readyState === WebSocket.OPEN) {
       socket.send(JSON.stringify({ type: "restart" }));
+      return;
     }
+    if (socket?.readyState === WebSocket.CONNECTING) {
+      setStatus("Connecting...");
+      return;
+    }
+    setStatus("Connecting...");
+    setConnectionVersion((value) => value + 1);
   }, []);
 
   return (
