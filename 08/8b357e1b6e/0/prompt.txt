@@ -367,3 +367,11 @@ We god to push the code to the `yinshi` vm?
 ---
 
 We god to push the code to the `yinshi` vm?
+
+---
+
+Terminal shows as disconnected. See here: https://yinshi.io/app/session/764c11f434d63b512c9b8e33f0cf130d - use `surf`
+
+---
+
+Terminal shows as disconnected. See here: https://yinshi.io/app/session/764c11f434d63b512c9b8e33f0cf130d - use `surf`
