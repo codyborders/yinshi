@@ -3,13 +3,35 @@
   "checkpoint_id": "67a01928ded8",
   "strategy": "manual-commit",
   "branch": "main",
-  "checkpoints_count": 2,
+  "checkpoints_count": 6,
   "files_touched": [
+    ".env.example",
+    "backend/src/yinshi/api/auth_routes.py",
     "backend/src/yinshi/api/stream.py",
+    "backend/src/yinshi/api/terminals.py",
+    "backend/src/yinshi/api/workspace_files.py",
+    "backend/src/yinshi/auth.py",
+    "backend/src/yinshi/config.py",
+    "backend/src/yinshi/main.py",
+    "backend/src/yinshi/services/container.py",
+    "backend/src/yinshi/services/sidecar_runtime.py",
     "backend/src/yinshi/services/workspace.py",
+    "backend/src/yinshi/services/workspace_files.py",
+    "backend/tests/test_container.py",
+    "backend/tests/test_security_fixes.py",
+    "backend/tests/test_sidecar_runtime.py",
+    "backend/tests/test_workspace_files.py",
+    "docs/security/workspace-secrets-manager-plan.md",
+    "frontend/package-lock.json",
+    "frontend/package.json",
     "frontend/src/api/client.ts",
+    "frontend/src/components/WorkspaceInspector.tsx",
     "frontend/src/pages/Session.tsx",
-    "sidecar/src/sidecar.js"
+    "sidecar/Dockerfile",
+    "sidecar/package-lock.json",
+    "sidecar/package.json",
+    "sidecar/src/sidecar.js",
+    "sidecar/tests/terminal.test.js"
   ],
   "sessions": [
     {
@@ -17,13 +39,19 @@
       "transcript": "/67/a01928ded8/0/full.jsonl",
       "content_hash": "/67/a01928ded8/0/content_hash.txt",
       "prompt": "/67/a01928ded8/0/prompt.txt"
+    },
+    {
+      "metadata": "/67/a01928ded8/1/metadata.json",
+      "transcript": "/67/a01928ded8/1/full.jsonl",
+      "content_hash": "/67/a01928ded8/1/content_hash.txt",
+      "prompt": "/67/a01928ded8/1/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 2905715,
+    "input_tokens": 4676300,
     "cache_creation_tokens": 0,
-    "cache_read_tokens": 64142848,
-    "output_tokens": 173182,
-    "api_call_count": 668
+    "cache_read_tokens": 114327040,
+    "output_tokens": 273393,
+    "api_call_count": 967
   }
 }
