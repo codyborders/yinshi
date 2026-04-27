@@ -1,0 +1,377 @@
+I want to give users access to a terminal for their workspaces. When a workspace is created, a terminal session should also be created for that workspace. I'd like to provide an experience similar to what you see here: /Users/user/Desktop/Screenshot\ 2026-04-27\ at\ 7.20.38 AM.png 
+
+Notice the list of files at the top right, and notice how the user can see both _all_ files in the repo, as well as a tab for the files that have been changed in _this_ coding session. When a commit is made, the list of changed files is updated (it's essentially the same thing as seeing a `git status` for this worktree). Then, note how below the list of files is a separate section for the terminal. It's automatically `cd` into the directory for the workspace and worktree name, so when the user creates a new worktree, they are immediately in the right directory in the terminal as well.
+
+There is some polish in the UI, in that the user can drag the sidebar for the file tree and the terminal in or out to suit their needs. For example, if they wanted to resize the terminal to see more text, they could drag it so it looked like this: /Users/user/Desktop/Screenshot\ 2026-04-27\ at\ 7.24.34 AM.png 
+
+The terminal should give the user access to their isolated filesystem. They should also be able to run arbitrary commands and install packages. If they wanted to install `gh` to make it easier for their agents to query their git repos, we should allow it. If they use the BYOC capability, they should be able to install the aws cli to access and manage their storage, or whatever else they want. This also means we need to think through how we want to let users manage secrets. I want it to be secure as possible, but if just telling them to use `.env` files is the right approach, I'm okay with that.
+
+
+What questions do you have for me about this feature request?
+
+---
+
+I want to give users access to a terminal for their workspaces. When a workspace is created, a terminal session should also be created for that workspace. I'd like to provide an experience similar to what you see here: /Users/user/Desktop/Screenshot\ 2026-04-27\ at\ 7.20.38 AM.png 
+
+Notice the list of files at the top right, and notice how the user can see both _all_ files in the repo, as well as a tab for the files that have been changed in _this_ coding session. When a commit is made, the list of changed files is updated (it's essentially the same thing as seeing a `git status` for this worktree). Then, note how below the list of files is a separate section for the terminal. It's automatically `cd` into the directory for the workspace and worktree name, so when the user creates a new worktree, they are immediately in the right directory in the terminal as well.
+
+There is some polish in the UI, in that the user can drag the sidebar for the file tree and the terminal in or out to suit their needs. For example, if they wanted to resize the terminal to see more text, they could drag it so it looked like this: /Users/user/Desktop/Screenshot\ 2026-04-27\ at\ 7.24.34 AM.png 
+
+The terminal should give the user access to their isolated filesystem. They should also be able to run arbitrary commands and install packages. If they wanted to install `gh` to make it easier for their agents to query their git repos, we should allow it. If they use the BYOC capability, they should be able to install the aws cli to access and manage their storage, or whatever else they want. This also means we need to think through how we want to let users manage secrets. I want it to be secure as possible, but if just telling them to use `.env` files is the right approach, I'm okay with that.
+
+
+What questions do you have for me about this feature request?
+
+---
+
+1. Per workspace, and persisted for a time. What I mean: If the user loses internet, logs out, or refreshes their browser, I want their terminal to persist for at least a couple hours so they don't lose their work.
+2. Yes, the agent and terminal should share a runtime.
+3. Ideally they persist indefintiely for the user.
+4. I'm not sure what to do here. I want to prioritize security first, functionality second, ease of use third. If giving root/sudo to the container does not expose us to the risk of the user getting access to the host or other containers, i'm okay with that. But I need your guidance here.
+5. What do you recommend? I know it should have *some* level of outbound access, I'm just not sure how much is optimal. Outbound access would allow for web search, etc. which is nice.
+6. All worktrees for a given workspace/repo. Users may want to provide context from another worktree.
+7. For now let's use `.env` but write up a plan for a more robust secrets manager.
+8. Automatically .gitignored by default, and it should not be editable. .env should never be in git for this service.
+9. Correct - only changes to the worktree should be shown, and after a commit the tab should be cleared.
+10. I think it makes sense to exclude those kinds of directories, unless you disagree.
+11. Ideally we provie the ability to preview, view diffs, make edits, and download files.
+12. For now, one terminal per workspace.
+13. Just per browser session. 
+14. What provides a better experience for the user? I want whatever makes the user feel more at home.
+15. I tbhink they should be private, never logged. Unless you disagree?
+
+---
+
+1. Per workspace, and persisted for a time. What I mean: If the user loses internet, logs out, or refreshes their browser, I want their terminal to persist for at least a couple hours so they don't lose their work.
+2. Yes, the agent and terminal should share a runtime.
+3. Ideally they persist indefintiely for the user.
+4. I'm not sure what to do here. I want to prioritize security first, functionality second, ease of use third. If giving root/sudo to the container does not expose us to the risk of the user getting access to the host or other containers, i'm okay with that. But I need your guidance here.
+5. What do you recommend? I know it should have *some* level of outbound access, I'm just not sure how much is optimal. Outbound access would allow for web search, etc. which is nice.
+6. All worktrees for a given workspace/repo. Users may want to provide context from another worktree.
+7. For now let's use `.env` but write up a plan for a more robust secrets manager.
+8. Automatically .gitignored by default, and it should not be editable. .env should never be in git for this service.
+9. Correct - only changes to the worktree should be shown, and after a commit the tab should be cleared.
+10. I think it makes sense to exclude those kinds of directories, unless you disagree.
+11. Ideally we provie the ability to preview, view diffs, make edits, and download files.
+12. For now, one terminal per workspace.
+13. Just per browser session. 
+14. What provides a better experience for the user? I want whatever makes the user feel more at home.
+15. I tbhink they should be private, never logged. Unless you disagree?
+
+---
+
+/skill:code-simplicity-reviewer
+
+<!-- code-simplifier-enforcer -->
+
+Post-implementation cleanup pass.
+
+Changed files:
+- `backend/src/yinshi/api/auth_routes.py`
+- `backend/src/yinshi/api/stream.py`
+- `backend/src/yinshi/api/terminals.py`
+- `backend/src/yinshi/api/workspace_files.py`
+- `backend/src/yinshi/auth.py`
+- `backend/src/yinshi/config.py`
+- `backend/src/yinshi/main.py`
+- `backend/src/yinshi/services/container.py`
+- `backend/src/yinshi/services/sidecar_runtime.py`
+- `backend/src/yinshi/services/workspace_files.py`
+- `backend/src/yinshi/services/workspace.py`
+- `backend/tests/test_container.py`
+- `backend/tests/test_security_fixes.py`
+- `backend/tests/test_sidecar_runtime.py`
+- `backend/tests/test_workspace_files.py`
+- `frontend/package.json`
+- `frontend/src/api/client.ts`
+- `frontend/src/components/WorkspaceInspector.tsx`
+- `frontend/src/pages/Session.tsx`
+- `sidecar/Dockerfile`
+- `sidecar/package.json`
+- `sidecar/src/sidecar.js`
+- `sidecar/tests/terminal.test.js`
+
+Use repository state as the source of truth, not the compacted summary. Inspect the listed files and current diff before editing. Apply only small, behavior-preserving simplifications that make the code clearer or more maintainable. Keep changes scoped to the listed files unless a directly related helper must change. If no simplification improves clarity, leave the files unchanged and say so. Run relevant checks after edits when the project exposes clear checks.
+
+---
+
+/skill:code-simplicity-reviewer
+
+<!-- code-simplifier-enforcer -->
+
+Post-implementation cleanup pass.
+
+Changed files:
+- `backend/src/yinshi/api/auth_routes.py`
+- `backend/src/yinshi/api/stream.py`
+- `backend/src/yinshi/api/terminals.py`
+- `backend/src/yinshi/api/workspace_files.py`
+- `backend/src/yinshi/auth.py`
+- `backend/src/yinshi/config.py`
+- `backend/src/yinshi/main.py`
+- `backend/src/yinshi/services/container.py`
+- `backend/src/yinshi/services/sidecar_runtime.py`
+- `backend/src/yinshi/services/workspace_files.py`
+- `backend/src/yinshi/services/workspace.py`
+- `backend/tests/test_container.py`
+- `backend/tests/test_security_fixes.py`
+- `backend/tests/test_sidecar_runtime.py`
+- `backend/tests/test_workspace_files.py`
+- `frontend/package.json`
+- `frontend/src/api/client.ts`
+- `frontend/src/components/WorkspaceInspector.tsx`
+- `frontend/src/pages/Session.tsx`
+- `sidecar/Dockerfile`
+- `sidecar/package.json`
+- `sidecar/src/sidecar.js`
+- `sidecar/tests/terminal.test.js`
+
+Use repository state as the source of truth, not the compacted summary. Inspect the listed files and current diff before editing. Apply only small, behavior-preserving simplifications that make the code clearer or more maintainable. Keep changes scoped to the listed files unless a directly related helper must change. If no simplification improves clarity, leave the files unchanged and say so. Run relevant checks after edits when the project exposes clear checks.
+
+---
+
+Commit but don't push.
+
+---
+
+Commit but don't push.
+
+---
+
+Commit but don't push.
+
+---
+
+Did we create a checkpoint in entire? I see there's a checkpoint and a relaed napkin file, but I don't see new checkpoints in the `entire` app.
+
+---
+
+Did we create a checkpoint in entire? I see there's a checkpoint and a relaed napkin file, but I don't see new checkpoints in the `entire` app.
+
+---
+
+You are reviewing changed code.
+
+Target files are ``. If none are supplied, use files from `git diff --name-only HEAD~1`.
+
+## Phase 1 - Design Review
+
+1. Invoke `/skill:software-design` on the target files.
+   Evaluate abstraction depth, information hiding, complexity red flags,
+   interface design, and module boundaries.
+   Summarize design-level findings before proceeding.
+
+## Phase 2 - Implementation Review
+
+The simplifier now lives as `/skill:code-simplicity-reviewer`. Do not spawn a `code-simplifier` subagent. The `code-simplifier-enforcer` extension handles automated cleanup before commit; this review uses the skill only for analysis.
+
+2. Invoke `/skill:code-simplicity-reviewer` in analysis-only mode on the target files.
+   Evaluate duplication, dead code, unnecessary abstractions, naming friction,
+   and behavior-preserving simplification opportunities.
+
+3. Apply these review skills in the current session:
+   - `python-reviewer`
+   - `security-sentinel`
+   - `performance-oracle`
+
+   Read each skill if needed, apply it to the target paths, and keep findings separated by source. The matching extensions provide standalone `/python-reviewer`, `/security-sentinel`, and `/performance-oracle` commands. Do not use the subagent tool for review.
+
+4. Collect all findings from both phases.
+
+5. Present one report grouped by severity.
+   - DESIGN covers architectural and structural issues from software-design.
+   - CRITICAL covers security vulnerabilities from security-sentinel.
+   - MAJOR covers performance issues and convention violations from python-reviewer and performance-oracle.
+   - MINOR covers simplification opportunities from code-simplicity-reviewer.
+
+## Phase 3 - Write Review Report
+
+6. Create the `code_reviews/` directory in the project root if it does not exist.
+
+7. Write the report to `code_reviews/YYYY-mm-dd-HHmm-code-review.md`
+   (use the current date and time for the filename, e.g. 2026-02-19-0830-code-review.md).
+
+   The report MUST be written for junior engineers who may have little coding experience.
+   For every finding, explain what changed or was flagged, how the code works, and why the change is needed. Show before/after snippets where useful.
+
+   Use this report structure.
+
+   ## Summary
+   State what was reviewed and the main findings.
+
+   ## Design Findings
+   (from /skill:software-design Phase 1)
+
+   ## Security Findings
+   (from /skill:security-sentinel)
+
+   ## Performance Findings
+   (from /skill:performance-oracle)
+
+   ## Code Quality Findings
+   (from /skill:python-reviewer)
+
+   ## Simplification Findings
+   (from /skill:code-simplicity-reviewer)
+
+   ## Changes Applied
+   List every change that was made, with file paths and explanations.
+
+8. Confirm the report path to the user when done.
+
+---
+
+You are reviewing changed code.
+
+Target files are ``. If none are supplied, use files from `git diff --name-only HEAD~1`.
+
+## Phase 1 - Design Review
+
+1. Invoke `/skill:software-design` on the target files.
+   Evaluate abstraction depth, information hiding, complexity red flags,
+   interface design, and module boundaries.
+   Summarize design-level findings before proceeding.
+
+## Phase 2 - Implementation Review
+
+The simplifier now lives as `/skill:code-simplicity-reviewer`. Do not spawn a `code-simplifier` subagent. The `code-simplifier-enforcer` extension handles automated cleanup before commit; this review uses the skill only for analysis.
+
+2. Invoke `/skill:code-simplicity-reviewer` in analysis-only mode on the target files.
+   Evaluate duplication, dead code, unnecessary abstractions, naming friction,
+   and behavior-preserving simplification opportunities.
+
+3. Apply these review skills in the current session:
+   - `python-reviewer`
+   - `security-sentinel`
+   - `performance-oracle`
+
+   Read each skill if needed, apply it to the target paths, and keep findings separated by source. The matching extensions provide standalone `/python-reviewer`, `/security-sentinel`, and `/performance-oracle` commands. Do not use the subagent tool for review.
+
+4. Collect all findings from both phases.
+
+5. Present one report grouped by severity.
+   - DESIGN covers architectural and structural issues from software-design.
+   - CRITICAL covers security vulnerabilities from security-sentinel.
+   - MAJOR covers performance issues and convention violations from python-reviewer and performance-oracle.
+   - MINOR covers simplification opportunities from code-simplicity-reviewer.
+
+## Phase 3 - Write Review Report
+
+6. Create the `code_reviews/` directory in the project root if it does not exist.
+
+7. Write the report to `code_reviews/YYYY-mm-dd-HHmm-code-review.md`
+   (use the current date and time for the filename, e.g. 2026-02-19-0830-code-review.md).
+
+   The report MUST be written for junior engineers who may have little coding experience.
+   For every finding, explain what changed or was flagged, how the code works, and why the change is needed. Show before/after snippets where useful.
+
+   Use this report structure.
+
+   ## Summary
+   State what was reviewed and the main findings.
+
+   ## Design Findings
+   (from /skill:software-design Phase 1)
+
+   ## Security Findings
+   (from /skill:security-sentinel)
+
+   ## Performance Findings
+   (from /skill:performance-oracle)
+
+   ## Code Quality Findings
+   (from /skill:python-reviewer)
+
+   ## Simplification Findings
+   (from /skill:code-simplicity-reviewer)
+
+   ## Changes Applied
+   List every change that was made, with file paths and explanations.
+
+8. Confirm the report path to the user when done.
+
+---
+
+Fix all the issues in the code review.
+
+---
+
+Fix all the issues in the code review.
+
+---
+
+/skill:code-simplicity-reviewer
+
+<!-- code-simplifier-enforcer -->
+
+Post-implementation cleanup pass.
+
+Changed files:
+- `backend/src/yinshi/api/terminals.py`
+- `backend/src/yinshi/api/workspace_files.py`
+- `backend/src/yinshi/auth.py`
+- `backend/src/yinshi/services/sidecar_runtime.py`
+- `backend/src/yinshi/services/workspace_files.py`
+- `backend/src/yinshi/services/workspace_runtime_paths.py`
+- `backend/tests/test_pi_config.py`
+- `backend/tests/test_security_fixes.py`
+- `backend/tests/test_workspace_files.py`
+- `frontend/src/components/WorkspaceInspector.tsx`
+- `frontend/src/pages/Session.tsx`
+- `sidecar/Dockerfile`
+- `sidecar/src/sidecar.js`
+- `sidecar/tests/git_guard.test.js`
+- `sidecar/tests/terminal.test.js`
+
+Use repository state as the source of truth, not the compacted summary. Inspect the listed files and current diff before editing. Apply only small, behavior-preserving simplifications that make the code clearer or more maintainable. Keep changes scoped to the listed files unless a directly related helper must change. If no simplification improves clarity, leave the files unchanged and say so. Run relevant checks after edits when the project exposes clear checks.
+
+---
+
+/skill:code-simplicity-reviewer
+
+<!-- code-simplifier-enforcer -->
+
+Post-implementation cleanup pass.
+
+Changed files:
+- `backend/src/yinshi/api/terminals.py`
+- `backend/src/yinshi/api/workspace_files.py`
+- `backend/src/yinshi/auth.py`
+- `backend/src/yinshi/services/sidecar_runtime.py`
+- `backend/src/yinshi/services/workspace_files.py`
+- `backend/src/yinshi/services/workspace_runtime_paths.py`
+- `backend/tests/test_pi_config.py`
+- `backend/tests/test_security_fixes.py`
+- `backend/tests/test_workspace_files.py`
+- `frontend/src/components/WorkspaceInspector.tsx`
+- `frontend/src/pages/Session.tsx`
+- `sidecar/Dockerfile`
+- `sidecar/src/sidecar.js`
+- `sidecar/tests/git_guard.test.js`
+- `sidecar/tests/terminal.test.js`
+
+Use repository state as the source of truth, not the compacted summary. Inspect the listed files and current diff before editing. Apply only small, behavior-preserving simplifications that make the code clearer or more maintainable. Keep changes scoped to the listed files unless a directly related helper must change. If no simplification improves clarity, leave the files unchanged and say so. Run relevant checks after edits when the project exposes clear checks.
+
+---
+
+Commit and push to github
+
+---
+
+Commit and push to github
+
+---
+
+We god to push the code to the `yinshi` vm?
+
+---
+
+We god to push the code to the `yinshi` vm?
+
+---
+
+Terminal shows as disconnected. See here: https://yinshi.io/app/session/764c11f434d63b512c9b8e33f0cf130d - use `surf`
+
+---
+
+Terminal shows as disconnected. See here: https://yinshi.io/app/session/764c11f434d63b512c9b8e33f0cf130d - use `surf`
