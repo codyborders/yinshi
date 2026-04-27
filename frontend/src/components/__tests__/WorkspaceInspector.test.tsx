@@ -4,6 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const WORKSPACE_ID = "workspace-1";
 const WORKSPACE_TERMINAL_URL = `ws://test.local/api/workspaces/${WORKSPACE_ID}/terminal`;
+const TERMINAL_RECONNECT_DELAY_MS = 2000;
+const TERMINAL_TEMPORARY_FAILURE_CLOSE_CODE = 1011;
 
 const apiGetMock = vi.fn();
 const terminalResetMock = vi.fn();
@@ -99,6 +101,12 @@ class FakeResizeObserver {
   }
 }
 
+async function waitForWebSocketCount(count: number): Promise<void> {
+  await waitFor(() => {
+    expect(FakeWebSocket.instances).toHaveLength(count);
+  });
+}
+
 describe("WorkspaceInspector terminal", () => {
   afterEach(() => {
     cleanup();
@@ -116,9 +124,7 @@ describe("WorkspaceInspector terminal", () => {
   it("reconnects when Restart is clicked after the terminal socket closes", async () => {
     render(<WorkspaceInspector workspaceId={WORKSPACE_ID} refreshKey={0} />);
 
-    await waitFor(() => {
-      expect(FakeWebSocket.instances).toHaveLength(1);
-    });
+    await waitForWebSocketCount(1);
 
     act(() => {
       FakeWebSocket.instances[0].closeFromServer();
@@ -127,9 +133,7 @@ describe("WorkspaceInspector terminal", () => {
     expect(screen.getByText("Disconnected. Retrying...")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Restart" }));
 
-    await waitFor(() => {
-      expect(FakeWebSocket.instances).toHaveLength(2);
-    });
+    await waitForWebSocketCount(2);
     expect(terminalResetMock).toHaveBeenCalled();
     expect(FakeWebSocket.instances[1].url).toBe(WORKSPACE_TERMINAL_URL);
     expect(screen.getByText("Connecting...")).toBeInTheDocument();
@@ -138,19 +142,17 @@ describe("WorkspaceInspector terminal", () => {
   it("automatically retries when the terminal runtime is temporarily unavailable", async () => {
     render(<WorkspaceInspector workspaceId={WORKSPACE_ID} refreshKey={0} />);
 
-    await waitFor(() => {
-      expect(FakeWebSocket.instances).toHaveLength(1);
-    });
+    await waitForWebSocketCount(1);
 
     vi.useFakeTimers();
     try {
       act(() => {
-        FakeWebSocket.instances[0].closeFromServer(1011);
+        FakeWebSocket.instances[0].closeFromServer(TERMINAL_TEMPORARY_FAILURE_CLOSE_CODE);
       });
 
       expect(screen.getByText("Terminal unavailable. Retrying...")).toBeInTheDocument();
       await act(async () => {
-        await vi.advanceTimersByTimeAsync(2000);
+        await vi.advanceTimersByTimeAsync(TERMINAL_RECONNECT_DELAY_MS);
       });
 
       expect(FakeWebSocket.instances).toHaveLength(2);

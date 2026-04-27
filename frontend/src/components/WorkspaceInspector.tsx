@@ -31,6 +31,8 @@ const TERMINAL_HEIGHT_DEFAULT = 260;
 const TERMINAL_HEIGHT_MIN = 140;
 const TERMINAL_HEIGHT_MAX = 620;
 const FILE_STATUS_REFRESH_MS = 15000;
+const TERMINAL_ACCESS_DENIED_CLOSE_CODE = 1008;
+const TERMINAL_TEMPORARY_FAILURE_CLOSE_CODE = 1011;
 const TERMINAL_RECONNECT_DELAY_MS = 2000;
 
 function storedTerminalHeight(): number {
@@ -60,6 +62,13 @@ function countFiles(nodes: WorkspaceFileNode[]): number {
     if (node.type === "file") return total + 1;
     return total + countFiles(node.children);
   }, 0);
+}
+
+function terminalReconnectStatus(closeCode: number): string {
+  if (closeCode === TERMINAL_TEMPORARY_FAILURE_CLOSE_CODE) {
+    return "Terminal unavailable. Retrying...";
+  }
+  return "Disconnected. Retrying...";
 }
 
 function FileTree({
@@ -332,11 +341,11 @@ function TerminalPane({ workspaceId, active }: { workspaceId: string; active: bo
       }
     });
     socket.addEventListener("close", (event) => {
-      if (event.code === 1008) {
+      if (event.code === TERMINAL_ACCESS_DENIED_CLOSE_CODE) {
         showStatus("Terminal access denied");
         return;
       }
-      reconnect(event.code === 1011 ? "Terminal unavailable. Retrying..." : "Disconnected. Retrying...");
+      reconnect(terminalReconnectStatus(event.code));
     });
     socket.addEventListener("error", () => showStatus("Terminal connection failed"));
 
