@@ -128,12 +128,13 @@ function terminalTheme(): ITheme {
   const ansiColors = document.documentElement.classList.contains("dark")
     ? DARK_TERMINAL_ANSI_COLORS
     : LIGHT_TERMINAL_ANSI_COLORS;
+  const background = themeVariableColor("--gray-900", "#f0e6d3");
   return {
     ...ansiColors,
-    background: themeVariableColor("--gray-900", "#f0e6d3"),
+    background,
     foreground: themeVariableColor("--gray-200", "#2d2520"),
     cursor: TERMINAL_ACCENT_COLOR,
-    cursorAccent: themeVariableColor("--gray-900", "#f0e6d3"),
+    cursorAccent: background,
     selectionBackground: TERMINAL_SELECTION_BACKGROUND,
     selectionForeground: themeVariableColor("--gray-50", "#0f0c09"),
     selectionInactiveBackground: themeVariableColor("--gray-600", "rgba(168, 148, 120, 0.24)", 0.24),
