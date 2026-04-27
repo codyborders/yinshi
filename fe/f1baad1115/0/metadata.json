@@ -1,0 +1,62 @@
+{
+  "cli_version": "dev",
+  "checkpoint_id": "fef1baad1115",
+  "session_id": "019dd0db-d46c-7681-9092-159528614310",
+  "strategy": "manual-commit",
+  "created_at": "2026-04-27T21:45:12.604153Z",
+  "branch": "main",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "frontend/public/architecture.html",
+    "lit/yinshi.epub",
+    "lit/yinshi.html",
+    "lit/yinshi.lit.map.json",
+    "lit/yinshi.lit.md",
+    "lit/yinshi.pdf"
+  ],
+  "agent": "Pi",
+  "model": "openai-codex/gpt-5.5",
+  "turn_id": "f7a89bf57fbb",
+  "token_usage": {
+    "input_tokens": 349151,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 4956160,
+    "output_tokens": 25887,
+    "api_call_count": 70
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-04-27T21:45:12.57047Z",
+    "agent_lines": 0,
+    "agent_removed": 0,
+    "human_added": 0,
+    "human_modified": 72286,
+    "human_removed": 26590,
+    "total_committed": 0,
+    "total_lines_changed": 98876,
+    "agent_percentage": 0,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 72916,
+      "user_lines_removed": 49438,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        "code_reviews/2026-04-25-1616-code-review.md": 289,
+        "code_reviews/2026-04-27-0901-code-review.md": 341,
+        "frontend/public/architecture.html": 25449,
+        "lit/yinshi.html": 25449,
+        "lit/yinshi.lit.map.json": 552,
+        "lit/yinshi.lit.md": 20836
+      },
+      "user_removed_per_file": {
+        "frontend/public/architecture.html": 17778,
+        "lit/yinshi.html": 17778,
+        "lit/yinshi.lit.map.json": 387,
+        "lit/yinshi.lit.md": 13495
+      }
+    }
+  ]
+}

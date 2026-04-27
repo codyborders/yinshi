@@ -1,0 +1,30 @@
+{
+  "cli_version": "dev",
+  "checkpoint_id": "fef1baad1115",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "frontend/public/architecture.html",
+    "lit/yinshi.epub",
+    "lit/yinshi.html",
+    "lit/yinshi.lit.map.json",
+    "lit/yinshi.lit.md",
+    "lit/yinshi.pdf"
+  ],
+  "sessions": [
+    {
+      "metadata": "/fe/f1baad1115/0/metadata.json",
+      "transcript": "/fe/f1baad1115/0/full.jsonl",
+      "content_hash": "/fe/f1baad1115/0/content_hash.txt",
+      "prompt": "/fe/f1baad1115/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 349151,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 4956160,
+    "output_tokens": 25887,
+    "api_call_count": 70
+  }
+}
