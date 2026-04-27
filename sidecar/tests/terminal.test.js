@@ -62,6 +62,29 @@ function ptyAvailable() {
   }
 }
 
+async function nextTerminalReady(socket) {
+  for (let index = 0; index < 10; index += 1) {
+    const message = await nextMessage(socket);
+    if (message.type === "terminal_ready") {
+      return message;
+    }
+  }
+  throw new Error("terminal_ready not received");
+}
+
+async function expectTerminalOutput(socket, expectedText) {
+  for (let index = 0; index < 10; index += 1) {
+    const message = await nextMessage(socket);
+    if (message.type === "terminal_data" && message.data.includes(expectedText)) {
+      return;
+    }
+    if (message.type === "error") {
+      throw new Error(message.error);
+    }
+  }
+  throw new Error(`${expectedText} not received`);
+}
+
 test("terminal environment uses an explicit allowlist", () => {
   process.env.YINSHI_TERMINAL_SECRET = "terminal-secret-must-not-leak";
   process.env.NPM_CONFIG_PREFIX = "/home/yinshi/.npm-global";
@@ -108,8 +131,7 @@ test("terminal attach starts a PTY and streams output", async (t) => {
         scrollbackLines: 100,
       },
     });
-    const ready = await nextMessage(socket);
-    assert.equal(ready.type, "terminal_ready");
+    const ready = await nextTerminalReady(socket);
     assert.equal(ready.cwd, tempDir);
 
     send(socket, {
@@ -118,15 +140,7 @@ test("terminal attach starts a PTY and streams output", async (t) => {
       data: "printf YINSHI_TERMINAL_TEST\\n\n",
     });
 
-    let sawOutput = false;
-    for (let index = 0; index < 10; index += 1) {
-      const message = await nextMessage(socket);
-      if (message.type === "terminal_data" && message.data.includes("YINSHI_TERMINAL_TEST")) {
-        sawOutput = true;
-        break;
-      }
-    }
-    assert.equal(sawOutput, true);
+    await expectTerminalOutput(socket, "YINSHI_TERMINAL_TEST");
 
     send(socket, {
       type: "terminal_input",
@@ -147,6 +161,25 @@ test("terminal attach starts a PTY and streams output", async (t) => {
       }
     }
     assert.equal(sawNoSecret, true);
+
+    send(socket, {
+      type: "terminal_restart",
+      id: terminalId,
+      options: {
+        workspaceId: terminalId,
+        cwd: tempDir,
+        cols: 80,
+        rows: 24,
+        scrollbackLines: 100,
+      },
+    });
+    await nextTerminalReady(socket);
+    send(socket, {
+      type: "terminal_input",
+      id: terminalId,
+      data: "printf YINSHI_TERMINAL_RESTART\\n\n",
+    });
+    await expectTerminalOutput(socket, "YINSHI_TERMINAL_RESTART");
   } finally {
     socket.destroy();
     sidecar.cleanup();

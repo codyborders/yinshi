@@ -943,7 +943,9 @@ export class YinshiSidecar {
           signal,
         });
       }
-      this.activeTerminals.delete(id);
+      if (this.activeTerminals.get(id) === entry) {
+        this.activeTerminals.delete(id);
+      }
     });
     this.activeTerminals.set(id, entry);
     return entry;
