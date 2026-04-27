@@ -11,10 +11,13 @@ const LIGHT_TERMINAL_BACKGROUND = "rgb(247, 240, 227)";
 const LIGHT_TERMINAL_FOREGROUND = "rgb(45, 37, 32)";
 const DARK_TERMINAL_BACKGROUND = "rgb(15, 12, 9)";
 const DARK_TERMINAL_FOREGROUND = "rgb(224, 209, 184)";
+const TERMINAL_CURSOR = "#c23b22";
+
+type TerminalMock = { options: { theme?: unknown } };
 
 const apiGetMock = vi.fn();
 const terminalResetMock = vi.fn();
-const terminalInstances: Array<{ options: { theme?: unknown } }> = [];
+const terminalInstances: TerminalMock[] = [];
 
 vi.mock("../../api/client", () => ({
   api: {
@@ -171,7 +174,7 @@ describe("WorkspaceInspector terminal", () => {
     expect(terminalInstances[0].options.theme).toMatchObject({
       background: LIGHT_TERMINAL_BACKGROUND,
       foreground: LIGHT_TERMINAL_FOREGROUND,
-      cursor: "#c23b22",
+      cursor: TERMINAL_CURSOR,
     });
 
     setTerminalThemeVariables("15 12 9", "224 209 184");
@@ -181,7 +184,7 @@ describe("WorkspaceInspector terminal", () => {
       expect(terminalInstances[0].options.theme).toMatchObject({
         background: DARK_TERMINAL_BACKGROUND,
         foreground: DARK_TERMINAL_FOREGROUND,
-        cursor: "#c23b22",
+        cursor: TERMINAL_CURSOR,
       });
     });
   });

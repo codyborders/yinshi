@@ -34,6 +34,8 @@ const FILE_STATUS_REFRESH_MS = 15000;
 const TERMINAL_ACCESS_DENIED_CLOSE_CODE = 1008;
 const TERMINAL_TEMPORARY_FAILURE_CLOSE_CODE = 1011;
 const TERMINAL_RECONNECT_DELAY_MS = 2000;
+const TERMINAL_ACCENT_COLOR = "#c23b22";
+const TERMINAL_SELECTION_BACKGROUND = "rgba(194, 59, 34, 0.28)";
 
 const LIGHT_TERMINAL_ANSI_COLORS: ITheme = {
   black: "#1a1410",
@@ -45,7 +47,7 @@ const LIGHT_TERMINAL_ANSI_COLORS: ITheme = {
   cyan: "#4d6b64",
   white: "#3d3228",
   brightBlack: "#8c7a64",
-  brightRed: "#c23b22",
+  brightRed: TERMINAL_ACCENT_COLOR,
   brightGreen: "#5f7f45",
   brightYellow: "#b8963e",
   brightBlue: "#946846",
@@ -130,9 +132,9 @@ function terminalTheme(): ITheme {
     ...ansiColors,
     background: themeVariableColor("--gray-950", "#f7f0e3"),
     foreground: themeVariableColor("--gray-200", "#2d2520"),
-    cursor: "#c23b22",
+    cursor: TERMINAL_ACCENT_COLOR,
     cursorAccent: themeVariableColor("--gray-950", "#f7f0e3"),
-    selectionBackground: "rgba(194, 59, 34, 0.28)",
+    selectionBackground: TERMINAL_SELECTION_BACKGROUND,
     selectionForeground: themeVariableColor("--gray-50", "#0f0c09"),
     selectionInactiveBackground: themeVariableColor("--gray-600", "rgba(168, 148, 120, 0.24)", 0.24),
     scrollbarSliderBackground: themeVariableColor("--gray-400", "rgba(107, 93, 79, 0.24)", 0.24),
