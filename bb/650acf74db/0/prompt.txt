@@ -423,3 +423,31 @@ Terminal still doesn't connect
 ---
 
 Terminal still doesn't connect
+
+---
+
+/skill:code-simplicity-reviewer
+
+<!-- code-simplifier-enforcer -->
+
+Post-implementation cleanup pass.
+
+Changed files:
+- `frontend/src/components/__tests__/WorkspaceInspector.test.tsx`
+- `frontend/src/components/WorkspaceInspector.tsx`
+
+Use repository state as the source of truth, not the compacted summary. Inspect the listed files and current diff before editing. Apply only small, behavior-preserving simplifications that make the code clearer or more maintainable. Keep changes scoped to the listed files unless a directly related helper must change. If no simplification improves clarity, leave the files unchanged and say so. Run relevant checks after edits when the project exposes clear checks.
+
+---
+
+/skill:code-simplicity-reviewer
+
+<!-- code-simplifier-enforcer -->
+
+Post-implementation cleanup pass.
+
+Changed files:
+- `frontend/src/components/__tests__/WorkspaceInspector.test.tsx`
+- `frontend/src/components/WorkspaceInspector.tsx`
+
+Use repository state as the source of truth, not the compacted summary. Inspect the listed files and current diff before editing. Apply only small, behavior-preserving simplifications that make the code clearer or more maintainable. Keep changes scoped to the listed files unless a directly related helper must change. If no simplification improves clarity, leave the files unchanged and say so. Run relevant checks after edits when the project exposes clear checks.
