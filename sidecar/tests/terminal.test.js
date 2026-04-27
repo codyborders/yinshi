@@ -8,39 +8,72 @@ import * as pty from "node-pty";
 
 import { YinshiSidecar, buildTerminalEnvironment } from "../src/sidecar.js";
 
-function nextMessage(socket, timeoutMs = 3000) {
-  return new Promise((resolve, reject) => {
-    let buffer = "";
-    const timer = setTimeout(() => {
-      cleanup();
-      reject(new Error("timed out waiting for sidecar message"));
-    }, timeoutMs);
+function createMessageReader(socket) {
+  let buffer = "";
+  const messages = [];
+  const waiters = [];
 
-    function cleanup() {
-      clearTimeout(timer);
+  function deliver(message) {
+    const waiter = waiters.shift();
+    if (!waiter) {
+      messages.push(message);
+      return;
+    }
+    clearTimeout(waiter.timer);
+    waiter.resolve(message);
+  }
+
+  function rejectWaiters(error) {
+    while (waiters.length > 0) {
+      const waiter = waiters.shift();
+      clearTimeout(waiter.timer);
+      waiter.reject(error);
+    }
+  }
+
+  function onData(chunk) {
+    buffer += chunk.toString("utf8");
+    let newline = buffer.indexOf("\n");
+    while (newline !== -1) {
+      const line = buffer.slice(0, newline).trim();
+      buffer = buffer.slice(newline + 1);
+      if (line) {
+        deliver(JSON.parse(line));
+      }
+      newline = buffer.indexOf("\n");
+    }
+  }
+
+  function onError(error) {
+    rejectWaiters(error);
+  }
+
+  socket.on("data", onData);
+  socket.on("error", onError);
+
+  return {
+    next(timeoutMs = 3000) {
+      const message = messages.shift();
+      if (message) {
+        return Promise.resolve(message);
+      }
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          const index = waiters.findIndex((waiter) => waiter.resolve === resolve);
+          if (index !== -1) {
+            waiters.splice(index, 1);
+          }
+          reject(new Error("timed out waiting for sidecar message"));
+        }, timeoutMs);
+        waiters.push({ resolve, reject, timer });
+      });
+    },
+    dispose() {
       socket.off("data", onData);
       socket.off("error", onError);
-    }
-
-    function onError(error) {
-      cleanup();
-      reject(error);
-    }
-
-    function onData(chunk) {
-      buffer += chunk.toString("utf8");
-      const newline = buffer.indexOf("\n");
-      if (newline === -1) {
-        return;
-      }
-      const line = buffer.slice(0, newline).trim();
-      cleanup();
-      resolve(JSON.parse(line));
-    }
-
-    socket.on("data", onData);
-    socket.on("error", onError);
-  });
+      rejectWaiters(new Error("message reader disposed"));
+    },
+  };
 }
 
 function send(socket, message) {
@@ -62,9 +95,9 @@ function ptyAvailable() {
   }
 }
 
-async function nextTerminalReady(socket) {
+async function nextTerminalReady(reader) {
   for (let index = 0; index < 10; index += 1) {
-    const message = await nextMessage(socket);
+    const message = await reader.next();
     if (message.type === "terminal_ready") {
       return message;
     }
@@ -72,9 +105,9 @@ async function nextTerminalReady(socket) {
   throw new Error("terminal_ready not received");
 }
 
-async function expectTerminalOutput(socket, expectedText) {
+async function expectTerminalOutput(reader, expectedText) {
   for (let index = 0; index < 10; index += 1) {
-    const message = await nextMessage(socket);
+    const message = await reader.next();
     if (message.type === "terminal_data" && message.data.includes(expectedText)) {
       return;
     }
@@ -116,8 +149,9 @@ test("terminal attach starts a PTY and streams output", async (t) => {
   await sidecar.start();
 
   const socket = net.createConnection(socketPath);
+  const reader = createMessageReader(socket);
   try {
-    const init = await nextMessage(socket);
+    const init = await reader.next();
     assert.equal(init.type, "init_status");
 
     send(socket, {
@@ -131,7 +165,7 @@ test("terminal attach starts a PTY and streams output", async (t) => {
         scrollbackLines: 100,
       },
     });
-    const ready = await nextTerminalReady(socket);
+    const ready = await nextTerminalReady(reader);
     assert.equal(ready.cwd, tempDir);
 
     send(socket, {
@@ -140,7 +174,7 @@ test("terminal attach starts a PTY and streams output", async (t) => {
       data: "printf YINSHI_TERMINAL_TEST\\n\n",
     });
 
-    await expectTerminalOutput(socket, "YINSHI_TERMINAL_TEST");
+    await expectTerminalOutput(reader, "YINSHI_TERMINAL_TEST");
 
     send(socket, {
       type: "terminal_input",
@@ -150,7 +184,7 @@ test("terminal attach starts a PTY and streams output", async (t) => {
 
     let sawNoSecret = false;
     for (let index = 0; index < 10; index += 1) {
-      const message = await nextMessage(socket);
+      const message = await reader.next();
       if (message.type !== "terminal_data") {
         continue;
       }
@@ -173,14 +207,15 @@ test("terminal attach starts a PTY and streams output", async (t) => {
         scrollbackLines: 100,
       },
     });
-    await nextTerminalReady(socket);
+    await nextTerminalReady(reader);
     send(socket, {
       type: "terminal_input",
       id: terminalId,
       data: "printf YINSHI_TERMINAL_RESTART\\n\n",
     });
-    await expectTerminalOutput(socket, "YINSHI_TERMINAL_RESTART");
+    await expectTerminalOutput(reader, "YINSHI_TERMINAL_RESTART");
   } finally {
+    reader.dispose();
     socket.destroy();
     sidecar.cleanup();
     delete process.env.YINSHI_TERMINAL_SECRET;
@@ -196,17 +231,19 @@ test("terminal attach rejects invalid workspace ids", async () => {
   await sidecar.start();
 
   const socket = net.createConnection(socketPath);
+  const reader = createMessageReader(socket);
   try {
-    await nextMessage(socket);
+    await reader.next();
     send(socket, {
       type: "terminal_attach",
       id: "bad",
       options: { workspaceId: "bad", cwd: tempDir },
     });
-    const error = await nextMessage(socket);
+    const error = await reader.next();
     assert.equal(error.type, "error");
     assert.match(error.error, /workspaceId/);
   } finally {
+    reader.dispose();
     socket.destroy();
     sidecar.cleanup();
     fs.rmSync(tempDir, { recursive: true, force: true });
