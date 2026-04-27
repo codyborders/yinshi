@@ -1,0 +1,40 @@
+{
+  "cli_version": "dev",
+  "checkpoint_id": "6640c4ca58bc",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 6,
+  "files_touched": [
+    "backend/src/yinshi/api/terminals.py",
+    "backend/src/yinshi/api/workspace_files.py",
+    "backend/src/yinshi/auth.py",
+    "backend/src/yinshi/services/sidecar_runtime.py",
+    "backend/src/yinshi/services/workspace_files.py",
+    "backend/src/yinshi/services/workspace_runtime_paths.py",
+    "backend/tests/test_pi_config.py",
+    "backend/tests/test_security_fixes.py",
+    "backend/tests/test_workspace_files.py",
+    "frontend/src/components/WorkspaceInspector.tsx",
+    "frontend/src/pages/Session.tsx",
+    "sidecar/Dockerfile",
+    "sidecar/bin/git",
+    "sidecar/src/sidecar.js",
+    "sidecar/tests/git_guard.test.js",
+    "sidecar/tests/terminal.test.js"
+  ],
+  "sessions": [
+    {
+      "metadata": "/66/40c4ca58bc/0/metadata.json",
+      "transcript": "/66/40c4ca58bc/0/full.jsonl",
+      "content_hash": "/66/40c4ca58bc/0/content_hash.txt",
+      "prompt": "/66/40c4ca58bc/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 2696954,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 73276928,
+    "output_tokens": 179606,
+    "api_call_count": 530
+  }
+}
