@@ -7,8 +7,14 @@ const WORKSPACE_TERMINAL_URL = `ws://test.local/api/workspaces/${WORKSPACE_ID}/t
 const TERMINAL_RECONNECT_DELAY_MS = 2000;
 const TERMINAL_TEMPORARY_FAILURE_CLOSE_CODE = 1011;
 
+const LIGHT_TERMINAL_BACKGROUND = "rgb(247, 240, 227)";
+const LIGHT_TERMINAL_FOREGROUND = "rgb(45, 37, 32)";
+const DARK_TERMINAL_BACKGROUND = "rgb(15, 12, 9)";
+const DARK_TERMINAL_FOREGROUND = "rgb(224, 209, 184)";
+
 const apiGetMock = vi.fn();
 const terminalResetMock = vi.fn();
+const terminalInstances: Array<{ options: { theme?: unknown } }> = [];
 
 vi.mock("../../api/client", () => ({
   api: {
@@ -21,6 +27,12 @@ vi.mock("@xterm/xterm", () => ({
   Terminal: class {
     cols = 80;
     rows = 24;
+    options: { theme?: unknown };
+
+    constructor(options: { theme?: unknown } = {}) {
+      this.options = options;
+      terminalInstances.push(this);
+    }
 
     loadAddon(): void {
       return undefined;
@@ -107,16 +119,29 @@ async function waitForWebSocketCount(count: number): Promise<void> {
   });
 }
 
+function setTerminalThemeVariables(background: string, foreground: string): void {
+  const rootStyle = document.documentElement.style;
+  rootStyle.setProperty("--gray-950", background);
+  rootStyle.setProperty("--gray-200", foreground);
+  rootStyle.setProperty("--gray-50", foreground);
+  rootStyle.setProperty("--gray-600", foreground);
+  rootStyle.setProperty("--gray-400", foreground);
+}
+
 describe("WorkspaceInspector terminal", () => {
   afterEach(() => {
     cleanup();
     vi.unstubAllGlobals();
+    document.documentElement.classList.remove("dark");
+    document.documentElement.removeAttribute("style");
   });
 
   beforeEach(() => {
     vi.clearAllMocks();
     FakeWebSocket.instances = [];
+    terminalInstances.length = 0;
     apiGetMock.mockResolvedValue({ files: [] });
+    setTerminalThemeVariables("247 240 227", "45 37 32");
     vi.stubGlobal("WebSocket", FakeWebSocket);
     vi.stubGlobal("ResizeObserver", FakeResizeObserver);
   });
@@ -137,6 +162,28 @@ describe("WorkspaceInspector terminal", () => {
     expect(terminalResetMock).toHaveBeenCalled();
     expect(FakeWebSocket.instances[1].url).toBe(WORKSPACE_TERMINAL_URL);
     expect(screen.getByText("Connecting...")).toBeInTheDocument();
+  });
+
+  it("updates terminal colors when the document theme changes", async () => {
+    render(<WorkspaceInspector workspaceId={WORKSPACE_ID} refreshKey={0} />);
+
+    await waitForWebSocketCount(1);
+    expect(terminalInstances[0].options.theme).toMatchObject({
+      background: LIGHT_TERMINAL_BACKGROUND,
+      foreground: LIGHT_TERMINAL_FOREGROUND,
+      cursor: "#c23b22",
+    });
+
+    setTerminalThemeVariables("15 12 9", "224 209 184");
+    document.documentElement.classList.add("dark");
+
+    await waitFor(() => {
+      expect(terminalInstances[0].options.theme).toMatchObject({
+        background: DARK_TERMINAL_BACKGROUND,
+        foreground: DARK_TERMINAL_FOREGROUND,
+        cursor: "#c23b22",
+      });
+    });
   });
 
   it("automatically retries when the terminal runtime is temporarily unavailable", async () => {

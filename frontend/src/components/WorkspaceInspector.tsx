@@ -6,7 +6,7 @@ import {
   type CSSProperties,
   type PointerEvent as ReactPointerEvent,
 } from "react";
-import { Terminal } from "@xterm/xterm";
+import { Terminal, type ITheme } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import {
@@ -34,6 +34,44 @@ const FILE_STATUS_REFRESH_MS = 15000;
 const TERMINAL_ACCESS_DENIED_CLOSE_CODE = 1008;
 const TERMINAL_TEMPORARY_FAILURE_CLOSE_CODE = 1011;
 const TERMINAL_RECONNECT_DELAY_MS = 2000;
+
+const LIGHT_TERMINAL_ANSI_COLORS: ITheme = {
+  black: "#1a1410",
+  red: "#a02e18",
+  green: "#4f6f37",
+  yellow: "#8a681d",
+  blue: "#75543c",
+  magenta: "#8a4d58",
+  cyan: "#4d6b64",
+  white: "#3d3228",
+  brightBlack: "#8c7a64",
+  brightRed: "#c23b22",
+  brightGreen: "#5f7f45",
+  brightYellow: "#b8963e",
+  brightBlue: "#946846",
+  brightMagenta: "#a15f6c",
+  brightCyan: "#5d8179",
+  brightWhite: "#1a1410",
+};
+
+const DARK_TERMINAL_ANSI_COLORS: ITheme = {
+  black: "#4a3f35",
+  red: "#d4543d",
+  green: "#b0bf80",
+  yellow: "#d7b95d",
+  blue: "#c79b75",
+  magenta: "#d38a9b",
+  cyan: "#8fbbb0",
+  white: "#e0d1b8",
+  brightBlack: "#a89478",
+  brightRed: "#e86a52",
+  brightGreen: "#c3d38f",
+  brightYellow: "#e7ca72",
+  brightBlue: "#d7ad88",
+  brightMagenta: "#e0a0ae",
+  brightCyan: "#a6d0c5",
+  brightWhite: "#f7f0e3",
+};
 
 function storedTerminalHeight(): number {
   const raw = sessionStorage.getItem("yinshi-terminal-height");
@@ -69,6 +107,38 @@ function terminalReconnectStatus(closeCode: number): string {
     return "Terminal unavailable. Retrying...";
   }
   return "Disconnected. Retrying...";
+}
+
+function themeVariableColor(variableName: string, fallback: string, alpha?: number): string {
+  const rawValue = getComputedStyle(document.documentElement).getPropertyValue(variableName).trim();
+  const components = rawValue.split(/\s+/).map(Number);
+  if (components.length !== 3 || components.some((component) => !Number.isFinite(component))) {
+    return fallback;
+  }
+  const [red, green, blue] = components;
+  if (alpha === undefined) {
+    return `rgb(${red}, ${green}, ${blue})`;
+  }
+  return `rgba(${red}, ${green}, ${blue}, ${alpha})`;
+}
+
+function terminalTheme(): ITheme {
+  const ansiColors = document.documentElement.classList.contains("dark")
+    ? DARK_TERMINAL_ANSI_COLORS
+    : LIGHT_TERMINAL_ANSI_COLORS;
+  return {
+    ...ansiColors,
+    background: themeVariableColor("--gray-950", "#f7f0e3"),
+    foreground: themeVariableColor("--gray-200", "#2d2520"),
+    cursor: "#c23b22",
+    cursorAccent: themeVariableColor("--gray-950", "#f7f0e3"),
+    selectionBackground: "rgba(194, 59, 34, 0.28)",
+    selectionForeground: themeVariableColor("--gray-50", "#0f0c09"),
+    selectionInactiveBackground: themeVariableColor("--gray-600", "rgba(168, 148, 120, 0.24)", 0.24),
+    scrollbarSliderBackground: themeVariableColor("--gray-400", "rgba(107, 93, 79, 0.24)", 0.24),
+    scrollbarSliderHoverBackground: themeVariableColor("--gray-400", "rgba(107, 93, 79, 0.38)", 0.38),
+    scrollbarSliderActiveBackground: themeVariableColor("--gray-400", "rgba(107, 93, 79, 0.5)", 0.5),
+  };
 }
 
 function FileTree({
@@ -282,11 +352,7 @@ function TerminalPane({ workspaceId, active }: { workspaceId: string; active: bo
       fontFamily: 'Menlo, Monaco, "Courier New", monospace',
       fontSize: 12,
       scrollback: 1000,
-      theme: {
-        background: "#030712",
-        foreground: "#d1d5db",
-        cursor: "#93c5fd",
-      },
+      theme: terminalTheme(),
     });
     const fitAddon = new FitAddon();
     terminal.loadAddon(fitAddon);
@@ -351,6 +417,10 @@ function TerminalPane({ workspaceId, active }: { workspaceId: string; active: bo
 
     const observer = new ResizeObserver(() => fit());
     observer.observe(container);
+    const themeObserver = new MutationObserver(() => {
+      terminal.options.theme = terminalTheme();
+    });
+    themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
     window.setTimeout(fit, 0);
 
     return () => {
@@ -358,6 +428,7 @@ function TerminalPane({ workspaceId, active }: { workspaceId: string; active: bo
       if (reconnectTimer !== null) {
         window.clearTimeout(reconnectTimer);
       }
+      themeObserver.disconnect();
       observer.disconnect();
       disposable.dispose();
       socket.close();
