@@ -95,21 +95,27 @@ function ptyAvailable() {
   }
 }
 
-async function nextTerminalReady(reader) {
+async function nextTerminalReady(reader, options = {}) {
   for (let index = 0; index < 10; index += 1) {
     const message = await reader.next();
     if (message.type === "terminal_ready") {
       return message;
     }
+    if (options.rejectTerminalExit && message.type === "terminal_exit") {
+      throw new Error("terminal_exit received during restart");
+    }
   }
   throw new Error("terminal_ready not received");
 }
 
-async function expectTerminalOutput(reader, expectedText) {
+async function expectTerminalOutput(reader, expectedText, options = {}) {
   for (let index = 0; index < 10; index += 1) {
     const message = await reader.next();
     if (message.type === "terminal_data" && message.data.includes(expectedText)) {
       return;
+    }
+    if (message.type === "terminal_exit" && options.rejectTerminalExit) {
+      throw new Error("terminal_exit received during restart");
     }
     if (message.type === "error") {
       throw new Error(message.error);
@@ -207,13 +213,13 @@ test("terminal attach starts a PTY and streams output", async (t) => {
         scrollbackLines: 100,
       },
     });
-    await nextTerminalReady(reader);
+    await nextTerminalReady(reader, { rejectTerminalExit: true });
     send(socket, {
       type: "terminal_input",
       id: terminalId,
       data: "printf YINSHI_TERMINAL_RESTART\\n\n",
     });
-    await expectTerminalOutput(reader, "YINSHI_TERMINAL_RESTART");
+    await expectTerminalOutput(reader, "YINSHI_TERMINAL_RESTART", { rejectTerminalExit: true });
   } finally {
     reader.dispose();
     socket.destroy();

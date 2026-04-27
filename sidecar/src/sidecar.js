@@ -927,6 +927,7 @@ export class YinshiSidecar {
       sockets: new Set(),
       scrollback: "",
       scrollbackLimitBytes: scrollbackLines * 200,
+      suppressExitEvent: false,
     };
     terminal.onData((data) => {
       appendTerminalScrollback(entry, data);
@@ -935,13 +936,15 @@ export class YinshiSidecar {
       }
     });
     terminal.onExit(({ exitCode, signal }) => {
-      for (const subscriber of entry.sockets) {
-        sendToSocket(subscriber, {
-          id,
-          type: "terminal_exit",
-          exit_code: exitCode,
-          signal,
-        });
+      if (!entry.suppressExitEvent) {
+        for (const subscriber of entry.sockets) {
+          sendToSocket(subscriber, {
+            id,
+            type: "terminal_exit",
+            exit_code: exitCode,
+            signal,
+          });
+        }
       }
       if (this.activeTerminals.get(id) === entry) {
         this.activeTerminals.delete(id);
@@ -953,7 +956,7 @@ export class YinshiSidecar {
 
   terminalEntry(id, options, restart = false) {
     if (restart) {
-      this.killTerminal(id);
+      this.killTerminal(id, { suppressExitEvent: true });
     }
     const existing = this.activeTerminals.get(id);
     if (existing) {
@@ -1002,11 +1005,12 @@ export class YinshiSidecar {
     );
   }
 
-  killTerminal(id) {
+  killTerminal(id, options = {}) {
     const entry = this.activeTerminals.get(id);
     if (!entry) {
       return;
     }
+    entry.suppressExitEvent = Boolean(options.suppressExitEvent);
     entry.terminal.kill();
     this.activeTerminals.delete(id);
   }
