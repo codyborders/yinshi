@@ -1,0 +1,28 @@
+{
+  "cli_version": "dev",
+  "checkpoint_id": "85458e25f01d",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 12,
+  "files_touched": [
+    "backend/src/yinshi/services/sidecar_runtime.py",
+    "backend/src/yinshi/services/workspace.py",
+    "backend/tests/test_container.py",
+    "sidecar/src/sidecar.js"
+  ],
+  "sessions": [
+    {
+      "metadata": "/85/458e25f01d/0/metadata.json",
+      "transcript": "/85/458e25f01d/0/full.jsonl",
+      "content_hash": "/85/458e25f01d/0/content_hash.txt",
+      "prompt": "/85/458e25f01d/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 2415542,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 55992320,
+    "output_tokens": 147699,
+    "api_call_count": 520
+  }
+}

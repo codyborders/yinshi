@@ -1,0 +1,327 @@
+Looks like we're missing some of the tab completion features that come with `pi`. In `yinshi` when I type `/resume` nothing happens, but I would expect to be able to resume a previous conversation. What do you think?
+
+---
+
+Looks like we're missing some of the tab completion features that come with `pi`. In `yinshi` when I type `/resume` nothing happens, but I would expect to be able to resume a previous conversation. What do you think?
+
+---
+
+So how does pi's compaction work in yinshi's web model?
+
+---
+
+So how does pi's compaction work in yinshi's web model?
+
+---
+
+How can we update yinshi to use compaction the way the pi author intended it work? Here, I'm speaking about autocompaction specifically.
+
+---
+
+How can we update yinshi to use compaction the way the pi author intended it work? Here, I'm speaking about autocompaction specifically.
+
+---
+
+Let's think carefully about the change. What are the risks? How does it impact the BYOC model? How does it impact the user's session saves, terminal, settings, etc.? Are we going to get the *exact* compaction capability defined in the pi docs?
+
+---
+
+Let's think carefully about the change. What are the risks? How does it impact the BYOC model? How does it impact the user's session saves, terminal, settings, etc.? Are we going to get the *exact* compaction capability defined in the pi docs?
+
+---
+
+Ok, what questions can I answer for you?
+
+---
+
+Ok, what questions can I answer for you?
+
+---
+
+1. I almost think option C makes the most sense? Any opinions or recommendations?
+2. I'm not sure. How do I think through this decision? What would you recommend?
+3. Imported settings should be allowed to disable/tune - that's the pi way.
+4. I think a pi user already knows that compaction uses LLM calls. If they don't like it, they can install the `pi-vcc` package.
+5. Yes. Just Yinshi sessions from SQLite.
+6. Probably the JSONL too unless you feel strongly otherwise.
+7. Users should have access to them. Obviously no one other than the user themselves should have access.
+8. Recreate and warn.
+9. Definitely show the status. That's how pi does it.
+
+---
+
+1. I almost think option C makes the most sense? Any opinions or recommendations?
+2. I'm not sure. How do I think through this decision? What would you recommend?
+3. Imported settings should be allowed to disable/tune - that's the pi way.
+4. I think a pi user already knows that compaction uses LLM calls. If they don't like it, they can install the `pi-vcc` package.
+5. Yes. Just Yinshi sessions from SQLite.
+6. Probably the JSONL too unless you feel strongly otherwise.
+7. Users should have access to them. Obviously no one other than the user themselves should have access.
+8. Recreate and warn.
+9. Definitely show the status. That's how pi does it.
+
+---
+
+Ok, create a task list and implement.
+
+---
+
+Ok, create a task list and implement.
+
+---
+
+/skill:code-simplicity-reviewer
+
+<!-- code-simplifier-enforcer -->
+
+Post-implementation cleanup pass.
+
+Changed files:
+- `backend/src/yinshi/api/repos.py`
+- `backend/src/yinshi/api/sessions.py`
+- `backend/src/yinshi/api/stream.py`
+- `backend/src/yinshi/api/workspaces.py`
+- `backend/src/yinshi/db.py`
+- `backend/src/yinshi/models.py`
+- `backend/src/yinshi/services/sidecar_runtime.py`
+- `backend/src/yinshi/services/sidecar.py`
+- `backend/src/yinshi/services/workspace.py`
+- `backend/src/yinshi/tenant.py`
+- `backend/tests/test_api.py`
+- `backend/tests/test_container.py`
+- `backend/tests/test_db.py`
+- `backend/tests/test_sidecar.py`
+- `frontend/src/api/client.ts`
+- `frontend/src/components/AssistantTurn.tsx`
+- `frontend/src/components/ChatView.tsx`
+- `frontend/src/pages/__tests__/Session.test.tsx`
+- `frontend/src/pages/Session.tsx`
+- `frontend/src/utils/__tests__/turnEvents.test.ts`
+- `frontend/src/utils/turnEvents.ts`
+- `sidecar/src/sidecar.js`
+
+Use repository state as the source of truth, not the compacted summary. Inspect the listed files and current diff before editing. Apply only small, behavior-preserving simplifications that make the code clearer or more maintainable. Keep changes scoped to the listed files unless a directly related helper must change. If no simplification improves clarity, leave the files unchanged and say so. Run relevant checks after edits when the project exposes clear checks.
+
+---
+
+/skill:code-simplicity-reviewer
+
+<!-- code-simplifier-enforcer -->
+
+Post-implementation cleanup pass.
+
+Changed files:
+- `backend/src/yinshi/api/repos.py`
+- `backend/src/yinshi/api/sessions.py`
+- `backend/src/yinshi/api/stream.py`
+- `backend/src/yinshi/api/workspaces.py`
+- `backend/src/yinshi/db.py`
+- `backend/src/yinshi/models.py`
+- `backend/src/yinshi/services/sidecar_runtime.py`
+- `backend/src/yinshi/services/sidecar.py`
+- `backend/src/yinshi/services/workspace.py`
+- `backend/src/yinshi/tenant.py`
+- `backend/tests/test_api.py`
+- `backend/tests/test_container.py`
+- `backend/tests/test_db.py`
+- `backend/tests/test_sidecar.py`
+- `frontend/src/api/client.ts`
+- `frontend/src/components/AssistantTurn.tsx`
+- `frontend/src/components/ChatView.tsx`
+- `frontend/src/pages/__tests__/Session.test.tsx`
+- `frontend/src/pages/Session.tsx`
+- `frontend/src/utils/__tests__/turnEvents.test.ts`
+- `frontend/src/utils/turnEvents.ts`
+- `sidecar/src/sidecar.js`
+
+Use repository state as the source of truth, not the compacted summary. Inspect the listed files and current diff before editing. Apply only small, behavior-preserving simplifications that make the code clearer or more maintainable. Keep changes scoped to the listed files unless a directly related helper must change. If no simplification improves clarity, leave the files unchanged and say so. Run relevant checks after edits when the project exposes clear checks.
+
+---
+
+Commit but don't push to the vm yet.
+
+---
+
+Commit but don't push to the vm yet.
+
+---
+
+You are reviewing changed code.
+
+Target files are ``. If none are supplied, use files from `git diff --name-only HEAD~1`.
+
+## Phase 1 - Design Review
+
+1. Invoke `/skill:software-design` on the target files.
+   Evaluate abstraction depth, information hiding, complexity red flags,
+   interface design, and module boundaries.
+   Summarize design-level findings before proceeding.
+
+## Phase 2 - Implementation Review
+
+The simplifier now lives as `/skill:code-simplicity-reviewer`. Do not spawn a `code-simplifier` subagent. The `code-simplifier-enforcer` extension handles automated cleanup before commit; this review uses the skill only for analysis.
+
+2. Invoke `/skill:code-simplicity-reviewer` in analysis-only mode on the target files.
+   Evaluate duplication, dead code, unnecessary abstractions, naming friction,
+   and behavior-preserving simplification opportunities.
+
+3. Apply these review skills in the current session:
+   - `python-reviewer`
+   - `security-sentinel`
+   - `performance-oracle`
+
+   Read each skill if needed, apply it to the target paths, and keep findings separated by source. The matching extensions provide standalone `/python-reviewer`, `/security-sentinel`, and `/performance-oracle` commands. Do not use the subagent tool for review.
+
+4. Collect all findings from both phases.
+
+5. Present one report grouped by severity.
+   - DESIGN covers architectural and structural issues from software-design.
+   - CRITICAL covers security vulnerabilities from security-sentinel.
+   - MAJOR covers performance issues and convention violations from python-reviewer and performance-oracle.
+   - MINOR covers simplification opportunities from code-simplicity-reviewer.
+
+## Phase 3 - Write Review Report
+
+6. Create the `code_reviews/` directory in the project root if it does not exist.
+
+7. Write the report to `code_reviews/YYYY-mm-dd-HHmm-code-review.md`
+   (use the current date and time for the filename, e.g. 2026-02-19-0830-code-review.md).
+
+   The report MUST be written for junior engineers who may have little coding experience.
+   For every finding, explain what changed or was flagged, how the code works, and why the change is needed. Show before/after snippets where useful.
+
+   Use this report structure.
+
+   ## Summary
+   State what was reviewed and the main findings.
+
+   ## Design Findings
+   (from /skill:software-design Phase 1)
+
+   ## Security Findings
+   (from /skill:security-sentinel)
+
+   ## Performance Findings
+   (from /skill:performance-oracle)
+
+   ## Code Quality Findings
+   (from /skill:python-reviewer)
+
+   ## Simplification Findings
+   (from /skill:code-simplicity-reviewer)
+
+   ## Changes Applied
+   List every change that was made, with file paths and explanations.
+
+8. Confirm the report path to the user when done.
+
+---
+
+You are reviewing changed code.
+
+Target files are ``. If none are supplied, use files from `git diff --name-only HEAD~1`.
+
+## Phase 1 - Design Review
+
+1. Invoke `/skill:software-design` on the target files.
+   Evaluate abstraction depth, information hiding, complexity red flags,
+   interface design, and module boundaries.
+   Summarize design-level findings before proceeding.
+
+## Phase 2 - Implementation Review
+
+The simplifier now lives as `/skill:code-simplicity-reviewer`. Do not spawn a `code-simplifier` subagent. The `code-simplifier-enforcer` extension handles automated cleanup before commit; this review uses the skill only for analysis.
+
+2. Invoke `/skill:code-simplicity-reviewer` in analysis-only mode on the target files.
+   Evaluate duplication, dead code, unnecessary abstractions, naming friction,
+   and behavior-preserving simplification opportunities.
+
+3. Apply these review skills in the current session:
+   - `python-reviewer`
+   - `security-sentinel`
+   - `performance-oracle`
+
+   Read each skill if needed, apply it to the target paths, and keep findings separated by source. The matching extensions provide standalone `/python-reviewer`, `/security-sentinel`, and `/performance-oracle` commands. Do not use the subagent tool for review.
+
+4. Collect all findings from both phases.
+
+5. Present one report grouped by severity.
+   - DESIGN covers architectural and structural issues from software-design.
+   - CRITICAL covers security vulnerabilities from security-sentinel.
+   - MAJOR covers performance issues and convention violations from python-reviewer and performance-oracle.
+   - MINOR covers simplification opportunities from code-simplicity-reviewer.
+
+## Phase 3 - Write Review Report
+
+6. Create the `code_reviews/` directory in the project root if it does not exist.
+
+7. Write the report to `code_reviews/YYYY-mm-dd-HHmm-code-review.md`
+   (use the current date and time for the filename, e.g. 2026-02-19-0830-code-review.md).
+
+   The report MUST be written for junior engineers who may have little coding experience.
+   For every finding, explain what changed or was flagged, how the code works, and why the change is needed. Show before/after snippets where useful.
+
+   Use this report structure.
+
+   ## Summary
+   State what was reviewed and the main findings.
+
+   ## Design Findings
+   (from /skill:software-design Phase 1)
+
+   ## Security Findings
+   (from /skill:security-sentinel)
+
+   ## Performance Findings
+   (from /skill:performance-oracle)
+
+   ## Code Quality Findings
+   (from /skill:python-reviewer)
+
+   ## Simplification Findings
+   (from /skill:code-simplicity-reviewer)
+
+   ## Changes Applied
+   List every change that was made, with file paths and explanations.
+
+8. Confirm the report path to the user when done.
+
+---
+
+Fix every issue in @2026-04-27-2057-code-review.md
+
+---
+
+Fix every issue in @2026-04-27-2057-code-review.md
+
+---
+
+/skill:code-simplicity-reviewer
+
+<!-- code-simplifier-enforcer -->
+
+Post-implementation cleanup pass.
+
+Changed files:
+- `backend/src/yinshi/services/sidecar_runtime.py`
+- `backend/src/yinshi/services/workspace.py`
+- `backend/tests/test_container.py`
+- `sidecar/src/sidecar.js`
+
+Use repository state as the source of truth, not the compacted summary. Inspect the listed files and current diff before editing. Apply only small, behavior-preserving simplifications that make the code clearer or more maintainable. Keep changes scoped to the listed files unless a directly related helper must change. If no simplification improves clarity, leave the files unchanged and say so. Run relevant checks after edits when the project exposes clear checks.
+
+---
+
+/skill:code-simplicity-reviewer
+
+<!-- code-simplifier-enforcer -->
+
+Post-implementation cleanup pass.
+
+Changed files:
+- `backend/src/yinshi/services/sidecar_runtime.py`
+- `backend/src/yinshi/services/workspace.py`
+- `backend/tests/test_container.py`
+- `sidecar/src/sidecar.js`
+
+Use repository state as the source of truth, not the compacted summary. Inspect the listed files and current diff before editing. Apply only small, behavior-preserving simplifications that make the code clearer or more maintainable. Keep changes scoped to the listed files unless a directly related helper must change. If no simplification improves clarity, leave the files unchanged and say so. Run relevant checks after edits when the project exposes clear checks.
