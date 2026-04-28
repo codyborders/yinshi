@@ -345,3 +345,11 @@ Have we fixed all issues found in 2026-04-27-2057-code-review.md?
 ---
 
 Have we fixed all issues found in 2026-04-27-2057-code-review.md?
+
+---
+
+Ok, push the code to the git repo, then to the `yinshi` vm
+
+---
+
+Ok, push the code to the git repo, then to the `yinshi` vm
