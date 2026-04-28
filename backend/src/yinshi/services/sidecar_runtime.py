@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import posixpath
 import re
@@ -10,6 +11,7 @@ import shutil
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from pathlib import Path
 
 from fastapi import Request
 
@@ -19,6 +21,8 @@ from yinshi.services.container import ContainerMount
 from yinshi.services.pi_config import resolve_effective_pi_runtime
 from yinshi.tenant import TenantContext
 from yinshi.utils.paths import is_path_inside
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,6 +39,7 @@ class TenantSidecarContext:
 _RUNTIME_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 _WORKSPACE_HOME_TARGET = "/home/yinshi"
 _PI_SESSION_DIRECTORY = ".yinshi/pi-sessions"
+_PI_SESSION_PATH_PARTS = tuple(_PI_SESSION_DIRECTORY.split("/"))
 _WORKSPACE_PATH = (
     f"{_WORKSPACE_HOME_TARGET}/bin:"
     f"{_WORKSPACE_HOME_TARGET}/.local/bin:"
@@ -127,20 +132,49 @@ def _pi_session_file_name(session_id: str) -> str:
     return f"{normalized_session_id}.jsonl"
 
 
+def _workspace_pi_session_directory(home_path: Path) -> Path:
+    """Return the Pi session directory below one workspace home."""
+    if not home_path.is_absolute():
+        raise ValueError("home_path must be absolute")
+    return home_path.joinpath(*_PI_SESSION_PATH_PARTS)
+
+
+def _workspace_pi_session_host_directory(
+    tenant: TenantContext,
+    workspace_id: str,
+    *,
+    create: bool,
+) -> Path:
+    """Return host directory for workspace-scoped durable Pi session files."""
+    if tenant is None:
+        raise ValueError("tenant is required")
+    if not tenant.data_dir:
+        raise ValueError("tenant data_dir must not be empty")
+    if create:
+        home_path = Path(_workspace_home_source(tenant, workspace_id))
+    else:
+        home_path = _workspace_home_expected_path(tenant, workspace_id)
+    session_directory = _workspace_pi_session_directory(home_path)
+    if create:
+        yinshi_directory = home_path / ".yinshi"
+        if yinshi_directory.is_symlink() or session_directory.is_symlink():
+            raise ValueError("workspace Pi session path must not contain symlinks")
+        session_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    return session_directory
+
+
 def _workspace_pi_session_host_file(
     tenant: TenantContext,
     workspace_id: str,
     session_id: str,
 ) -> str:
     """Return host path for a workspace-scoped durable Pi session file."""
-    if tenant is None:
-        raise ValueError("tenant is required")
-    if not tenant.data_dir:
-        raise ValueError("tenant data_dir must not be empty")
-    home_path = _workspace_home_source(tenant, workspace_id)
-    session_directory = os.path.join(home_path, *_PI_SESSION_DIRECTORY.split("/"))
-    os.makedirs(session_directory, mode=0o700, exist_ok=True)
-    return os.path.join(session_directory, _pi_session_file_name(session_id))
+    session_directory = _workspace_pi_session_host_directory(
+        tenant,
+        workspace_id,
+        create=True,
+    )
+    return str(session_directory / _pi_session_file_name(session_id))
 
 
 def _workspace_pi_session_runtime_file(
@@ -192,40 +226,85 @@ def delete_local_pi_session_file(session_id: str) -> None:
         os.unlink(session_file)
 
 
+def _pi_session_directory_is_safe_for_delete(
+    home_path: Path,
+    session_directory: Path,
+) -> bool:
+    """Return whether one Pi session directory can be safely removed."""
+    if not home_path.is_absolute():
+        raise ValueError("home_path must be absolute")
+    if not session_directory.is_absolute():
+        raise ValueError("session_directory must be absolute")
+
+    expected_session_directory = _workspace_pi_session_directory(home_path)
+    if session_directory != expected_session_directory:
+        raise ValueError("session_directory must belong to home_path")
+
+    yinshi_directory = home_path / ".yinshi"
+    for path in (home_path, yinshi_directory, session_directory):
+        if path.is_symlink():
+            logger.warning("Refusing to delete Pi session files through symlink %s", path)
+            return False
+
+    try:
+        resolved_session_directory = session_directory.resolve(strict=False)
+    except OSError as exc:
+        logger.warning(
+            "Refusing to delete Pi session files because %s could not be resolved: %s",
+            session_directory,
+            exc,
+        )
+        return False
+
+    if resolved_session_directory != expected_session_directory:
+        logger.warning(
+            "Refusing to delete Pi session files outside workspace home: %s resolved to %s",
+            session_directory,
+            resolved_session_directory,
+        )
+        return False
+
+    return True
+
+
 def delete_workspace_pi_sessions(tenant: TenantContext | None, workspace_id: str) -> None:
     """Delete durable Pi session files for one workspace runtime."""
     if tenant is None:
         return
     if not workspace_id:
         raise ValueError("workspace_id must not be empty")
-    home_path = _workspace_home_path(tenant, workspace_id)
-    session_directory = os.path.join(home_path, *_PI_SESSION_DIRECTORY.split("/"))
-    if os.path.exists(session_directory):
+    home_path = _workspace_home_expected_path(tenant, workspace_id)
+    session_directory = _workspace_pi_session_directory(home_path)
+    if not _pi_session_directory_is_safe_for_delete(home_path, session_directory):
+        return
+    if session_directory.exists():
         shutil.rmtree(session_directory)
+
+
+def _workspace_home_expected_path(tenant: TenantContext, workspace_id: str) -> Path:
+    """Return the non-symlink workspace home path owned by Yinshi."""
+    if not tenant.data_dir:
+        raise ValueError("tenant data_dir must not be empty")
+    normalized_workspace_id = _workspace_runtime_id(workspace_id)
+    assert normalized_workspace_id is not None, "workspace_id must be normalized"
+    data_dir = Path(tenant.data_dir).resolve(strict=False)
+    return data_dir / "runtime" / "workspaces" / normalized_workspace_id / "home"
 
 
 def _workspace_home_path(tenant: TenantContext, workspace_id: str) -> str:
     """Return the persistent host home path for one workspace runtime."""
-    normalized_workspace_id = _workspace_runtime_id(workspace_id)
-    assert normalized_workspace_id is not None, "workspace_id must be normalized"
-    return os.path.realpath(
-        os.path.join(
-            tenant.data_dir,
-            "runtime",
-            "workspaces",
-            normalized_workspace_id,
-            "home",
-        )
-    )
+    return str(_workspace_home_expected_path(tenant, workspace_id).resolve(strict=False))
 
 
 def _workspace_home_source(tenant: TenantContext, workspace_id: str) -> str:
     """Return and create the persistent host home for one workspace runtime."""
-    home_path = _workspace_home_path(tenant, workspace_id)
-    os.makedirs(home_path, mode=0o700, exist_ok=True)
+    home_path = _workspace_home_expected_path(tenant, workspace_id)
+    if home_path.is_symlink():
+        raise ValueError("workspace home must not be a symlink")
+    home_path.mkdir(mode=0o700, parents=True, exist_ok=True)
     for subdirectory in ("bin", ".local/bin", ".npm-global/bin"):
-        os.makedirs(os.path.join(home_path, subdirectory), mode=0o700, exist_ok=True)
-    return home_path
+        (home_path / subdirectory).mkdir(mode=0o700, parents=True, exist_ok=True)
+    return str(home_path)
 
 
 def workspace_runtime_environment(workspace_id: str | None) -> dict[str, str] | None:

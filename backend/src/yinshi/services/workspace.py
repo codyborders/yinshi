@@ -26,6 +26,10 @@ from yinshi.services.git import (
     validate_local_repo,
 )
 from yinshi.services.github_app import normalize_github_remote, resolve_github_clone_access
+from yinshi.services.sidecar_runtime import (
+    delete_local_pi_session_file,
+    delete_workspace_pi_sessions,
+)
 from yinshi.services.workspace_files import ensure_secret_guardrails
 from yinshi.tenant import TenantContext
 from yinshi.utils.paths import is_path_inside
@@ -396,15 +400,11 @@ async def delete_workspace(
     workspace = _fetch_workspace(db, workspace_id)
 
     if tenant is not None:
-        from yinshi.services.sidecar_runtime import delete_workspace_pi_sessions
-
         try:
             delete_workspace_pi_sessions(tenant, workspace_id)
         except OSError:
             logger.warning("Failed to delete Pi session files for workspace %s", workspace_id)
     else:
-        from yinshi.services.sidecar_runtime import delete_local_pi_session_file
-
         session_rows = db.execute(
             "SELECT id FROM sessions WHERE workspace_id = ?",
             (workspace_id,),

@@ -141,6 +141,45 @@ class TestPiSessionRuntimePaths:
         assert not session_dir.exists()
         assert keep_file.read_text(encoding="utf-8") == "keep"
 
+    def test_delete_workspace_pi_sessions_refuses_symlink_parent(self, tmp_path):
+        from yinshi.services.sidecar_runtime import delete_workspace_pi_sessions
+        from yinshi.tenant import TenantContext
+
+        if not hasattr(os, "symlink"):
+            pytest.skip("symlink support is unavailable")
+
+        tenant = TenantContext(
+            user_id="abcdef12345678901234567890abcdef",
+            email="test@example.com",
+            data_dir=str(tmp_path / "users" / "tenant"),
+            db_path=str(tmp_path / "users" / "tenant" / "tenant.db"),
+        )
+        first_workspace_id = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        second_workspace_id = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        first_home = Path(tenant.data_dir) / "runtime" / "workspaces" / first_workspace_id / "home"
+        second_session_file = (
+            Path(tenant.data_dir)
+            / "runtime"
+            / "workspaces"
+            / second_workspace_id
+            / "home"
+            / ".yinshi"
+            / "pi-sessions"
+            / "session.jsonl"
+        )
+        first_home.mkdir(parents=True)
+        second_session_file.parent.mkdir(parents=True)
+        second_session_file.write_text("{}\n", encoding="utf-8")
+        (first_home / ".yinshi").symlink_to(
+            f"../../{second_workspace_id}/home/.yinshi",
+            target_is_directory=True,
+        )
+
+        delete_workspace_pi_sessions(tenant, first_workspace_id)
+
+        assert (first_home / ".yinshi").is_symlink()
+        assert second_session_file.read_text(encoding="utf-8") == "{}\n"
+
 
 # ---------------------------------------------------------------------------
 # Podman subprocess mock helpers

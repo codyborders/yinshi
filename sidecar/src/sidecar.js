@@ -200,8 +200,7 @@ function normalizePiSessionFile(piSessionFile) {
   return normalizedPath;
 }
 
-function openSessionManager(cwd, piSessionFile) {
-  const normalizedSessionFile = normalizePiSessionFile(piSessionFile);
+function openSessionManager(cwd, normalizedSessionFile) {
   if (!normalizedSessionFile) {
     return {
       sessionManager: SessionManager.inMemory(),
@@ -1526,7 +1525,7 @@ export class YinshiSidecar {
     gitAuth,
     agentDir,
     importedSettings,
-    piSessionFile,
+    normalizedPiSessionFile,
   ) {
     const { authStorage: sessionAuth } = createModelRegistry(providerAuth, agentDir);
     const sessionRegistry = new ModelRegistry(sessionAuth, buildModelsJsonPath(agentDir));
@@ -1534,8 +1533,8 @@ export class YinshiSidecar {
     const {
       sessionManager,
       resetWarning,
-      piSessionFile: normalizedPiSessionFile,
-    } = openSessionManager(cwd, piSessionFile);
+      piSessionFile: openedPiSessionFile,
+    } = openSessionManager(cwd, normalizedPiSessionFile);
 
     const settingsManager = SettingsManager.inMemory({
       compaction: { enabled: true },
@@ -1586,11 +1585,11 @@ export class YinshiSidecar {
     console.log(
       `[sidecar] Created pi session ${sessionId} with model ${model.name || model.id}`
       + (agentDir ? ` and agentDir ${agentDir}` : "")
-      + (normalizedPiSessionFile
-        ? ` and piSessionFile ${normalizedPiSessionFile}`
+      + (openedPiSessionFile
+        ? ` and piSessionFile ${openedPiSessionFile}`
         : ""),
     );
-    return { session, model, piSessionFile: normalizedPiSessionFile };
+    return { session, model, piSessionFile: openedPiSessionFile };
   }
 
   async warmupSession(sessionId, socket, options) {
@@ -1608,7 +1607,7 @@ export class YinshiSidecar {
     const importedSettings = options.settings || null;
 
     try {
-      const piSessionFile = normalizePiSessionFile(options.piSessionFile || null);
+      const requestedPiSessionFile = normalizePiSessionFile(options.piSessionFile || null);
       const {
         session: piSession,
         model,
@@ -1623,7 +1622,7 @@ export class YinshiSidecar {
         gitAuth,
         agentDir,
         importedSettings,
-        piSessionFile,
+        requestedPiSessionFile,
       );
       this.activeSessions.set(sessionId, {
         piSession,
@@ -1660,13 +1659,13 @@ export class YinshiSidecar {
     );
 
     try {
-      const piSessionFile = normalizePiSessionFile(options.piSessionFile || null);
+      const requestedPiSessionFile = normalizePiSessionFile(options.piSessionFile || null);
       const authChanged = JSON.stringify(entry?.providerAuth || null) !== JSON.stringify(providerAuth);
       const configChanged = JSON.stringify(entry?.providerConfig || null) !== JSON.stringify(providerConfig);
       const gitAuthChanged = JSON.stringify(entry?.gitAuth || null) !== JSON.stringify(gitAuth);
       const settingsChanged = JSON.stringify(entry?.importedSettings || null)
         !== JSON.stringify(importedSettings);
-      const piSessionFileChanged = (entry?.piSessionFile || null) !== piSessionFile;
+      const piSessionFileChanged = (entry?.piSessionFile || null) !== requestedPiSessionFile;
       if (
         !entry
         || entry.modelRef !== modelRef
@@ -1696,7 +1695,7 @@ export class YinshiSidecar {
           gitAuth,
           agentDir,
           importedSettings,
-          piSessionFile,
+          requestedPiSessionFile,
         );
         entry = {
           piSession,
