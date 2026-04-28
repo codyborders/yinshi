@@ -208,6 +208,7 @@ export interface SessionInfo {
   workspace_id: string;
   status: string;
   model: string;
+  pi_context_version: number;
 }
 
 export interface Message {
@@ -428,6 +429,13 @@ export type SSEEvent =
   | { type: "message_delta"; delta?: unknown }
   | { type: "message_stop" }
   | { type: "result"; [key: string]: unknown }
+  | {
+      type: "status";
+      status: string;
+      message?: string;
+      severity?: "info" | "warning" | "error";
+      [key: string]: unknown;
+    }
   | { type: "cancelled"; reason?: string }
   | { type: "error"; error: string };
 

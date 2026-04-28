@@ -297,7 +297,7 @@ async def delete_repo(repo_id: str, request: Request) -> None:
         ).fetchall()
         for workspace in workspace_rows:
             try:
-                await delete_workspace(db, workspace["id"])
+                await delete_workspace(db, workspace["id"], tenant=get_tenant(request))
             except Exception:
                 logger.warning(
                     "Failed to delete workspace %s while deleting repo %s",

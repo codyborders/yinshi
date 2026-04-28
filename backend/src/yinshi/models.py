@@ -131,6 +131,7 @@ class SessionOut(BaseModel):
     workspace_id: str
     status: str = "idle"
     model: str = DEFAULT_SESSION_MODEL
+    pi_context_version: int = 0
 
 
 class MessageOut(BaseModel):

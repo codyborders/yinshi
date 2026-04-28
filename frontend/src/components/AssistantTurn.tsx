@@ -18,7 +18,17 @@ function isTraceBlock(block: TurnBlock): boolean {
 }
 
 function isResponseBlock(block: TurnBlock): boolean {
-  return block.type === "text" || block.type === "error";
+  return block.type === "text" || block.type === "error" || block.type === "status";
+}
+
+function statusClassName(severity: TurnBlock["severity"]): string {
+  if (severity === "warning") {
+    return "border-amber-800/50 bg-amber-950/30 text-amber-200";
+  }
+  if (severity === "error") {
+    return "border-red-800/50 bg-red-900/30 text-red-300";
+  }
+  return "border-blue-900/50 bg-blue-950/30 text-blue-200";
 }
 
 function turnSummary(blocks: TurnBlock[]) {
@@ -54,6 +64,15 @@ function renderResponseBlock(block: TurnBlock) {
           <ReactMarkdown remarkPlugins={[remarkGfm]}>
             {block.text || ""}
           </ReactMarkdown>
+        </div>
+      );
+    case "status":
+      return (
+        <div
+          key={block.id}
+          className={`mx-2 rounded-lg border px-3 py-2 text-sm ${statusClassName(block.severity)}`}
+        >
+          {block.text}
         </div>
       );
     case "error":

@@ -176,6 +176,13 @@ def test_repos_table_has_owner_email_column(db):
     assert "agents_md" in columns
 
 
+def test_sessions_table_has_pi_context_version(db):
+    """Sessions table should track durable Pi context compatibility."""
+    cursor = db.execute("PRAGMA table_info(sessions)")
+    columns = [row[1] for row in cursor.fetchall()]
+    assert "pi_context_version" in columns
+
+
 def test_init_control_db_creates_pi_config_tables(tmp_path, monkeypatch):
     """init_control_db should create pi_configs and user_settings tables."""
     monkeypatch.setenv("CONTROL_DB_PATH", str(tmp_path / "control.db"))

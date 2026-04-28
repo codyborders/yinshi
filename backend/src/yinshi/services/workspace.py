@@ -386,9 +386,37 @@ async def create_workspace_for_repo(
     return dict(row)
 
 
-async def delete_workspace(db: sqlite3.Connection, workspace_id: str) -> None:
-    """Delete a workspace and its worktree from disk."""
+async def delete_workspace(
+    db: sqlite3.Connection,
+    workspace_id: str,
+    *,
+    tenant: TenantContext | None = None,
+) -> None:
+    """Delete a workspace, durable Pi sessions, and its worktree from disk."""
     workspace = _fetch_workspace(db, workspace_id)
+
+    if tenant is not None:
+        from yinshi.services.sidecar_runtime import delete_workspace_pi_sessions
+
+        try:
+            delete_workspace_pi_sessions(tenant, workspace_id)
+        except OSError:
+            logger.warning("Failed to delete Pi session files for workspace %s", workspace_id)
+    else:
+        from yinshi.services.sidecar_runtime import delete_local_pi_session_file
+
+        session_rows = db.execute(
+            "SELECT id FROM sessions WHERE workspace_id = ?",
+            (workspace_id,),
+        ).fetchall()
+        for session_row in session_rows:
+            try:
+                delete_local_pi_session_file(session_row["id"])
+            except OSError:
+                logger.warning(
+                    "Failed to delete Pi session file for session %s",
+                    session_row["id"],
+                )
 
     repo = _fetch_repo(db, workspace["repo_id"])
 

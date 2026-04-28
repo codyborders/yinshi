@@ -74,17 +74,23 @@ vi.mock("../../api/client", () => ({
 vi.mock("../../components/ChatView", () => ({
   default: ({
     onSend,
+    inputDisabledReason,
   }: {
     onSend: (prompt: string) => void | Promise<void>;
+    inputDisabledReason?: string | null;
   }) => (
-    <button
-      type="button"
-      onClick={() => {
-        void onSend("Ship it");
-      }}
-    >
-      Send Prompt
-    </button>
+    <div>
+      {inputDisabledReason && <div>{inputDisabledReason}</div>}
+      <button
+        type="button"
+        disabled={Boolean(inputDisabledReason)}
+        onClick={() => {
+          void onSend("Ship it");
+        }}
+      >
+        Send Prompt
+      </button>
+    </div>
   ),
 }));
 
@@ -121,16 +127,33 @@ function mockCatalog({
   });
 }
 
+function sessionMetadata(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "session-123",
+    created_at: "2026-04-26T00:00:00Z",
+    updated_at: "2026-04-26T00:00:00Z",
+    workspace_id: "workspace-123",
+    status: "idle",
+    model: minimaxModel.ref,
+    pi_context_version: 1,
+    ...overrides,
+  };
+}
+
 function mockSessionApi(
-  sessionMetadata: { model: string } | Promise<{ model: string }>,
+  sessionMetadataValue: Record<string, unknown> | Promise<Record<string, unknown>> = sessionMetadata(),
   messages: unknown[] = [],
 ) {
+  const metadata =
+    sessionMetadataValue instanceof Promise
+      ? sessionMetadataValue
+      : sessionMetadata(sessionMetadataValue);
   apiGetMock.mockImplementation((path: string) => {
     if (path === "/api/sessions/session-123/messages") {
       return Promise.resolve(messages);
     }
     if (path === "/api/sessions/session-123") {
-      return Promise.resolve(sessionMetadata);
+      return Promise.resolve(metadata);
     }
     throw new Error(`Unexpected GET path: ${path}`);
   });
@@ -219,6 +242,34 @@ describe("Session", () => {
     await act(async () => {
       resolvePatch({ model: openaiModel.ref });
     });
+  });
+
+  it("disables prompting for legacy transcript-only sessions", async () => {
+    mockCatalog();
+    useAgentStreamMock.mockReturnValue({
+      messages: [
+        {
+          id: "message-1",
+          role: "user",
+          content: "Old prompt",
+          blocks: [],
+          timestamp: Date.now(),
+        },
+      ],
+      sendPrompt: sendPromptMock,
+      cancel: cancelMock,
+      streaming: false,
+      setMessages: setMessagesMock,
+    });
+    mockSessionApi(sessionMetadata({ pi_context_version: 0 }));
+
+    renderSession();
+
+    const sendButton = await screen.findByRole("button", { name: "Send Prompt" });
+    expect(sendButton).toBeDisabled();
+    expect(
+      screen.getByText(/predates durable Pi context/),
+    ).toBeInTheDocument();
   });
 
   it("omits the thinking override for models that do not support reasoning", async () => {

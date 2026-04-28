@@ -31,9 +31,7 @@ def _check_repo_owner(
     """In legacy mode, verify the authenticated user owns the repo."""
     if get_tenant(request):
         return
-    repo = db.execute(
-        "SELECT owner_email FROM repos WHERE id = ?", (repo_id,)
-    ).fetchone()
+    repo = db.execute("SELECT owner_email FROM repos WHERE id = ?", (repo_id,)).fetchone()
     if repo:
         check_owner(repo["owner_email"], get_user_email(request))
     else:
@@ -91,26 +89,20 @@ def update_workspace(
 ) -> dict[str, Any]:
     """Update workspace fields (currently only state)."""
     with get_db_for_request(request) as db:
-        row = db.execute(
-            "SELECT * FROM workspaces WHERE id = ?", (workspace_id,)
-        ).fetchone()
+        row = db.execute("SELECT * FROM workspaces WHERE id = ?", (workspace_id,)).fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Workspace not found")
         check_workspace_owner(db, workspace_id, request)
 
         updates = {
-            k: v
-            for k, v in body.model_dump(exclude_unset=True).items()
-            if k in _UPDATABLE_COLUMNS
+            k: v for k, v in body.model_dump(exclude_unset=True).items() if k in _UPDATABLE_COLUMNS
         }
         if updates:
             sets = ", ".join(f"{k} = ?" for k in updates)
             vals = list(updates.values()) + [workspace_id]
             db.execute(f"UPDATE workspaces SET {sets} WHERE id = ?", vals)  # noqa: S608
             db.commit()
-        updated = db.execute(
-            "SELECT * FROM workspaces WHERE id = ?", (workspace_id,)
-        ).fetchone()
+        updated = db.execute("SELECT * FROM workspaces WHERE id = ?", (workspace_id,)).fetchone()
         return dict(updated)
 
 
@@ -120,7 +112,7 @@ async def remove_workspace(workspace_id: str, request: Request) -> None:
     with get_db_for_request(request) as db:
         check_workspace_owner(db, workspace_id, request)
         try:
-            await delete_workspace(db, workspace_id)
+            await delete_workspace(db, workspace_id, tenant=get_tenant(request))
         except (WorkspaceNotFoundError, RepoNotFoundError):
             raise HTTPException(status_code=404, detail="Workspace not found")
         except Exception:

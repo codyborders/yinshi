@@ -61,6 +61,24 @@ function sendToSocket(socket, message) {
   socket.write(`${JSON.stringify(message)}\n`);
 }
 
+function sendStatusToSocket(
+  socket,
+  sessionId,
+  status,
+  message,
+  severity = "info",
+  extra = {},
+) {
+  sendToSocket(socket, {
+    id: sessionId,
+    type: "status",
+    status,
+    severity,
+    message,
+    ...extra,
+  });
+}
+
 function normalizePositiveInteger(value, fallback, minValue, maxValue) {
   const numericValue = Number(value);
   if (!Number.isFinite(numericValue)) {
@@ -163,6 +181,56 @@ function normalizeImportedSettings(importedSettings) {
     }
   }
   return normalizedSettings;
+}
+
+function normalizePiSessionFile(piSessionFile) {
+  if (piSessionFile === null || piSessionFile === undefined) {
+    return null;
+  }
+  if (typeof piSessionFile !== "string") {
+    throw new Error("piSessionFile must be a string");
+  }
+  const normalizedPath = piSessionFile.trim();
+  if (!normalizedPath) {
+    throw new Error("piSessionFile must not be empty");
+  }
+  if (normalizedPath.includes("\0")) {
+    throw new Error("piSessionFile must not contain NUL");
+  }
+  return normalizedPath;
+}
+
+function openSessionManager(cwd, piSessionFile) {
+  const normalizedSessionFile = normalizePiSessionFile(piSessionFile);
+  if (!normalizedSessionFile) {
+    return {
+      sessionManager: SessionManager.inMemory(),
+      resetWarning: null,
+      piSessionFile: null,
+    };
+  }
+
+  const sessionDir = path.dirname(normalizedSessionFile);
+  fs.mkdirSync(sessionDir, { recursive: true, mode: 0o700 });
+  try {
+    return {
+      sessionManager: SessionManager.open(normalizedSessionFile, sessionDir, cwd),
+      resetWarning: null,
+      piSessionFile: normalizedSessionFile,
+    };
+  } catch {
+    const suffix = new Date().toISOString().replace(/[:.]/g, "-");
+    const corruptPath = `${normalizedSessionFile}.corrupt-${suffix}`;
+    if (fs.existsSync(normalizedSessionFile)) {
+      fs.renameSync(normalizedSessionFile, corruptPath);
+    }
+    return {
+      sessionManager: SessionManager.open(normalizedSessionFile, sessionDir, cwd),
+      resetWarning:
+        "Pi session context was missing or unreadable, so Yinshi started a fresh model context. The visible transcript is still preserved.",
+      piSessionFile: normalizedSessionFile,
+    };
+  }
 }
 
 function stringifyToolContent(content) {
@@ -1448,10 +1516,26 @@ export class YinshiSidecar {
     });
   }
 
-  async _createPiSession(sessionId, socket, modelRef, cwd, providerAuth, providerConfig, gitAuth, agentDir, importedSettings) {
+  async _createPiSession(
+    sessionId,
+    socket,
+    modelRef,
+    cwd,
+    providerAuth,
+    providerConfig,
+    gitAuth,
+    agentDir,
+    importedSettings,
+    piSessionFile,
+  ) {
     const { authStorage: sessionAuth } = createModelRegistry(providerAuth, agentDir);
     const sessionRegistry = new ModelRegistry(sessionAuth, buildModelsJsonPath(agentDir));
     const model = resolveModel(modelRef, providerAuth, agentDir, providerConfig);
+    const {
+      sessionManager,
+      resetWarning,
+      piSessionFile: normalizedPiSessionFile,
+    } = openSessionManager(cwd, piSessionFile);
 
     const settingsManager = SettingsManager.inMemory({
       compaction: { enabled: true },
@@ -1469,7 +1553,7 @@ export class YinshiSidecar {
       // tool implementations as `customTools` so they replace the built-ins
       // while keeping read/bash/edit/write active for the model.
       customTools: createYinshiCodingTools(cwd, gitAuth),
-      sessionManager: SessionManager.inMemory(),
+      sessionManager,
       settingsManager,
       authStorage: sessionAuth,
       modelRegistry: sessionRegistry,
@@ -1490,11 +1574,23 @@ export class YinshiSidecar {
       runner.setUIContext(createWebUIContext(sessionId, socket, model));
       console.log(`[sidecar] session ${sessionId} UI context bound`);
     }
+    if (resetWarning) {
+      sendStatusToSocket(
+        socket,
+        sessionId,
+        "context_reset",
+        resetWarning,
+        "warning",
+      );
+    }
     console.log(
       `[sidecar] Created pi session ${sessionId} with model ${model.name || model.id}`
-      + (agentDir ? ` and agentDir ${agentDir}` : ""),
+      + (agentDir ? ` and agentDir ${agentDir}` : "")
+      + (normalizedPiSessionFile
+        ? ` and piSessionFile ${normalizedPiSessionFile}`
+        : ""),
     );
-    return { session, model };
+    return { session, model, piSessionFile: normalizedPiSessionFile };
   }
 
   async warmupSession(sessionId, socket, options) {
@@ -1512,7 +1608,12 @@ export class YinshiSidecar {
     const importedSettings = options.settings || null;
 
     try {
-      const { session: piSession, model } = await this._createPiSession(
+      const piSessionFile = normalizePiSessionFile(options.piSessionFile || null);
+      const {
+        session: piSession,
+        model,
+        piSessionFile: normalizedPiSessionFile,
+      } = await this._createPiSession(
         sessionId,
         socket,
         modelRef,
@@ -1522,6 +1623,7 @@ export class YinshiSidecar {
         gitAuth,
         agentDir,
         importedSettings,
+        piSessionFile,
       );
       this.activeSessions.set(sessionId, {
         piSession,
@@ -1532,6 +1634,7 @@ export class YinshiSidecar {
         providerConfig,
         gitAuth,
         importedSettings,
+        piSessionFile: normalizedPiSessionFile,
         unsubscribe: null,
         cancelRequested: false,
       });
@@ -1551,16 +1654,19 @@ export class YinshiSidecar {
     const agentDir = options.agentDir || null;
     const importedSettings = options.settings || null;
     let entry = this.activeSessions.get(sessionId);
+    let clearFinalizeTimer = () => {};
     console.log(
       `[sidecar] processQuery session=${sessionId} model=${modelRef} hasEntry=${!!entry} promptLen=${prompt?.length ?? 0}`,
     );
 
     try {
+      const piSessionFile = normalizePiSessionFile(options.piSessionFile || null);
       const authChanged = JSON.stringify(entry?.providerAuth || null) !== JSON.stringify(providerAuth);
       const configChanged = JSON.stringify(entry?.providerConfig || null) !== JSON.stringify(providerConfig);
       const gitAuthChanged = JSON.stringify(entry?.gitAuth || null) !== JSON.stringify(gitAuth);
       const settingsChanged = JSON.stringify(entry?.importedSettings || null)
         !== JSON.stringify(importedSettings);
+      const piSessionFileChanged = (entry?.piSessionFile || null) !== piSessionFile;
       if (
         !entry
         || entry.modelRef !== modelRef
@@ -1568,6 +1674,7 @@ export class YinshiSidecar {
         || configChanged
         || gitAuthChanged
         || settingsChanged
+        || piSessionFileChanged
       ) {
         if (entry) {
           if (entry.unsubscribe) {
@@ -1575,7 +1682,11 @@ export class YinshiSidecar {
           }
           entry.piSession.dispose();
         }
-        const { session: piSession, model } = await this._createPiSession(
+        const {
+          session: piSession,
+          model,
+          piSessionFile: normalizedPiSessionFile,
+        } = await this._createPiSession(
           sessionId,
           socket,
           modelRef,
@@ -1585,6 +1696,7 @@ export class YinshiSidecar {
           gitAuth,
           agentDir,
           importedSettings,
+          piSessionFile,
         );
         entry = {
           piSession,
@@ -1595,6 +1707,7 @@ export class YinshiSidecar {
           providerConfig,
           gitAuth,
           importedSettings,
+          piSessionFile: normalizedPiSessionFile,
           unsubscribe: null,
           cancelRequested: false,
         };
@@ -1614,6 +1727,41 @@ export class YinshiSidecar {
       // for a "result" event. Track whether agent_end fired so we can emit
       // a synthetic one after prompt() resolves.
       let agentEndEmitted = false;
+      let resultSent = false;
+      let pendingResult = null;
+      let compactionActive = false;
+      let finalizeTimer = null;
+
+      const buildResultMessage = (resultUsage) => ({
+        id: sessionId,
+        type: "message",
+        data: {
+          type: "result",
+          usage: resultUsage || {},
+          provider: model.provider,
+          model: `${model.provider}/${model.id}`,
+        },
+      });
+
+      clearFinalizeTimer = () => {
+        if (finalizeTimer) {
+          clearTimeout(finalizeTimer);
+          finalizeTimer = null;
+        }
+      };
+
+      const schedulePendingResult = () => {
+        clearFinalizeTimer();
+        finalizeTimer = setTimeout(() => {
+          finalizeTimer = null;
+          if (resultSent || compactionActive || !pendingResult) {
+            return;
+          }
+          sendToSocket(socket, pendingResult);
+          pendingResult = null;
+          resultSent = true;
+        }, 0);
+      };
 
       entry.unsubscribe = piSession.subscribe((event) => {
         // Temporary diagnostic so we can see every event pi emits while we
@@ -1691,26 +1839,66 @@ export class YinshiSidecar {
             }
             break;
           case "agent_end":
-            sendToSocket(socket, {
-              id: sessionId,
-              type: "message",
-              data: {
-                type: "result",
-                usage: usage || {},
-                provider: model.provider,
-                model: `${model.provider}/${model.id}`,
-              },
-            });
+            pendingResult = buildResultMessage(usage);
             usage = null;
             agentEndEmitted = true;
+            schedulePendingResult();
             break;
           case "auto_retry_start":
+            pendingResult = null;
+            clearFinalizeTimer();
             console.log(
               `[sidecar] Retrying (attempt ${event.attempt}/${event.maxAttempts}): ${event.errorMessage}`,
             );
+            sendStatusToSocket(
+              socket,
+              sessionId,
+              "retrying",
+              `Retrying after provider error (attempt ${event.attempt}/${event.maxAttempts})...`,
+            );
             break;
-          case "auto_compaction_start":
-            console.log("[sidecar] Auto-compacting context...");
+          case "auto_retry_end":
+            sendStatusToSocket(
+              socket,
+              sessionId,
+              event.success ? "retry_complete" : "retry_failed",
+              event.success ? "Retry complete." : "Retry failed.",
+              event.success ? "info" : "warning",
+            );
+            break;
+          case "compaction_start":
+            compactionActive = true;
+            clearFinalizeTimer();
+            console.log("[sidecar] Compacting context...");
+            sendStatusToSocket(
+              socket,
+              sessionId,
+              "compacting",
+              "Compacting context...",
+              "info",
+              { reason: event.reason },
+            );
+            break;
+          case "compaction_end":
+            compactionActive = false;
+            if (event.willRetry) {
+              pendingResult = null;
+            }
+            sendStatusToSocket(
+              socket,
+              sessionId,
+              event.errorMessage ? "compaction_failed" : "compacted",
+              event.errorMessage || "Context compacted.",
+              event.errorMessage ? "warning" : "info",
+              {
+                reason: event.reason,
+                willRetry: event.willRetry === true,
+                aborted: event.aborted === true,
+              },
+            );
+            if (!event.willRetry) {
+              schedulePendingResult();
+            }
             break;
         }
       });
@@ -1724,20 +1912,13 @@ export class YinshiSidecar {
       // Pi returns from prompt() without firing agent_end when it handles an
       // extension command inline (e.g. `/rtk-stats`). Synthesise the result
       // event so the client stream loop terminates cleanly instead of hanging.
-      if (!agentEndEmitted) {
+      if (!agentEndEmitted && !resultSent) {
         console.log(`[sidecar] synthesising result for session ${sessionId}`);
-        sendToSocket(socket, {
-          id: sessionId,
-          type: "message",
-          data: {
-            type: "result",
-            usage: usage || {},
-            provider: model.provider,
-            model: `${model.provider}/${model.id}`,
-          },
-        });
+        sendToSocket(socket, buildResultMessage(usage));
+        resultSent = true;
       }
     } catch (err) {
+      clearFinalizeTimer();
       const errorMessage = err instanceof Error ? err.message : String(err);
       if (entry?.cancelRequested) {
         console.log(`[sidecar] Session ${sessionId} cancelled by user`);
@@ -1766,6 +1947,8 @@ export class YinshiSidecar {
     }
     console.log(`[sidecar] Cancelling session ${sessionId}`);
     entry.cancelRequested = true;
+    entry.piSession.abortCompaction();
+    entry.piSession.abortRetry();
     await entry.piSession.abort();
   }
 

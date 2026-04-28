@@ -76,6 +76,72 @@ class TestRemapPath:
             _remap_path("/etc/passwd", "/var/lib/yinshi/users/ab/abc123")
 
 
+class TestPiSessionRuntimePaths:
+    """Tests for durable Pi session file paths in workspace runtimes."""
+
+    def test_resolve_context_returns_workspace_pi_session_file(self, tmp_path):
+        from yinshi.services.sidecar_runtime import _workspace_pi_session_runtime_file
+        from yinshi.tenant import TenantContext
+
+        tenant = TenantContext(
+            user_id="abcdef12345678901234567890abcdef",
+            email="test@example.com",
+            data_dir=str(tmp_path / "users" / "tenant"),
+            db_path=str(tmp_path / "users" / "tenant" / "tenant.db"),
+        )
+        Path(tenant.data_dir).mkdir(parents=True)
+
+        session_file = _workspace_pi_session_runtime_file(
+            tenant,
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            container_enabled=True,
+            narrow_mounts=True,
+        )
+
+        assert session_file.startswith("/home/yinshi/.yinshi/pi-sessions/")
+        assert session_file.endswith(".jsonl")
+        host_session_dir = (
+            Path(tenant.data_dir)
+            / "runtime"
+            / "workspaces"
+            / "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            / "home"
+            / ".yinshi"
+            / "pi-sessions"
+        )
+        assert host_session_dir.is_dir()
+
+    def test_delete_workspace_pi_sessions_removes_only_session_directory(self, tmp_path):
+        from yinshi.services.sidecar_runtime import delete_workspace_pi_sessions
+        from yinshi.tenant import TenantContext
+
+        tenant = TenantContext(
+            user_id="abcdef12345678901234567890abcdef",
+            email="test@example.com",
+            data_dir=str(tmp_path / "users" / "tenant"),
+            db_path=str(tmp_path / "users" / "tenant" / "tenant.db"),
+        )
+        session_dir = (
+            Path(tenant.data_dir)
+            / "runtime"
+            / "workspaces"
+            / "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            / "home"
+            / ".yinshi"
+            / "pi-sessions"
+        )
+        session_dir.mkdir(parents=True)
+        (session_dir / "session.jsonl").write_text("{}\n", encoding="utf-8")
+        keep_file = session_dir.parent / "keep.txt"
+        keep_file.write_text("keep", encoding="utf-8")
+
+        delete_workspace_pi_sessions(tenant, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+
+        assert not session_dir.exists()
+        assert keep_file.read_text(encoding="utf-8") == "keep"
+
+
 # ---------------------------------------------------------------------------
 # Podman subprocess mock helpers
 # ---------------------------------------------------------------------------

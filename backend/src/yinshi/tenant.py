@@ -94,7 +94,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
     workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
     status TEXT DEFAULT 'idle' NOT NULL,
-    model TEXT DEFAULT '{DEFAULT_SESSION_MODEL}'
+    model TEXT DEFAULT '{DEFAULT_SESSION_MODEL}',
+    pi_context_version INTEGER DEFAULT 1 NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -138,6 +139,12 @@ def _migrate_user_db(conn: sqlite3.Connection) -> None:
     repo_columns = [row[1] for row in conn.execute("PRAGMA table_info(repos)").fetchall()]
     if "agents_md" not in repo_columns:
         conn.execute("ALTER TABLE repos ADD COLUMN agents_md TEXT")
+
+    session_columns = [row[1] for row in conn.execute("PRAGMA table_info(sessions)").fetchall()]
+    if "pi_context_version" not in session_columns:
+        conn.execute(
+            "ALTER TABLE sessions ADD COLUMN pi_context_version INTEGER DEFAULT 0 NOT NULL"
+        )
 
     conn.commit()
 

@@ -57,6 +57,7 @@ interface ChatViewProps {
   onSend: (prompt: string) => void | Promise<void>;
   onCancel: () => void | Promise<void>;
   onCommand?: (name: string, args: string) => void | Promise<void>;
+  inputDisabledReason?: string | null;
   // Pi-provided slash commands (skills, prompts, extension commands). These
   // are inserted into the input on click so the user can supply arguments,
   // then submitted as a regular prompt that pi handles internally.
@@ -69,6 +70,7 @@ export default function ChatView({
   onSend,
   onCancel,
   onCommand,
+  inputDisabledReason,
   piCommands,
 }: ChatViewProps) {
   const [input, setInput] = useState("");
@@ -179,7 +181,7 @@ export default function ChatView({
     (e?: React.FormEvent) => {
       e?.preventDefault();
       const text = input.trim();
-      if (!text) return;
+      if (!text || inputDisabledReason) return;
 
       // Only intercept slash commands whose first token matches a builtin Yinshi
       // UI command. Pi skill / prompt / extension commands pass through to onSend
@@ -206,10 +208,11 @@ export default function ChatView({
       setShowMenu(false);
       resizeInput(inputRef.current);
     },
-    [input, streaming, onSend, onCommand],
+    [input, inputDisabledReason, streaming, onSend, onCommand],
   );
 
   const hasInput = input.trim().length > 0;
+  const inputDisabled = Boolean(inputDisabledReason);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -325,6 +328,11 @@ export default function ChatView({
             onSelect={selectCommand}
           />
         )}
+        {inputDisabledReason && (
+          <div className="mb-2 rounded-lg border border-amber-800/50 bg-amber-950/30 px-3 py-2 text-sm text-amber-200">
+            {inputDisabledReason}
+          </div>
+        )}
         <form onSubmit={handleSubmit} className="flex items-end gap-2">
           <textarea
             ref={inputRef}
@@ -334,9 +342,10 @@ export default function ChatView({
             onKeyUp={syncCaretFromInput}
             onClick={syncCaretFromInput}
             onSelect={syncCaretFromInput}
-            placeholder="Describe what to build..."
+            placeholder={inputDisabledReason || "Describe what to build..."}
+            disabled={inputDisabled}
             rows={1}
-            className="flex-1 resize-none rounded-xl bg-gray-800 px-4 py-3 text-sm text-gray-100 placeholder-gray-500 outline-none focus:ring-2 focus:ring-blue-500"
+            className="flex-1 resize-none rounded-xl bg-gray-800 px-4 py-3 text-sm text-gray-100 placeholder-gray-500 outline-none focus:ring-2 focus:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-60"
             style={{ maxHeight: "120px" }}
           />
           {streaming && !hasInput ? (
@@ -365,7 +374,7 @@ export default function ChatView({
           ) : (
             <button
               type="submit"
-              disabled={!hasInput}
+              disabled={!hasInput || inputDisabled}
               className="flex h-11 w-11 items-center justify-center rounded-xl bg-blue-500 text-white disabled:opacity-30 active:bg-blue-600"
               aria-label={streaming ? "Steer" : "Send"}
             >

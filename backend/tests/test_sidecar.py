@@ -68,6 +68,28 @@ async def test_sidecar_client_warmup_with_agent_dir_and_settings():
 
 
 @pytest.mark.asyncio
+async def test_sidecar_client_warmup_with_pi_session_file() -> None:
+    """warmup should include the durable Pi session file when provided."""
+    from yinshi.services.sidecar import SidecarClient
+
+    client = SidecarClient()
+    client._connected = True
+    client._writer = MagicMock()
+    client._writer.drain = AsyncMock()
+
+    await client.warmup(
+        "sess-4",
+        model="opus",
+        cwd="/tmp/repo",
+        pi_session_file="/home/yinshi/.yinshi/pi-sessions/sess-4.jsonl",
+    )
+
+    written = client._writer.write.call_args[0][0].decode()
+    msg = json.loads(written.strip())
+    assert msg["options"]["piSessionFile"] == "/home/yinshi/.yinshi/pi-sessions/sess-4.jsonl"
+
+
+@pytest.mark.asyncio
 async def test_sidecar_client_warmup_with_git_auth() -> None:
     """warmup should include runtime git auth when present."""
     from yinshi.services.sidecar import SidecarClient

@@ -36,15 +36,19 @@ _EXCLUDED_DIRS = frozenset(
 _TREE_FILE_LIMIT = 5000
 
 
-def _normalize_session_row(db, row: Any) -> dict[str, Any]:
+def _normalize_session_row(db: Any, row: Any) -> dict[str, Any]:
     """Normalize stored session models and persist repairs on read."""
     normalized_row = dict(row)
     original_model = normalized_row["model"]
     normalized_model = normalize_model_ref(original_model)
     if normalized_model != original_model:
-        db.execute("UPDATE sessions SET model = ? WHERE id = ?", (normalized_model, normalized_row["id"]))
+        db.execute(
+            "UPDATE sessions SET model = ? WHERE id = ?", (normalized_model, normalized_row["id"])
+        )
         db.commit()
         normalized_row["model"] = normalized_model
+    if "pi_context_version" not in normalized_row or normalized_row["pi_context_version"] is None:
+        normalized_row["pi_context_version"] = 0
     return normalized_row
 
 
@@ -55,11 +59,7 @@ def _list_workspace_files(workspace_path: str) -> list[str]:
 
     files: list[str] = []
     for dirpath, dirnames, filenames in os.walk(workspace_path):
-        dirnames[:] = sorted(
-            dirname
-            for dirname in dirnames
-            if dirname not in _EXCLUDED_DIRS
-        )
+        dirnames[:] = sorted(dirname for dirname in dirnames if dirname not in _EXCLUDED_DIRS)
         for filename in sorted(filenames):
             relative_path = os.path.relpath(
                 os.path.join(dirpath, filename),
@@ -98,22 +98,18 @@ def create_session(
 ) -> dict[str, Any]:
     """Create a new agent session for a workspace."""
     with get_db_for_request(request) as db:
-        ws = db.execute(
-            "SELECT id FROM workspaces WHERE id = ?", (workspace_id,)
-        ).fetchone()
+        ws = db.execute("SELECT id FROM workspaces WHERE id = ?", (workspace_id,)).fetchone()
         if not ws:
             raise HTTPException(status_code=404, detail="Workspace not found")
         check_workspace_owner(db, workspace_id, request)
 
         cursor = db.execute(
-            """INSERT INTO sessions (workspace_id, status, model)
-               VALUES (?, 'idle', ?)""",
+            """INSERT INTO sessions (workspace_id, status, model, pi_context_version)
+               VALUES (?, 'idle', ?, 1)""",
             (workspace_id, body.model),
         )
         db.commit()
-        row = db.execute(
-            "SELECT * FROM sessions WHERE rowid = ?", (cursor.lastrowid,)
-        ).fetchone()
+        row = db.execute("SELECT * FROM sessions WHERE rowid = ?", (cursor.lastrowid,)).fetchone()
         assert row is not None, "created session must be queryable"
         return _normalize_session_row(db, row)
 
@@ -122,9 +118,7 @@ def create_session(
 def get_session(session_id: str, request: Request) -> dict[str, Any]:
     """Get a session by ID."""
     with get_db_for_request(request) as db:
-        row = db.execute(
-            "SELECT * FROM sessions WHERE id = ?", (session_id,)
-        ).fetchone()
+        row = db.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Session not found")
         check_session_owner(db, session_id, request)
@@ -139,26 +133,20 @@ def update_session(
 ) -> dict[str, Any]:
     """Update session fields (currently only model)."""
     with get_db_for_request(request) as db:
-        row = db.execute(
-            "SELECT * FROM sessions WHERE id = ?", (session_id,)
-        ).fetchone()
+        row = db.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Session not found")
         check_session_owner(db, session_id, request)
 
         updates = {
-            k: v
-            for k, v in body.model_dump(exclude_unset=True).items()
-            if k in _UPDATABLE_COLUMNS
+            k: v for k, v in body.model_dump(exclude_unset=True).items() if k in _UPDATABLE_COLUMNS
         }
         if updates:
             sets = ", ".join(f"{k} = ?" for k in updates)
             vals = list(updates.values()) + [session_id]
             db.execute(f"UPDATE sessions SET {sets} WHERE id = ?", vals)  # noqa: S608
             db.commit()
-        updated = db.execute(
-            "SELECT * FROM sessions WHERE id = ?", (session_id,)
-        ).fetchone()
+        updated = db.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
         assert updated is not None, "updated session must be queryable"
         return _normalize_session_row(db, updated)
 
@@ -167,9 +155,7 @@ def update_session(
 def get_messages(session_id: str, request: Request) -> list[dict[str, Any]]:
     """Get all messages for a session."""
     with get_db_for_request(request) as db:
-        sess = db.execute(
-            "SELECT id FROM sessions WHERE id = ?", (session_id,)
-        ).fetchone()
+        sess = db.execute("SELECT id FROM sessions WHERE id = ?", (session_id,)).fetchone()
         if not sess:
             raise HTTPException(status_code=404, detail="Session not found")
         check_session_owner(db, session_id, request)

@@ -65,6 +65,32 @@ describe("turnEvents", () => {
     expect(blocks).toEqual([]);
   });
 
+  it("keeps status events visible without adding transcript text", () => {
+    const blocks: TurnBlock[] = [];
+
+    const result = applyTurnEventToBlocks(
+      blocks,
+      {
+        type: "status",
+        status: "compacting",
+        message: "Compacting context...",
+        severity: "info",
+      },
+      () => "block-1",
+    );
+
+    expect(result).toEqual({ changed: true });
+    expect(blocks).toEqual([
+      {
+        id: "block-1",
+        type: "status",
+        text: "Compacting context...",
+        severity: "info",
+      },
+    ]);
+    expect(blocksToContent(blocks)).toBe("");
+  });
+
   it("updates streaming tool input from content block deltas", () => {
     const blocks: TurnBlock[] = [];
     let blockIndex = 0;

@@ -335,11 +335,11 @@ def test_delete_repo_continues_on_workspace_failure(
 
     original_delete_workspace = repos_api.delete_workspace
 
-    async def flaky_delete_workspace(db, workspace_id: str) -> None:
+    async def flaky_delete_workspace(db, workspace_id: str, **kwargs) -> None:
         attempted_workspace_ids.append(workspace_id)
         if workspace_id == failure_workspace_id:
             raise RuntimeError("delete failed")
-        await original_delete_workspace(db, workspace_id)
+        await original_delete_workspace(db, workspace_id, **kwargs)
 
     with patch(
         "yinshi.api.repos.delete_workspace",
@@ -1185,9 +1185,10 @@ def test_prompt_streams_sidecar_events(client: TestClient, session_id: str) -> N
             "data": {"type": "result", "usage": {}},
         }
 
+    mock_sidecar = make_mock_sidecar(fake_query)
     with patch(
         "yinshi.api.stream.create_sidecar_connection",
-        return_value=make_mock_sidecar(fake_query),
+        return_value=mock_sidecar,
     ):
         resp = client.post(
             f"/api/sessions/{session_id}/prompt",
@@ -1220,6 +1221,72 @@ def test_prompt_streams_sidecar_events(client: TestClient, session_id: str) -> N
         "result",
     ]
     assert assistant_message["content"] == "Hello world"
+    assert mock_sidecar.warmup.call_args.kwargs["pi_session_file"].endswith(f"{session_id}.jsonl")
+
+
+def test_prompt_rejects_legacy_transcript_without_durable_pi_context(
+    client: TestClient,
+    session_id: str,
+) -> None:
+    """Legacy transcript-only sessions should not pretend to resume exact Pi context."""
+    from yinshi.db import get_db
+
+    with get_db() as db:
+        db.execute(
+            "UPDATE sessions SET pi_context_version = 0 WHERE id = ?",
+            (session_id,),
+        )
+        db.execute(
+            "INSERT INTO messages (session_id, role, content) VALUES (?, 'user', 'old prompt')",
+            (session_id,),
+        )
+        db.commit()
+
+    resp = client.post(
+        f"/api/sessions/{session_id}/prompt",
+        json={"prompt": "continue"},
+    )
+
+    assert resp.status_code == 409
+    payload = resp.json()
+    assert payload["detail"]["code"] == "legacy_pi_context"
+
+
+def test_prompt_upgrades_empty_legacy_session_to_durable_pi_context(
+    client: TestClient,
+    session_id: str,
+) -> None:
+    """Empty legacy sessions should be upgraded before first durable Pi prompt."""
+    from yinshi.db import get_db
+
+    with get_db() as db:
+        db.execute(
+            "UPDATE sessions SET pi_context_version = 0 WHERE id = ?",
+            (session_id,),
+        )
+        db.commit()
+
+    async def fake_query(*args, **kwargs):
+        del args, kwargs
+        yield {"type": "message", "data": {"type": "result", "usage": {}}}
+
+    with patch(
+        "yinshi.api.stream.create_sidecar_connection",
+        return_value=make_mock_sidecar(fake_query),
+    ):
+        resp = client.post(
+            f"/api/sessions/{session_id}/prompt",
+            json={"prompt": "start"},
+        )
+
+    assert resp.status_code == 200
+    with get_db() as db:
+        row = db.execute(
+            "SELECT pi_context_version FROM sessions WHERE id = ?",
+            (session_id,),
+        ).fetchone()
+    assert row is not None
+    assert row["pi_context_version"] == 1
 
 
 def test_prompt_forwards_explicit_thinking_override_for_reasoning_model(

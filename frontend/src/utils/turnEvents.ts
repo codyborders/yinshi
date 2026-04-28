@@ -4,8 +4,9 @@ export type TurnStatus = "completed" | "cancelled" | "failed";
 
 export interface TurnBlock {
   id: string;
-  type: "text" | "thinking" | "tool_use" | "error";
+  type: "text" | "thinking" | "tool_use" | "error" | "status";
   text?: string;
+  severity?: "info" | "warning" | "error";
   toolName?: string;
   toolInput?: unknown;
   toolId?: string;
@@ -200,6 +201,14 @@ export function applyTurnEventToBlocks(
       return { changed: false, status: "completed" };
     case "cancelled":
       return { changed: false, status: "cancelled" };
+    case "status":
+      blocks.push({
+        id: createBlockId(),
+        type: "status",
+        text: event.message || event.status,
+        severity: event.severity || "info",
+      });
+      return { changed: true };
     case "error":
       blocks.push({ id: createBlockId(), type: "error", text: event.error });
       return { changed: true, status: "failed" };

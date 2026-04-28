@@ -149,6 +149,7 @@ class SidecarClient:
         git_auth: dict[str, Any] | None = None,
         agent_dir: str | None = None,
         settings_payload: dict[str, Any] | None = None,
+        pi_session_file: str | None = None,
     ) -> dict[str, Any]:
         """Build the options dict sent with warmup/query messages."""
         options: dict[str, Any] = {"model": model, "cwd": cwd}
@@ -162,6 +163,8 @@ class SidecarClient:
             options["agentDir"] = agent_dir
         if settings_payload:
             options["settings"] = settings_payload
+        if pi_session_file:
+            options["piSessionFile"] = pi_session_file
         return options
 
     async def warmup(
@@ -174,6 +177,7 @@ class SidecarClient:
         git_auth: dict[str, Any] | None = None,
         agent_dir: str | None = None,
         settings_payload: dict[str, Any] | None = None,
+        pi_session_file: str | None = None,
     ) -> None:
         """Pre-create a pi session on the sidecar."""
         await self._send(
@@ -188,6 +192,7 @@ class SidecarClient:
                     git_auth,
                     agent_dir=agent_dir,
                     settings_payload=settings_payload,
+                    pi_session_file=pi_session_file,
                 ),
             }
         )
@@ -203,6 +208,7 @@ class SidecarClient:
         git_auth: dict[str, Any] | None = None,
         agent_dir: str | None = None,
         settings_payload: dict[str, Any] | None = None,
+        pi_session_file: str | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Send a prompt and yield streaming events from the sidecar."""
         await self._send(
@@ -218,6 +224,7 @@ class SidecarClient:
                     git_auth,
                     agent_dir=agent_dir,
                     settings_payload=settings_payload,
+                    pi_session_file=pi_session_file,
                 ),
             }
         )
@@ -332,9 +339,7 @@ class SidecarClient:
             "node_version": node_version,
         }
 
-    async def list_imported_commands(
-        self, *, agent_dir: str | None = None
-    ) -> PiCommandsPayload:
+    async def list_imported_commands(self, *, agent_dir: str | None = None) -> PiCommandsPayload:
         """Request the slash commands discoverable from the user's imported Pi config.
 
         Returns a flat ``commands`` list where each entry carries ``kind`` to
@@ -351,13 +356,9 @@ class SidecarClient:
         )
         msg = await self._read_line()
         if msg is None:
-            raise SidecarError(
-                "Sidecar connection lost during list_imported_commands request"
-            )
+            raise SidecarError("Sidecar connection lost during list_imported_commands request")
         if msg.get("type") == "error":
-            raise SidecarError(
-                f"list_imported_commands failed: {msg.get('error', 'unknown')}"
-            )
+            raise SidecarError(f"list_imported_commands failed: {msg.get('error', 'unknown')}")
         if msg.get("type") != "resources":
             raise SidecarError(f"Unexpected response type: {msg.get('type')}")
         raw_commands = msg.get("commands", [])

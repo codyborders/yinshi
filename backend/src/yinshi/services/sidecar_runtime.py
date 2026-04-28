@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import os
+import posixpath
 import re
+import shutil
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -27,10 +29,12 @@ class TenantSidecarContext:
     agent_dir: str | None
     settings_payload: dict[str, object] | None
     runtime_id: str | None = None
+    pi_session_file: str | None = None
 
 
-_WORKSPACE_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+_RUNTIME_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 _WORKSPACE_HOME_TARGET = "/home/yinshi"
+_PI_SESSION_DIRECTORY = ".yinshi/pi-sessions"
 _WORKSPACE_PATH = (
     f"{_WORKSPACE_HOME_TARGET}/bin:"
     f"{_WORKSPACE_HOME_TARGET}/.local/bin:"
@@ -97,35 +101,131 @@ def _resolve_agent_dir_for_runtime(
     return remap_path_for_container(normalized_agent_dir, data_dir)
 
 
+def _runtime_safe_id(value: str | None, name: str) -> str | None:
+    """Return a stable 32-character hex id for one runtime-owned path segment."""
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise TypeError(f"{name} must be a string or None")
+    normalized_value = value.strip()
+    if not normalized_value:
+        raise ValueError(f"{name} must not be empty when provided")
+    if _RUNTIME_ID_RE.match(normalized_value):
+        return normalized_value
+    return hashlib.sha256(normalized_value.encode("utf-8")).hexdigest()[:32]
+
+
 def _workspace_runtime_id(workspace_id: str | None) -> str | None:
     """Return stable container id for one workspace, or None for legacy runtime."""
-    if workspace_id is None:
-        return None
-    if not isinstance(workspace_id, str):
-        raise TypeError("workspace_id must be a string or None")
-    normalized_workspace_id = workspace_id.strip()
-    if not normalized_workspace_id:
-        raise ValueError("workspace_id must not be empty when provided")
-    if _WORKSPACE_ID_RE.match(normalized_workspace_id):
-        return normalized_workspace_id
-    return hashlib.sha256(normalized_workspace_id.encode("utf-8")).hexdigest()[:32]
+    return _runtime_safe_id(workspace_id, "workspace_id")
+
+
+def _pi_session_file_name(session_id: str) -> str:
+    """Return path-safe Pi session file name for one Yinshi session id."""
+    normalized_session_id = _runtime_safe_id(session_id, "session_id")
+    assert normalized_session_id is not None, "session_id must be normalized"
+    return f"{normalized_session_id}.jsonl"
+
+
+def _workspace_pi_session_host_file(
+    tenant: TenantContext,
+    workspace_id: str,
+    session_id: str,
+) -> str:
+    """Return host path for a workspace-scoped durable Pi session file."""
+    if tenant is None:
+        raise ValueError("tenant is required")
+    if not tenant.data_dir:
+        raise ValueError("tenant data_dir must not be empty")
+    home_path = _workspace_home_source(tenant, workspace_id)
+    session_directory = os.path.join(home_path, *_PI_SESSION_DIRECTORY.split("/"))
+    os.makedirs(session_directory, mode=0o700, exist_ok=True)
+    return os.path.join(session_directory, _pi_session_file_name(session_id))
+
+
+def _workspace_pi_session_runtime_file(
+    tenant: TenantContext,
+    workspace_id: str,
+    session_id: str,
+    *,
+    container_enabled: bool,
+    narrow_mounts: bool,
+) -> str:
+    """Return the path a sidecar process should use for Pi session persistence."""
+    host_file = _workspace_pi_session_host_file(tenant, workspace_id, session_id)
+    if not container_enabled:
+        return host_file
+    if narrow_mounts:
+        return posixpath.join(
+            _WORKSPACE_HOME_TARGET,
+            _PI_SESSION_DIRECTORY,
+            _pi_session_file_name(session_id),
+        )
+    return remap_path_for_container(host_file, tenant.data_dir)
+
+
+def _local_pi_session_directory(*, create: bool) -> str:
+    """Return the legacy no-tenant Pi session directory."""
+    settings = get_settings()
+    db_path = os.path.abspath(settings.db_path)
+    if not db_path:
+        raise ValueError("settings.db_path must not be empty")
+    session_directory = os.path.join(os.path.dirname(db_path), "pi-sessions")
+    if create:
+        os.makedirs(session_directory, mode=0o700, exist_ok=True)
+    return session_directory
+
+
+def local_pi_session_file(session_id: str) -> str:
+    """Return host path for durable Pi sessions in legacy no-tenant mode."""
+    return os.path.join(
+        _local_pi_session_directory(create=True),
+        _pi_session_file_name(session_id),
+    )
+
+
+def delete_local_pi_session_file(session_id: str) -> None:
+    """Delete one durable Pi session file in legacy no-tenant mode."""
+    session_directory = _local_pi_session_directory(create=False)
+    session_file = os.path.join(session_directory, _pi_session_file_name(session_id))
+    if os.path.exists(session_file):
+        os.unlink(session_file)
+
+
+def delete_workspace_pi_sessions(tenant: TenantContext | None, workspace_id: str) -> None:
+    """Delete durable Pi session files for one workspace runtime."""
+    if tenant is None:
+        return
+    if not workspace_id:
+        raise ValueError("workspace_id must not be empty")
+    home_path = _workspace_home_path(tenant, workspace_id)
+    session_directory = os.path.join(home_path, *_PI_SESSION_DIRECTORY.split("/"))
+    if os.path.exists(session_directory):
+        shutil.rmtree(session_directory)
+
+
+def _workspace_home_path(tenant: TenantContext, workspace_id: str) -> str:
+    """Return the persistent host home path for one workspace runtime."""
+    normalized_workspace_id = _workspace_runtime_id(workspace_id)
+    assert normalized_workspace_id is not None, "workspace_id must be normalized"
+    return os.path.realpath(
+        os.path.join(
+            tenant.data_dir,
+            "runtime",
+            "workspaces",
+            normalized_workspace_id,
+            "home",
+        )
+    )
 
 
 def _workspace_home_source(tenant: TenantContext, workspace_id: str) -> str:
     """Return and create the persistent host home for one workspace runtime."""
-    normalized_workspace_id = _workspace_runtime_id(workspace_id)
-    assert normalized_workspace_id is not None, "workspace_id must be normalized"
-    home_path = os.path.join(
-        tenant.data_dir,
-        "runtime",
-        "workspaces",
-        normalized_workspace_id,
-        "home",
-    )
+    home_path = _workspace_home_path(tenant, workspace_id)
     os.makedirs(home_path, mode=0o700, exist_ok=True)
     for subdirectory in ("bin", ".local/bin", ".npm-global/bin"):
         os.makedirs(os.path.join(home_path, subdirectory), mode=0o700, exist_ok=True)
-    return os.path.realpath(home_path)
+    return home_path
 
 
 def workspace_runtime_environment(workspace_id: str | None) -> dict[str, str] | None:
@@ -255,6 +355,15 @@ async def resolve_tenant_sidecar_context(
     )
     narrow_mounts = settings.container_mount_mode == "narrow"
     runtime_id = _workspace_runtime_id(workspace_id)
+    pi_session_file = None
+    if runtime_session_id is not None and workspace_id is not None:
+        pi_session_file = _workspace_pi_session_runtime_file(
+            tenant,
+            workspace_id,
+            runtime_session_id,
+            container_enabled=settings.container_enabled,
+            narrow_mounts=narrow_mounts,
+        )
     runtime_agent_dir = _resolve_agent_dir_for_runtime(
         runtime_inputs.agent_dir,
         tenant.data_dir,
@@ -267,6 +376,7 @@ async def resolve_tenant_sidecar_context(
             agent_dir=runtime_agent_dir,
             settings_payload=runtime_inputs.settings_payload,
             runtime_id=runtime_id,
+            pi_session_file=pi_session_file,
         )
 
     container_manager = getattr(request.app.state, "container_manager", None)
@@ -294,6 +404,7 @@ async def resolve_tenant_sidecar_context(
         agent_dir=runtime_agent_dir,
         settings_payload=runtime_inputs.settings_payload,
         runtime_id=runtime_id,
+        pi_session_file=pi_session_file,
     )
 
 

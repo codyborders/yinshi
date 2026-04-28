@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { useParams } from "react-router-dom";
-import { api, type Message, type ThinkingLevel } from "../api/client";
+import { api, type Message, type SessionInfo, type ThinkingLevel } from "../api/client";
 import ChatView from "../components/ChatView";
 import WorkspaceInspector from "../components/WorkspaceInspector";
 import { useAgentStream, type ChatMessage } from "../hooks/useAgentStream";
@@ -27,6 +27,8 @@ const INSPECTOR_WIDTH_DEFAULT = 420;
 const INSPECTOR_WIDTH_MIN = 320;
 const INSPECTOR_WIDTH_MAX = 760;
 const DESKTOP_INSPECTOR_QUERY = "(min-width: 1024px)";
+const LEGACY_PI_CONTEXT_MESSAGE =
+  "This session predates durable Pi context and cannot continue with exact model context. Start a new session in this workspace.";
 
 function useMediaQuery(query: string): boolean {
   const [matches, setMatches] = useState(() => {
@@ -75,6 +77,7 @@ export default function Session() {
   const [thinkingOverride, setThinkingOverride] =
     useState<ThinkingLevel | null>(null);
   const [workspaceId, setWorkspaceId] = useState<string | null>(null);
+  const [piContextVersion, setPiContextVersion] = useState(0);
   const [workspacePanelOpen, setWorkspacePanelOpen] = useState(false);
   const [inspectorWidth, setInspectorWidth] = useState(storedInspectorWidth);
   const [fileRefreshKey, setFileRefreshKey] = useState(0);
@@ -133,10 +136,11 @@ export default function Session() {
 
     async function loadSession() {
       try {
-        const session = await api.get<{ model: string; workspace_id: string }>(`/api/sessions/${id}`);
+        const session = await api.get<SessionInfo>(`/api/sessions/${id}`);
         if (cancelled) return;
         setSessionModel(session.model);
         setWorkspaceId(session.workspace_id);
+        setPiContextVersion(session.pi_context_version);
       } catch (error) {
         console.error(`Failed to load session metadata for ${id}`, error);
       }
@@ -405,6 +409,10 @@ export default function Session() {
   const promptThinkingOverride = canOverrideThinking
     ? (selectedThinkingOverride ?? undefined)
     : undefined;
+  const legacyInputDisabledReason =
+    piContextVersion < 1 && messages.length > 0
+      ? LEGACY_PI_CONTEXT_MESSAGE
+      : null;
 
   const handleModelChange = useCallback(
     (requestedModel: string) => {
@@ -423,6 +431,10 @@ export default function Session() {
 
   const handleSend = useCallback(
     async (prompt: string) => {
+      if (legacyInputDisabledReason) return;
+      if (piContextVersion < 1) {
+        setPiContextVersion(1);
+      }
       // If the user starts a prompt while the model save is still in flight,
       // include the selected model in this prompt so the run does not fall back
       // to the previously persisted session model.
@@ -432,7 +444,13 @@ export default function Session() {
         promptThinkingOverride,
       );
     },
-    [pendingModelSelection, promptThinkingOverride, sendPrompt],
+    [
+      legacyInputDisabledReason,
+      pendingModelSelection,
+      piContextVersion,
+      promptThinkingOverride,
+      sendPrompt,
+    ],
   );
 
   const beginInspectorResize = useCallback(
@@ -576,6 +594,7 @@ export default function Session() {
                   onSend={handleSend}
                   onCancel={cancel}
                   onCommand={handleCommand}
+                  inputDisabledReason={legacyInputDisabledReason}
                   piCommands={piCommands}
                 />
               </div>

@@ -41,6 +41,7 @@ from yinshi.services.sidecar import SidecarClient, create_sidecar_connection
 from yinshi.services.sidecar_runtime import (
     begin_tenant_container_activity,
     end_tenant_container_activity,
+    local_pi_session_file,
     remap_path_for_container,
     resolve_tenant_sidecar_context,
     touch_tenant_container,
@@ -85,6 +86,7 @@ class ExecutionContext:
     settings_payload: dict[str, object] | None = None
     model_ref: str = ""
     runtime_id: str | None = None
+    pi_session_file: str | None = None
 
 
 class PromptRequest(BaseModel):
@@ -401,6 +403,53 @@ def _remap_path(
     return remap_path_for_container(host_path, data_dir, mount_path=mount)
 
 
+def _session_pi_context_version(session: sqlite3.Row) -> int:
+    """Return durable Pi context version for one session row."""
+    if "pi_context_version" not in session.keys():
+        return 0
+    try:
+        return int(session["pi_context_version"] or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _message_count_for_session(db: sqlite3.Connection, session_id: str) -> int:
+    """Return stored transcript message count for one session."""
+    assert session_id, "session_id must not be empty"
+    row = db.execute(
+        "SELECT COUNT(*) AS message_count FROM messages WHERE session_id = ?",
+        (session_id,),
+    ).fetchone()
+    assert row is not None, "message count query must return one row"
+    return int(row["message_count"])
+
+
+def _ensure_promptable_pi_context(db: sqlite3.Connection, session: sqlite3.Row) -> None:
+    """Reject legacy transcript-only sessions that cannot resume exact Pi context."""
+    session_id = session["id"]
+    assert isinstance(session_id, str), "session id must be a string"
+    if _session_pi_context_version(session) >= 1:
+        return
+
+    if _message_count_for_session(db, session_id) > 0:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "legacy_pi_context",
+                "message": (
+                    "This session predates durable Pi context and cannot continue "
+                    "with exact model context. Start a new session in this workspace."
+                ),
+            },
+        )
+
+    db.execute(
+        "UPDATE sessions SET pi_context_version = 1 WHERE id = ?",
+        (session_id,),
+    )
+    db.commit()
+
+
 def _lookup_session(
     db: sqlite3.Connection,
     session_id: str,
@@ -458,6 +507,7 @@ async def _resolve_execution_context(
             git_auth=None,
             model_ref=model,
             runtime_id=None,
+            pi_session_file=local_pi_session_file(runtime_session_id),
         )
 
     _validate_workspace_path(tenant, workspace_path)
@@ -570,6 +620,7 @@ async def _resolve_execution_context(
         settings_payload=settings_payload,
         model_ref=resolved_model_ref,
         runtime_id=tenant_sidecar_context.runtime_id,
+        pi_session_file=tenant_sidecar_context.pi_session_file,
     )
 
 
@@ -603,6 +654,9 @@ async def prompt_session(
 
     if session["status"] == "running":
         raise HTTPException(status_code=409, detail="Session already has an active stream")
+
+    with get_db_for_request(request) as db:
+        _ensure_promptable_pi_context(db, session)
 
     workspace_path = session["workspace_path"]
     remote_url = session["remote_url"] if "remote_url" in session.keys() else None
@@ -714,6 +768,7 @@ async def prompt_session(
                 git_auth=cast(dict[str, Any] | None, context.git_auth),
                 agent_dir=context.agent_dir,
                 settings_payload=effective_settings,
+                pi_session_file=context.pi_session_file,
             )
 
             logger.info("Streaming started: session=%s turn_id=%s", session_id, turn_id)
@@ -728,6 +783,7 @@ async def prompt_session(
                 git_auth=cast(dict[str, Any] | None, context.git_auth),
                 agent_dir=context.agent_dir,
                 settings_payload=effective_settings,
+                pi_session_file=context.pi_session_file,
             ):
                 event_type = event.get("type")
                 if not isinstance(event_type, str):

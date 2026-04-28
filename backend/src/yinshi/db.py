@@ -11,7 +11,7 @@ from yinshi.model_catalog import DEFAULT_SESSION_MODEL
 
 logger = logging.getLogger(__name__)
 
-_SCHEMA_VERSION = 4
+_SCHEMA_VERSION = 5
 
 SCHEMA_SQL = f"""
 PRAGMA journal_mode = WAL;
@@ -46,7 +46,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
     workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
     status TEXT DEFAULT 'idle' NOT NULL,
-    model TEXT DEFAULT '{DEFAULT_SESSION_MODEL}'
+    model TEXT DEFAULT '{DEFAULT_SESSION_MODEL}',
+    pi_context_version INTEGER DEFAULT 1 NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -125,6 +126,14 @@ def _migrate(conn: sqlite3.Connection) -> None:
         if "agents_md" not in columns:
             logger.info("Migration v4: adding agents_md column to repos")
             conn.execute("ALTER TABLE repos ADD COLUMN agents_md TEXT")
+
+    if current < 5:
+        columns = [r[1] for r in conn.execute("PRAGMA table_info(sessions)").fetchall()]
+        if "pi_context_version" not in columns:
+            logger.info("Migration v5: adding pi_context_version column to sessions")
+            conn.execute(
+                "ALTER TABLE sessions ADD COLUMN pi_context_version INTEGER DEFAULT 0 NOT NULL"
+            )
 
     if current != _SCHEMA_VERSION:
         conn.execute("DELETE FROM schema_version")

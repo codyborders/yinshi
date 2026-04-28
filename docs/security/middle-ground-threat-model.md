@@ -16,7 +16,9 @@ Per-user data encryption keys are wrapped with `KEY_ENCRYPTION_KEY` and tagged w
 
 Tenant SQLite databases can use SQLCipher when `TENANT_DB_ENCRYPTION` is enabled. In required mode, startup and tenant DB access fail closed if no supported SQLCipher DB-API module is installed. Imported Pi settings in the control database can use field-level AES-256-GCM through `CONTROL_FIELD_ENCRYPTION`.
 
-Sidecar containers use `CONTAINER_MOUNT_MODE=narrow` by default. The container receives only the active workspace, repository checkout, and read-only Pi config path needed for the current request. The tenant database and tenant data root are left outside the sidecar mount set.
+Sidecar containers use `CONTAINER_MOUNT_MODE=narrow` by default. The container receives only the active workspace, repository checkout, read-only Pi config path, and workspace-scoped Pi session file needed for the current request. The tenant database and tenant data root are left outside the sidecar mount set.
+
+Durable Pi session files are stored as JSONL under the user's workspace runtime home. They contain prompts, assistant output, tool calls, tool results, file snippets, terminal-adjacent command output, and compaction summaries. Treat these files as sensitive user data with the same protection level as transcripts and workspace files. SQLCipher protects tenant SQLite databases, not these JSONL files, so production deployments that need stored context protection must place `USER_DATA_DIR` on encrypted storage.
 
 Production transport hardening is controlled by `REQUIRE_HTTPS` and `HSTS_ENABLED`. With HTTPS required, plaintext requests are redirected to HTTPS and secure session cookies are enabled. The reverse proxy must still terminate TLS and forward `X-Forwarded-Proto` correctly.
 
