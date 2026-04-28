@@ -1,0 +1,805 @@
+"""OAuth login/callback endpoints for Google and GitHub."""
+
+import logging
+import sqlite3
+from typing import Any, cast
+from urllib.parse import urlencode
+
+import httpx
+from authlib.integrations.starlette_client import OAuthError
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import JSONResponse, RedirectResponse, Response
+from itsdangerous import BadSignature, BadTimeSignature, URLSafeTimedSerializer
+
+from yinshi.auth import (
+    SESSION_MAX_AGE,
+    _resolve_tenant_from_user_id,
+    create_session_token,
+    get_session_identity,
+    oauth,
+    revoke_auth_session,
+    revoke_auth_sessions,
+    verify_session_token,
+)
+from yinshi.config import get_settings
+from yinshi.db import get_control_db
+from yinshi.exceptions import (
+    ContainerNotReadyError,
+    ContainerStartError,
+    GitError,
+    GitHubAppError,
+    GitHubInstallationUnusableError,
+    SidecarError,
+)
+from yinshi.models import ProviderAuthInputIn, ProviderAuthStartOut, ProviderAuthStatusOut
+from yinshi.rate_limit import limiter
+from yinshi.services.accounts import resolve_or_create_user
+from yinshi.services.github_app import get_installation_details
+from yinshi.services.provider_connections import create_provider_connection
+from yinshi.services.sidecar import create_sidecar_connection
+from yinshi.services.sidecar_runtime import (
+    begin_tenant_container_activity,
+    end_tenant_container_activity,
+    protect_tenant_container,
+    release_tenant_container,
+    resolve_tenant_sidecar_context,
+    touch_tenant_container,
+)
+from yinshi.services.workspace import relink_github_repos_for_tenant
+from yinshi.tenant import TenantContext, get_user_db
+
+logger = logging.getLogger(__name__)
+router = APIRouter(prefix="/auth", tags=["auth"])
+_GITHUB_INSTALL_STATE_MAX_AGE_S = 600
+_PROVIDER_OAUTH_CONTAINER_LEASE_TIMEOUT_S = 1800
+
+
+def _set_session_cookie(response: RedirectResponse, user_id: str) -> None:
+    """Set the yinshi_session cookie on a response."""
+    settings = get_settings()
+    session_token = create_session_token(user_id)
+    response.set_cookie(
+        key="yinshi_session",
+        value=session_token,
+        httponly=True,
+        secure=not settings.debug,
+        max_age=SESSION_MAX_AGE,
+        samesite="lax",
+        path="/",
+    )
+
+
+def _clear_session_cookie(response: Response) -> None:
+    """Remove the current session cookie from a response."""
+    response.delete_cookie("yinshi_session", path="/")
+
+
+def _github_install_state_serializer() -> URLSafeTimedSerializer:
+    """Build a serializer dedicated to GitHub install state tokens."""
+    settings = get_settings()
+    return URLSafeTimedSerializer(settings.secret_key)
+
+
+def _create_github_install_state(user_id: str) -> str:
+    """Sign a user id into a GitHub install state token."""
+    assert user_id, "user_id must not be empty"
+    serializer = _github_install_state_serializer()
+    return serializer.dumps(user_id, salt="github-install-state")
+
+
+def _verify_github_install_state(state: str) -> str | None:
+    """Verify a GitHub install state token and return the user id."""
+    assert state, "state must not be empty"
+    serializer = _github_install_state_serializer()
+    try:
+        user_id = serializer.loads(
+            state,
+            salt="github-install-state",
+            max_age=_GITHUB_INSTALL_STATE_MAX_AGE_S,
+        )
+    except (BadSignature, BadTimeSignature):
+        return None
+    if isinstance(user_id, str):
+        return user_id
+    return None
+
+
+def _current_session_identity(request: Request) -> tuple[str, str] | None:
+    """Return the authenticated user and auth session ids from the session cookie."""
+    token = request.cookies.get("yinshi_session")
+    if not token:
+        return None
+    return get_session_identity(token)
+
+
+def _current_user_id(request: Request) -> str | None:
+    """Return the authenticated user id from the session cookie."""
+    session_identity = _current_session_identity(request)
+    if session_identity is None:
+        return None
+    return session_identity[0]
+
+
+async def _refresh_connected_github_repos(
+    user_id: str,
+    account_login: str,
+) -> None:
+    """Backfill repo installation links after a GitHub App connect completes."""
+    if not user_id:
+        raise ValueError("user_id must not be empty")
+    if not account_login:
+        raise ValueError("account_login must not be empty")
+
+    tenant = _resolve_tenant_from_user_id(user_id)
+    if tenant is None:
+        return
+
+    try:
+        with get_user_db(tenant) as db:
+            await relink_github_repos_for_tenant(
+                db,
+                tenant,
+                account_login,
+            )
+    except (GitError, GitHubAppError) as exc:
+        logger.warning(
+            "Failed to refresh GitHub repo links for user %s and owner %s: %s",
+            user_id,
+            account_login,
+            exc,
+        )
+
+
+async def _resolve_provider_sidecar_socket(
+    request: Request,
+    user_id: str,
+) -> tuple[TenantContext | None, str | None]:
+    """Resolve the tenant record plus socket path for provider-auth sidecar calls."""
+    if not isinstance(user_id, str):
+        raise TypeError("user_id must be a string")
+    normalized_user_id = user_id.strip()
+    if not normalized_user_id:
+        raise ValueError("user_id must not be empty")
+
+    tenant = _resolve_tenant_from_user_id(normalized_user_id)
+    try:
+        tenant_sidecar_context = await resolve_tenant_sidecar_context(request, tenant)
+    except (ContainerStartError, ContainerNotReadyError) as error:
+        raise HTTPException(
+            status_code=503,
+            detail="Agent environment temporarily unavailable",
+        ) from error
+    return tenant, tenant_sidecar_context.socket_path
+
+
+def _normalize_provider_flow_status(status: object) -> str:
+    """Require a non-empty string OAuth flow status."""
+    if not isinstance(status, str):
+        raise HTTPException(status_code=500, detail="OAuth flow status is invalid")
+    normalized_status = status.strip()
+    if not normalized_status:
+        raise HTTPException(status_code=500, detail="OAuth flow status is invalid")
+    return normalized_status
+
+
+def _provider_auth_lease_key(flow_id: str) -> str:
+    """Build the container lease key used to protect one OAuth flow."""
+    if not isinstance(flow_id, str):
+        raise TypeError("flow_id must be a string")
+    normalized_flow_id = flow_id.strip()
+    if not normalized_flow_id:
+        raise ValueError("flow_id must not be empty")
+    return f"oauth:{normalized_flow_id}"
+
+
+def _provider_auth_sidecar_http_error(error: Exception) -> HTTPException:
+    """Translate provider-auth sidecar errors into stable HTTP responses."""
+    message = str(error)
+    if "OAuth flow not found" in message:
+        return HTTPException(status_code=404, detail="OAuth flow not found")
+    if "OAuth provider is not available" in message:
+        detail = message.removeprefix("OAuth start failed: ")
+        return HTTPException(status_code=400, detail=detail)
+    return HTTPException(
+        status_code=503,
+        detail="Agent environment temporarily unavailable",
+    )
+
+
+def _build_provider_auth_start_payload(flow: dict[str, Any]) -> dict[str, Any]:
+    """Validate and serialize one started provider OAuth flow."""
+    if not isinstance(flow, dict):
+        raise TypeError("flow must be a dictionary")
+    flow_id = flow.get("flow_id")
+    provider = flow.get("provider")
+    auth_url = flow.get("auth_url")
+    instructions = flow.get("instructions")
+    manual_input_prompt = flow.get("manual_input_prompt")
+    if not isinstance(flow_id, str) or not flow_id:
+        raise HTTPException(status_code=500, detail="OAuth flow id is invalid")
+    if not isinstance(provider, str) or not provider:
+        raise HTTPException(status_code=500, detail="OAuth flow provider is invalid")
+    if not isinstance(auth_url, str) or not auth_url:
+        raise HTTPException(status_code=500, detail="OAuth flow auth URL is invalid")
+    if instructions is not None and not isinstance(instructions, str):
+        raise HTTPException(status_code=500, detail="OAuth flow instructions are invalid")
+    if manual_input_prompt is not None and not isinstance(manual_input_prompt, str):
+        raise HTTPException(status_code=500, detail="OAuth flow manual input prompt is invalid")
+    return {
+        "flow_id": flow_id,
+        "provider": provider,
+        "auth_url": auth_url,
+        "instructions": instructions,
+        "manual_input_required": bool(flow.get("manual_input_required", False)),
+        "manual_input_prompt": manual_input_prompt,
+        "manual_input_submitted": bool(flow.get("manual_input_submitted", False)),
+    }
+
+
+def _build_provider_auth_status_payload(
+    flow: dict[str, Any],
+    *,
+    status: str,
+    error: str | None = None,
+) -> dict[str, Any]:
+    """Validate and serialize one provider OAuth status payload."""
+    if not isinstance(flow, dict):
+        raise TypeError("flow must be a dictionary")
+    normalized_status = _normalize_provider_flow_status(status)
+    flow_id = flow.get("flow_id")
+    provider = flow.get("provider")
+    instructions = flow.get("instructions")
+    manual_input_prompt = flow.get("manual_input_prompt")
+    progress = flow.get("progress", [])
+    if not isinstance(flow_id, str) or not flow_id:
+        raise HTTPException(status_code=500, detail="OAuth flow id is invalid")
+    if not isinstance(provider, str) or not provider:
+        raise HTTPException(status_code=500, detail="OAuth flow provider is invalid")
+    if instructions is not None and not isinstance(instructions, str):
+        raise HTTPException(status_code=500, detail="OAuth flow instructions are invalid")
+    if manual_input_prompt is not None and not isinstance(manual_input_prompt, str):
+        raise HTTPException(status_code=500, detail="OAuth flow manual input prompt is invalid")
+    if not isinstance(progress, list):
+        raise HTTPException(status_code=500, detail="OAuth flow progress is invalid")
+    normalized_progress: list[str] = []
+    for progress_entry in progress:
+        if not isinstance(progress_entry, str):
+            raise HTTPException(status_code=500, detail="OAuth flow progress is invalid")
+        normalized_progress.append(progress_entry)
+    if error is not None and not isinstance(error, str):
+        raise HTTPException(status_code=500, detail="OAuth flow error is invalid")
+    return {
+        "status": normalized_status,
+        "provider": provider,
+        "flow_id": flow_id,
+        "instructions": instructions,
+        "progress": normalized_progress,
+        "manual_input_required": bool(flow.get("manual_input_required", False)),
+        "manual_input_prompt": manual_input_prompt,
+        "manual_input_submitted": bool(flow.get("manual_input_submitted", False)),
+        "error": error,
+    }
+
+
+def _require_provider_match(provider: str, flow: dict[str, Any]) -> None:
+    """Reject OAuth flows that do not belong to the requested provider."""
+    if not isinstance(provider, str):
+        raise TypeError("provider must be a string")
+    normalized_provider = provider.strip()
+    if not normalized_provider:
+        raise ValueError("provider must not be empty")
+    flow_provider = flow.get("provider")
+    if not isinstance(flow_provider, str) or not flow_provider:
+        raise HTTPException(status_code=500, detail="OAuth flow provider is invalid")
+    if flow_provider != normalized_provider:
+        raise HTTPException(status_code=400, detail="Provider mismatch")
+
+
+async def _persist_completed_provider_auth(
+    user_id: str,
+    provider: str,
+    flow: dict[str, Any],
+    sidecar: Any,
+) -> None:
+    """Persist completed provider credentials and clear the finished flow."""
+    flow_id = flow.get("flow_id")
+    if not isinstance(flow_id, str) or not flow_id:
+        raise HTTPException(status_code=500, detail="OAuth flow id is invalid")
+    credentials = flow.get("credentials")
+    if not isinstance(credentials, dict) or not credentials:
+        raise HTTPException(status_code=500, detail="OAuth flow did not return credentials")
+    create_provider_connection(
+        user_id,
+        provider,
+        "oauth",
+        credentials,
+        label="",
+    )
+    try:
+        await sidecar.clear_oauth_flow(flow_id)
+    except SidecarError as error:
+        if "OAuth flow not found" not in str(error):
+            raise _provider_auth_sidecar_http_error(error) from error
+
+
+# --- Google OAuth ---
+
+
+@router.get("/login/google")
+async def login_google(request: Request) -> Response:
+    """Redirect to Google OAuth."""
+    settings = get_settings()
+    if not settings.google_client_id:
+        return JSONResponse({"error": "Google OAuth not configured"})
+    response = await oauth.google.authorize_redirect(
+        request,
+        settings.google_redirect_uri,
+    )
+    return cast(Response, response)
+
+
+@router.get("/callback/google")
+@limiter.limit("10/minute")
+async def callback_google(request: Request) -> RedirectResponse:
+    """Handle Google OAuth callback."""
+    try:
+        token = await oauth.google.authorize_access_token(request)
+    except OAuthError as exc:
+        logger.warning(
+            "Google OAuth rejected: error=%s description=%s",
+            exc.error,
+            exc.description,
+        )
+        return RedirectResponse(url="/?error=oauth_error")
+    except Exception as exc:
+        # Catches state mismatch, missing session, and other authlib internals.
+        logger.error("Google token exchange failed: %s", exc, exc_info=True)
+        return RedirectResponse(url="/?error=oauth_error")
+
+    user_info = token.get("userinfo")
+    if not user_info:
+        return RedirectResponse(url="/?error=no_user_info")
+
+    email = user_info.get("email")
+    if not email or not user_info.get("email_verified"):
+        return RedirectResponse(url="/?error=email_not_verified")
+
+    try:
+        tenant = resolve_or_create_user(
+            provider="google",
+            provider_user_id=user_info["sub"],
+            email=email,
+            display_name=user_info.get("name"),
+            avatar_url=user_info.get("picture"),
+            provider_data=dict(user_info),
+        )
+    except (sqlite3.Error, OSError) as exc:
+        logger.error(
+            "Account provisioning failed for email=%s: %s",
+            email,
+            exc,
+            exc_info=True,
+        )
+        return RedirectResponse(url="/?error=account_error")
+
+    response = RedirectResponse(url="/app")
+    _set_session_cookie(response, tenant.user_id)
+    logger.info("Google login: user=%s email=%s", tenant.user_id, email)
+    return response
+
+
+# --- GitHub OAuth ---
+
+
+@router.get("/login/github")
+async def login_github(request: Request) -> Response:
+    """Redirect to GitHub OAuth."""
+    settings = get_settings()
+    if not settings.github_client_id:
+        return JSONResponse({"error": "GitHub OAuth not configured"})
+    response = await oauth.github.authorize_redirect(
+        request,
+        settings.github_redirect_uri,
+    )
+    return cast(Response, response)
+
+
+@router.get("/callback/github")
+@limiter.limit("10/minute")
+async def callback_github(request: Request) -> RedirectResponse:
+    """Handle GitHub OAuth callback."""
+    try:
+        token = await oauth.github.authorize_access_token(request)
+    except OAuthError as exc:
+        logger.warning(
+            "GitHub OAuth rejected: error=%s description=%s",
+            exc.error,
+            exc.description,
+        )
+        return RedirectResponse(url="/?error=oauth_error")
+    except Exception as exc:
+        logger.error("GitHub token exchange failed: %s", exc, exc_info=True)
+        return RedirectResponse(url="/?error=oauth_error")
+
+    # GitHub doesn't include user info in the token; call the API.
+    try:
+        async with httpx.AsyncClient() as client:
+            headers = {"Authorization": f"Bearer {token['access_token']}"}
+            user_resp = await client.get("https://api.github.com/user", headers=headers)
+            user_resp.raise_for_status()
+            user_data = user_resp.json()
+
+            emails_resp = await client.get("https://api.github.com/user/emails", headers=headers)
+            emails_resp.raise_for_status()
+            emails = emails_resp.json()
+    except (httpx.HTTPError, KeyError) as exc:
+        logger.error("GitHub API call failed: %s", exc, exc_info=True)
+        return RedirectResponse(url="/?error=github_api_error")
+
+    # Find the primary verified email, falling back to any verified email.
+    primary_email = next(
+        (e["email"] for e in emails if e.get("primary") and e.get("verified")),
+        None,
+    )
+    verified_email = next(
+        (e["email"] for e in emails if e.get("verified")),
+        None,
+    )
+    email = primary_email or verified_email
+    if not email:
+        return RedirectResponse(url="/?error=no_verified_email")
+
+    try:
+        tenant = resolve_or_create_user(
+            provider="github",
+            provider_user_id=str(user_data["id"]),
+            email=email,
+            display_name=user_data.get("name") or user_data.get("login"),
+            avatar_url=user_data.get("avatar_url"),
+            provider_data=user_data,
+        )
+    except (sqlite3.Error, OSError) as exc:
+        logger.error(
+            "Account provisioning failed for email=%s: %s",
+            email,
+            exc,
+            exc_info=True,
+        )
+        return RedirectResponse(url="/?error=account_error")
+
+    response = RedirectResponse(url="/app")
+    _set_session_cookie(response, tenant.user_id)
+    logger.info("GitHub login: user=%s email=%s", tenant.user_id, email)
+    return response
+
+
+@router.get("/github/install", response_model=None)
+async def github_install(request: Request) -> Response:
+    """Redirect an authenticated user to the GitHub App install flow."""
+    settings = get_settings()
+    if not settings.github_app_slug:
+        return JSONResponse({"error": "GitHub App not configured"}, status_code=503)
+
+    user_id = _current_user_id(request)
+    if not user_id:
+        return RedirectResponse(url="/?error=not_authenticated")
+
+    state = _create_github_install_state(user_id)
+    query = urlencode({"state": state})
+    install_url = f"https://github.com/apps/{settings.github_app_slug}/installations/new?{query}"
+    return RedirectResponse(url=install_url)
+
+
+@router.get("/github/install/callback")
+async def github_install_callback(request: Request) -> RedirectResponse:
+    """Persist a GitHub installation after the GitHub App flow returns."""
+    state = request.query_params.get("state")
+    if not state:
+        return RedirectResponse(url="/app?github_connect_error=invalid_state")
+
+    state_user_id = _verify_github_install_state(state)
+    if not state_user_id:
+        return RedirectResponse(url="/app?github_connect_error=invalid_state")
+    current_user_id = _current_user_id(request)
+    if current_user_id != state_user_id:
+        return RedirectResponse(url="/app?github_connect_error=invalid_state")
+    user_id = state_user_id
+
+    installation_id_text = request.query_params.get("installation_id")
+    if not installation_id_text:
+        return RedirectResponse(url="/app?github_connect_error=missing_installation")
+
+    try:
+        installation_id = int(installation_id_text)
+    except ValueError:
+        return RedirectResponse(url="/app?github_connect_error=missing_installation")
+
+    if installation_id <= 0:
+        return RedirectResponse(url="/app?github_connect_error=missing_installation")
+
+    setup_action = request.query_params.get("setup_action")
+    if setup_action == "request":
+        return RedirectResponse(url="/app?github_connect_error=not_granted")
+
+    try:
+        installation = await get_installation_details(installation_id)
+    except GitHubInstallationUnusableError:
+        return RedirectResponse(url="/app?github_connect_error=not_granted")
+    except GitHubAppError:
+        logger.exception("GitHub App callback failed for installation=%s", installation_id)
+        return RedirectResponse(url="/app?github_connect_error=install_failed")
+
+    account = installation.get("account")
+    if not isinstance(account, dict):
+        return RedirectResponse(url="/app?github_connect_error=install_failed")
+
+    account_login = account.get("login")
+    account_type = account.get("type")
+    html_url = installation.get("html_url")
+    if installation.get("suspended_at"):
+        return RedirectResponse(url="/app?github_connect_error=not_granted")
+    if not isinstance(account_login, str):
+        return RedirectResponse(url="/app?github_connect_error=install_failed")
+    if not isinstance(account_type, str):
+        return RedirectResponse(url="/app?github_connect_error=install_failed")
+    if not isinstance(html_url, str):
+        return RedirectResponse(url="/app?github_connect_error=install_failed")
+
+    with get_control_db() as db:
+        db.execute(
+            """
+            INSERT INTO github_installations (
+                user_id, installation_id, account_login, account_type, html_url
+            ) VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(user_id, installation_id) DO UPDATE SET
+                account_login = excluded.account_login,
+                account_type = excluded.account_type,
+                html_url = excluded.html_url
+            """,
+            (user_id, installation_id, account_login, account_type, html_url),
+        )
+        db.commit()
+
+    await _refresh_connected_github_repos(user_id, account_login)
+
+    return RedirectResponse(url="/app?github_connected=1")
+
+
+@router.post("/providers/{provider}/start", response_model=ProviderAuthStartOut)
+async def start_provider_auth(provider: str, request: Request) -> dict[str, Any]:
+    """Start a provider OAuth flow through the sidecar."""
+    user_id = _current_user_id(request)
+    if user_id is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    tenant, socket_path = await _resolve_provider_sidecar_socket(request, user_id)
+    sidecar = None
+    begin_tenant_container_activity(request, tenant)
+    try:
+        sidecar = await create_sidecar_connection(socket_path)
+        flow = await sidecar.start_oauth_flow(provider)
+    except (OSError, SidecarError) as error:
+        raise _provider_auth_sidecar_http_error(error) from error
+    finally:
+        end_tenant_container_activity(request, tenant)
+        touch_tenant_container(request, tenant)
+        if sidecar is not None:
+            await sidecar.disconnect()
+    payload = _build_provider_auth_start_payload(flow)
+    protect_tenant_container(
+        request,
+        tenant,
+        lease_key=_provider_auth_lease_key(payload["flow_id"]),
+        timeout_s=_PROVIDER_OAUTH_CONTAINER_LEASE_TIMEOUT_S,
+    )
+    return payload
+
+
+@router.get("/providers/{provider}/callback")
+async def callback_provider_auth(provider: str, flow_id: str, request: Request) -> JSONResponse:
+    """Poll an OAuth flow and persist its credential when complete."""
+    user_id = _current_user_id(request)
+    if user_id is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    tenant, socket_path = await _resolve_provider_sidecar_socket(request, user_id)
+    lease_key = _provider_auth_lease_key(flow_id)
+    sidecar = None
+    begin_tenant_container_activity(request, tenant)
+    try:
+        sidecar = await create_sidecar_connection(socket_path)
+        flow = await sidecar.get_oauth_flow_status(flow_id)
+        _require_provider_match(provider, flow)
+        status = _normalize_provider_flow_status(flow.get("status"))
+        if status in {"pending", "starting"}:
+            protect_tenant_container(
+                request,
+                tenant,
+                lease_key=lease_key,
+                timeout_s=_PROVIDER_OAUTH_CONTAINER_LEASE_TIMEOUT_S,
+            )
+            return JSONResponse(
+                status_code=202,
+                content=_build_provider_auth_status_payload(flow, status=status),
+            )
+        if status == "error":
+            release_tenant_container(request, tenant, lease_key=lease_key)
+            error_message = flow.get("error")
+            if not isinstance(error_message, str) or not error_message:
+                error_message = "OAuth flow failed"
+            return JSONResponse(
+                status_code=400,
+                content=_build_provider_auth_status_payload(
+                    flow,
+                    status="error",
+                    error=error_message,
+                ),
+            )
+        if status != "complete":
+            raise HTTPException(status_code=500, detail=f"Unexpected OAuth status: {status}")
+
+        await _persist_completed_provider_auth(
+            user_id,
+            provider,
+            flow,
+            sidecar,
+        )
+        release_tenant_container(request, tenant, lease_key=lease_key)
+        return JSONResponse(_build_provider_auth_status_payload(flow, status="complete"))
+    except (OSError, SidecarError) as error:
+        raise _provider_auth_sidecar_http_error(error) from error
+    finally:
+        end_tenant_container_activity(request, tenant)
+        touch_tenant_container(request, tenant)
+        if sidecar is not None:
+            await sidecar.disconnect()
+
+
+@router.post("/providers/{provider}/callback", response_model=ProviderAuthStatusOut)
+async def submit_provider_auth_callback(
+    provider: str,
+    payload: ProviderAuthInputIn,
+    request: Request,
+) -> JSONResponse:
+    """Submit pasted OAuth callback data into an active provider auth flow."""
+    user_id = _current_user_id(request)
+    if user_id is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    tenant, socket_path = await _resolve_provider_sidecar_socket(request, user_id)
+    lease_key = _provider_auth_lease_key(payload.flow_id)
+    sidecar = None
+    begin_tenant_container_activity(request, tenant)
+    try:
+        sidecar = await create_sidecar_connection(socket_path)
+        flow = await sidecar.get_oauth_flow_status(payload.flow_id)
+        _require_provider_match(provider, flow)
+        status = _normalize_provider_flow_status(flow.get("status"))
+        if status == "complete":
+            await _persist_completed_provider_auth(
+                user_id,
+                provider,
+                flow,
+                sidecar,
+            )
+            release_tenant_container(request, tenant, lease_key=lease_key)
+            return JSONResponse(
+                _build_provider_auth_status_payload(flow, status="complete"),
+            )
+        if status == "error":
+            release_tenant_container(request, tenant, lease_key=lease_key)
+            error_message = flow.get("error")
+            if not isinstance(error_message, str) or not error_message:
+                error_message = "OAuth flow failed"
+            return JSONResponse(
+                status_code=400,
+                content=_build_provider_auth_status_payload(
+                    flow,
+                    status="error",
+                    error=error_message,
+                ),
+            )
+
+        await sidecar.submit_oauth_flow_input(
+            payload.flow_id,
+            payload.authorization_input,
+        )
+        protect_tenant_container(
+            request,
+            tenant,
+            lease_key=lease_key,
+            timeout_s=_PROVIDER_OAUTH_CONTAINER_LEASE_TIMEOUT_S,
+        )
+        return JSONResponse(
+            status_code=202,
+            content=_build_provider_auth_status_payload(
+                {
+                    **flow,
+                    "manual_input_required": True,
+                    "manual_input_submitted": True,
+                },
+                status="pending",
+            ),
+        )
+    except (OSError, SidecarError) as error:
+        raise _provider_auth_sidecar_http_error(error) from error
+    finally:
+        end_tenant_container_activity(request, tenant)
+        touch_tenant_container(request, tenant)
+        if sidecar is not None:
+            await sidecar.disconnect()
+
+
+# --- Backward compatibility: /auth/login redirects to /auth/login/google ---
+
+
+@router.get("/login")
+async def login_redirect(request: Request) -> RedirectResponse:
+    """Legacy /auth/login redirects to Google OAuth."""
+    return RedirectResponse(url="/auth/login/google", status_code=307)
+
+
+@router.get("/callback")
+async def callback_redirect(request: Request) -> RedirectResponse:
+    """Legacy /auth/callback redirects to Google callback.
+
+    Preserves query parameters (state, code, scope) from the OAuth
+    provider -- dropping them causes a state mismatch error.
+    """
+    target = "/auth/callback/google"
+    query_string = request.url.query
+    if query_string:
+        target = f"{target}?{query_string}"
+    return RedirectResponse(url=target, status_code=307)
+
+
+# --- Common endpoints ---
+
+
+@router.get("/me")
+async def me(request: Request) -> dict[str, Any]:
+    """Return current user info.
+
+    This endpoint is under /auth/ (an open path), so the middleware
+    doesn't populate request.state.tenant. We manually check the cookie.
+    """
+    token = request.cookies.get("yinshi_session")
+    if not token:
+        return {"authenticated": False}
+
+    user_id = verify_session_token(token)
+    if not user_id:
+        return {"authenticated": False}
+
+    tenant = _resolve_tenant_from_user_id(user_id)
+    if not tenant:
+        return {"authenticated": False}
+
+    return {
+        "authenticated": True,
+        "email": tenant.email,
+        "user_id": tenant.user_id,
+    }
+
+
+@router.post("/logout")
+async def logout(request: Request) -> RedirectResponse:
+    """Revoke the current auth session and clear the session cookie."""
+    session_identity = _current_session_identity(request)
+    if session_identity is not None:
+        user_id, auth_session_id = session_identity
+        revoke_auth_session(user_id, auth_session_id)
+    response = RedirectResponse(url="/")
+    _clear_session_cookie(response)
+    return response
+
+
+@router.post("/logout-all")
+async def logout_all(request: Request) -> JSONResponse:
+    """Revoke all auth sessions for the current user and clear the cookie."""
+    user_id = _current_user_id(request)
+    if user_id is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    revoke_auth_sessions(user_id)
+    response = JSONResponse({"status": "ok"})
+    _clear_session_cookie(response)
+    return response

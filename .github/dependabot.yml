@@ -1,0 +1,11 @@
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/sidecar"
+    schedule:
+      interval: "daily"
+      time: "04:00"
+      timezone: "Etc/UTC"
+    allow:
+      - dependency-name: "@mariozechner/pi-coding-agent"
+    open-pull-requests-limit: 1

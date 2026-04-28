@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+set -eu
+
+REAL_GIT="/usr/bin/git"
+ENV_PATH_REGEX='(^|/)\.env(\..*)?$'
+
+print_env_blocked() {
+  printf '%s\n' "Yinshi blocks Git operations that would publish .env files. Move secrets out of Git." >&2
+}
+
+git_with_prefix() {
+  if [ "${#prefix_args[@]}" -gt 0 ]; then
+    "$REAL_GIT" "${prefix_args[@]}" "$@"
+    return
+  fi
+  "$REAL_GIT" "$@"
+}
+
+contains_env_path() {
+  local candidate
+  while IFS= read -r -d '' candidate; do
+    if [[ "$candidate" =~ $ENV_PATH_REGEX ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+subcommand=""
+skip_next="false"
+prefix_args=()
+
+for argument in "$@"; do
+  if [ "$skip_next" = "true" ]; then
+    prefix_args+=("$argument")
+    skip_next="false"
+    continue
+  fi
+
+  case "$argument" in
+    -C|-c|--git-dir|--work-tree|--namespace)
+      prefix_args+=("$argument")
+      skip_next="true"
+      ;;
+    --git-dir=*|--work-tree=*|--namespace=*|-c*)
+      prefix_args+=("$argument")
+      ;;
+    --)
+      break
+      ;;
+    -*)
+      prefix_args+=("$argument")
+      ;;
+    *)
+      subcommand="$argument"
+      break
+      ;;
+  esac
+done
+
+case "$subcommand" in
+  commit)
+    if git_with_prefix diff --cached --name-only --diff-filter=ACM -z | contains_env_path; then
+      print_env_blocked
+      exit 1
+    fi
+    ;;
+  push)
+    if git_with_prefix ls-files -z | contains_env_path; then
+      print_env_blocked
+      exit 1
+    fi
+    ;;
+esac
+
+exec "$REAL_GIT" "$@"
