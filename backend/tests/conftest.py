@@ -12,7 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 DEFAULT_TEST_HEADERS = {"X-Requested-With": "XMLHttpRequest"}
-DEFAULT_TEST_SECRET = "test-secret-key"
+DEFAULT_TEST_SECRET = "test-session-secret-0123456789abcdef"
 DEFAULT_TEST_PEPPER = "a" * 64
 
 

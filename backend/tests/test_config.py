@@ -15,6 +15,20 @@ def test_default_settings():
     assert settings.port == 8000
 
 
+def test_settings_ignores_unknown_dotenv_secrets(tmp_path):
+    """Sidecar-only dotenv keys should not leak through settings validation errors."""
+    from yinshi.config import Settings
+
+    dotenv_path = tmp_path / ".env"
+    secret_marker = "synthetic-provider-secret-marker"
+    dotenv_path.write_text(f"UNRECOGNIZED_PROVIDER_KEY={secret_marker}\n", encoding="utf-8")
+
+    settings = Settings(_env_file=dotenv_path)
+
+    assert settings.app_name == "Yinshi"
+    assert secret_marker not in repr(settings)
+
+
 def test_settings_from_env(monkeypatch):
     """Settings should read from environment variables."""
     monkeypatch.setenv("DEBUG", "true")
@@ -29,14 +43,30 @@ def test_settings_from_env(monkeypatch):
     assert settings.port == 9000
 
 
-def test_get_settings_cached():
+def test_get_settings_cached(monkeypatch):
     """get_settings should return the same instance."""
+    monkeypatch.setenv("DISABLE_AUTH", "true")
+
     from yinshi.config import get_settings
 
     get_settings.cache_clear()
     s1 = get_settings()
     s2 = get_settings()
     assert s1 is s2
+    get_settings.cache_clear()
+
+
+def test_authenticated_mode_requires_an_oauth_provider(monkeypatch):
+    """Explicit authenticated mode should fail closed without an OAuth provider."""
+    monkeypatch.setenv("DISABLE_AUTH", "false")
+    monkeypatch.delenv("GOOGLE_CLIENT_ID", raising=False)
+    monkeypatch.delenv("GITHUB_CLIENT_ID", raising=False)
+
+    from yinshi.config import get_settings
+
+    get_settings.cache_clear()
+    with pytest.raises(RuntimeError, match="OAuth provider"):
+        get_settings()
     get_settings.cache_clear()
 
 
@@ -51,6 +81,38 @@ def test_auth_enabled_requires_explicit_secret_key(monkeypatch):
 
     get_settings.cache_clear()
     with pytest.raises(RuntimeError, match="SECRET_KEY"):
+        get_settings()
+    get_settings.cache_clear()
+
+
+def test_authenticated_mode_rejects_short_session_secret(monkeypatch):
+    """Authenticated deployments should require a 32-character session secret."""
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", "fake-client-id")
+    monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "fake-secret")
+    monkeypatch.setenv("DISABLE_AUTH", "false")
+    monkeypatch.setenv("SECRET_KEY", "s" * 31)
+    monkeypatch.setenv("KEY_ENCRYPTION_KEY", "b" * 64)
+
+    from yinshi.config import get_settings
+
+    get_settings.cache_clear()
+    with pytest.raises(RuntimeError, match="at least 32"):
+        get_settings()
+    get_settings.cache_clear()
+
+
+def test_authenticated_mode_rejects_low_diversity_session_secret(monkeypatch):
+    """A long repeated character should not qualify as a session secret."""
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", "fake-client-id")
+    monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "fake-secret")
+    monkeypatch.setenv("DISABLE_AUTH", "false")
+    monkeypatch.setenv("SECRET_KEY", "s" * 64)
+    monkeypatch.setenv("KEY_ENCRYPTION_KEY", "b" * 64)
+
+    from yinshi.config import get_settings
+
+    get_settings.cache_clear()
+    with pytest.raises(RuntimeError, match="distinct characters"):
         get_settings()
     get_settings.cache_clear()
 
@@ -100,7 +162,7 @@ def test_auto_tenant_db_encryption_is_required_in_authenticated_production(monke
     monkeypatch.setenv("GOOGLE_CLIENT_ID", "fake-client-id")
     monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "fake-secret")
     monkeypatch.setenv("DISABLE_AUTH", "false")
-    monkeypatch.setenv("SECRET_KEY", "test-secret")
+    monkeypatch.setenv("SECRET_KEY", "test-session-secret-0123456789abcdef")
     monkeypatch.setenv("KEY_ENCRYPTION_KEY", "b" * 64)
     monkeypatch.setenv("TENANT_DB_ENCRYPTION", "auto")
     monkeypatch.setenv("DEBUG", "false")

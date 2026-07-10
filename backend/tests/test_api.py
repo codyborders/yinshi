@@ -163,7 +163,7 @@ def test_list_repos_includes_null_owner(
     monkeypatch.setenv("GOOGLE_CLIENT_ID", "fake-client-id")
     monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "fake-secret")
     monkeypatch.setenv("DISABLE_AUTH", "false")
-    monkeypatch.setenv("SECRET_KEY", "test-secret-key")
+    monkeypatch.setenv("SECRET_KEY", "test-session-secret-0123456789abcdef")
     monkeypatch.setenv("CONTAINER_ENABLED", "false")
     monkeypatch.setenv("TENANT_DB_ENCRYPTION", "disabled")
     monkeypatch.setenv("CONTROL_FIELD_ENCRYPTION", "disabled")

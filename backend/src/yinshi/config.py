@@ -124,7 +124,14 @@ class Settings(BaseSettings):
     terminal_keepalive_s: int = 7200
     terminal_scrollback_lines: int = 1000
 
-    model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "case_sensitive": False}
+    model_config = {
+        "env_file": ".env",
+        "env_file_encoding": "utf-8",
+        "case_sensitive": False,
+        # The shared dotenv also contains sidecar provider credentials. Ignoring
+        # unknown names prevents Pydantic from echoing their values on startup.
+        "extra": "ignore",
+    }
 
     @property
     def encryption_pepper_bytes(self) -> bytes:
@@ -166,14 +173,10 @@ class Settings(BaseSettings):
 
 
 def auth_is_enabled(settings: Settings) -> bool:
-    """Return whether authentication is configured to run."""
-    if settings.disable_auth:
-        return False
-    if settings.google_client_id:
-        return True
-    if settings.github_client_id:
-        return True
-    return False
+    """Return whether the operator explicitly enabled authentication."""
+    if not isinstance(settings, Settings):
+        raise TypeError("settings must be a Settings instance")
+    return not settings.disable_auth
 
 
 def _auth_is_enabled(settings: Settings) -> bool:
@@ -226,13 +229,26 @@ def https_required(settings: Settings) -> bool:
 
 def _validate_settings(settings: Settings) -> None:
     """Reject invalid security-critical configuration."""
-    if auth_is_enabled(settings) and not settings.secret_key:
+    authentication_enabled = auth_is_enabled(settings)
+    if authentication_enabled:
+        google_configured = bool(settings.google_client_id and settings.google_client_secret)
+        github_configured = bool(settings.github_client_id and settings.github_client_secret)
+        if not google_configured and not github_configured:
+            raise RuntimeError(
+                "At least one complete OAuth provider configuration is required when "
+                "authentication is enabled"
+            )
+    if authentication_enabled and not settings.secret_key:
         raise RuntimeError("SECRET_KEY must be set when authentication is enabled")
+    if authentication_enabled and len(settings.secret_key.encode("utf-8")) < 32:
+        raise RuntimeError("SECRET_KEY must contain at least 32 bytes")
+    if authentication_enabled and len(set(settings.secret_key)) < 8:
+        raise RuntimeError("SECRET_KEY must contain at least 8 distinct characters")
 
     settings.encryption_pepper_bytes
     settings.key_encryption_key_bytes
 
-    if auth_is_enabled(settings):
+    if authentication_enabled:
         if not settings.debug:
             if not settings.active_key_encryption_key_bytes:
                 raise RuntimeError(

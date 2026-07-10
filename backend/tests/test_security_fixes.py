@@ -20,7 +20,7 @@ def test_websocket_header_does_not_bypass_auth(tmp_path, monkeypatch):
     monkeypatch.setenv("GOOGLE_CLIENT_ID", "fake-client-id")
     monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "fake-secret")
     monkeypatch.setenv("DISABLE_AUTH", "false")
-    monkeypatch.setenv("SECRET_KEY", "test-secret-key")
+    monkeypatch.setenv("SECRET_KEY", "test-session-secret-0123456789abcdef")
     monkeypatch.setenv("CONTAINER_ENABLED", "false")
 
     from yinshi.config import get_settings

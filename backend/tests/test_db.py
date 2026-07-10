@@ -5,6 +5,12 @@ import sqlite3
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def disable_auth_for_database_tests(monkeypatch):
+    """Database-only tests should use explicit local no-auth mode."""
+    monkeypatch.setenv("DISABLE_AUTH", "true")
+
+
 def test_init_db_creates_tables(db):
     """init_db should create all required tables."""
     tables = db.execute(

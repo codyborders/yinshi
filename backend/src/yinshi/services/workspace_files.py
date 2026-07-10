@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import os
 import stat
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Iterator, Literal
 
 from yinshi.exceptions import GitError
 from yinshi.utils.paths import is_path_inside
@@ -145,23 +147,77 @@ def _is_visible_relative_path(relative_path: str) -> bool:
     return not _has_excluded_segment(relative_path)
 
 
-def validate_visible_relative_path(workspace_path: str, relative_path: str) -> Path:
-    """Resolve one user-supplied relative path inside the workspace and UI allowlist."""
+def _visible_relative_path_parts(relative_path: str) -> tuple[str, ...]:
+    """Return validated lexical components for one workspace-relative path."""
     if not isinstance(relative_path, str):
         raise TypeError("relative_path must be a string")
-    normalized_relative_path = relative_path.strip().lstrip("/")
+    normalized_relative_path = relative_path.strip()
     if not normalized_relative_path:
         raise ValueError("relative_path must not be empty")
-    if os.path.isabs(relative_path):
+    if os.path.isabs(normalized_relative_path):
         raise ValueError("relative_path must not be absolute")
-    root = _workspace_root(workspace_path)
-    candidate = (root / normalized_relative_path).resolve()
-    if not is_path_inside(str(candidate), str(root)):
+    parts = Path(normalized_relative_path).parts
+    if not parts or any(part in {"", ".", ".."} for part in parts):
         raise ValueError("path must stay inside workspace")
-    display_path = candidate.relative_to(root).as_posix()
+    display_path = Path(*parts).as_posix()
     if not _is_visible_relative_path(display_path):
         raise PermissionError("path is not available through the workspace UI")
-    return candidate
+    return parts
+
+
+def validate_visible_relative_path(workspace_path: str, relative_path: str) -> Path:
+    """Return one lexically valid workspace path without following child symlinks."""
+    root = _workspace_root(workspace_path)
+    parts = _visible_relative_path_parts(relative_path)
+    return root.joinpath(*parts)
+
+
+@contextmanager
+def _open_workspace_parent(
+    workspace_path: str,
+    relative_path: str,
+    *,
+    create: bool = False,
+) -> Iterator[tuple[int, str]]:
+    """Open a stable parent directory descriptor beneath one workspace."""
+    root = _workspace_root(workspace_path)
+    parts = _visible_relative_path_parts(relative_path)
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    current_fd = os.open(root, directory_flags)
+    try:
+        for part in parts[:-1]:
+            if create:
+                try:
+                    os.mkdir(part, mode=0o700, dir_fd=current_fd)
+                except FileExistsError:
+                    pass
+            try:
+                next_fd = os.open(part, directory_flags, dir_fd=current_fd)
+            except OSError as exc:
+                if exc.errno in {errno.ELOOP, errno.ENOTDIR}:
+                    raise PermissionError("path contains a symlink") from exc
+                raise
+            os.close(current_fd)
+            current_fd = next_fd
+        yield current_fd, parts[-1]
+    finally:
+        os.close(current_fd)
+
+
+def _read_bounded_file_descriptor(file_descriptor: int) -> bytes:
+    """Read one regular file up to the browser preview limit."""
+    if file_descriptor < 0:
+        raise ValueError("file_descriptor must be non-negative")
+    file_stat = os.fstat(file_descriptor)
+    if not stat.S_ISREG(file_stat.st_mode):
+        raise FileNotFoundError("file does not exist")
+    data = bytearray()
+    while len(data) <= _MAX_TEXT_BYTES:
+        chunk = os.read(file_descriptor, min(64 * 1024, _MAX_TEXT_BYTES + 1 - len(data)))
+        if not chunk:
+            break
+        data.extend(chunk)
+    return bytes(data)
 
 
 def _node_to_dict(node: FileNode) -> dict[str, object]:
@@ -327,11 +383,19 @@ def changed_files_to_dicts(changes: tuple[ChangedFile, ...]) -> list[dict[str, o
 
 
 def read_text_file(workspace_path: str, relative_path: str) -> str:
-    """Read a bounded UTF-8-ish text file from a visible workspace path."""
-    file_path = validate_visible_relative_path(workspace_path, relative_path)
-    if not file_path.is_file():
-        raise FileNotFoundError("file does not exist")
-    data = file_path.read_bytes()
+    """Read a bounded text file through symlink-resistant descriptors."""
+    file_flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC
+    with _open_workspace_parent(workspace_path, relative_path) as (parent_fd, file_name):
+        try:
+            file_descriptor = os.open(file_name, file_flags, dir_fd=parent_fd)
+        except OSError as exc:
+            if exc.errno in {errno.ELOOP, errno.ENOTDIR}:
+                raise PermissionError("path contains a symlink") from exc
+            raise
+        try:
+            data = _read_bounded_file_descriptor(file_descriptor)
+        finally:
+            os.close(file_descriptor)
     if len(data) > _MAX_TEXT_BYTES:
         raise ValueError("file is too large to preview")
     if b"\x00" in data:

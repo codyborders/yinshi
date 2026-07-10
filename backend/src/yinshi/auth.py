@@ -221,11 +221,9 @@ def resolve_tenant_from_session_token(token: str) -> TenantContext | None:
 
 
 def auth_disabled() -> bool:
-    """Check if authentication is disabled."""
+    """Return whether authentication was explicitly disabled."""
     settings = get_settings()
-    return settings.disable_auth or (
-        not settings.google_client_id and not settings.github_client_id
-    )
+    return settings.disable_auth
 
 
 def _resolve_tenant_from_user_id(user_id: str) -> TenantContext | None:

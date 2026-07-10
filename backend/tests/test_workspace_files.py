@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+import threading
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -68,6 +69,45 @@ def test_workspace_changed_files_clear_after_commit(
     cleared_response = noauth_client.get(f"/api/workspaces/{workspace['id']}/files/changed")
     assert cleared_response.status_code == 200
     assert cleared_response.json()["files"] == []
+
+
+def test_workspace_file_read_never_follows_concurrent_parent_symlink(tmp_path: Path) -> None:
+    """A parent-directory swap must not redirect a preview outside the workspace."""
+    from yinshi.services.workspace_files import read_text_file
+
+    workspace_path = tmp_path / "workspace"
+    live_directory = workspace_path / "switch"
+    saved_directory = workspace_path / "switch-saved"
+    outside_directory = tmp_path / "outside"
+    live_directory.mkdir(parents=True)
+    outside_directory.mkdir()
+    (live_directory / "target.txt").write_text("inside", encoding="utf-8")
+    (outside_directory / "target.txt").write_text("outside", encoding="utf-8")
+
+    stop_event = threading.Event()
+
+    def swap_parent() -> None:
+        while not stop_event.is_set():
+            try:
+                live_directory.rename(saved_directory)
+                live_directory.symlink_to(outside_directory, target_is_directory=True)
+                live_directory.unlink()
+                saved_directory.rename(live_directory)
+            except FileNotFoundError:
+                continue
+
+    attacker = threading.Thread(target=swap_parent)
+    attacker.start()
+    try:
+        for _ in range(2000):
+            try:
+                content = read_text_file(str(workspace_path), "switch/target.txt")
+            except (FileNotFoundError, PermissionError, ValueError):
+                continue
+            assert content == "inside"
+    finally:
+        stop_event.set()
+        attacker.join(timeout=2)
 
 
 def test_workspace_file_preview_rejects_env_and_path_traversal(

@@ -110,6 +110,17 @@ def test_verify_invalid_token(tmp_path, monkeypatch):
     assert verify_session_token("garbage-token") is None
 
 
+def test_auth_disabled_requires_explicit_disable_flag(monkeypatch):
+    """Missing OAuth settings must not silently disable request authentication."""
+    from yinshi.auth import auth_disabled
+    from yinshi.config import Settings
+
+    settings = Settings(disable_auth=False, google_client_id="", github_client_id="")
+    monkeypatch.setattr("yinshi.auth.get_settings", lambda: settings)
+
+    assert auth_disabled() is False
+
+
 def test_verify_empty_token(tmp_path, monkeypatch):
     """Empty token should return None."""
     _configure_test_env(monkeypatch, tmp_path, auth_enabled=True)
