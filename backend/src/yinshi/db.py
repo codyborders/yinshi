@@ -258,6 +258,17 @@ CREATE TABLE IF NOT EXISTS github_installations (
 
 CREATE INDEX IF NOT EXISTS idx_github_installations_user ON github_installations(user_id);
 
+CREATE TABLE IF NOT EXISTS github_install_flows (
+    state_digest TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    installation_id INTEGER,
+    expires_at INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_github_install_flows_user ON github_install_flows(user_id);
+CREATE INDEX IF NOT EXISTS idx_github_install_flows_expiry ON github_install_flows(expires_at);
+
 CREATE TABLE IF NOT EXISTS pi_configs (
     id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,

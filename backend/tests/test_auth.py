@@ -506,10 +506,16 @@ def test_github_install_callback_stores_installation(
             params={"state": verification_state, "code": "one-time-user-code"},
             follow_redirects=False,
         )
+        replay_resp = client.get(
+            "/auth/github/install/verify",
+            params={"state": verification_state, "code": "replayed-user-code"},
+            follow_redirects=False,
+        )
 
     assert install_resp.status_code == 307
     assert resp.status_code == 307
     assert resp.headers["location"] == "/app?github_connected=1"
+    assert replay_resp.headers["location"] == "/app?github_connect_error=invalid_state"
     with get_control_db() as db:
         row = db.execute(
             "SELECT installation_id, account_login, account_type, html_url "
@@ -637,13 +643,26 @@ def test_github_install_callback_relinks_existing_user_repos(
                 )
             ),
         ),
+        patch(
+            "yinshi.api.auth_routes.verify_github_user_installation",
+            new=AsyncMock(return_value=True),
+        ),
     ):
         client.cookies.set("yinshi_session", create_session_token(tenant.user_id))
-        resp = client.get(
+        install_resp = client.get(
             f"/auth/github/install/callback?state={state}&installation_id=42&setup_action=install",
             follow_redirects=False,
         )
+        verification_state = parse_qs(urlparse(install_resp.headers["location"]).query)[
+            "state"
+        ][0]
+        resp = client.get(
+            "/auth/github/install/verify",
+            params={"state": verification_state, "code": "one-time-user-code"},
+            follow_redirects=False,
+        )
 
+    assert install_resp.status_code == 307
     assert resp.status_code == 307
     assert resp.headers["location"] == "/app?github_connected=1"
     with get_control_db() as db:

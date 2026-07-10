@@ -1,7 +1,10 @@
 """OAuth login/callback endpoints for Google and GitHub."""
 
+import hashlib
 import logging
+import secrets
 import sqlite3
+import time
 from typing import Any, cast
 from urllib.parse import urlencode
 
@@ -80,28 +83,60 @@ def _github_install_state_serializer() -> URLSafeTimedSerializer:
     return URLSafeTimedSerializer(settings.secret_key)
 
 
+def _github_install_flow_digest(flow_token: str) -> str:
+    """Hash an unguessable install-flow token for control-database storage."""
+    if not flow_token:
+        raise ValueError("flow_token must not be empty")
+    return hashlib.sha256(flow_token.encode("utf-8")).hexdigest()
+
+
 def _create_github_install_state(user_id: str) -> str:
-    """Sign a user id into a GitHub install state token."""
-    assert user_id, "user_id must not be empty"
+    """Create a signed, database-backed GitHub install state token."""
+    if not user_id:
+        raise ValueError("user_id must not be empty")
+    flow_token = secrets.token_urlsafe(32)
+    state_digest = _github_install_flow_digest(flow_token)
+    expires_at = int(time.time()) + _GITHUB_INSTALL_STATE_MAX_AGE_S
+    with get_control_db() as db:
+        db.execute("DELETE FROM github_install_flows WHERE expires_at < ?", (int(time.time()),))
+        db.execute(
+            "INSERT INTO github_install_flows (state_digest, user_id, expires_at) "
+            "VALUES (?, ?, ?)",
+            (state_digest, user_id, expires_at),
+        )
+        db.commit()
     serializer = _github_install_state_serializer()
-    return serializer.dumps(user_id, salt="github-install-state")
+    return serializer.dumps(
+        {"user_id": user_id, "flow_token": flow_token},
+        salt="github-install-state",
+    )
 
 
-def _create_github_install_verification_state(user_id: str, installation_id: int) -> str:
-    """Sign a user and candidate installation for the GitHub authorization leg."""
+def _create_github_install_verification_state(
+    user_id: str,
+    installation_id: int,
+    flow_token: str,
+) -> str:
+    """Sign a user, installation, and one-time flow token for authorization."""
     if not user_id:
         raise ValueError("user_id must not be empty")
     if installation_id <= 0:
         raise ValueError("installation_id must be positive")
+    if not flow_token:
+        raise ValueError("flow_token must not be empty")
     serializer = _github_install_state_serializer()
     return serializer.dumps(
-        {"user_id": user_id, "installation_id": installation_id},
+        {
+            "user_id": user_id,
+            "installation_id": installation_id,
+            "flow_token": flow_token,
+        },
         salt="github-install-verification-state",
     )
 
 
-def _verify_github_install_verification_state(state: str) -> tuple[str, int] | None:
-    """Return the signed user and installation when authorization state is valid."""
+def _verify_github_install_verification_state(state: str) -> tuple[str, int, str] | None:
+    """Return the signed user, installation, and flow digest when valid."""
     if not state:
         raise ValueError("state must not be empty")
     serializer = _github_install_state_serializer()
@@ -117,28 +152,38 @@ def _verify_github_install_verification_state(state: str) -> tuple[str, int] | N
         return None
     user_id = payload.get("user_id")
     installation_id = payload.get("installation_id")
+    flow_token = payload.get("flow_token")
     if not isinstance(user_id, str) or not user_id:
         return None
     if not isinstance(installation_id, int) or installation_id <= 0:
         return None
-    return user_id, installation_id
+    if not isinstance(flow_token, str) or not flow_token:
+        return None
+    return user_id, installation_id, _github_install_flow_digest(flow_token)
 
 
-def _verify_github_install_state(state: str) -> str | None:
-    """Verify a GitHub install state token and return the user id."""
-    assert state, "state must not be empty"
+def _verify_github_install_state(state: str) -> tuple[str, str] | None:
+    """Verify initial state and return its user id and raw one-time token."""
+    if not state:
+        raise ValueError("state must not be empty")
     serializer = _github_install_state_serializer()
     try:
-        user_id = serializer.loads(
+        payload = serializer.loads(
             state,
             salt="github-install-state",
             max_age=_GITHUB_INSTALL_STATE_MAX_AGE_S,
         )
     except (BadSignature, BadTimeSignature):
         return None
-    if isinstance(user_id, str):
-        return user_id
-    return None
+    if not isinstance(payload, dict):
+        return None
+    user_id = payload.get("user_id")
+    flow_token = payload.get("flow_token")
+    if not isinstance(user_id, str) or not user_id:
+        return None
+    if not isinstance(flow_token, str) or not flow_token:
+        return None
+    return user_id, flow_token
 
 
 def _current_session_identity(request: Request) -> tuple[str, str] | None:
@@ -585,13 +630,13 @@ async def github_install_callback(request: Request) -> RedirectResponse:
     if not state:
         return RedirectResponse(url="/app?github_connect_error=invalid_state")
 
-    state_user_id = _verify_github_install_state(state)
-    if not state_user_id:
+    state_payload = _verify_github_install_state(state)
+    if state_payload is None:
         return RedirectResponse(url="/app?github_connect_error=invalid_state")
+    user_id, flow_token = state_payload
     current_user_id = _current_user_id(request)
-    if current_user_id != state_user_id:
+    if current_user_id != user_id:
         return RedirectResponse(url="/app?github_connect_error=invalid_state")
-    user_id = state_user_id
 
     installation_id_text = request.query_params.get("installation_id")
     if not installation_id_text:
@@ -610,7 +655,30 @@ async def github_install_callback(request: Request) -> RedirectResponse:
         return RedirectResponse(url="/app?github_connect_error=not_granted")
 
     settings = get_settings()
-    verification_state = _create_github_install_verification_state(user_id, installation_id)
+    if not settings.github_app_client_id:
+        return RedirectResponse(url="/app?github_connect_error=install_failed")
+    if settings.github_app_client_secret is None:
+        return RedirectResponse(url="/app?github_connect_error=install_failed")
+    if not settings.github_app_user_callback_url:
+        return RedirectResponse(url="/app?github_connect_error=install_failed")
+
+    state_digest = _github_install_flow_digest(flow_token)
+    with get_control_db() as db:
+        cursor = db.execute(
+            "UPDATE github_install_flows SET installation_id = ? "
+            "WHERE state_digest = ? AND user_id = ? AND installation_id IS NULL "
+            "AND expires_at >= ?",
+            (installation_id, state_digest, user_id, int(time.time())),
+        )
+        db.commit()
+    if cursor.rowcount != 1:
+        return RedirectResponse(url="/app?github_connect_error=invalid_state")
+
+    verification_state = _create_github_install_verification_state(
+        user_id,
+        installation_id,
+        flow_token,
+    )
     authorization_query = urlencode(
         {
             "client_id": settings.github_app_client_id,
@@ -632,8 +700,17 @@ async def github_install_verify(request: Request) -> RedirectResponse:
     state_payload = _verify_github_install_verification_state(state)
     if state_payload is None:
         return RedirectResponse(url="/app?github_connect_error=invalid_state")
-    user_id, installation_id = state_payload
+    user_id, installation_id, state_digest = state_payload
     if _current_user_id(request) != user_id:
+        return RedirectResponse(url="/app?github_connect_error=invalid_state")
+    with get_control_db() as db:
+        active_flow = db.execute(
+            "SELECT 1 FROM github_install_flows "
+            "WHERE state_digest = ? AND user_id = ? AND installation_id = ? "
+            "AND expires_at >= ?",
+            (state_digest, user_id, installation_id, int(time.time())),
+        ).fetchone()
+    if active_flow is None:
         return RedirectResponse(url="/app?github_connect_error=invalid_state")
 
     try:
@@ -666,6 +743,16 @@ async def github_install_verify(request: Request) -> RedirectResponse:
         return RedirectResponse(url="/app?github_connect_error=install_failed")
 
     with get_control_db() as db:
+        db.execute("BEGIN IMMEDIATE")
+        active_flow = db.execute(
+            "SELECT 1 FROM github_install_flows "
+            "WHERE state_digest = ? AND user_id = ? AND installation_id = ? "
+            "AND expires_at >= ?",
+            (state_digest, user_id, installation_id, int(time.time())),
+        ).fetchone()
+        if active_flow is None:
+            db.rollback()
+            return RedirectResponse(url="/app?github_connect_error=invalid_state")
         db.execute(
             """
             INSERT INTO github_installations (
@@ -678,6 +765,13 @@ async def github_install_verify(request: Request) -> RedirectResponse:
             """,
             (user_id, installation_id, account_login, account_type, html_url),
         )
+        delete_cursor = db.execute(
+            "DELETE FROM github_install_flows WHERE state_digest = ?",
+            (state_digest,),
+        )
+        if delete_cursor.rowcount != 1:
+            db.rollback()
+            return RedirectResponse(url="/app?github_connect_error=invalid_state")
         db.commit()
 
     await _refresh_connected_github_repos(user_id, account_login)
