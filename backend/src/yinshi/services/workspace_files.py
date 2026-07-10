@@ -404,17 +404,39 @@ def read_text_file(workspace_path: str, relative_path: str) -> str:
 
 
 def write_text_file(workspace_path: str, relative_path: str, content: str) -> None:
-    """Write text content to a visible workspace file path."""
+    """Atomically replace one text file through a stable parent descriptor."""
     if not isinstance(content, str):
         raise TypeError("content must be a string")
     encoded_content = content.encode("utf-8")
     if len(encoded_content) > _MAX_TEXT_BYTES:
         raise ValueError("file is too large to edit through the browser")
-    file_path = validate_visible_relative_path(workspace_path, relative_path)
-    if file_path.exists() and not file_path.is_file():
-        raise ValueError("path is not a file")
-    file_path.parent.mkdir(parents=True, exist_ok=True)
-    file_path.write_text(content, encoding="utf-8")
+
+    with _open_workspace_parent(
+        workspace_path,
+        relative_path,
+        create=True,
+    ) as (parent_fd, file_name):
+        temporary_name = f".{file_name}.yinshi-tmp-{os.getpid()}"
+        file_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
+        file_descriptor = os.open(temporary_name, file_flags, 0o600, dir_fd=parent_fd)
+        try:
+            remaining_content = memoryview(encoded_content)
+            while remaining_content:
+                bytes_written = os.write(file_descriptor, remaining_content)
+                if bytes_written <= 0:
+                    raise OSError("failed to write workspace file")
+                remaining_content = remaining_content[bytes_written:]
+            os.fsync(file_descriptor)
+        finally:
+            os.close(file_descriptor)
+        try:
+            os.replace(temporary_name, file_name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+            os.fsync(parent_fd)
+        finally:
+            try:
+                os.unlink(temporary_name, dir_fd=parent_fd)
+            except FileNotFoundError:
+                pass
 
 
 async def _changed_file_for_path(root: Path, display_path: str) -> ChangedFile | None:
