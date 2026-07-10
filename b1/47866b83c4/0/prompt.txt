@@ -1,0 +1,5 @@
+Looks the same in browser?
+
+---
+
+Looks terrible. And I don't want my github name on the site. Get rid of that. Make the logo larger

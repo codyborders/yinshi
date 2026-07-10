@@ -1,0 +1,27 @@
+{
+  "cli_version": "0.7.7",
+  "checkpoint_id": "b147866b83c4",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 3,
+  "files_touched": [
+    "frontend/src/pages/Landing.css",
+    "frontend/src/pages/Landing.tsx",
+    "frontend/src/pages/__tests__/Landing.test.tsx"
+  ],
+  "sessions": [
+    {
+      "metadata": "/b1/47866b83c4/0/metadata.json",
+      "transcript": "/b1/47866b83c4/0/full.jsonl",
+      "content_hash": "/b1/47866b83c4/0/content_hash.txt",
+      "prompt": "/b1/47866b83c4/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 725681,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 26048000,
+    "output_tokens": 43891,
+    "api_call_count": 101
+  }
+}
