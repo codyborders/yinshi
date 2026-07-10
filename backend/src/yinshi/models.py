@@ -567,18 +567,6 @@ class PiConfigCommandsOut(BaseModel):
     commands: list[PiCommand] = Field(default_factory=list)
 
 
-class PiPackageUpdateStatusOut(BaseModel):
-    """Last recorded result from the daily pi package updater."""
-
-    checked_at: str | None = None
-    status: str | None = None
-    previous_version: str | None = None
-    current_version: str | None = None
-    latest_version: str | None = None
-    updated: bool | None = None
-    message: str | None = None
-
-
 class PiPackageReleaseOut(BaseModel):
     """One upstream pi release note entry."""
 
@@ -598,8 +586,7 @@ class PiReleaseNotesOut(BaseModel):
     latest_version: str | None = None
     node_version: str | None = None
     release_notes_url: str
-    update_schedule: str
-    update_status: PiPackageUpdateStatusOut | None = None
+    update_policy: str
     runtime_error: str | None = None
     release_error: str | None = None
     releases: list[PiPackageReleaseOut] = Field(default_factory=list)

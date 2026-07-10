@@ -151,6 +151,22 @@ test("terminal environment uses an explicit allowlist", () => {
   }
 });
 
+test("sidecar creates a private Unix socket", async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "yinshi-socket-test-"));
+  const socketPath = path.join(tempDir, "sidecar.sock");
+  process.env.SIDECAR_SOCKET_PATH = socketPath;
+  const sidecar = new YinshiSidecar();
+
+  try {
+    await sidecar.start();
+    assert.equal(fs.statSync(socketPath).mode & 0o777, 0o600);
+  } finally {
+    sidecar.cleanup();
+    delete process.env.SIDECAR_SOCKET_PATH;
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("terminal attach starts a PTY and streams output", async (t) => {
   if (!ptyAvailable()) {
     t.skip("node-pty cannot spawn on this host runtime");

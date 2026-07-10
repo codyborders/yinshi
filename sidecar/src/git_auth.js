@@ -1,10 +1,13 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import net from "node:net";
 import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
-import { createBashTool, createLocalBashOperations } from "@mariozechner/pi-coding-agent";
+import { createBashTool, createLocalBashOperations } from "@earendil-works/pi-coding-agent";
 
+const GIT_EXECUTABLE_PATH = "/usr/bin/git";
 const GIT_REMOTE_SUBCOMMANDS = new Set(["clone", "fetch", "ls-remote", "pull", "push"]);
 const SHELL_AND_OPERATOR = "&&";
 
@@ -24,13 +27,10 @@ function quoteShellLiteral(value) {
   return `'${normalizedValue.replace(/'/g, `'\"'\"'`)}'`;
 }
 
-function buildGitAskpassScript(tokenFilePath) {
-  const normalizedTokenFilePath = assertNonEmptyString(tokenFilePath, "tokenFilePath");
+function buildGitAskpassScript() {
+  const clientPath = fileURLToPath(new URL("./git_askpass_client.js", import.meta.url));
   return "#!/bin/sh\n"
-    + "case \"$1\" in\n"
-    + "  *Username*) printf '%s\\n' 'x-access-token' ;;\n"
-    + `  *) cat ${quoteShellLiteral(normalizedTokenFilePath)} ;;\n`
-    + "esac\n";
+    + `exec ${quoteShellLiteral(process.execPath)} ${quoteShellLiteral(clientPath)} \"$1\"\n`;
 }
 
 export function normalizeGitAuth(gitAuth) {
@@ -209,25 +209,21 @@ export function parseGitCommandForRuntimeAuth(command, defaultCwd) {
   }
 
   return {
-    command: "git",
+    command: GIT_EXECUTABLE_PATH,
     cwd: gitCwd,
     gitArguments,
     subcommand: normalizedSubcommand,
   };
 }
 
-export function createGitAskpassBundle(accessToken) {
-  const normalizedAccessToken = assertNonEmptyString(accessToken, "accessToken");
+export function createGitAskpassBundle() {
   const bundleDirPath = fs.mkdtempSync(path.join(os.tmpdir(), "yinshi-git-"));
   fs.chmodSync(bundleDirPath, 0o700);
 
-  const tokenFilePath = path.join(bundleDirPath, "token");
   const askpassPath = path.join(bundleDirPath, "askpass.sh");
-  fs.writeFileSync(tokenFilePath, normalizedAccessToken, { encoding: "utf-8", mode: 0o600 });
-  fs.chmodSync(tokenFilePath, 0o600);
   fs.writeFileSync(
     askpassPath,
-    buildGitAskpassScript(tokenFilePath),
+    buildGitAskpassScript(),
     { encoding: "utf-8", mode: 0o700 },
   );
   fs.chmodSync(askpassPath, 0o700);
@@ -241,19 +237,81 @@ export function createGitAskpassBundle(accessToken) {
   };
 }
 
-function createGitExecutionEnvironment(baseEnv, askpassPath) {
+function createGitExecutionEnvironment(baseEnv, askpassPath, credentialSocketPath) {
   const normalizedAskpassPath = assertNonEmptyString(askpassPath, "askpassPath");
-  const executionEnvironment = {
-    ...process.env,
-    ...(baseEnv || {}),
-  };
+  const normalizedSocketPath = assertNonEmptyString(
+    credentialSocketPath,
+    "credentialSocketPath",
+  );
+  const environmentSource = { ...process.env, ...(baseEnv || {}) };
+  const executionEnvironment = {};
+  for (const name of ["HOME", "LANG", "LC_ALL", "PATH", "TEMP", "TMP", "TMPDIR"]) {
+    if (typeof environmentSource[name] === "string") {
+      executionEnvironment[name] = environmentSource[name];
+    }
+  }
   executionEnvironment.GCM_INTERACTIVE = "Never";
   executionEnvironment.GIT_ASKPASS = normalizedAskpassPath;
   executionEnvironment.GIT_CONFIG_NOSYSTEM = "1";
   executionEnvironment.GIT_CONFIG_GLOBAL = os.devNull;
   executionEnvironment.GIT_PAGER = "cat";
   executionEnvironment.GIT_TERMINAL_PROMPT = "0";
+  executionEnvironment.YINSHI_GIT_CREDENTIAL_SOCKET = normalizedSocketPath;
   return executionEnvironment;
+}
+
+async function createGitCredentialBroker(accessToken) {
+  let credential = assertNonEmptyString(accessToken, "accessToken");
+  const askpassBundle = createGitAskpassBundle();
+  const socketPath = path.join(askpassBundle.bundleDirPath, "credential.sock");
+  let credentialIssued = false;
+  const server = net.createServer((socket) => {
+    socket.setTimeout(5000, () => socket.destroy());
+    socket.once("data", (rawPrompt) => {
+      if (rawPrompt.length > 1024) {
+        socket.destroy();
+        return;
+      }
+      const prompt = rawPrompt.toString("utf-8").trim();
+      if (prompt.includes("Username")) {
+        socket.end("x-access-token\n");
+        return;
+      }
+      if (credentialIssued) {
+        socket.destroy();
+        return;
+      }
+      credentialIssued = true;
+      const oneTimeCredential = credential;
+      credential = "";
+      socket.end(`${oneTimeCredential}\n`);
+    });
+  });
+
+  try {
+    await new Promise((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(socketPath, () => {
+        server.removeListener("error", reject);
+        resolve();
+      });
+    });
+    fs.chmodSync(socketPath, 0o600);
+  } catch (error) {
+    server.close();
+    askpassBundle.cleanup();
+    throw error;
+  }
+
+  return {
+    askpassPath: askpassBundle.askpassPath,
+    socketPath,
+    cleanup() {
+      credential = "";
+      server.close();
+      askpassBundle.cleanup();
+    },
+  };
 }
 
 function createGitCommandArguments(gitArguments) {
@@ -272,7 +330,7 @@ function createGitCommandArguments(gitArguments) {
   ];
 }
 
-function executeGitCommand(parsedGitCommand, execOptions, gitAuth) {
+async function executeGitCommand(parsedGitCommand, execOptions, gitAuth) {
   if (!parsedGitCommand || typeof parsedGitCommand !== "object") {
     throw new TypeError("parsedGitCommand is required");
   }
@@ -280,9 +338,13 @@ function executeGitCommand(parsedGitCommand, execOptions, gitAuth) {
   if (normalizedGitAuth === null) {
     throw new Error("gitAuth is required for authenticated git execution");
   }
-  const askpassBundle = createGitAskpassBundle(normalizedGitAuth.accessToken);
+  const credentialBroker = await createGitCredentialBroker(normalizedGitAuth.accessToken);
   const gitCommandArguments = createGitCommandArguments(parsedGitCommand.gitArguments);
-  const gitEnvironment = createGitExecutionEnvironment(execOptions?.env, askpassBundle.askpassPath);
+  const gitEnvironment = createGitExecutionEnvironment(
+    execOptions?.env,
+    credentialBroker.askpassPath,
+    credentialBroker.socketPath,
+  );
 
   return new Promise((resolve, reject) => {
     const gitChild = spawn(
@@ -327,7 +389,7 @@ function executeGitCommand(parsedGitCommand, execOptions, gitAuth) {
       if (execOptions?.signal) {
         execOptions.signal.removeEventListener("abort", onAbort);
       }
-      askpassBundle.cleanup();
+      credentialBroker.cleanup();
     };
 
     gitChild.on("error", (error) => {

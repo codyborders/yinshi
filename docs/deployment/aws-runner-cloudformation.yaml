@@ -38,10 +38,10 @@ Parameters:
     Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
     Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
     Description: "Amazon Linux 2023 AMI SSM parameter."
-  PackageInstallCommand:
+  YinshiReleaseCommit:
     Type: String
-    Default: "/opt/yinshi-runner/venv/bin/python -m pip install --upgrade 'git+https://github.com/codyborders/yinshi.git#subdirectory=backend'"
-    Description: "Command that installs the yinshi Python package into the runner virtualenv."
+    AllowedPattern: "^[0-9a-f]{40}$"
+    Description: "Reviewed Yinshi Git commit to install. Branch names and mutable tags are rejected."
   SharedFilesMountCommand:
     Type: String
     Default: ""
@@ -77,7 +77,9 @@ Resources:
       GroupDescription: "Yinshi runner outbound-only security group."
       VpcId: !Ref VpcId
       SecurityGroupEgress:
-        - IpProtocol: -1
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
           CidrIp: 0.0.0.0/0
       Tags:
         - Key: Application
@@ -92,6 +94,10 @@ Resources:
       SubnetId: !Ref SubnetId
       SecurityGroupIds:
         - !Ref RunnerSecurityGroup
+      MetadataOptions:
+        HttpEndpoint: enabled
+        HttpTokens: required
+        HttpPutResponseHopLimit: 1
       BlockDeviceMappings:
         - DeviceName: /dev/xvda
           Ebs:
@@ -138,11 +144,12 @@ Resources:
 
           dnf update -y
           dnf install -y git podman python3 python3-pip nfs-utils
+          useradd --system --home-dir /var/lib/yinshi --shell /sbin/nologin yinshi-runner
 
-          mkdir -p "$RUNNER_DATA_DIR" "$RUNNER_SQLITE_DIR" "$RUNNER_SHARED_FILES_DIR" /opt/yinshi-runner
-          chmod 700 "$RUNNER_DATA_DIR"
-          chmod 700 "$RUNNER_SQLITE_DIR"
-          chmod 755 "$RUNNER_SHARED_FILES_DIR"
+          install -d -m 700 -o yinshi-runner -g yinshi-runner "$RUNNER_DATA_DIR"
+          install -d -m 700 -o yinshi-runner -g yinshi-runner "$RUNNER_SQLITE_DIR"
+          install -d -m 755 -o yinshi-runner -g yinshi-runner "$RUNNER_SHARED_FILES_DIR"
+          install -d -m 755 -o yinshi-runner -g yinshi-runner /opt/yinshi-runner
 
           cat >/tmp/yinshi-shared-files-mount.sh <<'MOUNT'
           ${SharedFilesMountCommand}
@@ -160,8 +167,12 @@ Resources:
             "$RUNNER_SHARED_FILES_DIR/db-backups"
 
           python3 -m venv /opt/yinshi-runner/venv
-          /opt/yinshi-runner/venv/bin/python -m pip install --upgrade pip wheel
-          ${PackageInstallCommand}
+          chown -R yinshi-runner:yinshi-runner /opt/yinshi-runner
+          runuser -u yinshi-runner -- /opt/yinshi-runner/venv/bin/python -m pip install --upgrade pip wheel
+          runuser -u yinshi-runner -- /opt/yinshi-runner/venv/bin/python -m pip install \
+            -r "https://raw.githubusercontent.com/codyborders/yinshi/${YinshiReleaseCommit}/backend/requirements/base.txt"
+          runuser -u yinshi-runner -- /opt/yinshi-runner/venv/bin/python -m pip install --no-deps \
+            "git+https://github.com/codyborders/yinshi.git@${YinshiReleaseCommit}#subdirectory=backend"
 
           cat >/etc/yinshi-runner.env <<ENV
           YINSHI_CONTROL_URL=${YinshiControlUrl}
@@ -175,6 +186,7 @@ Resources:
           YINSHI_RUNNER_TOKEN_FILE=/var/lib/yinshi/runner-token
           YINSHI_RUNNER_ENV_FILE=/etc/yinshi-runner.env
           ENV
+          chown yinshi-runner:yinshi-runner /etc/yinshi-runner.env
           chmod 600 /etc/yinshi-runner.env
 
           cat >/etc/systemd/system/yinshi-runner.service <<'SERVICE'
@@ -189,7 +201,10 @@ Resources:
           ExecStart=/opt/yinshi-runner/venv/bin/python -m yinshi.runner_agent
           Restart=always
           RestartSec=10
-          User=root
+          User=yinshi-runner
+          Group=yinshi-runner
+          NoNewPrivileges=true
+          PrivateTmp=true
           WorkingDirectory=/var/lib/yinshi
 
           [Install]

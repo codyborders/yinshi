@@ -32,26 +32,6 @@ function buildVersionStatus(releaseNotes: PiReleaseNotes): { text: string; tone:
   return { text: "Update available", tone: "warning" };
 }
 
-function updateStatusText(releaseNotes: PiReleaseNotes): string {
-  const updateStatus = releaseNotes.update_status;
-  if (!updateStatus) {
-    return "No daily update run recorded yet.";
-  }
-  if (updateStatus.message) {
-    return updateStatus.message;
-  }
-  if (updateStatus.status === "current") {
-    return "Daily updater found pi already current.";
-  }
-  if (updateStatus.status === "updated") {
-    return "Daily updater installed a newer pi package.";
-  }
-  if (updateStatus.status === "failed") {
-    return "Daily updater failed on the last run.";
-  }
-  return "Daily updater status recorded.";
-}
-
 function ReleaseMarkdown({ body }: { body: string }) {
   if (!body.trim()) {
     return <p className="text-sm text-gray-500">No release notes published.</p>;
@@ -120,13 +100,8 @@ function RuntimeSummary({ releaseNotes }: { releaseNotes: PiReleaseNotes }) {
         <div className={`mt-1 text-xs ${statusClassName}`}>{status.text}</div>
       </div>
       <div className="rounded-xl border border-gray-800 bg-gray-900/70 p-4">
-        <div className="text-xs uppercase tracking-wide text-gray-500">Daily updater</div>
-        <div className="mt-2 text-sm text-gray-200">{updateStatusText(releaseNotes)}</div>
-        {releaseNotes.update_status?.checked_at ? (
-          <div className="mt-1 text-xs text-gray-500">
-            Last checked {new Date(releaseNotes.update_status.checked_at).toLocaleString()}
-          </div>
-        ) : null}
+        <div className="text-xs uppercase tracking-wide text-gray-500">Update policy</div>
+        <div className="mt-2 text-sm text-gray-200">{releaseNotes.update_policy}</div>
       </div>
     </div>
   );
@@ -143,7 +118,7 @@ export default function PiReleaseNotesSection() {
             Pi release notes
           </h2>
           <p className="mt-1 text-sm text-gray-400">
-            Yinshi updates the bundled pi package daily and rebuilds the sidecar image when npm publishes a new version.
+            Yinshi updates the bundled pi package through reviewed lockfile changes and immutable sidecar builds.
           </p>
           {releaseNotes ? (
             <a

@@ -1,0 +1,9 @@
+title = "Yinshi secret scanning"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Datadog browser client tokens are public ingestion identifiers."
+regexTarget = "match"
+regexes = ['''pubbe7e2760d9e429d5cda2d2eb49a408be''']

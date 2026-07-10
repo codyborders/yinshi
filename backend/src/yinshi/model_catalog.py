@@ -50,7 +50,7 @@ def _titleize_provider(provider_id: str) -> str:
     return " ".join(piece.upper() if len(piece) <= 3 else piece.capitalize() for piece in pieces)
 
 
-_COMMON_DOCS_URL = "https://www.npmjs.com/package/@mariozechner/pi-ai"
+_COMMON_DOCS_URL = "https://www.npmjs.com/package/@earendil-works/pi-ai"
 
 PROVIDER_METADATA_BY_ID: dict[str, ProviderMetadata] = {
     "anthropic": ProviderMetadata(

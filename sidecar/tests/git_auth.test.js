@@ -23,7 +23,7 @@ test("parseGitCommandForRuntimeAuth accepts a direct remote git command", () => 
     "/tmp/workspace",
   );
 
-  assert.equal(parsedCommand?.command, "git");
+  assert.equal(parsedCommand?.command, "/usr/bin/git");
   assert.equal(parsedCommand?.cwd, "/tmp/workspace/repo");
   assert.deepEqual(parsedCommand?.gitArguments, ["push", "origin", "main"]);
 });
@@ -48,16 +48,17 @@ test("parseGitCommandForRuntimeAuth rejects non-git shell commands", () => {
   assert.equal(parsedCommand, null);
 });
 
-test("createGitAskpassBundle uses a unique private bundle path", () => {
-  // Unique bundle paths prevent later commands from overwriting a shared helper.
-  const firstBundle = createGitAskpassBundle("token-1");
-  const secondBundle = createGitAskpassBundle("token-2");
+test("createGitAskpassBundle contains no credential material", () => {
+  const firstBundle = createGitAskpassBundle();
+  const secondBundle = createGitAskpassBundle();
 
   try {
     assert.notEqual(firstBundle.askpassPath, secondBundle.askpassPath);
     assert.notEqual(firstBundle.bundleDirPath, secondBundle.bundleDirPath);
-    assert.equal(fs.existsSync(firstBundle.askpassPath), true);
-    assert.equal(fs.existsSync(secondBundle.askpassPath), true);
+    assert.equal(fs.statSync(firstBundle.bundleDirPath).mode & 0o777, 0o700);
+    assert.equal(fs.statSync(firstBundle.askpassPath).mode & 0o777, 0o700);
+    assert.deepEqual(fs.readdirSync(firstBundle.bundleDirPath), ["askpass.sh"]);
+    assert.doesNotMatch(fs.readFileSync(firstBundle.askpassPath, "utf-8"), /token-1/);
   } finally {
     firstBundle.cleanup();
     secondBundle.cleanup();

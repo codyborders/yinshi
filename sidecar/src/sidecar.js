@@ -16,15 +16,15 @@ import {
   createEditTool,
   createReadTool,
   createWriteTool,
-} from "@mariozechner/pi-coding-agent";
-import { supportsXhigh } from "@mariozechner/pi-ai";
-import { getOAuthProvider } from "@mariozechner/pi-ai/oauth";
+} from "@earendil-works/pi-coding-agent";
+import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
+import { getOAuthProvider } from "@earendil-works/pi-ai/oauth";
 
 import { HEALTH_CHECK_INTERVAL } from "./constants.js";
 import { createGitAwareBashTool } from "./git_auth.js";
 
 const __sidecarDir = path.dirname(fileURLToPath(import.meta.url));
-const PI_PACKAGE_NAME = "@mariozechner/pi-coding-agent";
+const PI_PACKAGE_NAME = "@earendil-works/pi-coding-agent";
 const DEFAULT_MODEL_REF = "minimax/MiniMax-M2.7";
 const DEFAULT_THINKING_LEVEL = "medium";
 const OFF_THINKING_LEVEL = "off";
@@ -526,7 +526,8 @@ function getThinkingLevels(model) {
   if (!model.reasoning) {
     return [OFF_THINKING_LEVEL];
   }
-  return supportsXhigh(model) ? XHIGH_THINKING_LEVELS : STANDARD_THINKING_LEVELS;
+  const supportedLevels = new Set(getSupportedThinkingLevels(model));
+  return supportedLevels.has("xhigh") ? XHIGH_THINKING_LEVELS : STANDARD_THINKING_LEVELS;
 }
 
 function toCatalogModel(model) {
@@ -1087,6 +1088,13 @@ export class YinshiSidecar {
 
     return new Promise((resolve, reject) => {
       this.server.listen(this.socketPath, () => {
+        try {
+          fs.chmodSync(this.socketPath, 0o600);
+        } catch (error) {
+          this.server.close();
+          reject(error);
+          return;
+        }
         console.log(`SOCKET_PATH=${this.socketPath}`);
         this.healthCheckInterval = setInterval(() => {
           console.log(

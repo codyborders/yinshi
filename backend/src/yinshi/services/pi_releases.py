@@ -6,7 +6,6 @@ import asyncio
 import json
 import logging
 import time
-from pathlib import Path
 from typing import Any
 
 import httpx
@@ -28,6 +27,7 @@ _SIDECAR_VERSION_TIMEOUT_S = 5.0
 _GITHUB_API_BASE_URL = "https://api.github.com"
 _RUNTIME_VERSION_ERROR = "Failed to read sidecar pi package version"
 _DISCONNECT_ERROR = "sidecar disconnect failed after version request"
+_UPDATE_POLICY = "Updated through reviewed lockfile deployments"
 
 _release_cache_lock = asyncio.Lock()
 _release_cache_payload: dict[str, Any] | None = None
@@ -40,13 +40,6 @@ def _string_or_none(value: Any) -> str | None:
         normalized_value = value.strip()
         if normalized_value:
             return normalized_value
-    return None
-
-
-def _bool_or_none(value: Any) -> bool | None:
-    """Return a boolean value or ``None`` for absent metadata."""
-    if isinstance(value, bool):
-        return value
     return None
 
 
@@ -172,44 +165,6 @@ async def _get_cached_github_releases(
         return fetched_payload, None
 
 
-def _read_update_status(status_path: str) -> dict[str, Any] | None:
-    """Read the last updater status JSON written by the systemd timer."""
-    normalized_status_path = _string_or_none(status_path)
-    if normalized_status_path is None:
-        return None
-
-    path = Path(normalized_status_path).expanduser()
-    if not path.exists():
-        return None
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
-        logger.warning(
-            "Failed to read pi update status from %s",
-            path,
-            exc_info=True,
-        )
-        return {
-            "status": "error",
-            "message": f"Could not read update status: {error}",
-        }
-    if not isinstance(payload, dict):
-        return {
-            "status": "error",
-            "message": "Update status file did not contain a JSON object",
-        }
-
-    return {
-        "checked_at": _string_or_none(payload.get("checked_at")),
-        "status": _string_or_none(payload.get("status")),
-        "previous_version": _string_or_none(payload.get("previous_version")),
-        "current_version": _string_or_none(payload.get("current_version")),
-        "latest_version": _string_or_none(payload.get("latest_version")),
-        "updated": _bool_or_none(payload.get("updated")),
-        "message": _string_or_none(payload.get("message")),
-    }
-
-
 async def _read_runtime_version() -> tuple[PiRuntimeVersionPayload | None, str | None]:
     """Ask the live sidecar which pi package version it has loaded."""
     sidecar: SidecarClient | None = None
@@ -246,8 +201,6 @@ async def get_pi_release_notes() -> dict[str, Any]:
     release_payload, release_error = await _get_cached_github_releases(
         settings.pi_release_repository
     )
-    update_status = _read_update_status(settings.pi_update_status_path)
-
     installed_version = None
     node_version = None
     package_name = settings.pi_package_name
@@ -269,8 +222,7 @@ async def get_pi_release_notes() -> dict[str, Any]:
         "latest_version": release_payload.get("latest_version"),
         "node_version": node_version,
         "release_notes_url": release_notes_url,
-        "update_schedule": settings.pi_update_schedule,
-        "update_status": update_status,
+        "update_policy": _UPDATE_POLICY,
         "runtime_error": runtime_error,
         "release_error": release_error,
         "releases": release_payload.get("releases", []),

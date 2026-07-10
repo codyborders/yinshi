@@ -158,16 +158,6 @@ export interface PiConfigCommands {
   commands: PiCommand[];
 }
 
-export interface PiPackageUpdateStatus {
-  checked_at: string | null;
-  status: string | null;
-  previous_version: string | null;
-  current_version: string | null;
-  latest_version: string | null;
-  updated: boolean | null;
-  message: string | null;
-}
-
 export interface PiPackageRelease {
   tag_name: string;
   version: string;
@@ -183,8 +173,7 @@ export interface PiReleaseNotes {
   latest_version: string | null;
   node_version: string | null;
   release_notes_url: string;
-  update_schedule: string;
-  update_status: PiPackageUpdateStatus | null;
+  update_policy: string;
   runtime_error: string | null;
   release_error: string | null;
   releases: PiPackageRelease[];
