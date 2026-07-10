@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import errno
 import logging
+import os
 import sqlite3
-from typing import Any, cast
+import stat
+from collections.abc import Iterator
+from typing import Any, BinaryIO, cast
+from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from yinshi.api.deps import check_workspace_owner, get_db_for_request, get_tenant
@@ -19,8 +24,8 @@ from yinshi.services.workspace_files import (
     diff_file,
     ensure_secret_guardrails,
     file_tree_to_dicts,
+    _open_workspace_parent,
     read_text_file,
-    validate_visible_relative_path,
     write_text_file,
 )
 from yinshi.services.workspace_runtime_paths import prepare_tenant_workspace_runtime_paths
@@ -179,19 +184,55 @@ async def edit_workspace_file(
     return {"path": path, "status": "saved"}
 
 
+def _stream_open_file(file_handle: BinaryIO) -> Iterator[bytes]:
+    """Yield fixed-size chunks and close the pre-opened file on completion."""
+    if file_handle.closed:
+        raise ValueError("file_handle must be open")
+    try:
+        while True:
+            chunk = file_handle.read(64 * 1024)
+            if not chunk:
+                break
+            yield chunk
+    finally:
+        file_handle.close()
+
+
 @router.get("/api/workspaces/{workspace_id}/files/download")
 async def download_workspace_file(
     workspace_id: str,
     request: Request,
     path: str = Query(..., min_length=1, max_length=4096),
-) -> FileResponse:
-    """Download one visible workspace file."""
+) -> StreamingResponse:
+    """Download one visible workspace file through a stable descriptor."""
+    file_handle: BinaryIO | None = None
     try:
         with get_db_for_request(request) as db:
             workspace_path = await _prepare_workspace_files(db, workspace_id, request)
-        file_path = validate_visible_relative_path(workspace_path, path)
-        if not file_path.is_file():
+        file_flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC
+        with _open_workspace_parent(workspace_path, path) as (parent_fd, file_name):
+            try:
+                file_descriptor = os.open(file_name, file_flags, dir_fd=parent_fd)
+            except OSError as exc:
+                if exc.errno in {errno.ELOOP, errno.ENOTDIR}:
+                    raise PermissionError("path contains a symlink") from exc
+                raise
+        file_stat = os.fstat(file_descriptor)
+        if not stat.S_ISREG(file_stat.st_mode):
+            os.close(file_descriptor)
             raise FileNotFoundError("file does not exist")
+        file_handle = os.fdopen(file_descriptor, "rb", closefd=True)
     except Exception as exc:
+        if file_handle is not None:
+            file_handle.close()
         raise _http_file_error(exc, workspace_id) from exc
-    return FileResponse(file_path, filename=file_path.name)
+
+    encoded_name = quote(file_name, safe="")
+    return StreamingResponse(
+        _stream_open_file(file_handle),
+        media_type="application/octet-stream",
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_name}",
+            "Content-Length": str(file_stat.st_size),
+        },
+    )
