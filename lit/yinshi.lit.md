@@ -3,36 +3,6 @@ title: "Yinshi"
 author: "Generated from source"
 toc: true
 toc-depth: 3
-header-includes:
-  - |
-    <script>
-      (function(h,o,u,n,d){
-        h = h[d] = h[d] || { q: [], onReady: function(c) { h.q.push(c); } };
-        d = o.createElement(u);
-        d.async = 1;
-        d.src = n;
-        n = o.getElementsByTagName(u)[0];
-        n.parentNode.insertBefore(d, n);
-      })(window, document, 'script', 'https://www.datadoghq-browser-agent.com/us1/v6/datadog-rum.js', 'DD_RUM');
-    </script>
-  - |
-    <script>
-      window.DD_RUM.onReady(function () {
-        window.DD_RUM.init({
-          applicationId: "6ca07893-ea15-4577-88cb-ef72b856ad3e",
-          clientToken: "pubbe7e2760d9e429d5cda2d2eb49a408be",
-          site: "datadoghq.com",
-          service: "yinshi",
-          env: "prod",
-          sessionSampleRate: 100,
-          sessionReplaySampleRate: 100,
-          trackResources: true,
-          trackUserInteractions: true,
-          trackLongTasks: true,
-          defaultPrivacyLevel: "allow"
-        });
-      });
-    </script>
 ---
 
 # Introduction
@@ -120,8 +90,9 @@ from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.sessions import SessionMiddleware
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.responses import RedirectResponse
-from starlette.types import ASGIApp
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from yinshi.api import (
     auth_routes,
@@ -149,6 +120,76 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+class RequestBodyLimitMiddleware:
+    """Reject declared or streamed HTTP bodies above a process-wide limit."""
+
+    def __init__(self, app: ASGIApp, *, body_bytes_max: int) -> None:
+        if body_bytes_max <= 0:
+            raise ValueError("body_bytes_max must be positive")
+        self._app = app
+        self._body_bytes_max = body_bytes_max
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self._app(scope, receive, send)
+            return
+
+        headers = {key.lower(): value for key, value in scope.get("headers", [])}
+        content_length = headers.get(b"content-length")
+        if content_length is not None:
+            try:
+                declared_bytes = int(content_length)
+            except ValueError:
+                await Response(status_code=400)(scope, receive, send)
+                return
+            if declared_bytes > self._body_bytes_max:
+                await Response(status_code=413)(scope, receive, send)
+                return
+
+        received_bytes = 0
+
+        async def limited_receive() -> Message:
+            nonlocal received_bytes
+            message = await receive()
+            if message["type"] == "http.request":
+                received_bytes += len(message.get("body", b""))
+                if received_bytes > self._body_bytes_max:
+                    raise _RequestBodyTooLarge
+            return message
+
+        try:
+            await self._app(scope, limited_receive, send)
+        except _RequestBodyTooLarge:
+            await Response(status_code=413)(scope, receive, send)
+
+
+class _RequestBodyTooLarge(Exception):
+    """Signal an ASGI receive stream that crossed its configured body limit."""
+
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """Attach browser hardening headers to every HTTP response."""
+
+    async def dispatch(
+        self,
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
+        response = await call_next(request)
+        response.headers.setdefault(
+            "Content-Security-Policy",
+            "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+        )
+        response.headers.setdefault("Referrer-Policy", "no-referrer")
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault(
+            "Permissions-Policy",
+            "camera=(), geolocation=(), microphone=()",
+        )
+        return response
+
+
 class TransportSecurityMiddleware(BaseHTTPMiddleware):
     """Enforce HTTPS and HSTS when production transport hardening is enabled."""
 
@@ -158,6 +199,7 @@ class TransportSecurityMiddleware(BaseHTTPMiddleware):
         *,
         require_https: bool,
         hsts_enabled: bool,
+        trusted_proxy_ips: set[str] | None = None,
     ) -> None:
         """Configure transport security behavior from validated settings."""
         super().__init__(app)
@@ -165,8 +207,11 @@ class TransportSecurityMiddleware(BaseHTTPMiddleware):
             raise TypeError("require_https must be a boolean")
         if not isinstance(hsts_enabled, bool):
             raise TypeError("hsts_enabled must be a boolean")
+        if trusted_proxy_ips is not None and not isinstance(trusted_proxy_ips, set):
+            raise TypeError("trusted_proxy_ips must be a set or None")
         self._require_https = require_https
         self._hsts_enabled = hsts_enabled
+        self._trusted_proxy_ips = trusted_proxy_ips or set()
 
     async def dispatch(
         self,
@@ -174,8 +219,11 @@ class TransportSecurityMiddleware(BaseHTTPMiddleware):
         call_next: Callable[[Request], Awaitable[Response]],
     ) -> Response:
         """Redirect plaintext requests and attach HSTS to HTTPS responses."""
-        forwarded_proto = request.headers.get("x-forwarded-proto", request.url.scheme)
-        request_scheme = forwarded_proto.split(",", maxsplit=1)[0].strip().lower()
+        request_scheme = request.url.scheme.lower()
+        client_host = request.client.host.lower() if request.client is not None else ""
+        forwarded_proto = request.headers.get("x-forwarded-proto")
+        if forwarded_proto and client_host in self._trusted_proxy_ips:
+            request_scheme = forwarded_proto.split(",", maxsplit=1)[0].strip().lower()
         if self._require_https:
             if request_scheme != "https":
                 https_url = request.url.replace(scheme="https")
@@ -256,6 +304,16 @@ app.add_middleware(
     TransportSecurityMiddleware,
     require_https=_https_required,
     hsts_enabled=app_settings.hsts_enabled and not app_settings.debug,
+    trusted_proxy_ips=app_settings.trusted_proxy_ip_set,
+)
+app.add_middleware(
+    RequestBodyLimitMiddleware,
+    body_bytes_max=app_settings.request_body_max_bytes,
+)
+app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(
+    TrustedHostMiddleware,
+    allowed_hosts=app_settings.trusted_host_list,
 )
 app.add_middleware(
     CORSMiddleware,
@@ -301,9 +359,12 @@ Settings normalize environment variables into one explicit configuration object 
 
 from __future__ import annotations
 
+import json
 import secrets
 from functools import lru_cache
+from urllib.parse import urlsplit
 
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings
 
 _SECURITY_MODE_VALUES = {"auto", "disabled", "enabled", "required"}
@@ -358,6 +419,7 @@ class Settings(BaseSettings):
     encryption_pepper: str = ""
     key_encryption_key: str = ""
     key_encryption_key_id: str = "local-v1"
+    key_encryption_keys_previous: SecretStr | None = None
 
     # Middle-ground data protection controls. "auto" enables the control in
     # authenticated non-debug deployments while keeping local tests explicit.
@@ -377,6 +439,9 @@ class Settings(BaseSettings):
     github_app_id: str = ""
     github_app_private_key_path: str = ""
     github_app_slug: str = ""
+    github_app_client_id: str = ""
+    github_app_client_secret: SecretStr | None = None
+    github_app_user_callback_url: str = ""
 
     # Session secret for cookies -- generated randomly if not set
     secret_key: str = ""
@@ -388,22 +453,26 @@ class Settings(BaseSettings):
     sidecar_socket_path: str = "/tmp/yinshi-sidecar.sock"
 
     # Pi package update and release-note metadata
-    pi_package_name: str = "@mariozechner/pi-coding-agent"
-    pi_release_repository: str = "badlogic/pi-mono"
-    pi_update_status_path: str = "/opt/yinshi/.runtime/pi-package-update.json"
-    pi_update_schedule: str = "Daily around 04:17 UTC with up to 1 hour randomized delay"
+    pi_package_name: str = "@earendil-works/pi-coding-agent"
+    pi_release_repository: str = "earendil-works/pi"
+    # Encrypted database backups
+    backup_dir: str = "/var/lib/yinshi/backups"
+    backup_encryption_key: SecretStr | None = None
 
     # CORS
     frontend_url: str = "http://localhost:5173"
 
     # Server
-    host: str = "0.0.0.0"
+    host: str = "127.0.0.1"
     port: int = 8000
 
     # Production transport controls. "auto" requires HTTPS in authenticated
     # non-debug deployments and trusts the edge proxy to provide TLS.
     require_https: str = "auto"
     hsts_enabled: bool = True
+    trusted_proxy_ips: str = "127.0.0.1,::1"
+    trusted_hosts: str = "localhost,127.0.0.1,[::1]"
+    request_body_max_bytes: int = 10 * 1024 * 1024
 
     # Allowed base directory for local repo imports (empty = reject all local imports)
     allowed_repo_base: str = ""
@@ -423,7 +492,14 @@ class Settings(BaseSettings):
     terminal_keepalive_s: int = 7200
     terminal_scrollback_lines: int = 1000
 
-    model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "case_sensitive": False}
+    model_config = {
+        "env_file": ".env",
+        "env_file_encoding": "utf-8",
+        "case_sensitive": False,
+        # The shared dotenv also contains sidecar provider credentials. Ignoring
+        # unknown names prevents Pydantic from echoing their values on startup.
+        "extra": "ignore",
+    }
 
     @property
     def encryption_pepper_bytes(self) -> bytes:
@@ -434,6 +510,32 @@ class Settings(BaseSettings):
     def key_encryption_key_bytes(self) -> bytes:
         """Return the current server-managed KEK bytes."""
         return _decode_hex_secret(self.key_encryption_key, "KEY_ENCRYPTION_KEY")
+
+    @property
+    def key_encryption_keyring_previous(self) -> dict[str, bytes]:
+        """Return explicitly configured previous KEKs keyed by their stable IDs."""
+        if self.key_encryption_keys_previous is None:
+            return {}
+        raw_keyring = self.key_encryption_keys_previous.get_secret_value().strip()
+        if not raw_keyring:
+            return {}
+        try:
+            payload = json.loads(raw_keyring)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("KEY_ENCRYPTION_KEYS_PREVIOUS must be a JSON object") from exc
+        if not isinstance(payload, dict):
+            raise RuntimeError("KEY_ENCRYPTION_KEYS_PREVIOUS must be a JSON object")
+        keyring: dict[str, bytes] = {}
+        for raw_key_id, raw_key in payload.items():
+            if not isinstance(raw_key_id, str) or not raw_key_id.strip():
+                raise RuntimeError("Previous key IDs must be non-empty strings")
+            if not isinstance(raw_key, str):
+                raise RuntimeError("Previous KEK values must be hexadecimal strings")
+            key_id = raw_key_id.strip()
+            if key_id == self.key_encryption_key_id.strip():
+                raise RuntimeError("Previous KEK IDs must differ from KEY_ENCRYPTION_KEY_ID")
+            keyring[key_id] = _decode_hex_secret(raw_key, "previous KEK")
+        return keyring
 
     @property
     def active_key_encryption_key_bytes(self) -> bytes:
@@ -463,16 +565,32 @@ class Settings(BaseSettings):
         """Return the normalized HTTPS enforcement mode."""
         return _normalize_mode(self.require_https, "REQUIRE_HTTPS")
 
+    @property
+    def trusted_host_list(self) -> list[str]:
+        """Return explicit hosts plus the configured frontend hostname."""
+        configured_hosts = [
+            host.strip().lower() for host in self.trusted_hosts.split(",") if host.strip()
+        ]
+        frontend_host = urlsplit(self.frontend_url).hostname
+        if frontend_host:
+            configured_hosts.append(frontend_host.lower())
+        return list(dict.fromkeys(configured_hosts))
+
+    @property
+    def trusted_proxy_ip_set(self) -> set[str]:
+        """Return normalized proxy addresses trusted to set forwarding headers."""
+        return {
+            address.strip().lower()
+            for address in self.trusted_proxy_ips.split(",")
+            if address.strip()
+        }
+
 
 def auth_is_enabled(settings: Settings) -> bool:
-    """Return whether authentication is configured to run."""
-    if settings.disable_auth:
-        return False
-    if settings.google_client_id:
-        return True
-    if settings.github_client_id:
-        return True
-    return False
+    """Return whether the operator explicitly enabled authentication."""
+    if not isinstance(settings, Settings):
+        raise TypeError("settings must be a Settings instance")
+    return not settings.disable_auth
 
 
 def _auth_is_enabled(settings: Settings) -> bool:
@@ -525,13 +643,33 @@ def https_required(settings: Settings) -> bool:
 
 def _validate_settings(settings: Settings) -> None:
     """Reject invalid security-critical configuration."""
-    if auth_is_enabled(settings) and not settings.secret_key:
+    authentication_enabled = auth_is_enabled(settings)
+    if not authentication_enabled:
+        normalized_host = settings.host.strip().lower()
+        if normalized_host not in {"127.0.0.1", "::1", "localhost"}:
+            raise RuntimeError("No-auth mode must bind to a loopback host")
+        if settings.container_enabled:
+            raise RuntimeError("No-auth mode requires CONTAINER_ENABLED=false")
+    if authentication_enabled:
+        google_configured = bool(settings.google_client_id and settings.google_client_secret)
+        github_configured = bool(settings.github_client_id and settings.github_client_secret)
+        if not google_configured and not github_configured:
+            raise RuntimeError(
+                "At least one complete OAuth provider configuration is required when "
+                "authentication is enabled"
+            )
+    if authentication_enabled and not settings.secret_key:
         raise RuntimeError("SECRET_KEY must be set when authentication is enabled")
+    if authentication_enabled and len(settings.secret_key.encode("utf-8")) < 32:
+        raise RuntimeError("SECRET_KEY must contain at least 32 bytes")
+    if authentication_enabled and len(set(settings.secret_key)) < 8:
+        raise RuntimeError("SECRET_KEY must contain at least 8 distinct characters")
 
     settings.encryption_pepper_bytes
     settings.key_encryption_key_bytes
+    settings.key_encryption_keyring_previous
 
-    if auth_is_enabled(settings):
+    if authentication_enabled:
         if not settings.debug:
             if not settings.active_key_encryption_key_bytes:
                 raise RuntimeError(
@@ -555,6 +693,13 @@ def _validate_settings(settings: Settings) -> None:
         raise RuntimeError("TERMINAL_KEEPALIVE_S must be at least 300 seconds")
     if settings.terminal_scrollback_lines < 100:
         raise RuntimeError("TERMINAL_SCROLLBACK_LINES must be at least 100")
+    if settings.request_body_max_bytes < 1024:
+        raise RuntimeError("REQUEST_BODY_MAX_BYTES must be at least 1024")
+    if not settings.trusted_host_list:
+        raise RuntimeError("TRUSTED_HOSTS must configure at least one host")
+    if "*" in settings.trusted_host_list:
+        raise RuntimeError("TRUSTED_HOSTS must not trust every host")
+    settings.trusted_proxy_ip_set
 
 
 @lru_cache()
@@ -705,6 +850,7 @@ class SessionOut(BaseModel):
     workspace_id: str
     status: str = "idle"
     model: str = DEFAULT_SESSION_MODEL
+    pi_context_version: int = 0
 
 
 class MessageOut(BaseModel):
@@ -1140,18 +1286,6 @@ class PiConfigCommandsOut(BaseModel):
     commands: list[PiCommand] = Field(default_factory=list)
 
 
-class PiPackageUpdateStatusOut(BaseModel):
-    """Last recorded result from the daily pi package updater."""
-
-    checked_at: str | None = None
-    status: str | None = None
-    previous_version: str | None = None
-    current_version: str | None = None
-    latest_version: str | None = None
-    updated: bool | None = None
-    message: str | None = None
-
-
 class PiPackageReleaseOut(BaseModel):
     """One upstream pi release note entry."""
 
@@ -1171,8 +1305,7 @@ class PiReleaseNotesOut(BaseModel):
     latest_version: str | None = None
     node_version: str | None = None
     release_notes_url: str
-    update_schedule: str
-    update_status: PiPackageUpdateStatusOut | None = None
+    update_policy: str
     runtime_error: str | None = None
     release_error: str | None = None
     releases: list[PiPackageReleaseOut] = Field(default_factory=list)
@@ -1235,7 +1368,7 @@ def _titleize_provider(provider_id: str) -> str:
     return " ".join(piece.upper() if len(piece) <= 3 else piece.capitalize() for piece in pieces)
 
 
-_COMMON_DOCS_URL = "https://www.npmjs.com/package/@mariozechner/pi-ai"
+_COMMON_DOCS_URL = "https://www.npmjs.com/package/@earendil-works/pi-ai"
 
 PROVIDER_METADATA_BY_ID: dict[str, ProviderMetadata] = {
     "anthropic": ProviderMetadata(
@@ -1658,7 +1791,7 @@ from yinshi.model_catalog import DEFAULT_SESSION_MODEL
 
 logger = logging.getLogger(__name__)
 
-_SCHEMA_VERSION = 4
+_SCHEMA_VERSION = 5
 
 SCHEMA_SQL = f"""
 PRAGMA journal_mode = WAL;
@@ -1693,7 +1826,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
     workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
     status TEXT DEFAULT 'idle' NOT NULL,
-    model TEXT DEFAULT '{DEFAULT_SESSION_MODEL}'
+    model TEXT DEFAULT '{DEFAULT_SESSION_MODEL}',
+    pi_context_version INTEGER DEFAULT 1 NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -1772,6 +1906,14 @@ def _migrate(conn: sqlite3.Connection) -> None:
         if "agents_md" not in columns:
             logger.info("Migration v4: adding agents_md column to repos")
             conn.execute("ALTER TABLE repos ADD COLUMN agents_md TEXT")
+
+    if current < 5:
+        columns = [r[1] for r in conn.execute("PRAGMA table_info(sessions)").fetchall()]
+        if "pi_context_version" not in columns:
+            logger.info("Migration v5: adding pi_context_version column to sessions")
+            conn.execute(
+                "ALTER TABLE sessions ADD COLUMN pi_context_version INTEGER DEFAULT 0 NOT NULL"
+            )
 
     if current != _SCHEMA_VERSION:
         conn.execute("DELETE FROM schema_version")
@@ -1895,6 +2037,17 @@ CREATE TABLE IF NOT EXISTS github_installations (
 );
 
 CREATE INDEX IF NOT EXISTS idx_github_installations_user ON github_installations(user_id);
+
+CREATE TABLE IF NOT EXISTS github_install_flows (
+    state_digest TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    installation_id INTEGER,
+    expires_at INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_github_install_flows_user ON github_install_flows(user_id);
+CREATE INDEX IF NOT EXISTS idx_github_install_flows_expiry ON github_install_flows(expires_at);
 
 CREATE TABLE IF NOT EXISTS pi_configs (
     id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
@@ -2250,7 +2403,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
     workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
     status TEXT DEFAULT 'idle' NOT NULL,
-    model TEXT DEFAULT '{DEFAULT_SESSION_MODEL}'
+    model TEXT DEFAULT '{DEFAULT_SESSION_MODEL}',
+    pi_context_version INTEGER DEFAULT 1 NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -2294,6 +2448,12 @@ def _migrate_user_db(conn: sqlite3.Connection) -> None:
     repo_columns = [row[1] for row in conn.execute("PRAGMA table_info(repos)").fetchall()]
     if "agents_md" not in repo_columns:
         conn.execute("ALTER TABLE repos ADD COLUMN agents_md TEXT")
+
+    session_columns = [row[1] for row in conn.execute("PRAGMA table_info(sessions)").fetchall()]
+    if "pi_context_version" not in session_columns:
+        conn.execute(
+            "ALTER TABLE sessions ADD COLUMN pi_context_version INTEGER DEFAULT 0 NOT NULL"
+        )
 
     conn.commit()
 
@@ -2420,8 +2580,24 @@ def _copy_plaintext_user_database(source_path: str, target_path: str, sqlcipher_
         target.close()
 
 
+def _validate_encrypted_user_database(db_path: str, sqlcipher_key: bytes) -> None:
+    """Require an encrypted database to open and pass SQLCipher integrity checks."""
+    if not db_path:
+        raise ValueError("db_path must not be empty")
+    if len(sqlcipher_key) != 32:
+        raise ValueError("sqlcipher_key must contain 32 bytes")
+    connection = _open_sqlcipher_connection(db_path, sqlcipher_key)
+    try:
+        integrity_row = connection.execute("PRAGMA integrity_check").fetchone()
+        if integrity_row is None or str(integrity_row[0]).lower() != "ok":
+            raise RuntimeError("Encrypted tenant database failed integrity validation")
+        connection.execute("SELECT count(*) FROM sqlite_master").fetchone()
+    finally:
+        connection.close()
+
+
 def _migrate_plaintext_user_database(db_path: str, sqlcipher_key: bytes) -> None:
-    """Replace a plaintext tenant DB with a SQLCipher-encrypted copy."""
+    """Replace a plaintext tenant DB without retaining the original copy."""
     if not _plaintext_database_readable(db_path):
         return
     backup_path = f"{db_path}.plaintext.{int(time.time())}.bak"
@@ -2430,14 +2606,35 @@ def _migrate_plaintext_user_database(db_path: str, sqlcipher_key: bytes) -> None
         if os.path.exists(stale_path):
             os.unlink(stale_path)
     _copy_plaintext_user_database(db_path, temp_path, sqlcipher_key)
+    _validate_encrypted_user_database(temp_path, sqlcipher_key)
     os.replace(db_path, backup_path)
-    os.replace(temp_path, db_path)
+    try:
+        os.replace(temp_path, db_path)
+        _validate_encrypted_user_database(db_path, sqlcipher_key)
+        os.chmod(db_path, 0o600)
+    except Exception:
+        if os.path.exists(db_path):
+            os.unlink(db_path)
+        os.replace(backup_path, db_path)
+        raise
+    else:
+        os.unlink(backup_path)
     for suffix in ("-wal", "-shm"):
         stale_path = f"{db_path}{suffix}"
         if os.path.exists(stale_path):
             os.unlink(stale_path)
-    os.chmod(db_path, 0o600)
     logger.info("Migrated plaintext tenant database to encrypted storage at %s", db_path)
+
+
+def _remove_plaintext_migration_backups(db_path: str) -> None:
+    """Remove legacy plaintext backups after the encrypted primary is validated."""
+    if not db_path:
+        raise ValueError("db_path must not be empty")
+    database_path = Path(db_path)
+    pattern = f"{database_path.name}.plaintext.*.bak"
+    for backup_path in database_path.parent.glob(pattern):
+        backup_path.unlink()
+        logger.info("Removed legacy plaintext tenant database backup %s", backup_path)
 
 
 def _encrypted_storage_marker_exists(data_dir: str) -> bool:
@@ -2489,7 +2686,9 @@ def _open_user_connection(
 
     if os.path.exists(db_path):
         _migrate_plaintext_user_database(db_path, sqlcipher_key)
-    return _open_sqlcipher_connection(db_path, sqlcipher_key)
+    connection = _open_sqlcipher_connection(db_path, sqlcipher_key)
+    _remove_plaintext_migration_backups(db_path)
+    return connection
 
 
 def init_user_db(db_path: str, tenant: TenantContext | None = None) -> None:
@@ -2518,6 +2717,279 @@ def get_user_db(tenant: TenantContext) -> Iterator[sqlite3.Connection]:
 
 Every protected request needs the same three answers: who is calling, which tenant owns the data, and whether the requested object belongs to that tenant. Middleware and dependencies answer those questions once so route handlers can stay direct.
 
+## backup.py
+
+Backup tooling snapshots every SQLite database through its live connection, verifies each copy, packages only validated files, and encrypts the resulting archive before it leaves private staging storage.
+
+```python {chunk="backend-src-yinshi-backup-py" file="backend/src/yinshi/backup.py"}
+"""Encrypted, SQLCipher-aware backup creation and archive decryption."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shutil
+import sqlite3
+import tarfile
+import tempfile
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import BinaryIO
+
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.primitives.ciphers.base import CipherContext
+
+from yinshi.config import get_settings, tenant_db_encryption_enabled
+from yinshi.db import get_control_db
+from yinshi.services.accounts import make_tenant
+from yinshi.tenant import (
+    TenantContext,
+    _open_sqlcipher_connection,
+    _tenant_database_key,
+    get_user_db,
+)
+
+_ARCHIVE_MAGIC = b"YINSHI-BACKUP-V1\n"
+_BACKUP_CHUNK_BYTES = 1024 * 1024
+_GCM_NONCE_BYTES = 12
+_GCM_TAG_BYTES = 16
+
+
+def _backup_key_from_settings() -> bytes:
+    """Decode the separately managed 256-bit backup key."""
+    settings = get_settings()
+    if settings.backup_encryption_key is None:
+        raise RuntimeError("BACKUP_ENCRYPTION_KEY must be configured for backups")
+    encoded_key = settings.backup_encryption_key.get_secret_value().strip()
+    try:
+        key = bytes.fromhex(encoded_key)
+    except ValueError as exc:
+        raise RuntimeError("BACKUP_ENCRYPTION_KEY must be 64 hexadecimal characters") from exc
+    if len(key) != 32:
+        raise RuntimeError("BACKUP_ENCRYPTION_KEY must decode to exactly 32 bytes")
+    return key
+
+
+def _write_encrypted_chunks(
+    source: BinaryIO,
+    target: BinaryIO,
+    encryptor: CipherContext,
+) -> None:
+    """Encrypt a source stream into a target stream with bounded memory."""
+    if source.closed or target.closed:
+        raise ValueError("source and target must be open")
+    while True:
+        chunk = source.read(_BACKUP_CHUNK_BYTES)
+        if not chunk:
+            break
+        target.write(encryptor.update(chunk))
+    target.write(encryptor.finalize())
+
+
+def _encrypt_archive(source_path: Path, target_path: Path, key: bytes) -> None:
+    """Encrypt one tar archive with AES-256-GCM and an authenticated header."""
+    if len(key) != 32:
+        raise ValueError("key must contain exactly 32 bytes")
+    if not source_path.is_file():
+        raise FileNotFoundError(source_path)
+    if target_path.exists():
+        raise FileExistsError(target_path)
+
+    nonce = os.urandom(_GCM_NONCE_BYTES)
+    encryptor = Cipher(algorithms.AES(key), modes.GCM(nonce)).encryptor()
+    encryptor.authenticate_additional_data(_ARCHIVE_MAGIC)
+    file_descriptor = os.open(target_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with (
+            source_path.open("rb") as source,
+            os.fdopen(file_descriptor, "wb", closefd=False) as target,
+        ):
+            target.write(_ARCHIVE_MAGIC)
+            target.write(nonce)
+            _write_encrypted_chunks(source, target, encryptor)
+            target.write(encryptor.tag)
+            target.flush()
+            os.fsync(target.fileno())
+    except Exception:
+        target_path.unlink(missing_ok=True)
+        raise
+    finally:
+        os.close(file_descriptor)
+    os.chmod(target_path, 0o600)
+
+
+def decrypt_backup_archive(source_path: Path, target_path: Path, key: bytes) -> None:
+    """Decrypt and authenticate one backup into a tar archive."""
+    if len(key) != 32:
+        raise ValueError("key must contain exactly 32 bytes")
+    if not source_path.is_file():
+        raise FileNotFoundError(source_path)
+    if target_path.exists():
+        raise FileExistsError(target_path)
+
+    source_size = source_path.stat().st_size
+    minimum_size = len(_ARCHIVE_MAGIC) + _GCM_NONCE_BYTES + _GCM_TAG_BYTES
+    if source_size <= minimum_size:
+        raise ValueError("encrypted backup is truncated")
+
+    with source_path.open("rb") as source:
+        magic = source.read(len(_ARCHIVE_MAGIC))
+        if magic != _ARCHIVE_MAGIC:
+            raise ValueError("encrypted backup header is invalid")
+        nonce = source.read(_GCM_NONCE_BYTES)
+        source.seek(-_GCM_TAG_BYTES, os.SEEK_END)
+        tag = source.read(_GCM_TAG_BYTES)
+        ciphertext_bytes = source_size - minimum_size
+        source.seek(len(_ARCHIVE_MAGIC) + _GCM_NONCE_BYTES)
+
+        decryptor = Cipher(algorithms.AES(key), modes.GCM(nonce, tag)).decryptor()
+        decryptor.authenticate_additional_data(_ARCHIVE_MAGIC)
+        file_descriptor = os.open(target_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            with os.fdopen(file_descriptor, "wb", closefd=False) as target:
+                remaining = ciphertext_bytes
+                while remaining > 0:
+                    chunk = source.read(min(_BACKUP_CHUNK_BYTES, remaining))
+                    if not chunk:
+                        raise ValueError("encrypted backup is truncated")
+                    remaining -= len(chunk)
+                    target.write(decryptor.update(chunk))
+                target.write(decryptor.finalize())
+                target.flush()
+                os.fsync(target.fileno())
+        except Exception:
+            target_path.unlink(missing_ok=True)
+            raise
+        finally:
+            os.close(file_descriptor)
+    os.chmod(target_path, 0o600)
+
+
+def _backup_sqlite_connection(source: sqlite3.Connection, target_path: Path) -> None:
+    """Write and validate one plaintext SQLite snapshot."""
+    if target_path.exists():
+        raise FileExistsError(target_path)
+    target_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    target = sqlite3.connect(target_path)
+    try:
+        source.backup(target)
+        target.commit()
+        integrity_row = target.execute("PRAGMA integrity_check").fetchone()
+        if integrity_row is None or str(integrity_row[0]).lower() != "ok":
+            raise RuntimeError("SQLite backup failed integrity validation")
+    finally:
+        target.close()
+    os.chmod(target_path, 0o600)
+
+
+def _backup_tenant_database(tenant: TenantContext, target_path: Path) -> None:
+    """Snapshot one tenant database under its configured encryption policy."""
+    settings = get_settings()
+    target_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with get_user_db(tenant) as source:
+        if tenant_db_encryption_enabled(settings):
+            key = _tenant_database_key(tenant)
+            target = _open_sqlcipher_connection(str(target_path), key)
+            try:
+                source.backup(target)
+                target.commit()
+                integrity_row = target.execute("PRAGMA integrity_check").fetchone()
+                if integrity_row is None or str(integrity_row[0]).lower() != "ok":
+                    raise RuntimeError("Encrypted tenant backup failed integrity validation")
+            finally:
+                target.close()
+            os.chmod(target_path, 0o600)
+        else:
+            _backup_sqlite_connection(source, target_path)
+
+
+def _purge_stale_staging(backup_directory: Path) -> None:
+    """Remove abandoned private staging directories from interrupted backups."""
+    for candidate in backup_directory.glob(".staging-*"):
+        if candidate.is_symlink():
+            candidate.unlink()
+        elif candidate.is_dir():
+            shutil.rmtree(candidate)
+    for candidate in backup_directory.glob(".archive-*.tar.gz"):
+        if candidate.is_file() and not candidate.is_symlink():
+            candidate.unlink()
+
+
+def create_backup() -> Path:
+    """Create an encrypted control and tenant database backup archive."""
+    settings = get_settings()
+    backup_key = _backup_key_from_settings()
+    backup_directory = Path(settings.backup_dir).resolve()
+    backup_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(backup_directory, 0o700)
+    _purge_stale_staging(backup_directory)
+
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+    archive_path = backup_directory / f"yinshi-{timestamp}.tar.gz.enc"
+    temporary_tar = backup_directory / f".archive-{timestamp}.tar.gz"
+    previous_umask = os.umask(0o077)
+    try:
+        with tempfile.TemporaryDirectory(prefix=".staging-", dir=backup_directory) as staging_name:
+            staging_directory = Path(staging_name)
+            os.chmod(staging_directory, 0o700)
+            with get_control_db() as control_database:
+                user_rows = control_database.execute(
+                    "SELECT id, email FROM users ORDER BY id"
+                ).fetchall()
+                _backup_sqlite_connection(
+                    control_database,
+                    staging_directory / "control.db",
+                )
+
+            tenant_count = 0
+            for user_row in user_rows:
+                tenant = make_tenant(str(user_row["id"]), str(user_row["email"]))
+                if not Path(tenant.db_path).is_file():
+                    continue
+                target_path = (
+                    staging_directory / "users" / tenant.user_id[:2] / tenant.user_id / "yinshi.db"
+                )
+                _backup_tenant_database(tenant, target_path)
+                tenant_count += 1
+
+            manifest = {
+                "created_at": datetime.now(UTC).isoformat(),
+                "format": "yinshi-backup-v1",
+                "tenant_database_count": tenant_count,
+            }
+            manifest_path = staging_directory / "manifest.json"
+            manifest_path.write_text(
+                json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            os.chmod(manifest_path, 0o600)
+
+            with tarfile.open(temporary_tar, mode="w:gz") as archive:
+                for child in sorted(staging_directory.iterdir(), key=lambda path: path.name):
+                    archive.add(child, arcname=child.name, recursive=True)
+            os.chmod(temporary_tar, 0o600)
+            _encrypt_archive(temporary_tar, archive_path, backup_key)
+    finally:
+        temporary_tar.unlink(missing_ok=True)
+        os.umask(previous_umask)
+
+    return archive_path
+
+
+def _main() -> int:
+    """Run the backup command-line interface."""
+    parser = argparse.ArgumentParser(description="Create an encrypted Yinshi database backup")
+    parser.parse_args()
+    archive_path = create_backup()
+    print(archive_path)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(_main())
+```
+
 ## auth.py
 
 Authentication middleware verifies signed session cookies, resolves tenant context, and attaches identity to each request. The root chunk below tangles back to `backend/src/yinshi/auth.py`.
@@ -2538,6 +3010,10 @@ from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoin
 from yinshi.config import get_settings
 from yinshi.db import get_control_db
 from yinshi.services.accounts import make_tenant
+from yinshi.services.live_auth_sessions import (
+    signal_auth_session_revoked,
+    signal_user_sessions_revoked,
+)
 from yinshi.tenant import TenantContext
 
 logger = logging.getLogger(__name__)
@@ -2671,6 +3147,8 @@ def get_session_identity(token: str) -> tuple[str, str] | None:
         return None
     if session_row["revoked_at"] is not None:
         return None
+    if session_row["user_status"] != "active":
+        return None
     return normalized_user_id, normalized_auth_session_id
 
 
@@ -2680,7 +3158,9 @@ def _load_auth_session_row(user_id: str, auth_session_id: str) -> sqlite3.Row | 
     normalized_auth_session_id = _normalize_auth_session_id(auth_session_id)
     with get_control_db() as db:
         row = db.execute(
-            "SELECT id, revoked_at FROM auth_sessions WHERE id = ? AND user_id = ?",
+            "SELECT a.id, a.revoked_at, u.status AS user_status "
+            "FROM auth_sessions a JOIN users u ON u.id = a.user_id "
+            "WHERE a.id = ? AND a.user_id = ?",
             (normalized_auth_session_id, normalized_user_id),
         ).fetchone()
     return cast(sqlite3.Row | None, row)
@@ -2700,6 +3180,7 @@ def revoke_auth_session(user_id: str, auth_session_id: str) -> None:
             (normalized_auth_session_id, normalized_user_id),
         )
         db.commit()
+    signal_auth_session_revoked(normalized_auth_session_id)
 
 
 def revoke_auth_sessions(user_id: str) -> None:
@@ -2715,6 +3196,7 @@ def revoke_auth_sessions(user_id: str) -> None:
             (normalized_user_id,),
         )
         db.commit()
+    signal_user_sessions_revoked(normalized_user_id)
 
 
 def create_session_token(user_id: str) -> str:
@@ -2746,11 +3228,9 @@ def resolve_tenant_from_session_token(token: str) -> TenantContext | None:
 
 
 def auth_disabled() -> bool:
-    """Check if authentication is disabled."""
+    """Return whether authentication was explicitly disabled."""
     settings = get_settings()
-    return settings.disable_auth or (
-        not settings.google_client_id and not settings.github_client_id
-    )
+    return settings.disable_auth
 
 
 def _resolve_tenant_from_user_id(user_id: str) -> TenantContext | None:
@@ -2813,6 +3293,117 @@ class AuthMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 ```
 
+## live_auth_sessions.py
+
+Long-lived SSE and terminal connections register one local revocation signal. Durable database checks remain authoritative across processes, while the in-process registry lets logout wake connections immediately within the serving process.
+
+```python {chunk="backend-src-yinshi-services-live-auth-sessions-py" file="backend/src/yinshi/services/live_auth_sessions.py"}
+"""In-process revocation signals for long-lived authenticated connections."""
+
+from __future__ import annotations
+
+import asyncio
+import threading
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True, slots=True)
+class LiveAuthSessionRegistration:
+    """One event-loop-bound connection waiting for auth-session revocation."""
+
+    user_id: str
+    auth_session_id: str
+    event: asyncio.Event
+    loop: asyncio.AbstractEventLoop
+
+    def close(self) -> None:
+        """Remove this registration after its connection closes."""
+        _remove_registration(self)
+
+
+_registry_lock = threading.Lock()
+_registrations_by_session: dict[str, dict[int, LiveAuthSessionRegistration]] = {}
+_registrations_by_user: dict[str, dict[int, LiveAuthSessionRegistration]] = {}
+
+
+def _normalize_identifier(value: str, name: str) -> str:
+    """Return one non-empty registry identifier."""
+    if not isinstance(value, str):
+        raise TypeError(f"{name} must be a string")
+    normalized_value = value.strip()
+    if not normalized_value:
+        raise ValueError(f"{name} must not be empty")
+    return normalized_value
+
+
+def register_live_auth_session(
+    user_id: str,
+    auth_session_id: str,
+) -> LiveAuthSessionRegistration:
+    """Register one long-lived connection on the current event loop."""
+    normalized_user_id = _normalize_identifier(user_id, "user_id")
+    normalized_auth_session_id = _normalize_identifier(auth_session_id, "auth_session_id")
+    loop = asyncio.get_running_loop()
+    registration = LiveAuthSessionRegistration(
+        user_id=normalized_user_id,
+        auth_session_id=normalized_auth_session_id,
+        event=asyncio.Event(),
+        loop=loop,
+    )
+    registration_key = id(registration)
+    with _registry_lock:
+        _registrations_by_session.setdefault(normalized_auth_session_id, {})[
+            registration_key
+        ] = registration
+        _registrations_by_user.setdefault(normalized_user_id, {})[registration_key] = registration
+    return registration
+
+
+def _remove_registration(registration: LiveAuthSessionRegistration) -> None:
+    """Remove one registration from both indexes without assuming it exists."""
+    if not isinstance(registration, LiveAuthSessionRegistration):
+        raise TypeError("registration must be a LiveAuthSessionRegistration")
+    registration_key = id(registration)
+    with _registry_lock:
+        session_registrations = _registrations_by_session.get(registration.auth_session_id)
+        if session_registrations is not None:
+            session_registrations.pop(registration_key, None)
+            if not session_registrations:
+                _registrations_by_session.pop(registration.auth_session_id, None)
+        user_registrations = _registrations_by_user.get(registration.user_id)
+        if user_registrations is not None:
+            user_registrations.pop(registration_key, None)
+            if not user_registrations:
+                _registrations_by_user.pop(registration.user_id, None)
+
+
+def _signal_registrations(registrations: tuple[LiveAuthSessionRegistration, ...]) -> None:
+    """Signal registrations safely from event-loop or worker threads."""
+    for registration in registrations:
+        try:
+            registration.loop.call_soon_threadsafe(registration.event.set)
+        except RuntimeError:
+            _remove_registration(registration)
+
+
+def signal_auth_session_revoked(auth_session_id: str) -> None:
+    """Wake every local connection created by one auth session."""
+    normalized_auth_session_id = _normalize_identifier(auth_session_id, "auth_session_id")
+    with _registry_lock:
+        registrations = tuple(
+            _registrations_by_session.get(normalized_auth_session_id, {}).values()
+        )
+    _signal_registrations(registrations)
+
+
+def signal_user_sessions_revoked(user_id: str) -> None:
+    """Wake every local connection owned by one user."""
+    normalized_user_id = _normalize_identifier(user_id, "user_id")
+    with _registry_lock:
+        registrations = tuple(_registrations_by_user.get(normalized_user_id, {}).values())
+    _signal_registrations(registrations)
+```
+
 ## api/auth_routes.py
 
 Auth routes handle Google login, GitHub login, GitHub App installation state, logout, and provider-auth handoffs. The root chunk below tangles back to `backend/src/yinshi/api/auth_routes.py`.
@@ -2820,8 +3411,11 @@ Auth routes handle Google login, GitHub login, GitHub App installation state, lo
 ```python {chunk="backend-src-yinshi-api-auth-routes-py" file="backend/src/yinshi/api/auth_routes.py"}
 """OAuth login/callback endpoints for Google and GitHub."""
 
+import hashlib
 import logging
+import secrets
 import sqlite3
+import time
 from typing import Any, cast
 from urllib.parse import urlencode
 
@@ -2900,28 +3494,107 @@ def _github_install_state_serializer() -> URLSafeTimedSerializer:
     return URLSafeTimedSerializer(settings.secret_key)
 
 
+def _github_install_flow_digest(flow_token: str) -> str:
+    """Hash an unguessable install-flow token for control-database storage."""
+    if not flow_token:
+        raise ValueError("flow_token must not be empty")
+    return hashlib.sha256(flow_token.encode("utf-8")).hexdigest()
+
+
 def _create_github_install_state(user_id: str) -> str:
-    """Sign a user id into a GitHub install state token."""
-    assert user_id, "user_id must not be empty"
+    """Create a signed, database-backed GitHub install state token."""
+    if not user_id:
+        raise ValueError("user_id must not be empty")
+    flow_token = secrets.token_urlsafe(32)
+    state_digest = _github_install_flow_digest(flow_token)
+    expires_at = int(time.time()) + _GITHUB_INSTALL_STATE_MAX_AGE_S
+    with get_control_db() as db:
+        db.execute("DELETE FROM github_install_flows WHERE expires_at < ?", (int(time.time()),))
+        db.execute(
+            "INSERT INTO github_install_flows (state_digest, user_id, expires_at) "
+            "VALUES (?, ?, ?)",
+            (state_digest, user_id, expires_at),
+        )
+        db.commit()
     serializer = _github_install_state_serializer()
-    return serializer.dumps(user_id, salt="github-install-state")
+    return serializer.dumps(
+        {"user_id": user_id, "flow_token": flow_token},
+        salt="github-install-state",
+    )
 
 
-def _verify_github_install_state(state: str) -> str | None:
-    """Verify a GitHub install state token and return the user id."""
-    assert state, "state must not be empty"
+def _create_github_install_verification_state(
+    user_id: str,
+    installation_id: int,
+    flow_token: str,
+) -> str:
+    """Sign a user, installation, and one-time flow token for authorization."""
+    if not user_id:
+        raise ValueError("user_id must not be empty")
+    if installation_id <= 0:
+        raise ValueError("installation_id must be positive")
+    if not flow_token:
+        raise ValueError("flow_token must not be empty")
+    serializer = _github_install_state_serializer()
+    return serializer.dumps(
+        {
+            "user_id": user_id,
+            "installation_id": installation_id,
+            "flow_token": flow_token,
+        },
+        salt="github-install-verification-state",
+    )
+
+
+def _verify_github_install_verification_state(state: str) -> tuple[str, int, str] | None:
+    """Return the signed user, installation, and flow digest when valid."""
+    if not state:
+        raise ValueError("state must not be empty")
     serializer = _github_install_state_serializer()
     try:
-        user_id = serializer.loads(
+        payload = serializer.loads(
+            state,
+            salt="github-install-verification-state",
+            max_age=_GITHUB_INSTALL_STATE_MAX_AGE_S,
+        )
+    except (BadSignature, BadTimeSignature):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    user_id = payload.get("user_id")
+    installation_id = payload.get("installation_id")
+    flow_token = payload.get("flow_token")
+    if not isinstance(user_id, str) or not user_id:
+        return None
+    if not isinstance(installation_id, int) or installation_id <= 0:
+        return None
+    if not isinstance(flow_token, str) or not flow_token:
+        return None
+    return user_id, installation_id, _github_install_flow_digest(flow_token)
+
+
+def _verify_github_install_state(state: str) -> tuple[str, str] | None:
+    """Verify initial state and return its user id and raw one-time token."""
+    if not state:
+        raise ValueError("state must not be empty")
+    serializer = _github_install_state_serializer()
+    try:
+        payload = serializer.loads(
             state,
             salt="github-install-state",
             max_age=_GITHUB_INSTALL_STATE_MAX_AGE_S,
         )
     except (BadSignature, BadTimeSignature):
         return None
-    if isinstance(user_id, str):
-        return user_id
-    return None
+    if not isinstance(payload, dict):
+        return None
+    user_id = payload.get("user_id")
+    flow_token = payload.get("flow_token")
+    if not isinstance(user_id, str) or not user_id:
+        return None
+    if not isinstance(flow_token, str) or not flow_token:
+        return None
+    return user_id, flow_token
 
 
 def _current_session_identity(request: Request) -> tuple[str, str] | None:
@@ -3164,16 +3837,11 @@ async def callback_google(request: Request) -> RedirectResponse:
     """Handle Google OAuth callback."""
     try:
         token = await oauth.google.authorize_access_token(request)
-    except OAuthError as exc:
-        logger.warning(
-            "Google OAuth rejected: error=%s description=%s",
-            exc.error,
-            exc.description,
-        )
+    except OAuthError:
+        logger.warning("Google OAuth rejected")
         return RedirectResponse(url="/?error=oauth_error")
-    except Exception as exc:
-        # Catches state mismatch, missing session, and other authlib internals.
-        logger.error("Google token exchange failed: %s", exc, exc_info=True)
+    except (ConnectionError, httpx.HTTPError, OSError, TypeError, ValueError):
+        logger.error("Google token exchange failed")
         return RedirectResponse(url="/?error=oauth_error")
 
     user_info = token.get("userinfo")
@@ -3193,13 +3861,8 @@ async def callback_google(request: Request) -> RedirectResponse:
             avatar_url=user_info.get("picture"),
             provider_data=dict(user_info),
         )
-    except (sqlite3.Error, OSError) as exc:
-        logger.error(
-            "Account provisioning failed for email=%s: %s",
-            email,
-            exc,
-            exc_info=True,
-        )
+    except (sqlite3.Error, OSError):
+        logger.error("Google account provisioning failed")
         return RedirectResponse(url="/?error=account_error")
 
     response = RedirectResponse(url="/app")
@@ -3230,15 +3893,11 @@ async def callback_github(request: Request) -> RedirectResponse:
     """Handle GitHub OAuth callback."""
     try:
         token = await oauth.github.authorize_access_token(request)
-    except OAuthError as exc:
-        logger.warning(
-            "GitHub OAuth rejected: error=%s description=%s",
-            exc.error,
-            exc.description,
-        )
+    except OAuthError:
+        logger.warning("GitHub OAuth rejected")
         return RedirectResponse(url="/?error=oauth_error")
-    except Exception as exc:
-        logger.error("GitHub token exchange failed: %s", exc, exc_info=True)
+    except (ConnectionError, httpx.HTTPError, OSError, TypeError, ValueError):
+        logger.error("GitHub token exchange failed")
         return RedirectResponse(url="/?error=oauth_error")
 
     # GitHub doesn't include user info in the token; call the API.
@@ -3252,8 +3911,8 @@ async def callback_github(request: Request) -> RedirectResponse:
             emails_resp = await client.get("https://api.github.com/user/emails", headers=headers)
             emails_resp.raise_for_status()
             emails = emails_resp.json()
-    except (httpx.HTTPError, KeyError) as exc:
-        logger.error("GitHub API call failed: %s", exc, exc_info=True)
+    except (httpx.HTTPError, KeyError):
+        logger.error("GitHub API call failed")
         return RedirectResponse(url="/?error=github_api_error")
 
     # Find the primary verified email, falling back to any verified email.
@@ -3278,19 +3937,65 @@ async def callback_github(request: Request) -> RedirectResponse:
             avatar_url=user_data.get("avatar_url"),
             provider_data=user_data,
         )
-    except (sqlite3.Error, OSError) as exc:
-        logger.error(
-            "Account provisioning failed for email=%s: %s",
-            email,
-            exc,
-            exc_info=True,
-        )
+    except (sqlite3.Error, OSError):
+        logger.error("GitHub account provisioning failed")
         return RedirectResponse(url="/?error=account_error")
 
     response = RedirectResponse(url="/app")
     _set_session_cookie(response, tenant.user_id)
     logger.info("GitHub login: user=%s email=%s", tenant.user_id, email)
     return response
+
+
+async def verify_github_user_installation(code: str, installation_id: int) -> bool:
+    """Verify that the authorized GitHub user can access one installation."""
+    if not code:
+        raise ValueError("code must not be empty")
+    if installation_id <= 0:
+        raise ValueError("installation_id must be positive")
+    settings = get_settings()
+    if not settings.github_app_client_id:
+        raise GitHubAppError("GitHub App client ID is not configured")
+    if settings.github_app_client_secret is None:
+        raise GitHubAppError("GitHub App client secret is not configured")
+    if not settings.github_app_user_callback_url:
+        raise GitHubAppError("GitHub App user callback URL is not configured")
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            token_response = await client.post(
+                "https://github.com/login/oauth/access_token",
+                headers={"Accept": "application/json"},
+                data={
+                    "client_id": settings.github_app_client_id,
+                    "client_secret": settings.github_app_client_secret.get_secret_value(),
+                    "code": code,
+                    "redirect_uri": settings.github_app_user_callback_url,
+                },
+            )
+            if token_response.status_code >= 400:
+                return False
+            token_payload = token_response.json()
+            access_token = token_payload.get("access_token")
+            if not isinstance(access_token, str) or not access_token:
+                return False
+            installation_response = await client.get(
+                f"https://api.github.com/user/installations/"
+                f"{installation_id}/repositories?per_page=1",
+                headers={
+                    "Accept": "application/vnd.github+json",
+                    "Authorization": f"Bearer {access_token}",
+                    "X-GitHub-Api-Version": "2022-11-28",
+                },
+            )
+    except (httpx.HTTPError, ValueError) as exc:
+        raise GitHubAppError("GitHub user authorization verification failed") from exc
+
+    if installation_response.status_code in {401, 403, 404}:
+        return False
+    if installation_response.status_code >= 400:
+        raise GitHubAppError("GitHub installation access verification failed")
+    return True
 
 
 @router.get("/github/install", response_model=None)
@@ -3317,13 +4022,13 @@ async def github_install_callback(request: Request) -> RedirectResponse:
     if not state:
         return RedirectResponse(url="/app?github_connect_error=invalid_state")
 
-    state_user_id = _verify_github_install_state(state)
-    if not state_user_id:
+    state_payload = _verify_github_install_state(state)
+    if state_payload is None:
         return RedirectResponse(url="/app?github_connect_error=invalid_state")
+    user_id, flow_token = state_payload
     current_user_id = _current_user_id(request)
-    if current_user_id != state_user_id:
+    if current_user_id != user_id:
         return RedirectResponse(url="/app?github_connect_error=invalid_state")
-    user_id = state_user_id
 
     installation_id_text = request.query_params.get("installation_id")
     if not installation_id_text:
@@ -3341,31 +4046,105 @@ async def github_install_callback(request: Request) -> RedirectResponse:
     if setup_action == "request":
         return RedirectResponse(url="/app?github_connect_error=not_granted")
 
+    settings = get_settings()
+    if not settings.github_app_client_id:
+        return RedirectResponse(url="/app?github_connect_error=install_failed")
+    if settings.github_app_client_secret is None:
+        return RedirectResponse(url="/app?github_connect_error=install_failed")
+    if not settings.github_app_user_callback_url:
+        return RedirectResponse(url="/app?github_connect_error=install_failed")
+
+    state_digest = _github_install_flow_digest(flow_token)
+    with get_control_db() as db:
+        cursor = db.execute(
+            "UPDATE github_install_flows SET installation_id = ? "
+            "WHERE state_digest = ? AND user_id = ? AND installation_id IS NULL "
+            "AND expires_at >= ?",
+            (installation_id, state_digest, user_id, int(time.time())),
+        )
+        db.commit()
+    if cursor.rowcount != 1:
+        return RedirectResponse(url="/app?github_connect_error=invalid_state")
+
+    verification_state = _create_github_install_verification_state(
+        user_id,
+        installation_id,
+        flow_token,
+    )
+    authorization_query = urlencode(
+        {
+            "client_id": settings.github_app_client_id,
+            "redirect_uri": settings.github_app_user_callback_url,
+            "state": verification_state,
+        }
+    )
+    return RedirectResponse(url=f"https://github.com/login/oauth/authorize?{authorization_query}")
+
+
+@router.get("/github/install/verify")
+async def github_install_verify(request: Request) -> RedirectResponse:
+    """Bind an installation after a GitHub user authorization callback."""
+    state = request.query_params.get("state")
+    code = request.query_params.get("code")
+    if not state or not code:
+        return RedirectResponse(url="/app?github_connect_error=invalid_state")
+
+    state_payload = _verify_github_install_verification_state(state)
+    if state_payload is None:
+        return RedirectResponse(url="/app?github_connect_error=invalid_state")
+    user_id, installation_id, state_digest = state_payload
+    if _current_user_id(request) != user_id:
+        return RedirectResponse(url="/app?github_connect_error=invalid_state")
+    with get_control_db() as db:
+        active_flow = db.execute(
+            "SELECT 1 FROM github_install_flows "
+            "WHERE state_digest = ? AND user_id = ? AND installation_id = ? "
+            "AND expires_at >= ?",
+            (state_digest, user_id, installation_id, int(time.time())),
+        ).fetchone()
+    if active_flow is None:
+        return RedirectResponse(url="/app?github_connect_error=invalid_state")
+
+    try:
+        user_has_access = await verify_github_user_installation(code, installation_id)
+    except GitHubAppError:
+        logger.error("GitHub user installation verification failed")
+        return RedirectResponse(url="/app?github_connect_error=install_failed")
+    if not user_has_access:
+        return RedirectResponse(url="/app?github_connect_error=not_granted")
+
     try:
         installation = await get_installation_details(installation_id)
     except GitHubInstallationUnusableError:
         return RedirectResponse(url="/app?github_connect_error=not_granted")
     except GitHubAppError:
-        logger.exception("GitHub App callback failed for installation=%s", installation_id)
+        logger.error("GitHub App installation verification failed")
         return RedirectResponse(url="/app?github_connect_error=install_failed")
 
     account = installation.get("account")
-    if not isinstance(account, dict):
-        return RedirectResponse(url="/app?github_connect_error=install_failed")
-
-    account_login = account.get("login")
-    account_type = account.get("type")
+    account_login = account.get("login") if isinstance(account, dict) else None
+    account_type = account.get("type") if isinstance(account, dict) else None
     html_url = installation.get("html_url")
     if installation.get("suspended_at"):
         return RedirectResponse(url="/app?github_connect_error=not_granted")
-    if not isinstance(account_login, str):
+    if not isinstance(account_login, str) or not account_login:
         return RedirectResponse(url="/app?github_connect_error=install_failed")
-    if not isinstance(account_type, str):
+    if not isinstance(account_type, str) or not account_type:
         return RedirectResponse(url="/app?github_connect_error=install_failed")
-    if not isinstance(html_url, str):
+    if not isinstance(html_url, str) or not html_url:
         return RedirectResponse(url="/app?github_connect_error=install_failed")
 
     with get_control_db() as db:
+        db.execute("BEGIN IMMEDIATE")
+        active_flow = db.execute(
+            "SELECT 1 FROM github_install_flows "
+            "WHERE state_digest = ? AND user_id = ? AND installation_id = ? "
+            "AND expires_at >= ?",
+            (state_digest, user_id, installation_id, int(time.time())),
+        ).fetchone()
+        if active_flow is None:
+            db.rollback()
+            return RedirectResponse(url="/app?github_connect_error=invalid_state")
         db.execute(
             """
             INSERT INTO github_installations (
@@ -3378,10 +4157,16 @@ async def github_install_callback(request: Request) -> RedirectResponse:
             """,
             (user_id, installation_id, account_login, account_type, html_url),
         )
+        delete_cursor = db.execute(
+            "DELETE FROM github_install_flows WHERE state_digest = ?",
+            (state_digest,),
+        )
+        if delete_cursor.rowcount != 1:
+            db.rollback()
+            return RedirectResponse(url="/app?github_connect_error=invalid_state")
         db.commit()
 
     await _refresh_connected_github_repos(user_id, account_login)
-
     return RedirectResponse(url="/app?github_connected=1")
 
 
@@ -3746,6 +4531,7 @@ Repository routes import, list, update, and delete local or GitHub repositories 
 """CRUD endpoints for repositories."""
 
 import logging
+import shutil
 import sqlite3
 import uuid
 from pathlib import Path
@@ -3766,7 +4552,9 @@ from yinshi.models import RepoCreate, RepoOut, RepoUpdate
 from yinshi.rate_limit import limiter
 from yinshi.services.git import clone_local_repo, clone_repo, validate_local_repo
 from yinshi.services.github_app import GitHubCloneAccess, resolve_github_clone_access
+from yinshi.services.run_coordinator import get_run_coordinator
 from yinshi.services.workspace import delete_workspace
+from yinshi.tenant import TenantContext, validate_user_path
 from yinshi.utils.paths import is_path_inside
 
 logger = logging.getLogger(__name__)
@@ -4028,6 +4816,30 @@ def update_repo(
         return dict(row)
 
 
+def _delete_managed_repo_root(
+    repo: sqlite3.Row,
+    tenant: TenantContext | None,
+) -> None:
+    """Delete a Yinshi-owned checkout while preserving registered local sources."""
+    root_path = Path(str(repo["root_path"]))
+    if tenant is not None:
+        validate_user_path(tenant, str(root_path))
+        managed_root = True
+    else:
+        legacy_repo_directory = Path.home() / ".yinshi" / "repos"
+        managed_root = bool(repo["remote_url"]) and is_path_inside(
+            str(root_path),
+            str(legacy_repo_directory),
+        )
+    if not managed_root or not root_path.exists():
+        return
+    if root_path.is_symlink():
+        raise ValueError("managed repository root must not be a symlink")
+    if not shutil.rmtree.avoids_symlink_attacks:
+        raise RuntimeError("safe descriptor-based directory deletion is unavailable")
+    shutil.rmtree(root_path)
+
+
 @router.delete("/{repo_id}", status_code=204)
 async def delete_repo(repo_id: str, request: Request) -> None:
     """Delete a repository and all its workspaces."""
@@ -4036,20 +4848,48 @@ async def delete_repo(repo_id: str, request: Request) -> None:
         if not row:
             raise HTTPException(status_code=404, detail="Repo not found")
         _check_repo_owner(row, request)
+        tenant = get_tenant(request)
         workspace_rows = db.execute(
             "SELECT id FROM workspaces WHERE repo_id = ?",
             (repo_id,),
         ).fetchall()
         for workspace in workspace_rows:
+            workspace_id = str(workspace["id"])
             try:
-                await delete_workspace(db, workspace["id"])
-            except Exception:
-                logger.warning(
+                session_rows = db.execute(
+                    "SELECT id FROM sessions WHERE workspace_id = ?",
+                    (workspace_id,),
+                ).fetchall()
+                coordinator = get_run_coordinator()
+                for session_row in session_rows:
+                    await coordinator.request_cancel(str(session_row["id"]))
+                if tenant is not None:
+                    container_manager = getattr(request.app.state, "container_manager", None)
+                    if container_manager is None:
+                        raise RuntimeError("container manager is unavailable")
+                    await container_manager.destroy_container(
+                        tenant.user_id,
+                        runtime_id=workspace_id,
+                    )
+                await delete_workspace(db, workspace_id, tenant=tenant)
+            except (GitError, OSError, RuntimeError, ValueError):
+                logger.exception(
                     "Failed to delete workspace %s while deleting repo %s",
-                    workspace["id"],
+                    workspace_id,
                     repo_id,
-                    exc_info=True,
                 )
+                raise HTTPException(
+                    status_code=500,
+                    detail="Repository cleanup failed; deletion can be retried",
+                ) from None
+        try:
+            _delete_managed_repo_root(row, tenant)
+        except (OSError, RuntimeError, ValueError):
+            logger.exception("Failed to delete repository checkout %s", repo_id)
+            raise HTTPException(
+                status_code=500,
+                detail="Repository cleanup failed; deletion can be retried",
+            ) from None
         db.execute("DELETE FROM repos WHERE id = ?", (repo_id,))
         db.commit()
 ```
@@ -4076,6 +4916,7 @@ from yinshi.api.deps import (
 )
 from yinshi.exceptions import GitError, RepoNotFoundError, WorkspaceNotFoundError
 from yinshi.models import WorkspaceCreate, WorkspaceOut, WorkspaceUpdate
+from yinshi.services.run_coordinator import get_run_coordinator
 from yinshi.services.workspace import create_workspace_for_repo, delete_workspace
 
 logger = logging.getLogger(__name__)
@@ -4092,9 +4933,7 @@ def _check_repo_owner(
     """In legacy mode, verify the authenticated user owns the repo."""
     if get_tenant(request):
         return
-    repo = db.execute(
-        "SELECT owner_email FROM repos WHERE id = ?", (repo_id,)
-    ).fetchone()
+    repo = db.execute("SELECT owner_email FROM repos WHERE id = ?", (repo_id,)).fetchone()
     if repo:
         check_owner(repo["owner_email"], get_user_email(request))
     else:
@@ -4152,36 +4991,46 @@ def update_workspace(
 ) -> dict[str, Any]:
     """Update workspace fields (currently only state)."""
     with get_db_for_request(request) as db:
-        row = db.execute(
-            "SELECT * FROM workspaces WHERE id = ?", (workspace_id,)
-        ).fetchone()
+        row = db.execute("SELECT * FROM workspaces WHERE id = ?", (workspace_id,)).fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Workspace not found")
         check_workspace_owner(db, workspace_id, request)
 
         updates = {
-            k: v
-            for k, v in body.model_dump(exclude_unset=True).items()
-            if k in _UPDATABLE_COLUMNS
+            k: v for k, v in body.model_dump(exclude_unset=True).items() if k in _UPDATABLE_COLUMNS
         }
         if updates:
             sets = ", ".join(f"{k} = ?" for k in updates)
             vals = list(updates.values()) + [workspace_id]
             db.execute(f"UPDATE workspaces SET {sets} WHERE id = ?", vals)  # noqa: S608
             db.commit()
-        updated = db.execute(
-            "SELECT * FROM workspaces WHERE id = ?", (workspace_id,)
-        ).fetchone()
+        updated = db.execute("SELECT * FROM workspaces WHERE id = ?", (workspace_id,)).fetchone()
         return dict(updated)
 
 
 @router.delete("/api/workspaces/{workspace_id}", status_code=204)
 async def remove_workspace(workspace_id: str, request: Request) -> None:
-    """Delete a workspace and its worktree."""
+    """Stop runtime activity, then delete a workspace and its durable paths."""
+    tenant = get_tenant(request)
     with get_db_for_request(request) as db:
         check_workspace_owner(db, workspace_id, request)
+        session_rows = db.execute(
+            "SELECT id FROM sessions WHERE workspace_id = ?",
+            (workspace_id,),
+        ).fetchall()
         try:
-            await delete_workspace(db, workspace_id)
+            coordinator = get_run_coordinator()
+            for session_row in session_rows:
+                await coordinator.request_cancel(str(session_row["id"]))
+            if tenant is not None:
+                container_manager = getattr(request.app.state, "container_manager", None)
+                if container_manager is None:
+                    raise RuntimeError("container manager is unavailable")
+                await container_manager.destroy_container(
+                    tenant.user_id,
+                    runtime_id=workspace_id,
+                )
+            await delete_workspace(db, workspace_id, tenant=tenant)
         except (WorkspaceNotFoundError, RepoNotFoundError):
             raise HTTPException(status_code=404, detail="Workspace not found")
         except Exception:
@@ -4199,12 +5048,13 @@ Git services clone repositories, maintain remotes, create worktrees, and run git
 import asyncio
 import logging
 import os
-import random
+import secrets
 import string
 import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from urllib.parse import urlparse
 
 from yinshi.exceptions import GitError
 
@@ -4271,28 +5121,49 @@ _NOUNS = [
     "brook",
 ]
 
-_ALLOWED_URL_SCHEMES = ("https://", "ssh://", "git@")
+_GIT_COMMAND_TIMEOUT_S = 300.0
+_GIT_EXECUTABLE_PATH = "/usr/bin/git"
+_GITHUB_HOST = "github.com"
 
 
 def generate_branch_name(username: str | None = None) -> str:
     """Generate a random branch name like 'username/swift-fox-a3f2'."""
-    adj = random.choice(_ADJECTIVES)
-    noun = random.choice(_NOUNS)
-    suffix = "".join(random.choices(string.ascii_lowercase + string.digits, k=4))
-    bare = f"{adj}-{noun}-{suffix}"
+    adjective = secrets.choice(_ADJECTIVES)
+    noun = secrets.choice(_NOUNS)
+    suffix = "".join(secrets.choice(string.ascii_lowercase + string.digits) for _ in range(4))
+    bare = f"{adjective}-{noun}-{suffix}"
     if username:
         return f"{username}/{bare}"
     return bare
 
 
 def _validate_clone_url(url: str) -> None:
-    """Reject dangerous git URL schemes."""
+    """Allow only canonical GitHub HTTPS repository URLs on the host."""
+    if not isinstance(url, str):
+        raise TypeError("url must be a string")
     if url.startswith("-"):
         raise GitError("Invalid repository URL")
     if url.startswith(("ext::", "file://")):
         raise GitError("URL scheme not allowed")
-    if not any(url.startswith(s) for s in _ALLOWED_URL_SCHEMES):
-        raise GitError("URL must start with https://, ssh://, or git@")
+
+    parsed = urlparse(url)
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise GitError("Only canonical GitHub HTTPS repository URLs are allowed") from exc
+    path_parts = [part for part in parsed.path.split("/") if part]
+    canonical = (
+        parsed.scheme == "https"
+        and parsed.hostname == _GITHUB_HOST
+        and parsed.username is None
+        and parsed.password is None
+        and port is None
+        and len(path_parts) == 2
+        and not parsed.query
+        and not parsed.fragment
+    )
+    if not canonical:
+        raise GitError("Only canonical GitHub HTTPS repository URLs are allowed")
 
 
 @contextmanager
@@ -4329,9 +5200,20 @@ async def _run_git(
     env: dict[str, str] | None = None,
 ) -> str:
     """Run a git command asynchronously and return stdout."""
-    cmd = ["git"] + args
-    logger.debug("Running: %s (cwd=%s)", " ".join(cmd), cwd)
-    child_env = os.environ.copy()
+    if not args:
+        raise ValueError("args must not be empty")
+    cmd = [_GIT_EXECUTABLE_PATH, *args]
+    logger.debug("Running git %s (cwd=%s)", args[0], cwd)
+    child_env = {
+        "GCM_INTERACTIVE": "Never",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_PAGER": "cat",
+        "GIT_TERMINAL_PROMPT": "0",
+        "HOME": "/nonexistent",
+        "LANG": os.environ.get("LANG", "C.UTF-8"),
+        "PATH": "/usr/bin:/bin",
+    }
     if env is not None:
         child_env.update(env)
     proc = await asyncio.create_subprocess_exec(
@@ -4341,7 +5223,15 @@ async def _run_git(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    stdout, stderr = await proc.communicate()
+    try:
+        stdout, stderr = await asyncio.wait_for(
+            proc.communicate(),
+            timeout=_GIT_COMMAND_TIMEOUT_S,
+        )
+    except TimeoutError as exc:
+        proc.kill()
+        await proc.wait()
+        raise GitError(f"git {args[0]} timed out") from exc
     if proc.returncode != 0:
         logger.error("git %s failed (cwd=%s): %s", args[0], cwd, stderr.decode().strip())
         raise GitError(f"git {args[0]} failed")
@@ -4486,7 +5376,7 @@ async def clone_repo(
             except GitError:
                 existing_remote = ""
             if not _remote_urls_match(existing_remote, url):
-                raise GitError(f"Destination already contains a clone of a different repository")
+                raise GitError("Destination already contains a clone of a different repository")
             had_remote_refs_before_fetch = await _has_remote_refs(dest)
             logger.info("Reusing existing clone at %s", dest)
             try:
@@ -4765,6 +5655,10 @@ from yinshi.services.git import (
     validate_local_repo,
 )
 from yinshi.services.github_app import normalize_github_remote, resolve_github_clone_access
+from yinshi.services.sidecar_runtime import (
+    delete_local_pi_session_file,
+    delete_workspace_runtime_home,
+)
 from yinshi.services.workspace_files import ensure_secret_guardrails
 from yinshi.tenant import TenantContext
 from yinshi.utils.paths import is_path_inside
@@ -5125,16 +6019,34 @@ async def create_workspace_for_repo(
     return dict(row)
 
 
-async def delete_workspace(db: sqlite3.Connection, workspace_id: str) -> None:
-    """Delete a workspace and its worktree from disk."""
+async def delete_workspace(
+    db: sqlite3.Connection,
+    workspace_id: str,
+    *,
+    tenant: TenantContext | None = None,
+) -> None:
+    """Delete a workspace, durable Pi sessions, and its worktree from disk."""
     workspace = _fetch_workspace(db, workspace_id)
+
+    if tenant is not None:
+        delete_workspace_runtime_home(tenant, workspace_id)
+    else:
+        session_rows = db.execute(
+            "SELECT id FROM sessions WHERE workspace_id = ?",
+            (workspace_id,),
+        ).fetchall()
+        for session_row in session_rows:
+            try:
+                delete_local_pi_session_file(session_row["id"])
+            except OSError:
+                logger.warning(
+                    "Failed to delete Pi session file for session %s",
+                    session_row["id"],
+                )
 
     repo = _fetch_repo(db, workspace["repo_id"])
 
-    try:
-        await delete_worktree(repo["root_path"], workspace["path"])
-    except Exception as e:
-        logger.warning("Failed to delete worktree on disk: %s", e)
+    await delete_worktree(repo["root_path"], workspace["path"])
 
     db.execute("DELETE FROM workspaces WHERE id = ?", (workspace_id,))
     db.commit()
@@ -5241,11 +6153,12 @@ Tests: test_prompt_session_not_found, test_prompt_streams_sidecar_events,
        test_cancel_no_active_stream in tests/test_api.py
 """
 
+import asyncio
 import json
 import logging
 import sqlite3
 import uuid
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, AsyncIterator
 from dataclasses import dataclass
 from typing import Any, Literal, cast
 
@@ -5254,6 +6167,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 
 from yinshi.api.deps import check_owner, get_db_for_request, get_tenant, get_user_email
+from yinshi.auth import get_session_identity
 from yinshi.config import get_settings
 from yinshi.exceptions import (
     ContainerNotReadyError,
@@ -5268,6 +6182,7 @@ from yinshi.model_catalog import get_provider_metadata, normalize_model_ref
 from yinshi.rate_limit import limiter
 from yinshi.services.git_runtime import resolve_git_runtime_auth
 from yinshi.services.keys import record_usage
+from yinshi.services.live_auth_sessions import register_live_auth_session
 from yinshi.services.provider_connections import (
     resolve_provider_connection,
     update_provider_connection_secret,
@@ -5277,6 +6192,7 @@ from yinshi.services.sidecar import SidecarClient, create_sidecar_connection
 from yinshi.services.sidecar_runtime import (
     begin_tenant_container_activity,
     end_tenant_container_activity,
+    local_pi_session_file,
     remap_path_for_container,
     resolve_tenant_sidecar_context,
     touch_tenant_container,
@@ -5292,6 +6208,8 @@ _PERSIST_BATCH_SIZE = 10
 _STORED_TURN_SCHEMA = "yinshi.assistant_turn.v1"
 ThinkingLevel = Literal["off", "minimal", "low", "medium", "high", "xhigh"]
 
+_AUTH_SESSION_RECHECK_INTERVAL_S = 1.0
+_STREAM_LIFETIME_S_MAX = 2 * 60 * 60
 _THINKING_LEVEL_DEFAULT: ThinkingLevel = "medium"
 _THINKING_LEVEL_OFF: ThinkingLevel = "off"
 _THINKING_LEVEL_ORDER: tuple[ThinkingLevel, ...] = (
@@ -5321,6 +6239,92 @@ class ExecutionContext:
     settings_payload: dict[str, object] | None = None
     model_ref: str = ""
     runtime_id: str | None = None
+    pi_session_file: str | None = None
+
+
+class _AuthSessionRevoked(Exception):
+    """Signal that an active stream's originating auth session was revoked."""
+
+
+class _StreamLifetimeReached(Exception):
+    """Signal that a response reached its independent connection deadline."""
+
+
+async def _session_bound_events(
+    events: AsyncIterator[dict[str, Any]],
+    session_token: str,
+    sidecar: SidecarClient,
+    session_id: str,
+) -> AsyncGenerator[dict[str, Any], None]:
+    """Yield sidecar events until local signaling or durable revocation occurs."""
+    if not session_token:
+        raise ValueError("session_token must not be empty")
+    if not session_id:
+        raise ValueError("session_id must not be empty")
+    identity = get_session_identity(session_token)
+    if identity is None:
+        await sidecar.cancel(session_id)
+        raise _AuthSessionRevoked
+
+    user_id, auth_session_id = identity
+    registration = register_live_auth_session(
+        user_id=user_id,
+        auth_session_id=auth_session_id,
+    )
+    loop = asyncio.get_running_loop()
+    connection_deadline = loop.time() + _STREAM_LIFETIME_S_MAX
+    event_iterator = aiter(events)
+    next_event_task: asyncio.Future[dict[str, Any]] | None = None
+    revocation_task = asyncio.create_task(registration.event.wait())
+    try:
+        while True:
+            if loop.time() >= connection_deadline:
+                await sidecar.cancel(session_id)
+                raise _StreamLifetimeReached
+            next_event_task = asyncio.ensure_future(anext(event_iterator))
+            while not next_event_task.done():
+                remaining_lifetime_s = connection_deadline - loop.time()
+                if remaining_lifetime_s <= 0:
+                    next_event_task.cancel()
+                    await sidecar.cancel(session_id)
+                    raise _StreamLifetimeReached
+                done, _ = await asyncio.wait(
+                    {next_event_task, revocation_task},
+                    timeout=min(_AUTH_SESSION_RECHECK_INTERVAL_S, remaining_lifetime_s),
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if revocation_task in done:
+                    next_event_task.cancel()
+                    await sidecar.cancel(session_id)
+                    raise _AuthSessionRevoked
+                if next_event_task in done:
+                    break
+                if loop.time() >= connection_deadline:
+                    next_event_task.cancel()
+                    await sidecar.cancel(session_id)
+                    raise _StreamLifetimeReached
+                if get_session_identity(session_token) is None:
+                    next_event_task.cancel()
+                    await sidecar.cancel(session_id)
+                    raise _AuthSessionRevoked
+            try:
+                event = next_event_task.result()
+            except StopAsyncIteration:
+                return
+            finally:
+                next_event_task = None
+            if registration.event.is_set() or get_session_identity(session_token) is None:
+                await sidecar.cancel(session_id)
+                raise _AuthSessionRevoked
+            if loop.time() >= connection_deadline:
+                await sidecar.cancel(session_id)
+                raise _StreamLifetimeReached
+            yield event
+    finally:
+        registration.close()
+        revocation_task.cancel()
+        if next_event_task is not None and not next_event_task.done():
+            next_event_task.cancel()
 
 
 class PromptRequest(BaseModel):
@@ -5637,6 +6641,53 @@ def _remap_path(
     return remap_path_for_container(host_path, data_dir, mount_path=mount)
 
 
+def _session_pi_context_version(session: sqlite3.Row) -> int:
+    """Return durable Pi context version for one session row."""
+    if "pi_context_version" not in session.keys():
+        return 0
+    try:
+        return int(session["pi_context_version"] or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _message_count_for_session(db: sqlite3.Connection, session_id: str) -> int:
+    """Return stored transcript message count for one session."""
+    assert session_id, "session_id must not be empty"
+    row = db.execute(
+        "SELECT COUNT(*) AS message_count FROM messages WHERE session_id = ?",
+        (session_id,),
+    ).fetchone()
+    assert row is not None, "message count query must return one row"
+    return int(row["message_count"])
+
+
+def _ensure_promptable_pi_context(db: sqlite3.Connection, session: sqlite3.Row) -> None:
+    """Reject legacy transcript-only sessions that cannot resume exact Pi context."""
+    session_id = session["id"]
+    assert isinstance(session_id, str), "session id must be a string"
+    if _session_pi_context_version(session) >= 1:
+        return
+
+    if _message_count_for_session(db, session_id) > 0:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "legacy_pi_context",
+                "message": (
+                    "This session predates durable Pi context and cannot continue "
+                    "with exact model context. Start a new session in this workspace."
+                ),
+            },
+        )
+
+    db.execute(
+        "UPDATE sessions SET pi_context_version = 1 WHERE id = ?",
+        (session_id,),
+    )
+    db.commit()
+
+
 def _lookup_session(
     db: sqlite3.Connection,
     session_id: str,
@@ -5694,6 +6745,7 @@ async def _resolve_execution_context(
             git_auth=None,
             model_ref=model,
             runtime_id=None,
+            pi_session_file=local_pi_session_file(runtime_session_id),
         )
 
     _validate_workspace_path(tenant, workspace_path)
@@ -5806,6 +6858,7 @@ async def _resolve_execution_context(
         settings_payload=settings_payload,
         model_ref=resolved_model_ref,
         runtime_id=tenant_sidecar_context.runtime_id,
+        pi_session_file=tenant_sidecar_context.pi_session_file,
     )
 
 
@@ -5818,6 +6871,7 @@ async def prompt_session(
 ) -> StreamingResponse:
     """Send a prompt and stream agent events as SSE."""
     tenant = get_tenant(request)
+    auth_session_token = request.cookies.get("yinshi_session") if tenant else None
     with get_db_for_request(request) as db:
         session = _lookup_session(db, session_id, request)
         if session and tenant:
@@ -5839,6 +6893,9 @@ async def prompt_session(
 
     if session["status"] == "running":
         raise HTTPException(status_code=409, detail="Session already has an active stream")
+
+    with get_db_for_request(request) as db:
+        _ensure_promptable_pi_context(db, session)
 
     workspace_path = session["workspace_path"]
     remote_url = session["remote_url"] if "remote_url" in session.keys() else None
@@ -5950,11 +7007,12 @@ async def prompt_session(
                 git_auth=cast(dict[str, Any] | None, context.git_auth),
                 agent_dir=context.agent_dir,
                 settings_payload=effective_settings,
+                pi_session_file=context.pi_session_file,
             )
 
             logger.info("Streaming started: session=%s turn_id=%s", session_id, turn_id)
 
-            async for event in sidecar.query(
+            sidecar_events = sidecar.query(
                 session_id,
                 prompt,
                 model=context.model_ref or model,
@@ -5964,7 +7022,21 @@ async def prompt_session(
                 git_auth=cast(dict[str, Any] | None, context.git_auth),
                 agent_dir=context.agent_dir,
                 settings_payload=effective_settings,
-            ):
+                pi_session_file=context.pi_session_file,
+            )
+            if tenant:
+                if not auth_session_token:
+                    raise _AuthSessionRevoked
+                event_source = _session_bound_events(
+                    sidecar_events,
+                    auth_session_token,
+                    sidecar,
+                    session_id,
+                )
+            else:
+                event_source = sidecar_events
+
+            async for event in event_source:
                 event_type = event.get("type")
                 if not isinstance(event_type, str):
                     raise SidecarError("Sidecar event type must be a string")
@@ -6076,6 +7148,14 @@ async def prompt_session(
                     turn_events.append(_stored_turn_event(event))
                     yield f"data: {json.dumps(event)}\n\n"
 
+        except _AuthSessionRevoked:
+            turn_status = "cancelled"
+            logger.info("Prompt stream revoked: session=%s turn_id=%s", session_id, turn_id)
+        except _StreamLifetimeReached:
+            turn_status = "cancelled"
+            logger.info(
+                "Prompt stream lifetime reached: session=%s turn_id=%s", session_id, turn_id
+            )
         except (ConnectionError, OSError, GitError, SidecarError, TypeError, ValueError) as e:
             logger.error(
                 "Sidecar error: session=%s turn_id=%s error=%s",
@@ -6344,6 +7424,7 @@ class SidecarClient:
         git_auth: dict[str, Any] | None = None,
         agent_dir: str | None = None,
         settings_payload: dict[str, Any] | None = None,
+        pi_session_file: str | None = None,
     ) -> dict[str, Any]:
         """Build the options dict sent with warmup/query messages."""
         options: dict[str, Any] = {"model": model, "cwd": cwd}
@@ -6357,6 +7438,8 @@ class SidecarClient:
             options["agentDir"] = agent_dir
         if settings_payload:
             options["settings"] = settings_payload
+        if pi_session_file:
+            options["piSessionFile"] = pi_session_file
         return options
 
     async def warmup(
@@ -6369,6 +7452,7 @@ class SidecarClient:
         git_auth: dict[str, Any] | None = None,
         agent_dir: str | None = None,
         settings_payload: dict[str, Any] | None = None,
+        pi_session_file: str | None = None,
     ) -> None:
         """Pre-create a pi session on the sidecar."""
         await self._send(
@@ -6383,6 +7467,7 @@ class SidecarClient:
                     git_auth,
                     agent_dir=agent_dir,
                     settings_payload=settings_payload,
+                    pi_session_file=pi_session_file,
                 ),
             }
         )
@@ -6398,6 +7483,7 @@ class SidecarClient:
         git_auth: dict[str, Any] | None = None,
         agent_dir: str | None = None,
         settings_payload: dict[str, Any] | None = None,
+        pi_session_file: str | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Send a prompt and yield streaming events from the sidecar."""
         await self._send(
@@ -6413,6 +7499,7 @@ class SidecarClient:
                     git_auth,
                     agent_dir=agent_dir,
                     settings_payload=settings_payload,
+                    pi_session_file=pi_session_file,
                 ),
             }
         )
@@ -6527,9 +7614,7 @@ class SidecarClient:
             "node_version": node_version,
         }
 
-    async def list_imported_commands(
-        self, *, agent_dir: str | None = None
-    ) -> PiCommandsPayload:
+    async def list_imported_commands(self, *, agent_dir: str | None = None) -> PiCommandsPayload:
         """Request the slash commands discoverable from the user's imported Pi config.
 
         Returns a flat ``commands`` list where each entry carries ``kind`` to
@@ -6546,13 +7631,9 @@ class SidecarClient:
         )
         msg = await self._read_line()
         if msg is None:
-            raise SidecarError(
-                "Sidecar connection lost during list_imported_commands request"
-            )
+            raise SidecarError("Sidecar connection lost during list_imported_commands request")
         if msg.get("type") == "error":
-            raise SidecarError(
-                f"list_imported_commands failed: {msg.get('error', 'unknown')}"
-            )
+            raise SidecarError(f"list_imported_commands failed: {msg.get('error', 'unknown')}")
         if msg.get("type") != "resources":
             raise SidecarError(f"Unexpected response type: {msg.get('type')}")
         raw_commands = msg.get("commands", [])
@@ -7695,11 +8776,16 @@ Sidecar runtime resolution maps tenant paths into container paths and protects a
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
+import posixpath
 import re
+import shutil
+import stat
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from pathlib import Path
 
 from fastapi import Request
 
@@ -7710,6 +8796,8 @@ from yinshi.services.pi_config import resolve_effective_pi_runtime
 from yinshi.tenant import TenantContext
 from yinshi.utils.paths import is_path_inside
 
+logger = logging.getLogger(__name__)
+
 
 @dataclass(frozen=True, slots=True)
 class TenantSidecarContext:
@@ -7719,10 +8807,13 @@ class TenantSidecarContext:
     agent_dir: str | None
     settings_payload: dict[str, object] | None
     runtime_id: str | None = None
+    pi_session_file: str | None = None
 
 
-_WORKSPACE_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+_RUNTIME_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 _WORKSPACE_HOME_TARGET = "/home/yinshi"
+_PI_SESSION_DIRECTORY = ".yinshi/pi-sessions"
+_PI_SESSION_PATH_PARTS = tuple(_PI_SESSION_DIRECTORY.split("/"))
 _WORKSPACE_PATH = (
     f"{_WORKSPACE_HOME_TARGET}/bin:"
     f"{_WORKSPACE_HOME_TARGET}/.local/bin:"
@@ -7789,35 +8880,238 @@ def _resolve_agent_dir_for_runtime(
     return remap_path_for_container(normalized_agent_dir, data_dir)
 
 
+def _runtime_safe_id(value: str | None, name: str) -> str | None:
+    """Return a stable 32-character hex id for one runtime-owned path segment."""
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise TypeError(f"{name} must be a string or None")
+    normalized_value = value.strip()
+    if not normalized_value:
+        raise ValueError(f"{name} must not be empty when provided")
+    if _RUNTIME_ID_RE.match(normalized_value):
+        return normalized_value
+    return hashlib.sha256(normalized_value.encode("utf-8")).hexdigest()[:32]
+
+
 def _workspace_runtime_id(workspace_id: str | None) -> str | None:
     """Return stable container id for one workspace, or None for legacy runtime."""
-    if workspace_id is None:
-        return None
-    if not isinstance(workspace_id, str):
-        raise TypeError("workspace_id must be a string or None")
-    normalized_workspace_id = workspace_id.strip()
-    if not normalized_workspace_id:
-        raise ValueError("workspace_id must not be empty when provided")
-    if _WORKSPACE_ID_RE.match(normalized_workspace_id):
-        return normalized_workspace_id
-    return hashlib.sha256(normalized_workspace_id.encode("utf-8")).hexdigest()[:32]
+    return _runtime_safe_id(workspace_id, "workspace_id")
+
+
+def _pi_session_file_name(session_id: str) -> str:
+    """Return path-safe Pi session file name for one Yinshi session id."""
+    normalized_session_id = _runtime_safe_id(session_id, "session_id")
+    assert normalized_session_id is not None, "session_id must be normalized"
+    return f"{normalized_session_id}.jsonl"
+
+
+def _workspace_pi_session_directory(home_path: Path) -> Path:
+    """Return the Pi session directory below one workspace home."""
+    if not home_path.is_absolute():
+        raise ValueError("home_path must be absolute")
+    return home_path.joinpath(*_PI_SESSION_PATH_PARTS)
+
+
+def _workspace_pi_session_host_directory(
+    tenant: TenantContext,
+    workspace_id: str,
+    *,
+    create: bool,
+) -> Path:
+    """Return host directory for workspace-scoped durable Pi session files."""
+    if tenant is None:
+        raise ValueError("tenant is required")
+    if not tenant.data_dir:
+        raise ValueError("tenant data_dir must not be empty")
+    if create:
+        home_path = Path(_workspace_home_source(tenant, workspace_id))
+    else:
+        home_path = _workspace_home_expected_path(tenant, workspace_id)
+    session_directory = _workspace_pi_session_directory(home_path)
+    if create:
+        yinshi_directory = home_path / ".yinshi"
+        if yinshi_directory.is_symlink() or session_directory.is_symlink():
+            raise ValueError("workspace Pi session path must not contain symlinks")
+        session_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    return session_directory
+
+
+def _workspace_pi_session_host_file(
+    tenant: TenantContext,
+    workspace_id: str,
+    session_id: str,
+) -> str:
+    """Return host path for a workspace-scoped durable Pi session file."""
+    session_directory = _workspace_pi_session_host_directory(
+        tenant,
+        workspace_id,
+        create=True,
+    )
+    return str(session_directory / _pi_session_file_name(session_id))
+
+
+def _workspace_pi_session_runtime_file(
+    tenant: TenantContext,
+    workspace_id: str,
+    session_id: str,
+    *,
+    container_enabled: bool,
+    narrow_mounts: bool,
+) -> str:
+    """Return the path a sidecar process should use for Pi session persistence."""
+    host_file = _workspace_pi_session_host_file(tenant, workspace_id, session_id)
+    if not container_enabled:
+        return host_file
+    if narrow_mounts:
+        return posixpath.join(
+            _WORKSPACE_HOME_TARGET,
+            _PI_SESSION_DIRECTORY,
+            _pi_session_file_name(session_id),
+        )
+    return remap_path_for_container(host_file, tenant.data_dir)
+
+
+def _local_pi_session_directory(*, create: bool) -> str:
+    """Return the legacy no-tenant Pi session directory."""
+    settings = get_settings()
+    db_path = os.path.abspath(settings.db_path)
+    if not db_path:
+        raise ValueError("settings.db_path must not be empty")
+    session_directory = os.path.join(os.path.dirname(db_path), "pi-sessions")
+    if create:
+        os.makedirs(session_directory, mode=0o700, exist_ok=True)
+    return session_directory
+
+
+def local_pi_session_file(session_id: str) -> str:
+    """Return host path for durable Pi sessions in legacy no-tenant mode."""
+    return os.path.join(
+        _local_pi_session_directory(create=True),
+        _pi_session_file_name(session_id),
+    )
+
+
+def delete_local_pi_session_file(session_id: str) -> None:
+    """Delete one durable Pi session file in legacy no-tenant mode."""
+    session_directory = _local_pi_session_directory(create=False)
+    session_file = os.path.join(session_directory, _pi_session_file_name(session_id))
+    if os.path.exists(session_file):
+        os.unlink(session_file)
+
+
+def _pi_session_directory_is_safe_for_delete(
+    home_path: Path,
+    session_directory: Path,
+) -> bool:
+    """Return whether one Pi session directory can be safely removed."""
+    if not home_path.is_absolute():
+        raise ValueError("home_path must be absolute")
+    if not session_directory.is_absolute():
+        raise ValueError("session_directory must be absolute")
+
+    expected_session_directory = _workspace_pi_session_directory(home_path)
+    if session_directory != expected_session_directory:
+        raise ValueError("session_directory must belong to home_path")
+
+    yinshi_directory = home_path / ".yinshi"
+    for path in (home_path, yinshi_directory, session_directory):
+        if path.is_symlink():
+            logger.warning("Refusing to delete Pi session files through symlink %s", path)
+            return False
+
+    try:
+        resolved_session_directory = session_directory.resolve(strict=False)
+    except OSError as exc:
+        logger.warning(
+            "Refusing to delete Pi session files because %s could not be resolved: %s",
+            session_directory,
+            exc,
+        )
+        return False
+
+    if resolved_session_directory != expected_session_directory:
+        logger.warning(
+            "Refusing to delete Pi session files outside workspace home: %s resolved to %s",
+            session_directory,
+            resolved_session_directory,
+        )
+        return False
+
+    return True
+
+
+def delete_workspace_runtime_home(tenant: TenantContext, workspace_id: str) -> None:
+    """Delete the complete persistent home for one workspace runtime."""
+    if tenant is None:
+        raise ValueError("tenant is required")
+    if not workspace_id:
+        raise ValueError("workspace_id must not be empty")
+    home_path = _workspace_home_expected_path(tenant, workspace_id)
+    runtime_directory = home_path.parent
+    if not runtime_directory.exists():
+        return
+    if runtime_directory.is_symlink() or home_path.is_symlink():
+        raise ValueError("workspace runtime path must not contain symlinks")
+    if not shutil.rmtree.avoids_symlink_attacks:
+        raise RuntimeError("safe descriptor-based directory deletion is unavailable")
+
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    parent_fd = os.open(runtime_directory, directory_flags)
+    try:
+        try:
+            home_stat = os.stat("home", dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return
+        if not stat.S_ISDIR(home_stat.st_mode):
+            raise ValueError("workspace home must be a directory")
+        shutil.rmtree("home", dir_fd=parent_fd)
+    finally:
+        os.close(parent_fd)
+    try:
+        runtime_directory.rmdir()
+    except OSError:
+        logger.warning("Workspace runtime directory was not empty: %s", runtime_directory)
+
+
+def delete_workspace_pi_sessions(tenant: TenantContext | None, workspace_id: str) -> None:
+    """Delete durable Pi session files for one workspace runtime."""
+    if tenant is None:
+        return
+    if not workspace_id:
+        raise ValueError("workspace_id must not be empty")
+    home_path = _workspace_home_expected_path(tenant, workspace_id)
+    session_directory = _workspace_pi_session_directory(home_path)
+    if not _pi_session_directory_is_safe_for_delete(home_path, session_directory):
+        return
+    if session_directory.exists():
+        shutil.rmtree(session_directory)
+
+
+def _workspace_home_expected_path(tenant: TenantContext, workspace_id: str) -> Path:
+    """Return the non-symlink workspace home path owned by Yinshi."""
+    if not tenant.data_dir:
+        raise ValueError("tenant data_dir must not be empty")
+    normalized_workspace_id = _workspace_runtime_id(workspace_id)
+    assert normalized_workspace_id is not None, "workspace_id must be normalized"
+    data_dir = Path(tenant.data_dir).resolve(strict=False)
+    return data_dir / "runtime" / "workspaces" / normalized_workspace_id / "home"
+
+
+def _workspace_home_path(tenant: TenantContext, workspace_id: str) -> str:
+    """Return the persistent host home path for one workspace runtime."""
+    return str(_workspace_home_expected_path(tenant, workspace_id).resolve(strict=False))
 
 
 def _workspace_home_source(tenant: TenantContext, workspace_id: str) -> str:
     """Return and create the persistent host home for one workspace runtime."""
-    normalized_workspace_id = _workspace_runtime_id(workspace_id)
-    assert normalized_workspace_id is not None, "workspace_id must be normalized"
-    home_path = os.path.join(
-        tenant.data_dir,
-        "runtime",
-        "workspaces",
-        normalized_workspace_id,
-        "home",
-    )
-    os.makedirs(home_path, mode=0o700, exist_ok=True)
+    home_path = _workspace_home_expected_path(tenant, workspace_id)
+    if home_path.is_symlink():
+        raise ValueError("workspace home must not be a symlink")
+    home_path.mkdir(mode=0o700, parents=True, exist_ok=True)
     for subdirectory in ("bin", ".local/bin", ".npm-global/bin"):
-        os.makedirs(os.path.join(home_path, subdirectory), mode=0o700, exist_ok=True)
-    return os.path.realpath(home_path)
+        (home_path / subdirectory).mkdir(mode=0o700, parents=True, exist_ok=True)
+    return str(home_path)
 
 
 def workspace_runtime_environment(workspace_id: str | None) -> dict[str, str] | None:
@@ -7947,6 +9241,15 @@ async def resolve_tenant_sidecar_context(
     )
     narrow_mounts = settings.container_mount_mode == "narrow"
     runtime_id = _workspace_runtime_id(workspace_id)
+    pi_session_file = None
+    if runtime_session_id is not None and workspace_id is not None:
+        pi_session_file = _workspace_pi_session_runtime_file(
+            tenant,
+            workspace_id,
+            runtime_session_id,
+            container_enabled=settings.container_enabled,
+            narrow_mounts=narrow_mounts,
+        )
     runtime_agent_dir = _resolve_agent_dir_for_runtime(
         runtime_inputs.agent_dir,
         tenant.data_dir,
@@ -7959,6 +9262,7 @@ async def resolve_tenant_sidecar_context(
             agent_dir=runtime_agent_dir,
             settings_payload=runtime_inputs.settings_payload,
             runtime_id=runtime_id,
+            pi_session_file=pi_session_file,
         )
 
     container_manager = getattr(request.app.state, "container_manager", None)
@@ -7986,6 +9290,7 @@ async def resolve_tenant_sidecar_context(
         agent_dir=runtime_agent_dir,
         settings_payload=runtime_inputs.settings_payload,
         runtime_id=runtime_id,
+        pi_session_file=pi_session_file,
     )
 
 
@@ -8152,17 +9457,23 @@ Workspace file routes expose safe tree, status, preview, diff, edit, and downloa
 
 from __future__ import annotations
 
+import errno
 import logging
+import os
 import sqlite3
-from typing import Any, cast
+import stat
+from collections.abc import Iterator
+from typing import Any, BinaryIO, cast
+from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from yinshi.api.deps import check_workspace_owner, get_db_for_request, get_tenant
 from yinshi.exceptions import GitError, WorkspaceNotFoundError
 from yinshi.services.workspace_files import (
+    _open_workspace_parent,
     build_file_tree,
     changed_files,
     changed_files_to_dicts,
@@ -8170,7 +9481,6 @@ from yinshi.services.workspace_files import (
     ensure_secret_guardrails,
     file_tree_to_dicts,
     read_text_file,
-    validate_visible_relative_path,
     write_text_file,
 )
 from yinshi.services.workspace_runtime_paths import prepare_tenant_workspace_runtime_paths
@@ -8329,22 +9639,58 @@ async def edit_workspace_file(
     return {"path": path, "status": "saved"}
 
 
+def _stream_open_file(file_handle: BinaryIO) -> Iterator[bytes]:
+    """Yield fixed-size chunks and close the pre-opened file on completion."""
+    if file_handle.closed:
+        raise ValueError("file_handle must be open")
+    try:
+        while True:
+            chunk = file_handle.read(64 * 1024)
+            if not chunk:
+                break
+            yield chunk
+    finally:
+        file_handle.close()
+
+
 @router.get("/api/workspaces/{workspace_id}/files/download")
 async def download_workspace_file(
     workspace_id: str,
     request: Request,
     path: str = Query(..., min_length=1, max_length=4096),
-) -> FileResponse:
-    """Download one visible workspace file."""
+) -> StreamingResponse:
+    """Download one visible workspace file through a stable descriptor."""
+    file_handle: BinaryIO | None = None
     try:
         with get_db_for_request(request) as db:
             workspace_path = await _prepare_workspace_files(db, workspace_id, request)
-        file_path = validate_visible_relative_path(workspace_path, path)
-        if not file_path.is_file():
+        file_flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC
+        with _open_workspace_parent(workspace_path, path) as (parent_fd, file_name):
+            try:
+                file_descriptor = os.open(file_name, file_flags, dir_fd=parent_fd)
+            except OSError as exc:
+                if exc.errno in {errno.ELOOP, errno.ENOTDIR}:
+                    raise PermissionError("path contains a symlink") from exc
+                raise
+        file_stat = os.fstat(file_descriptor)
+        if not stat.S_ISREG(file_stat.st_mode):
+            os.close(file_descriptor)
             raise FileNotFoundError("file does not exist")
+        file_handle = os.fdopen(file_descriptor, "rb", closefd=True)
     except Exception as exc:
+        if file_handle is not None:
+            file_handle.close()
         raise _http_file_error(exc, workspace_id) from exc
-    return FileResponse(file_path, filename=file_path.name)
+
+    encoded_name = quote(file_name, safe="")
+    return StreamingResponse(
+        _stream_open_file(file_handle),
+        media_type="application/octet-stream",
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_name}",
+            "Content-Length": str(file_stat.st_size),
+        },
+    )
 ```
 
 ## services/workspace_files.py
@@ -8357,14 +9703,16 @@ Workspace file services apply ignore rules, secret-path filters, text-size limit
 from __future__ import annotations
 
 import asyncio
+import difflib
+import errno
 import os
 import stat
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Iterator, Literal
 
 from yinshi.exceptions import GitError
-from yinshi.utils.paths import is_path_inside
 
 FileNodeType = Literal["file", "directory"]
 ChangeKind = Literal["added", "copied", "deleted", "modified", "renamed", "untracked", "unknown"]
@@ -8436,15 +9784,6 @@ class ChangedFile:
     original_path: str | None = None
 
 
-@dataclass(frozen=True, slots=True)
-class _VisibleDirectoryEntry:
-    """One lstat-classified child entry safe to include in the UI tree."""
-
-    path: Path
-    relative_path: str
-    node_type: FileNodeType
-
-
 def _workspace_root(workspace_path: str) -> Path:
     """Return a validated workspace root path."""
     if not isinstance(workspace_path, str):
@@ -8499,23 +9838,77 @@ def _is_visible_relative_path(relative_path: str) -> bool:
     return not _has_excluded_segment(relative_path)
 
 
-def validate_visible_relative_path(workspace_path: str, relative_path: str) -> Path:
-    """Resolve one user-supplied relative path inside the workspace and UI allowlist."""
+def _visible_relative_path_parts(relative_path: str) -> tuple[str, ...]:
+    """Return validated lexical components for one workspace-relative path."""
     if not isinstance(relative_path, str):
         raise TypeError("relative_path must be a string")
-    normalized_relative_path = relative_path.strip().lstrip("/")
+    normalized_relative_path = relative_path.strip()
     if not normalized_relative_path:
         raise ValueError("relative_path must not be empty")
-    if os.path.isabs(relative_path):
+    if os.path.isabs(normalized_relative_path):
         raise ValueError("relative_path must not be absolute")
-    root = _workspace_root(workspace_path)
-    candidate = (root / normalized_relative_path).resolve()
-    if not is_path_inside(str(candidate), str(root)):
+    parts = Path(normalized_relative_path).parts
+    if not parts or any(part in {"", ".", ".."} for part in parts):
         raise ValueError("path must stay inside workspace")
-    display_path = candidate.relative_to(root).as_posix()
+    display_path = Path(*parts).as_posix()
     if not _is_visible_relative_path(display_path):
         raise PermissionError("path is not available through the workspace UI")
-    return candidate
+    return parts
+
+
+def validate_visible_relative_path(workspace_path: str, relative_path: str) -> Path:
+    """Return one lexically valid workspace path without following child symlinks."""
+    root = _workspace_root(workspace_path)
+    parts = _visible_relative_path_parts(relative_path)
+    return root.joinpath(*parts)
+
+
+@contextmanager
+def _open_workspace_parent(
+    workspace_path: str,
+    relative_path: str,
+    *,
+    create: bool = False,
+) -> Iterator[tuple[int, str]]:
+    """Open a stable parent directory descriptor beneath one workspace."""
+    root = _workspace_root(workspace_path)
+    parts = _visible_relative_path_parts(relative_path)
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    current_fd = os.open(root, directory_flags)
+    try:
+        for part in parts[:-1]:
+            if create:
+                try:
+                    os.mkdir(part, mode=0o700, dir_fd=current_fd)
+                except FileExistsError:
+                    pass
+            try:
+                next_fd = os.open(part, directory_flags, dir_fd=current_fd)
+            except OSError as exc:
+                if exc.errno in {errno.ELOOP, errno.ENOTDIR}:
+                    raise PermissionError("path contains a symlink") from exc
+                raise
+            os.close(current_fd)
+            current_fd = next_fd
+        yield current_fd, parts[-1]
+    finally:
+        os.close(current_fd)
+
+
+def _read_bounded_file_descriptor(file_descriptor: int) -> bytes:
+    """Read one regular file up to the browser preview limit."""
+    if file_descriptor < 0:
+        raise ValueError("file_descriptor must be non-negative")
+    file_stat = os.fstat(file_descriptor)
+    if not stat.S_ISREG(file_stat.st_mode):
+        raise FileNotFoundError("file does not exist")
+    data = bytearray()
+    while len(data) <= _MAX_TEXT_BYTES:
+        chunk = os.read(file_descriptor, min(64 * 1024, _MAX_TEXT_BYTES + 1 - len(data)))
+        if not chunk:
+            break
+        data.extend(chunk)
+    return bytes(data)
 
 
 def _node_to_dict(node: FileNode) -> dict[str, object]:
@@ -8533,70 +9926,65 @@ def file_tree_to_dicts(nodes: tuple[FileNode, ...]) -> list[dict[str, object]]:
     return [_node_to_dict(node) for node in nodes]
 
 
-def _visible_directory_entries(
-    directory_path: Path, root: Path
-) -> tuple[_VisibleDirectoryEntry, ...]:
-    """Return visible child entries without following symlinks."""
-    entries: list[_VisibleDirectoryEntry] = []
-    for child in directory_path.iterdir():
-        try:
-            relative_path = child.relative_to(root).as_posix()
-        except ValueError:
-            continue
-        if not _is_visible_relative_path(relative_path):
-            continue
-        try:
-            child_stat = child.lstat()
-        except OSError:
-            continue
-        if stat.S_ISLNK(child_stat.st_mode):
-            continue
-        if stat.S_ISDIR(child_stat.st_mode):
-            node_type: FileNodeType = "directory"
-        elif stat.S_ISREG(child_stat.st_mode):
-            node_type = "file"
-        else:
-            continue
-        entries.append(
-            _VisibleDirectoryEntry(
-                path=child,
-                relative_path=relative_path,
-                node_type=node_type,
-            )
-        )
-    return tuple(
-        sorted(entries, key=lambda entry: (entry.node_type == "file", entry.path.name.lower()))
-    )
-
-
 def build_file_tree(workspace_path: str) -> tuple[FileNode, ...]:
-    """Build a bounded visible file tree for one workspace."""
+    """Build a bounded visible file tree through stable directory descriptors."""
     root = _workspace_root(workspace_path)
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    root_fd = os.open(root, directory_flags)
     entry_count = 0
 
-    def build_directory(directory_path: Path) -> tuple[FileNode, ...]:
+    def build_directory(directory_fd: int, parent_path: str = "") -> tuple[FileNode, ...]:
         nonlocal entry_count
+        classified_entries: list[tuple[str, str, FileNodeType]] = []
+        for name in os.listdir(directory_fd):
+            relative_path = f"{parent_path}/{name}" if parent_path else name
+            if not _is_visible_relative_path(relative_path):
+                continue
+            try:
+                child_stat = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+            except OSError:
+                continue
+            if stat.S_ISDIR(child_stat.st_mode):
+                node_type: FileNodeType = "directory"
+            elif stat.S_ISREG(child_stat.st_mode):
+                node_type = "file"
+            else:
+                continue
+            classified_entries.append((name, relative_path, node_type))
+
+        classified_entries.sort(key=lambda entry: (entry[2] == "file", entry[0].lower()))
         children: list[FileNode] = []
-        for entry in _visible_directory_entries(directory_path, root):
+        for name, relative_path, node_type in classified_entries:
             if entry_count >= _MAX_TREE_ENTRIES:
                 break
             entry_count += 1
-            if entry.node_type == "directory":
-                children.append(
-                    FileNode(
-                        name=entry.path.name,
-                        path=entry.relative_path,
-                        type="directory",
-                        children=build_directory(entry.path),
-                    )
+            if node_type == "file":
+                children.append(FileNode(name=name, path=relative_path, type="file"))
+                continue
+            try:
+                child_fd = os.open(name, directory_flags, dir_fd=directory_fd)
+            except OSError as exc:
+                if exc.errno in {errno.ELOOP, errno.ENOENT, errno.ENOTDIR}:
+                    continue
+                raise
+            try:
+                child_nodes = build_directory(child_fd, relative_path)
+            finally:
+                os.close(child_fd)
+            children.append(
+                FileNode(
+                    name=name,
+                    path=relative_path,
+                    type="directory",
+                    children=child_nodes,
                 )
-            else:
-                children.append(
-                    FileNode(name=entry.path.name, path=entry.relative_path, type="file")
-                )
+            )
         return tuple(children)
 
-    return build_directory(root)
+    try:
+        return build_directory(root_fd)
+    finally:
+        os.close(root_fd)
 
 
 def _change_kind(status: str) -> ChangeKind:
@@ -8651,7 +10039,7 @@ async def changed_files(workspace_path: str) -> tuple[ChangedFile, ...]:
     """Return visible changed files from Git status for one workspace."""
     root = _workspace_root(workspace_path)
     process = await asyncio.create_subprocess_exec(
-        "git",
+        "/usr/bin/git",
         "-C",
         str(root),
         "status",
@@ -8681,11 +10069,19 @@ def changed_files_to_dicts(changes: tuple[ChangedFile, ...]) -> list[dict[str, o
 
 
 def read_text_file(workspace_path: str, relative_path: str) -> str:
-    """Read a bounded UTF-8-ish text file from a visible workspace path."""
-    file_path = validate_visible_relative_path(workspace_path, relative_path)
-    if not file_path.is_file():
-        raise FileNotFoundError("file does not exist")
-    data = file_path.read_bytes()
+    """Read a bounded text file through symlink-resistant descriptors."""
+    file_flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC
+    with _open_workspace_parent(workspace_path, relative_path) as (parent_fd, file_name):
+        try:
+            file_descriptor = os.open(file_name, file_flags, dir_fd=parent_fd)
+        except OSError as exc:
+            if exc.errno in {errno.ELOOP, errno.ENOTDIR}:
+                raise PermissionError("path contains a symlink") from exc
+            raise
+        try:
+            data = _read_bounded_file_descriptor(file_descriptor)
+        finally:
+            os.close(file_descriptor)
     if len(data) > _MAX_TEXT_BYTES:
         raise ValueError("file is too large to preview")
     if b"\x00" in data:
@@ -8694,23 +10090,45 @@ def read_text_file(workspace_path: str, relative_path: str) -> str:
 
 
 def write_text_file(workspace_path: str, relative_path: str, content: str) -> None:
-    """Write text content to a visible workspace file path."""
+    """Atomically replace one text file through a stable parent descriptor."""
     if not isinstance(content, str):
         raise TypeError("content must be a string")
     encoded_content = content.encode("utf-8")
     if len(encoded_content) > _MAX_TEXT_BYTES:
         raise ValueError("file is too large to edit through the browser")
-    file_path = validate_visible_relative_path(workspace_path, relative_path)
-    if file_path.exists() and not file_path.is_file():
-        raise ValueError("path is not a file")
-    file_path.parent.mkdir(parents=True, exist_ok=True)
-    file_path.write_text(content, encoding="utf-8")
+
+    with _open_workspace_parent(
+        workspace_path,
+        relative_path,
+        create=True,
+    ) as (parent_fd, file_name):
+        temporary_name = f".{file_name}.yinshi-tmp-{os.getpid()}"
+        file_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
+        file_descriptor = os.open(temporary_name, file_flags, 0o600, dir_fd=parent_fd)
+        try:
+            remaining_content = memoryview(encoded_content)
+            while remaining_content:
+                bytes_written = os.write(file_descriptor, remaining_content)
+                if bytes_written <= 0:
+                    raise OSError("failed to write workspace file")
+                remaining_content = remaining_content[bytes_written:]
+            os.fsync(file_descriptor)
+        finally:
+            os.close(file_descriptor)
+        try:
+            os.replace(temporary_name, file_name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+            os.fsync(parent_fd)
+        finally:
+            try:
+                os.unlink(temporary_name, dir_fd=parent_fd)
+            except FileNotFoundError:
+                pass
 
 
 async def _changed_file_for_path(root: Path, display_path: str) -> ChangedFile | None:
     """Return Git status for one path without scanning the whole worktree."""
     process = await asyncio.create_subprocess_exec(
-        "git",
+        "/usr/bin/git",
         "-C",
         str(root),
         "status",
@@ -8728,32 +10146,52 @@ async def _changed_file_for_path(root: Path, display_path: str) -> ChangedFile |
     return next(iter(_parse_porcelain_z(stdout)), None)
 
 
+async def _head_file_text(root: Path, display_path: str) -> str | None:
+    """Read one committed file from Git's object database without touching the worktree."""
+    process = await asyncio.create_subprocess_exec(
+        "/usr/bin/git",
+        "-C",
+        str(root),
+        "show",
+        f"HEAD:{display_path}",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, _ = await process.communicate()
+    if process.returncode != 0:
+        return None
+    if len(stdout) > _MAX_TEXT_BYTES:
+        raise ValueError("file is too large to preview")
+    if b"\x00" in stdout:
+        raise ValueError("binary files cannot be previewed")
+    return stdout.decode("utf-8", errors="replace")
+
+
 async def diff_file(workspace_path: str, relative_path: str) -> str:
-    """Return a Git diff for one visible file path."""
+    """Return a text diff using stable worktree reads and Git object data."""
     root = _workspace_root(workspace_path)
     file_path = validate_visible_relative_path(workspace_path, relative_path)
     display_path = file_path.relative_to(root).as_posix()
     matching_change = await _changed_file_for_path(root, display_path)
-    if matching_change is not None and matching_change.kind == "untracked":
-        content = read_text_file(workspace_path, display_path)
-        added_lines = [f"+{line}" for line in content.splitlines()]
-        return "\n".join([f"+++ b/{display_path}", *added_lines])
+    if matching_change is not None and matching_change.kind == "deleted":
+        current_content = ""
+    else:
+        current_content = read_text_file(workspace_path, display_path)
 
-    process = await asyncio.create_subprocess_exec(
-        "git",
-        "-C",
-        str(root),
-        "diff",
-        "HEAD",
-        "--",
-        display_path,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
+    committed_content = await _head_file_text(root, display_path)
+    if committed_content is None:
+        if matching_change is None:
+            raise GitError("file does not exist in Git HEAD")
+        committed_content = ""
+
+    diff_lines = difflib.unified_diff(
+        committed_content.splitlines(),
+        current_content.splitlines(),
+        fromfile=f"a/{display_path}",
+        tofile=f"b/{display_path}",
+        lineterm="",
     )
-    stdout, stderr = await process.communicate()
-    if process.returncode != 0:
-        raise GitError(stderr.decode("utf-8", errors="replace") or "git diff failed")
-    return stdout.decode("utf-8", errors="replace")
+    return "\n".join(diff_lines)
 
 
 def _install_secret_hook_guard(hook_path: Path, marker: str, guard_script: str) -> None:
@@ -8816,13 +10254,17 @@ from typing import Any, cast
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from yinshi.auth import auth_disabled, resolve_tenant_from_session_token
+from yinshi.auth import auth_disabled, get_session_identity, resolve_tenant_from_session_token
 from yinshi.config import get_settings
 from yinshi.exceptions import (
     ContainerNotReadyError,
     ContainerStartError,
     GitError,
     WorkspaceNotFoundError,
+)
+from yinshi.services.live_auth_sessions import (
+    LiveAuthSessionRegistration,
+    register_live_auth_session,
 )
 from yinshi.services.sidecar_runtime import (
     remap_path_for_container,
@@ -8891,10 +10333,16 @@ async def _proxy_browser_to_sidecar(
     writer: asyncio.StreamWriter,
     terminal_id: str,
     attach_options: dict[str, Any],
+    session_token: str,
 ) -> None:
-    """Forward browser terminal input and control messages to the sidecar."""
+    """Forward input while the originating auth session remains active."""
+    if not session_token:
+        raise ValueError("session_token must not be empty")
     while True:
         payload = await websocket.receive_json()
+        if get_session_identity(session_token) is None:
+            await websocket.close(code=_TERMINAL_CLOSE_POLICY)
+            return
         if not isinstance(payload, dict):
             continue
         message_type = payload.get("type")
@@ -8932,13 +10380,46 @@ async def _proxy_browser_to_sidecar(
             await websocket.send_json({"type": "error", "error": "Unknown terminal message"})
 
 
+async def _monitor_terminal_session(
+    websocket: WebSocket,
+    session_token: str,
+    revocation_event: asyncio.Event,
+    connection_lifetime_s_max: int,
+) -> None:
+    """Close a revoked or expired terminal even while both proxies are idle."""
+    if not session_token:
+        raise ValueError("session_token must not be empty")
+    if not isinstance(revocation_event, asyncio.Event):
+        raise TypeError("revocation_event must be an asyncio.Event")
+    if connection_lifetime_s_max <= 0:
+        raise ValueError("connection_lifetime_s_max must be positive")
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + connection_lifetime_s_max
+    while True:
+        remaining_s = deadline - loop.time()
+        session_revoked = revocation_event.is_set() or get_session_identity(session_token) is None
+        if remaining_s <= 0 or session_revoked:
+            await websocket.close(code=_TERMINAL_CLOSE_POLICY)
+            return
+        try:
+            await asyncio.wait_for(revocation_event.wait(), timeout=min(1.0, remaining_s))
+        except TimeoutError:
+            continue
+
+
 async def _proxy_sidecar_to_browser(
     websocket: WebSocket,
     reader: asyncio.StreamReader,
+    session_token: str,
 ) -> None:
-    """Forward sidecar terminal events to the browser."""
+    """Forward terminal events while the originating session remains active."""
+    if not session_token:
+        raise ValueError("session_token must not be empty")
     while True:
         message = await _read_sidecar(reader)
+        if get_session_identity(session_token) is None:
+            await websocket.close(code=_TERMINAL_CLOSE_POLICY)
+            return
         if message is None:
             await websocket.send_json({"type": "error", "error": "Terminal runtime disconnected"})
             return
@@ -8954,8 +10435,9 @@ async def workspace_terminal(websocket: WebSocket, workspace_id: str) -> None:
         await websocket.close(code=_TERMINAL_CLOSE_POLICY)
         return
 
+    session_token = websocket.cookies.get("yinshi_session")
     tenant = _tenant_from_websocket(websocket)
-    if tenant is None:
+    if tenant is None or not session_token:
         await websocket.close(code=_TERMINAL_CLOSE_POLICY)
         return
 
@@ -9008,6 +10490,7 @@ async def workspace_terminal(websocket: WebSocket, workspace_id: str) -> None:
 
     reader: asyncio.StreamReader | None = None
     writer: asyncio.StreamWriter | None = None
+    registration: LiveAuthSessionRegistration | None = None
     try:
         async with tenant_container_activity(
             cast(Any, websocket),
@@ -9021,6 +10504,15 @@ async def workspace_terminal(websocket: WebSocket, workspace_id: str) -> None:
             if init_message is not None and init_message.get("type") != "init_status":
                 await websocket.send_json(init_message)
 
+            identity = get_session_identity(session_token)
+            if identity is None:
+                await websocket.close(code=_TERMINAL_CLOSE_POLICY)
+                return
+            user_id, auth_session_id = identity
+            registration = register_live_auth_session(
+                user_id=user_id,
+                auth_session_id=auth_session_id,
+            )
             attach_options = {
                 "workspaceId": terminal_id,
                 "cwd": effective_cwd,
@@ -9033,11 +10525,27 @@ async def workspace_terminal(websocket: WebSocket, workspace_id: str) -> None:
                 {"type": "terminal_attach", "id": terminal_id, "options": attach_options},
             )
             browser_task = asyncio.create_task(
-                _proxy_browser_to_sidecar(websocket, writer, terminal_id, attach_options)
+                _proxy_browser_to_sidecar(
+                    websocket,
+                    writer,
+                    terminal_id,
+                    attach_options,
+                    session_token,
+                )
             )
-            sidecar_task = asyncio.create_task(_proxy_sidecar_to_browser(websocket, reader))
+            sidecar_task = asyncio.create_task(
+                _proxy_sidecar_to_browser(websocket, reader, session_token)
+            )
+            session_task = asyncio.create_task(
+                _monitor_terminal_session(
+                    websocket,
+                    session_token,
+                    registration.event,
+                    settings.terminal_keepalive_s,
+                )
+            )
             done, pending = await asyncio.wait(
-                {browser_task, sidecar_task},
+                {browser_task, sidecar_task, session_task},
                 return_when=asyncio.FIRST_COMPLETED,
             )
             for task in pending:
@@ -9053,6 +10561,8 @@ async def workspace_terminal(websocket: WebSocket, workspace_id: str) -> None:
         except RuntimeError:
             pass
     finally:
+        if registration is not None:
+            registration.close()
         if writer is not None:
             try:
                 await _send_sidecar(writer, {"type": "terminal_detach", "id": terminal_id})
@@ -9334,20 +10844,32 @@ Control-plane encryption protects sensitive shared database fields when field en
 
 from __future__ import annotations
 
+from cryptography.exceptions import InvalidTag
+
 from yinshi.config import control_field_encryption_enabled, get_settings
 from yinshi.exceptions import EncryptionNotConfiguredError
 from yinshi.services.crypto import decrypt_text, derive_subkey, encrypt_text, is_encrypted_text
 
 
-def _control_field_key() -> bytes:
-    """Derive the AES key used for encrypted control-plane fields."""
+def _control_field_keys() -> tuple[bytes, ...]:
+    """Derive current and previous AES keys for control-field rotation overlap."""
     settings = get_settings()
     master_key = settings.active_key_encryption_key_bytes
     if not master_key:
         raise EncryptionNotConfiguredError(
             "KEY_ENCRYPTION_KEY or ENCRYPTION_PEPPER is required for control-field encryption"
         )
-    return derive_subkey(master_key, purpose="control-field", context="v1")
+    keys = [derive_subkey(master_key, purpose="control-field", context="v1")]
+    for previous_key in settings.key_encryption_keyring_previous.values():
+        derived_key = derive_subkey(previous_key, purpose="control-field", context="v1")
+        if derived_key not in keys:
+            keys.append(derived_key)
+    return tuple(keys)
+
+
+def _control_field_key() -> bytes:
+    """Return the current AES key used for new control-field encryption."""
+    return _control_field_keys()[0]
 
 
 def _aad(field_name: str, user_id: str) -> str:
@@ -9387,7 +10909,13 @@ def decrypt_control_text(field_name: str, user_id: str, stored_value: str | None
         raise TypeError("stored_value must be a string or None")
     if not is_encrypted_text(stored_value):
         return stored_value
-    return decrypt_text(stored_value, _control_field_key(), aad=_aad(field_name, user_id))
+    associated_data = _aad(field_name, user_id)
+    for key in _control_field_keys():
+        try:
+            return decrypt_text(stored_value, key, aad=associated_data)
+        except InvalidTag:
+            continue
+    raise InvalidTag("No configured control-field key could decrypt the value")
 ```
 
 ## services/keys.py
@@ -9465,7 +10993,8 @@ def _unwrap_user_dek(wrapped: bytes, user_id: str) -> bytes:
             raise EncryptionNotConfiguredError(
                 "KEY_ENCRYPTION_KEY is required to unwrap versioned DEK envelopes"
             )
-        keyring = {settings.key_encryption_key_id: key_encryption_key}
+        keyring = settings.key_encryption_keyring_previous
+        keyring[settings.key_encryption_key_id] = key_encryption_key
         return unwrap_dek_with_keks(wrapped, normalized_user_id, keyring)
 
     pepper = settings.encryption_pepper_bytes
@@ -10201,9 +11730,7 @@ def _normalize_api_key_with_config_secret(
     """Normalize encrypted secret payloads for api_key_with_config providers."""
     secret_field_keys = {field.key for field in provider_metadata.setup_fields if field.secret}
     required_secret_field_keys = {
-        field.key
-        for field in provider_metadata.setup_fields
-        if field.secret and field.required
+        field.key for field in provider_metadata.setup_fields if field.secret and field.required
     }
     if isinstance(secret, str):
         normalized_api_key = _normalize_text_setting("API key", secret)
@@ -10456,7 +11983,10 @@ def update_provider_connection_secret(
             (normalized_connection_id, normalized_user_id),
         ).fetchone()
     if row is None:
-        logger.warning("Skipping secret refresh for missing connection %s", normalized_connection_id[:8])
+        logger.warning(
+            "Skipping refresh for missing provider connection %s",
+            normalized_connection_id[:8],
+        )
         return
     normalized_secret = _normalize_connection_secret(
         get_provider_metadata(row["provider"]),
@@ -10474,7 +12004,7 @@ def update_provider_connection_secret(
             (encrypted_secret, normalized_connection_id, normalized_user_id),
         )
         db.commit()
-    logger.info("Refreshed provider connection secret for %s", normalized_connection_id[:8])
+    logger.info("Refreshed provider connection %s", normalized_connection_id[:8])
 ```
 
 ## services/pi_config.py
@@ -10524,6 +12054,7 @@ _AGENT_DIRECTORY_NAME = "agent"
 _SESSION_RUNTIME_DIRECTORY_NAME = "sessions"
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 _MAX_EXTRACTED_BYTES = 200 * 1024 * 1024
+_MAX_ARCHIVE_MEMBERS = 4096
 _EXTRACT_CHUNK_BYTES = 64 * 1024
 _INSTRUCTION_FILENAMES = ("AGENTS.md", "CLAUDE.md")
 _SENSITIVE_JSON_FILENAMES = frozenset(
@@ -10970,6 +12501,8 @@ def _extract_archive(zip_data: bytes, temp_root: Path) -> None:
         members = archive.infolist()
         if not members:
             raise PiConfigError("Uploaded archive is empty")
+        if len(members) > _MAX_ARCHIVE_MEMBERS:
+            raise PiConfigError("Uploaded archive contains too many files")
 
         for member in members:
             mode_bits = member.external_attr >> 16
@@ -11758,7 +13291,6 @@ import asyncio
 import json
 import logging
 import time
-from pathlib import Path
 from typing import Any
 
 import httpx
@@ -11780,6 +13312,7 @@ _SIDECAR_VERSION_TIMEOUT_S = 5.0
 _GITHUB_API_BASE_URL = "https://api.github.com"
 _RUNTIME_VERSION_ERROR = "Failed to read sidecar pi package version"
 _DISCONNECT_ERROR = "sidecar disconnect failed after version request"
+_UPDATE_POLICY = "Updated through reviewed lockfile deployments"
 
 _release_cache_lock = asyncio.Lock()
 _release_cache_payload: dict[str, Any] | None = None
@@ -11792,13 +13325,6 @@ def _string_or_none(value: Any) -> str | None:
         normalized_value = value.strip()
         if normalized_value:
             return normalized_value
-    return None
-
-
-def _bool_or_none(value: Any) -> bool | None:
-    """Return a boolean value or ``None`` for absent metadata."""
-    if isinstance(value, bool):
-        return value
     return None
 
 
@@ -11924,44 +13450,6 @@ async def _get_cached_github_releases(
         return fetched_payload, None
 
 
-def _read_update_status(status_path: str) -> dict[str, Any] | None:
-    """Read the last updater status JSON written by the systemd timer."""
-    normalized_status_path = _string_or_none(status_path)
-    if normalized_status_path is None:
-        return None
-
-    path = Path(normalized_status_path).expanduser()
-    if not path.exists():
-        return None
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
-        logger.warning(
-            "Failed to read pi update status from %s",
-            path,
-            exc_info=True,
-        )
-        return {
-            "status": "error",
-            "message": f"Could not read update status: {error}",
-        }
-    if not isinstance(payload, dict):
-        return {
-            "status": "error",
-            "message": "Update status file did not contain a JSON object",
-        }
-
-    return {
-        "checked_at": _string_or_none(payload.get("checked_at")),
-        "status": _string_or_none(payload.get("status")),
-        "previous_version": _string_or_none(payload.get("previous_version")),
-        "current_version": _string_or_none(payload.get("current_version")),
-        "latest_version": _string_or_none(payload.get("latest_version")),
-        "updated": _bool_or_none(payload.get("updated")),
-        "message": _string_or_none(payload.get("message")),
-    }
-
-
 async def _read_runtime_version() -> tuple[PiRuntimeVersionPayload | None, str | None]:
     """Ask the live sidecar which pi package version it has loaded."""
     sidecar: SidecarClient | None = None
@@ -11998,8 +13486,6 @@ async def get_pi_release_notes() -> dict[str, Any]:
     release_payload, release_error = await _get_cached_github_releases(
         settings.pi_release_repository
     )
-    update_status = _read_update_status(settings.pi_update_status_path)
-
     installed_version = None
     node_version = None
     package_name = settings.pi_package_name
@@ -12021,8 +13507,7 @@ async def get_pi_release_notes() -> dict[str, Any]:
         "latest_version": release_payload.get("latest_version"),
         "node_version": node_version,
         "release_notes_url": release_notes_url,
-        "update_schedule": settings.pi_update_schedule,
-        "update_status": update_status,
+        "update_policy": _UPDATE_POLICY,
         "runtime_error": runtime_error,
         "release_error": release_error,
         "releases": release_payload.get("releases", []),
@@ -12244,12 +13729,9 @@ _GITHUB_API_TIMEOUT_S = 15.0
 _GITHUB_API_VERSION = "2022-11-28"
 _INSTALLATION_REFRESH_WINDOW_S = 300
 _GITHUB_SHORTHAND_RE = re.compile(
-    r"^(?P<owner>[A-Za-z0-9](?:[A-Za-z0-9-]{0,38}))/"
-    r"(?P<repo>[A-Za-z0-9._-]+?)(?:\.git)?$"
+    r"^(?P<owner>[A-Za-z0-9](?:[A-Za-z0-9-]{0,38}))/" r"(?P<repo>[A-Za-z0-9._-]+?)(?:\.git)?$"
 )
-_GITHUB_SCP_RE = re.compile(
-    r"^git@github\.com:(?P<owner>[^/\s]+)/(?P<repo>[^/\s]+?)(?:\.git)?$"
-)
+_GITHUB_SCP_RE = re.compile(r"^git@github\.com:(?P<owner>[^/\s]+)/(?P<repo>[^/\s]+?)(?:\.git)?$")
 
 
 @dataclass(frozen=True)
@@ -12290,7 +13772,7 @@ class _CachedInstallationToken:
     expires_at_epoch: float
 
 
-_INSTALLATION_TOKEN_CACHE: dict[int, _CachedInstallationToken] = {}
+_INSTALLATION_TOKEN_CACHE: dict[tuple[int, str], _CachedInstallationToken] = {}
 
 
 def _build_clone_url(owner: str, repo: str) -> str:
@@ -12422,6 +13904,7 @@ async def _request_github_json(
     path: str,
     *,
     bearer_token: str,
+    json_payload: dict[str, Any] | None = None,
 ) -> tuple[int, dict[str, Any]]:
     """Issue a GitHub API request and return status plus parsed JSON."""
     assert method, "method must not be empty"
@@ -12429,11 +13912,14 @@ async def _request_github_json(
 
     try:
         async with httpx.AsyncClient(timeout=_GITHUB_API_TIMEOUT_S) as client:
-            response = await client.request(
-                method=method,
-                url=f"{_GITHUB_API_BASE_URL}{path}",
-                headers=_github_headers(bearer_token),
-            )
+            request_arguments: dict[str, Any] = {
+                "method": method,
+                "url": f"{_GITHUB_API_BASE_URL}{path}",
+                "headers": _github_headers(bearer_token),
+            }
+            if json_payload is not None:
+                request_arguments["json"] = json_payload
+            response = await client.request(**request_arguments)
     except httpx.HTTPError as exc:
         logger.error("GitHub API request failed for %s %s: %s", method, path, exc)
         raise GitHubAppError("GitHub API request failed") from exc
@@ -12466,9 +13952,7 @@ async def get_installation_details(installation_id: int) -> dict[str, Any]:
         bearer_token=app_jwt,
     )
     if status_code == 404:
-        raise GitHubInstallationUnusableError(
-            "The GitHub installation is no longer available."
-        )
+        raise GitHubInstallationUnusableError("The GitHub installation is no longer available.")
     if status_code >= 400:
         raise GitHubAppError("Failed to fetch GitHub installation details")
     return payload
@@ -12495,11 +13979,18 @@ async def get_repo_installation(owner: str, repo: str) -> int | None:
     return installation_id
 
 
-async def get_installation_token(installation_id: int) -> str:
-    """Mint or reuse an access token for a GitHub App installation."""
-    assert installation_id > 0, "installation_id must be positive"
+async def get_installation_token(installation_id: int, repository_name: str) -> str:
+    """Mint or reuse a token restricted to one GitHub repository."""
+    if installation_id <= 0:
+        raise ValueError("installation_id must be positive")
+    normalized_repository_name = repository_name.strip()
+    if not normalized_repository_name:
+        raise ValueError("repository_name must not be empty")
+    if "/" in normalized_repository_name or "\\" in normalized_repository_name:
+        raise ValueError("repository_name must not contain a path separator")
 
-    cached_entry = _INSTALLATION_TOKEN_CACHE.get(installation_id)
+    cache_key = (installation_id, normalized_repository_name.lower())
+    cached_entry = _INSTALLATION_TOKEN_CACHE.get(cache_key)
     if cached_entry is not None:
         refresh_before_epoch = cached_entry.expires_at_epoch - _INSTALLATION_REFRESH_WINDOW_S
         if time.time() < refresh_before_epoch:
@@ -12510,6 +14001,10 @@ async def get_installation_token(installation_id: int) -> str:
         "POST",
         f"/app/installations/{installation_id}/access_tokens",
         bearer_token=app_jwt,
+        json_payload={
+            "repositories": [normalized_repository_name],
+            "permissions": {"contents": "write"},
+        },
     )
     if status_code in (403, 404):
         raise GitHubInstallationUnusableError(
@@ -12526,7 +14021,7 @@ async def get_installation_token(installation_id: int) -> str:
         raise GitHubAppError("GitHub installation token response is missing expiry")
 
     expires_at_epoch = _parse_github_timestamp(expires_at_text)
-    _INSTALLATION_TOKEN_CACHE[installation_id] = _CachedInstallationToken(
+    _INSTALLATION_TOKEN_CACHE[cache_key] = _CachedInstallationToken(
         token=access_token,
         expires_at_epoch=expires_at_epoch,
     )
@@ -12651,7 +14146,7 @@ async def resolve_github_clone_access(
         )
 
     try:
-        access_token = await get_installation_token(installation_id)
+        access_token = await get_installation_token(installation_id, github_remote.repo)
     except GitHubInstallationUnusableError as exc:
         raise GitHubInstallationUnusableError(
             str(exc),
@@ -12691,23 +14186,15 @@ async def resolve_github_runtime_access_token(
         if installation is None:
             return None
         try:
-            return await get_installation_token(installation_id)
+            return await get_installation_token(installation_id, github_remote.repo)
         except (GitHubAppError, GitHubInstallationUnusableError):
-            logger.warning(
-                "Failed to mint runtime GitHub token for installation %s",
-                installation_id,
-                exc_info=True,
-            )
+            logger.warning("Failed to authorize a runtime Git operation")
             return None
 
     try:
         clone_access = await resolve_github_clone_access(user_id, remote_url)
     except (GitHubAppError, GitHubInstallationUnusableError):
-        logger.warning(
-            "Failed to resolve runtime GitHub clone access for %s",
-            remote_url,
-            exc_info=True,
-        )
+        logger.warning("Failed to resolve runtime GitHub clone access")
         return None
     if clone_access is None:
         return None
@@ -12730,7 +14217,7 @@ import logging
 import os
 import secrets
 import sqlite3
-from typing import Any
+from typing import Any, cast
 
 from yinshi.config import get_settings
 from yinshi.db import get_control_db
@@ -12908,12 +14395,13 @@ def _find_user_by_identity(
     provider_user_id: str,
 ) -> sqlite3.Row | None:
     """Return one user row for one OAuth identity, or None when missing."""
-    return db.execute(
+    row = db.execute(
         "SELECT oi.user_id, u.email FROM oauth_identities oi "
         "JOIN users u ON oi.user_id = u.id "
         "WHERE oi.provider = ? AND oi.provider_user_id = ?",
         (provider, provider_user_id),
     ).fetchone()
+    return cast(sqlite3.Row | None, row)
 
 
 def _find_user_by_email(
@@ -12921,10 +14409,11 @@ def _find_user_by_email(
     email: str,
 ) -> sqlite3.Row | None:
     """Return one user row for one email, or None when missing."""
-    return db.execute(
+    row = db.execute(
         "SELECT id, email FROM users WHERE email = ?",
         (email,),
     ).fetchone()
+    return cast(sqlite3.Row | None, row)
 
 
 def _insert_oauth_identity(
@@ -14402,10 +15891,15 @@ hostname to clients.
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 import httpx
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
+
+from yinshi.rate_limit import limiter
 
 logger = logging.getLogger(__name__)
 
@@ -14426,6 +15920,9 @@ MAX_BODY_BYTES = 5 * 1024 * 1024  # 5 MiB
 
 # Connect quickly but allow slower uploads for replay segments on poor links.
 INTAKE_TIMEOUT_S = httpx.Timeout(connect=5.0, read=15.0, write=15.0, pool=5.0)
+_INTAKE_CONCURRENCY_MAX = 16
+_INTAKE_SLOT_WAIT_TIMEOUT_S = 0.1
+_intake_concurrency = asyncio.Semaphore(_INTAKE_CONCURRENCY_MAX)
 
 # Hop-by-hop and transport-specific headers that must not be relayed to the
 # caller. See RFC 7230 section 6.1; `content-encoding`/`content-length` are
@@ -14453,8 +15950,51 @@ def _validate_intake_path(intake_path: str) -> str:
     return intake_path
 
 
+@asynccontextmanager
+async def _intake_concurrency_slot() -> AsyncIterator[None]:
+    """Bound concurrent body reads and upstream requests across this process."""
+    try:
+        await asyncio.wait_for(
+            _intake_concurrency.acquire(),
+            timeout=_INTAKE_SLOT_WAIT_TIMEOUT_S,
+        )
+    except TimeoutError:
+        raise HTTPException(
+            status_code=503,
+            detail="Intake concurrency limit reached",
+            headers={"Retry-After": "1"},
+        ) from None
+    try:
+        yield
+    finally:
+        _intake_concurrency.release()
+
+
+async def _intake_concurrency_dependency() -> AsyncIterator[None]:
+    """Hold one global intake slot for the duration of a proxy request."""
+    async with _intake_concurrency_slot():
+        yield
+
+
+async def _read_bounded_body(request: Request) -> bytes:
+    """Read request chunks while enforcing the intake memory boundary."""
+    if not isinstance(request, Request):
+        raise TypeError("request must be a Request")
+    body = bytearray()
+    async for chunk in request.stream():
+        if len(body) + len(chunk) > MAX_BODY_BYTES:
+            raise HTTPException(status_code=413, detail="Intake payload too large")
+        body.extend(chunk)
+    return bytes(body)
+
+
 @router.post("/rum/api/v2/{intake_path}")
-async def proxy_datadog_intake(intake_path: str, request: Request) -> Response:
+@limiter.limit("120/minute")
+async def proxy_datadog_intake(
+    intake_path: str,
+    request: Request,
+    _concurrency_slot: None = Depends(_intake_concurrency_dependency),
+) -> Response:
     """Forward a browser SDK intake POST to Datadog and relay the response."""
     validated_intake_path = _validate_intake_path(intake_path)
 
@@ -14470,9 +16010,7 @@ async def proxy_datadog_intake(intake_path: str, request: Request) -> Response:
         if content_length_bytes > MAX_BODY_BYTES:
             raise HTTPException(status_code=413, detail="Intake payload too large")
 
-    body_bytes = await request.body()
-    if len(body_bytes) > MAX_BODY_BYTES:
-        raise HTTPException(status_code=413, detail="Intake payload too large")
+    body_bytes = await _read_bounded_body(request)
 
     # Preserve the original query string -- the SDK signs batches with
     # per-request parameters (e.g. `dd-api-key`, `dd-request-id`, `ddsource`).
@@ -14536,33 +16074,16 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
 import { datadogRum } from "@datadog/browser-rum";
-import { reactPlugin } from "@datadog/browser-rum-react";
 import App from "./App";
 import { AuthProvider } from "./hooks/useAuth";
+import { createRumConfiguration } from "./rum";
 import "./index.css";
 
 declare const __GIT_COMMIT_HASH__: string;
 
 /* Defer Datadog RUM so it does not compete with first paint. */
 const initDatadogRum = () => {
-  datadogRum.init({
-    applicationId: "6ca07893-ea15-4577-88cb-ef72b856ad3e",
-    clientToken: "pubbe7e2760d9e429d5cda2d2eb49a408be",
-    site: "datadoghq.com",
-    service: "yinshi",
-    env: "prod",
-    version: __GIT_COMMIT_HASH__,
-    sessionSampleRate: 100,
-    sessionReplaySampleRate: 100,
-    trackResources: true,
-    trackUserInteractions: true,
-    trackLongTasks: true,
-    defaultPrivacyLevel: "allow",
-    // Route intake through our own origin so DNS-level blockers targeting
-    // `browser-intake-datadoghq.com` (e.g. NextDNS, Pi-hole) cannot break RUM.
-    proxy: (options) => `/rum${options.path}?${options.parameters}`,
-    plugins: [reactPlugin({ router: false })],
-  });
+  datadogRum.init(createRumConfiguration(__GIT_COMMIT_HASH__));
 };
 
 if ("requestIdleCallback" in window) {
@@ -14573,13 +16094,47 @@ if ("requestIdleCallback" in window) {
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <BrowserRouter>
+    <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
       <AuthProvider>
         <App />
       </AuthProvider>
     </BrowserRouter>
   </React.StrictMode>,
 );
+```
+
+## rum.ts
+
+Browser observability is isolated from application startup so privacy defaults, sampling, and transport settings can be tested without mounting React.
+
+```typescript {chunk="frontend-src-rum-ts" file="frontend/src/rum.ts"}
+import { reactPlugin } from "@datadog/browser-rum-react";
+
+export function createRumConfiguration(version: string) {
+  if (typeof version !== "string" || version.trim().length === 0) {
+    throw new Error("version must be a non-empty string");
+  }
+
+  return {
+    applicationId: "6ca07893-ea15-4577-88cb-ef72b856ad3e",
+    clientToken: "pubbe7e2760d9e429d5cda2d2eb49a408be", // gitleaks:allow -- public browser token
+    site: "datadoghq.com",
+    service: "yinshi",
+    env: "prod",
+    version,
+    sessionSampleRate: 10,
+    // Coding sessions render private source, prompts, and tool output. Replay
+    // remains disabled even though the SDK package supports it.
+    sessionReplaySampleRate: 0,
+    trackResources: true,
+    trackUserInteractions: false,
+    trackLongTasks: true,
+    defaultPrivacyLevel: "mask" as const,
+    proxy: (options: { path: string; parameters: string }) =>
+      `/rum${options.path}?${options.parameters}`,
+    plugins: [reactPlugin({ router: false })],
+  };
+}
 ```
 
 ## App.tsx
@@ -15722,7 +17277,6 @@ export default function Landing() {
             className="landing-mascot"
             width={360}
             height={360}
-            fetchPriority="high"
           />
         </div>
         <div className="landing-hero-text">
@@ -15927,7 +17481,7 @@ The session page coordinates chat, sidebar selection, prompt submission, cancell
 ```tsx {chunk="frontend-src-pages-session-tsx" file="frontend/src/pages/Session.tsx"}
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { useParams } from "react-router-dom";
-import { api, type Message, type ThinkingLevel } from "../api/client";
+import { api, type Message, type SessionInfo, type ThinkingLevel } from "../api/client";
 import ChatView from "../components/ChatView";
 import WorkspaceInspector from "../components/WorkspaceInspector";
 import { useAgentStream, type ChatMessage } from "../hooks/useAgentStream";
@@ -15954,6 +17508,8 @@ const INSPECTOR_WIDTH_DEFAULT = 420;
 const INSPECTOR_WIDTH_MIN = 320;
 const INSPECTOR_WIDTH_MAX = 760;
 const DESKTOP_INSPECTOR_QUERY = "(min-width: 1024px)";
+const LEGACY_PI_CONTEXT_MESSAGE =
+  "This session predates durable Pi context and cannot continue with exact model context. Start a new session in this workspace.";
 
 function useMediaQuery(query: string): boolean {
   const [matches, setMatches] = useState(() => {
@@ -16002,6 +17558,7 @@ export default function Session() {
   const [thinkingOverride, setThinkingOverride] =
     useState<ThinkingLevel | null>(null);
   const [workspaceId, setWorkspaceId] = useState<string | null>(null);
+  const [piContextVersion, setPiContextVersion] = useState(0);
   const [workspacePanelOpen, setWorkspacePanelOpen] = useState(false);
   const [inspectorWidth, setInspectorWidth] = useState(storedInspectorWidth);
   const [fileRefreshKey, setFileRefreshKey] = useState(0);
@@ -16060,10 +17617,11 @@ export default function Session() {
 
     async function loadSession() {
       try {
-        const session = await api.get<{ model: string; workspace_id: string }>(`/api/sessions/${id}`);
+        const session = await api.get<SessionInfo>(`/api/sessions/${id}`);
         if (cancelled) return;
         setSessionModel(session.model);
         setWorkspaceId(session.workspace_id);
+        setPiContextVersion(session.pi_context_version);
       } catch (error) {
         console.error(`Failed to load session metadata for ${id}`, error);
       }
@@ -16332,6 +17890,10 @@ export default function Session() {
   const promptThinkingOverride = canOverrideThinking
     ? (selectedThinkingOverride ?? undefined)
     : undefined;
+  const legacyInputDisabledReason =
+    piContextVersion < 1 && messages.length > 0
+      ? LEGACY_PI_CONTEXT_MESSAGE
+      : null;
 
   const handleModelChange = useCallback(
     (requestedModel: string) => {
@@ -16350,6 +17912,10 @@ export default function Session() {
 
   const handleSend = useCallback(
     async (prompt: string) => {
+      if (legacyInputDisabledReason) return;
+      if (piContextVersion < 1) {
+        setPiContextVersion(1);
+      }
       // If the user starts a prompt while the model save is still in flight,
       // include the selected model in this prompt so the run does not fall back
       // to the previously persisted session model.
@@ -16359,7 +17925,13 @@ export default function Session() {
         promptThinkingOverride,
       );
     },
-    [pendingModelSelection, promptThinkingOverride, sendPrompt],
+    [
+      legacyInputDisabledReason,
+      pendingModelSelection,
+      piContextVersion,
+      promptThinkingOverride,
+      sendPrompt,
+    ],
   );
 
   const beginInspectorResize = useCallback(
@@ -16503,6 +18075,7 @@ export default function Session() {
                   onSend={handleSend}
                   onCancel={cancel}
                   onCommand={handleCommand}
+                  inputDisabledReason={legacyInputDisabledReason}
                   piCommands={piCommands}
                 />
               </div>
@@ -17300,16 +18873,6 @@ export interface PiConfigCommands {
   commands: PiCommand[];
 }
 
-export interface PiPackageUpdateStatus {
-  checked_at: string | null;
-  status: string | null;
-  previous_version: string | null;
-  current_version: string | null;
-  latest_version: string | null;
-  updated: boolean | null;
-  message: string | null;
-}
-
 export interface PiPackageRelease {
   tag_name: string;
   version: string;
@@ -17325,8 +18888,7 @@ export interface PiReleaseNotes {
   latest_version: string | null;
   node_version: string | null;
   release_notes_url: string;
-  update_schedule: string;
-  update_status: PiPackageUpdateStatus | null;
+  update_policy: string;
   runtime_error: string | null;
   release_error: string | null;
   releases: PiPackageRelease[];
@@ -17350,6 +18912,7 @@ export interface SessionInfo {
   workspace_id: string;
   status: string;
   model: string;
+  pi_context_version: number;
 }
 
 export interface Message {
@@ -17570,6 +19133,13 @@ export type SSEEvent =
   | { type: "message_delta"; delta?: unknown }
   | { type: "message_stop" }
   | { type: "result"; [key: string]: unknown }
+  | {
+      type: "status";
+      status: string;
+      message?: string;
+      severity?: "info" | "warning" | "error";
+      [key: string]: unknown;
+    }
   | { type: "cancelled"; reason?: string }
   | { type: "error"; error: string };
 
@@ -18798,8 +20368,9 @@ export type TurnStatus = "completed" | "cancelled" | "failed";
 
 export interface TurnBlock {
   id: string;
-  type: "text" | "thinking" | "tool_use" | "error";
+  type: "text" | "thinking" | "tool_use" | "error" | "status";
   text?: string;
+  severity?: "info" | "warning" | "error";
   toolName?: string;
   toolInput?: unknown;
   toolId?: string;
@@ -18994,6 +20565,14 @@ export function applyTurnEventToBlocks(
       return { changed: false, status: "completed" };
     case "cancelled":
       return { changed: false, status: "cancelled" };
+    case "status":
+      blocks.push({
+        id: createBlockId(),
+        type: "status",
+        text: event.message || event.status,
+        severity: event.severity || "info",
+      });
+      return { changed: true };
     case "error":
       blocks.push({ id: createBlockId(), type: "error", text: event.error });
       return { changed: true, status: "failed" };
@@ -19138,6 +20717,7 @@ interface ChatViewProps {
   onSend: (prompt: string) => void | Promise<void>;
   onCancel: () => void | Promise<void>;
   onCommand?: (name: string, args: string) => void | Promise<void>;
+  inputDisabledReason?: string | null;
   // Pi-provided slash commands (skills, prompts, extension commands). These
   // are inserted into the input on click so the user can supply arguments,
   // then submitted as a regular prompt that pi handles internally.
@@ -19150,6 +20730,7 @@ export default function ChatView({
   onSend,
   onCancel,
   onCommand,
+  inputDisabledReason,
   piCommands,
 }: ChatViewProps) {
   const [input, setInput] = useState("");
@@ -19260,7 +20841,7 @@ export default function ChatView({
     (e?: React.FormEvent) => {
       e?.preventDefault();
       const text = input.trim();
-      if (!text) return;
+      if (!text || inputDisabledReason) return;
 
       // Only intercept slash commands whose first token matches a builtin Yinshi
       // UI command. Pi skill / prompt / extension commands pass through to onSend
@@ -19287,10 +20868,11 @@ export default function ChatView({
       setShowMenu(false);
       resizeInput(inputRef.current);
     },
-    [input, streaming, onSend, onCommand],
+    [input, inputDisabledReason, streaming, onSend, onCommand],
   );
 
   const hasInput = input.trim().length > 0;
+  const inputDisabled = Boolean(inputDisabledReason);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -19406,6 +20988,11 @@ export default function ChatView({
             onSelect={selectCommand}
           />
         )}
+        {inputDisabledReason && (
+          <div className="mb-2 rounded-lg border border-amber-800/50 bg-amber-950/30 px-3 py-2 text-sm text-amber-200">
+            {inputDisabledReason}
+          </div>
+        )}
         <form onSubmit={handleSubmit} className="flex items-end gap-2">
           <textarea
             ref={inputRef}
@@ -19415,9 +21002,10 @@ export default function ChatView({
             onKeyUp={syncCaretFromInput}
             onClick={syncCaretFromInput}
             onSelect={syncCaretFromInput}
-            placeholder="Describe what to build..."
+            placeholder={inputDisabledReason || "Describe what to build..."}
+            disabled={inputDisabled}
             rows={1}
-            className="flex-1 resize-none rounded-xl bg-gray-800 px-4 py-3 text-sm text-gray-100 placeholder-gray-500 outline-none focus:ring-2 focus:ring-blue-500"
+            className="flex-1 resize-none rounded-xl bg-gray-800 px-4 py-3 text-sm text-gray-100 placeholder-gray-500 outline-none focus:ring-2 focus:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-60"
             style={{ maxHeight: "120px" }}
           />
           {streaming && !hasInput ? (
@@ -19446,7 +21034,7 @@ export default function ChatView({
           ) : (
             <button
               type="submit"
-              disabled={!hasInput}
+              disabled={!hasInput || inputDisabled}
               className="flex h-11 w-11 items-center justify-center rounded-xl bg-blue-500 text-white disabled:opacity-30 active:bg-blue-600"
               aria-label={streaming ? "Steer" : "Send"}
             >
@@ -19497,7 +21085,17 @@ function isTraceBlock(block: TurnBlock): boolean {
 }
 
 function isResponseBlock(block: TurnBlock): boolean {
-  return block.type === "text" || block.type === "error";
+  return block.type === "text" || block.type === "error" || block.type === "status";
+}
+
+function statusClassName(severity: TurnBlock["severity"]): string {
+  if (severity === "warning") {
+    return "border-amber-800/50 bg-amber-950/30 text-amber-200";
+  }
+  if (severity === "error") {
+    return "border-red-800/50 bg-red-900/30 text-red-300";
+  }
+  return "border-blue-900/50 bg-blue-950/30 text-blue-200";
 }
 
 function turnSummary(blocks: TurnBlock[]) {
@@ -19533,6 +21131,15 @@ function renderResponseBlock(block: TurnBlock) {
           <ReactMarkdown remarkPlugins={[remarkGfm]}>
             {block.text || ""}
           </ReactMarkdown>
+        </div>
+      );
+    case "status":
+      return (
+        <div
+          key={block.id}
+          className={`mx-2 rounded-lg border px-3 py-2 text-sm ${statusClassName(block.severity)}`}
+        >
+          {block.text}
         </div>
       );
     case "error":
@@ -22622,26 +24229,6 @@ function buildVersionStatus(releaseNotes: PiReleaseNotes): { text: string; tone:
   return { text: "Update available", tone: "warning" };
 }
 
-function updateStatusText(releaseNotes: PiReleaseNotes): string {
-  const updateStatus = releaseNotes.update_status;
-  if (!updateStatus) {
-    return "No daily update run recorded yet.";
-  }
-  if (updateStatus.message) {
-    return updateStatus.message;
-  }
-  if (updateStatus.status === "current") {
-    return "Daily updater found pi already current.";
-  }
-  if (updateStatus.status === "updated") {
-    return "Daily updater installed a newer pi package.";
-  }
-  if (updateStatus.status === "failed") {
-    return "Daily updater failed on the last run.";
-  }
-  return "Daily updater status recorded.";
-}
-
 function ReleaseMarkdown({ body }: { body: string }) {
   if (!body.trim()) {
     return <p className="text-sm text-gray-500">No release notes published.</p>;
@@ -22710,13 +24297,8 @@ function RuntimeSummary({ releaseNotes }: { releaseNotes: PiReleaseNotes }) {
         <div className={`mt-1 text-xs ${statusClassName}`}>{status.text}</div>
       </div>
       <div className="rounded-xl border border-gray-800 bg-gray-900/70 p-4">
-        <div className="text-xs uppercase tracking-wide text-gray-500">Daily updater</div>
-        <div className="mt-2 text-sm text-gray-200">{updateStatusText(releaseNotes)}</div>
-        {releaseNotes.update_status?.checked_at ? (
-          <div className="mt-1 text-xs text-gray-500">
-            Last checked {new Date(releaseNotes.update_status.checked_at).toLocaleString()}
-          </div>
-        ) : null}
+        <div className="text-xs uppercase tracking-wide text-gray-500">Update policy</div>
+        <div className="mt-2 text-sm text-gray-200">{releaseNotes.update_policy}</div>
       </div>
     </div>
   );
@@ -22733,7 +24315,7 @@ export default function PiReleaseNotesSection() {
             Pi release notes
           </h2>
           <p className="mt-1 text-sm text-gray-400">
-            Yinshi updates the bundled pi package daily and rebuilds the sidecar image when npm publishes a new version.
+            Yinshi updates the bundled pi package through reviewed lockfile changes and immutable sidecar builds.
           </p>
           {releaseNotes ? (
             <a
@@ -22856,15 +24438,15 @@ import {
   createEditTool,
   createReadTool,
   createWriteTool,
-} from "@mariozechner/pi-coding-agent";
-import { supportsXhigh } from "@mariozechner/pi-ai";
-import { getOAuthProvider } from "@mariozechner/pi-ai/oauth";
+} from "@earendil-works/pi-coding-agent";
+import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
+import { getOAuthProvider } from "@earendil-works/pi-ai/oauth";
 
 import { HEALTH_CHECK_INTERVAL } from "./constants.js";
 import { createGitAwareBashTool } from "./git_auth.js";
 
 const __sidecarDir = path.dirname(fileURLToPath(import.meta.url));
-const PI_PACKAGE_NAME = "@mariozechner/pi-coding-agent";
+const PI_PACKAGE_NAME = "@earendil-works/pi-coding-agent";
 const DEFAULT_MODEL_REF = "minimax/MiniMax-M2.7";
 const DEFAULT_THINKING_LEVEL = "medium";
 const OFF_THINKING_LEVEL = "off";
@@ -22899,6 +24481,24 @@ function sendToSocket(socket, message) {
     return;
   }
   socket.write(`${JSON.stringify(message)}\n`);
+}
+
+function sendStatusToSocket(
+  socket,
+  sessionId,
+  status,
+  message,
+  severity = "info",
+  extra = {},
+) {
+  sendToSocket(socket, {
+    id: sessionId,
+    type: "status",
+    status,
+    severity,
+    message,
+    ...extra,
+  });
 }
 
 function normalizePositiveInteger(value, fallback, minValue, maxValue) {
@@ -23003,6 +24603,55 @@ function normalizeImportedSettings(importedSettings) {
     }
   }
   return normalizedSettings;
+}
+
+function normalizePiSessionFile(piSessionFile) {
+  if (piSessionFile === null || piSessionFile === undefined) {
+    return null;
+  }
+  if (typeof piSessionFile !== "string") {
+    throw new Error("piSessionFile must be a string");
+  }
+  const normalizedPath = piSessionFile.trim();
+  if (!normalizedPath) {
+    throw new Error("piSessionFile must not be empty");
+  }
+  if (normalizedPath.includes("\0")) {
+    throw new Error("piSessionFile must not contain NUL");
+  }
+  return normalizedPath;
+}
+
+function openSessionManager(cwd, normalizedSessionFile) {
+  if (!normalizedSessionFile) {
+    return {
+      sessionManager: SessionManager.inMemory(),
+      resetWarning: null,
+      piSessionFile: null,
+    };
+  }
+
+  const sessionDir = path.dirname(normalizedSessionFile);
+  fs.mkdirSync(sessionDir, { recursive: true, mode: 0o700 });
+  try {
+    return {
+      sessionManager: SessionManager.open(normalizedSessionFile, sessionDir, cwd),
+      resetWarning: null,
+      piSessionFile: normalizedSessionFile,
+    };
+  } catch {
+    const suffix = new Date().toISOString().replace(/[:.]/g, "-");
+    const corruptPath = `${normalizedSessionFile}.corrupt-${suffix}`;
+    if (fs.existsSync(normalizedSessionFile)) {
+      fs.renameSync(normalizedSessionFile, corruptPath);
+    }
+    return {
+      sessionManager: SessionManager.open(normalizedSessionFile, sessionDir, cwd),
+      resetWarning:
+        "Pi session context was missing or unreadable, so Yinshi started a fresh model context. The visible transcript is still preserved.",
+      piSessionFile: normalizedSessionFile,
+    };
+  }
 }
 
 function stringifyToolContent(content) {
@@ -23299,7 +24948,8 @@ function getThinkingLevels(model) {
   if (!model.reasoning) {
     return [OFF_THINKING_LEVEL];
   }
-  return supportsXhigh(model) ? XHIGH_THINKING_LEVELS : STANDARD_THINKING_LEVELS;
+  const supportedLevels = new Set(getSupportedThinkingLevels(model));
+  return supportedLevels.has("xhigh") ? XHIGH_THINKING_LEVELS : STANDARD_THINKING_LEVELS;
 }
 
 function toCatalogModel(model) {
@@ -23860,6 +25510,13 @@ export class YinshiSidecar {
 
     return new Promise((resolve, reject) => {
       this.server.listen(this.socketPath, () => {
+        try {
+          fs.chmodSync(this.socketPath, 0o600);
+        } catch (error) {
+          this.server.close();
+          reject(error);
+          return;
+        }
         console.log(`SOCKET_PATH=${this.socketPath}`);
         this.healthCheckInterval = setInterval(() => {
           console.log(
@@ -24288,10 +25945,26 @@ export class YinshiSidecar {
     });
   }
 
-  async _createPiSession(sessionId, socket, modelRef, cwd, providerAuth, providerConfig, gitAuth, agentDir, importedSettings) {
+  async _createPiSession(
+    sessionId,
+    socket,
+    modelRef,
+    cwd,
+    providerAuth,
+    providerConfig,
+    gitAuth,
+    agentDir,
+    importedSettings,
+    normalizedPiSessionFile,
+  ) {
     const { authStorage: sessionAuth } = createModelRegistry(providerAuth, agentDir);
     const sessionRegistry = new ModelRegistry(sessionAuth, buildModelsJsonPath(agentDir));
     const model = resolveModel(modelRef, providerAuth, agentDir, providerConfig);
+    const {
+      sessionManager,
+      resetWarning,
+      piSessionFile: openedPiSessionFile,
+    } = openSessionManager(cwd, normalizedPiSessionFile);
 
     const settingsManager = SettingsManager.inMemory({
       compaction: { enabled: true },
@@ -24309,7 +25982,7 @@ export class YinshiSidecar {
       // tool implementations as `customTools` so they replace the built-ins
       // while keeping read/bash/edit/write active for the model.
       customTools: createYinshiCodingTools(cwd, gitAuth),
-      sessionManager: SessionManager.inMemory(),
+      sessionManager,
       settingsManager,
       authStorage: sessionAuth,
       modelRegistry: sessionRegistry,
@@ -24330,11 +26003,23 @@ export class YinshiSidecar {
       runner.setUIContext(createWebUIContext(sessionId, socket, model));
       console.log(`[sidecar] session ${sessionId} UI context bound`);
     }
+    if (resetWarning) {
+      sendStatusToSocket(
+        socket,
+        sessionId,
+        "context_reset",
+        resetWarning,
+        "warning",
+      );
+    }
     console.log(
       `[sidecar] Created pi session ${sessionId} with model ${model.name || model.id}`
-      + (agentDir ? ` and agentDir ${agentDir}` : ""),
+      + (agentDir ? ` and agentDir ${agentDir}` : "")
+      + (openedPiSessionFile
+        ? ` and piSessionFile ${openedPiSessionFile}`
+        : ""),
     );
-    return { session, model };
+    return { session, model, piSessionFile: openedPiSessionFile };
   }
 
   async warmupSession(sessionId, socket, options) {
@@ -24352,7 +26037,12 @@ export class YinshiSidecar {
     const importedSettings = options.settings || null;
 
     try {
-      const { session: piSession, model } = await this._createPiSession(
+      const requestedPiSessionFile = normalizePiSessionFile(options.piSessionFile || null);
+      const {
+        session: piSession,
+        model,
+        piSessionFile: normalizedPiSessionFile,
+      } = await this._createPiSession(
         sessionId,
         socket,
         modelRef,
@@ -24362,6 +26052,7 @@ export class YinshiSidecar {
         gitAuth,
         agentDir,
         importedSettings,
+        requestedPiSessionFile,
       );
       this.activeSessions.set(sessionId, {
         piSession,
@@ -24372,6 +26063,7 @@ export class YinshiSidecar {
         providerConfig,
         gitAuth,
         importedSettings,
+        piSessionFile: normalizedPiSessionFile,
         unsubscribe: null,
         cancelRequested: false,
       });
@@ -24391,16 +26083,19 @@ export class YinshiSidecar {
     const agentDir = options.agentDir || null;
     const importedSettings = options.settings || null;
     let entry = this.activeSessions.get(sessionId);
+    let clearFinalizeTimer = () => {};
     console.log(
       `[sidecar] processQuery session=${sessionId} model=${modelRef} hasEntry=${!!entry} promptLen=${prompt?.length ?? 0}`,
     );
 
     try {
+      const requestedPiSessionFile = normalizePiSessionFile(options.piSessionFile || null);
       const authChanged = JSON.stringify(entry?.providerAuth || null) !== JSON.stringify(providerAuth);
       const configChanged = JSON.stringify(entry?.providerConfig || null) !== JSON.stringify(providerConfig);
       const gitAuthChanged = JSON.stringify(entry?.gitAuth || null) !== JSON.stringify(gitAuth);
       const settingsChanged = JSON.stringify(entry?.importedSettings || null)
         !== JSON.stringify(importedSettings);
+      const piSessionFileChanged = (entry?.piSessionFile || null) !== requestedPiSessionFile;
       if (
         !entry
         || entry.modelRef !== modelRef
@@ -24408,6 +26103,7 @@ export class YinshiSidecar {
         || configChanged
         || gitAuthChanged
         || settingsChanged
+        || piSessionFileChanged
       ) {
         if (entry) {
           if (entry.unsubscribe) {
@@ -24415,7 +26111,11 @@ export class YinshiSidecar {
           }
           entry.piSession.dispose();
         }
-        const { session: piSession, model } = await this._createPiSession(
+        const {
+          session: piSession,
+          model,
+          piSessionFile: normalizedPiSessionFile,
+        } = await this._createPiSession(
           sessionId,
           socket,
           modelRef,
@@ -24425,6 +26125,7 @@ export class YinshiSidecar {
           gitAuth,
           agentDir,
           importedSettings,
+          requestedPiSessionFile,
         );
         entry = {
           piSession,
@@ -24435,6 +26136,7 @@ export class YinshiSidecar {
           providerConfig,
           gitAuth,
           importedSettings,
+          piSessionFile: normalizedPiSessionFile,
           unsubscribe: null,
           cancelRequested: false,
         };
@@ -24454,6 +26156,41 @@ export class YinshiSidecar {
       // for a "result" event. Track whether agent_end fired so we can emit
       // a synthetic one after prompt() resolves.
       let agentEndEmitted = false;
+      let resultSent = false;
+      let pendingResult = null;
+      let compactionActive = false;
+      let finalizeTimer = null;
+
+      const buildResultMessage = (resultUsage) => ({
+        id: sessionId,
+        type: "message",
+        data: {
+          type: "result",
+          usage: resultUsage || {},
+          provider: model.provider,
+          model: `${model.provider}/${model.id}`,
+        },
+      });
+
+      clearFinalizeTimer = () => {
+        if (finalizeTimer) {
+          clearTimeout(finalizeTimer);
+          finalizeTimer = null;
+        }
+      };
+
+      const schedulePendingResult = () => {
+        clearFinalizeTimer();
+        finalizeTimer = setTimeout(() => {
+          finalizeTimer = null;
+          if (resultSent || compactionActive || !pendingResult) {
+            return;
+          }
+          sendToSocket(socket, pendingResult);
+          pendingResult = null;
+          resultSent = true;
+        }, 0);
+      };
 
       entry.unsubscribe = piSession.subscribe((event) => {
         // Temporary diagnostic so we can see every event pi emits while we
@@ -24531,26 +26268,66 @@ export class YinshiSidecar {
             }
             break;
           case "agent_end":
-            sendToSocket(socket, {
-              id: sessionId,
-              type: "message",
-              data: {
-                type: "result",
-                usage: usage || {},
-                provider: model.provider,
-                model: `${model.provider}/${model.id}`,
-              },
-            });
+            pendingResult = buildResultMessage(usage);
             usage = null;
             agentEndEmitted = true;
+            schedulePendingResult();
             break;
           case "auto_retry_start":
+            pendingResult = null;
+            clearFinalizeTimer();
             console.log(
               `[sidecar] Retrying (attempt ${event.attempt}/${event.maxAttempts}): ${event.errorMessage}`,
             );
+            sendStatusToSocket(
+              socket,
+              sessionId,
+              "retrying",
+              `Retrying after provider error (attempt ${event.attempt}/${event.maxAttempts})...`,
+            );
             break;
-          case "auto_compaction_start":
-            console.log("[sidecar] Auto-compacting context...");
+          case "auto_retry_end":
+            sendStatusToSocket(
+              socket,
+              sessionId,
+              event.success ? "retry_complete" : "retry_failed",
+              event.success ? "Retry complete." : "Retry failed.",
+              event.success ? "info" : "warning",
+            );
+            break;
+          case "compaction_start":
+            compactionActive = true;
+            clearFinalizeTimer();
+            console.log("[sidecar] Compacting context...");
+            sendStatusToSocket(
+              socket,
+              sessionId,
+              "compacting",
+              "Compacting context...",
+              "info",
+              { reason: event.reason },
+            );
+            break;
+          case "compaction_end":
+            compactionActive = false;
+            if (event.willRetry) {
+              pendingResult = null;
+            }
+            sendStatusToSocket(
+              socket,
+              sessionId,
+              event.errorMessage ? "compaction_failed" : "compacted",
+              event.errorMessage || "Context compacted.",
+              event.errorMessage ? "warning" : "info",
+              {
+                reason: event.reason,
+                willRetry: event.willRetry === true,
+                aborted: event.aborted === true,
+              },
+            );
+            if (!event.willRetry) {
+              schedulePendingResult();
+            }
             break;
         }
       });
@@ -24564,20 +26341,13 @@ export class YinshiSidecar {
       // Pi returns from prompt() without firing agent_end when it handles an
       // extension command inline (e.g. `/rtk-stats`). Synthesise the result
       // event so the client stream loop terminates cleanly instead of hanging.
-      if (!agentEndEmitted) {
+      if (!agentEndEmitted && !resultSent) {
         console.log(`[sidecar] synthesising result for session ${sessionId}`);
-        sendToSocket(socket, {
-          id: sessionId,
-          type: "message",
-          data: {
-            type: "result",
-            usage: usage || {},
-            provider: model.provider,
-            model: `${model.provider}/${model.id}`,
-          },
-        });
+        sendToSocket(socket, buildResultMessage(usage));
+        resultSent = true;
       }
     } catch (err) {
+      clearFinalizeTimer();
       const errorMessage = err instanceof Error ? err.message : String(err);
       if (entry?.cancelRequested) {
         console.log(`[sidecar] Session ${sessionId} cancelled by user`);
@@ -24606,6 +26376,8 @@ export class YinshiSidecar {
     }
     console.log(`[sidecar] Cancelling session ${sessionId}`);
     entry.cancelRequested = true;
+    entry.piSession.abortCompaction();
+    entry.piSession.abortRetry();
     await entry.piSession.abort();
   }
 
@@ -24663,10 +26435,13 @@ Git-auth helpers wrap the sidecar's bash tool so git commands can use runtime cr
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import net from "node:net";
 import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
-import { createBashTool, createLocalBashOperations } from "@mariozechner/pi-coding-agent";
+import { createBashTool, createLocalBashOperations } from "@earendil-works/pi-coding-agent";
 
+const GIT_EXECUTABLE_PATH = "/usr/bin/git";
 const GIT_REMOTE_SUBCOMMANDS = new Set(["clone", "fetch", "ls-remote", "pull", "push"]);
 const SHELL_AND_OPERATOR = "&&";
 
@@ -24686,13 +26461,10 @@ function quoteShellLiteral(value) {
   return `'${normalizedValue.replace(/'/g, `'\"'\"'`)}'`;
 }
 
-function buildGitAskpassScript(tokenFilePath) {
-  const normalizedTokenFilePath = assertNonEmptyString(tokenFilePath, "tokenFilePath");
+function buildGitAskpassScript() {
+  const clientPath = fileURLToPath(new URL("./git_askpass_client.js", import.meta.url));
   return "#!/bin/sh\n"
-    + "case \"$1\" in\n"
-    + "  *Username*) printf '%s\\n' 'x-access-token' ;;\n"
-    + `  *) cat ${quoteShellLiteral(normalizedTokenFilePath)} ;;\n`
-    + "esac\n";
+    + `exec ${quoteShellLiteral(process.execPath)} ${quoteShellLiteral(clientPath)} \"$1\"\n`;
 }
 
 export function normalizeGitAuth(gitAuth) {
@@ -24871,25 +26643,21 @@ export function parseGitCommandForRuntimeAuth(command, defaultCwd) {
   }
 
   return {
-    command: "git",
+    command: GIT_EXECUTABLE_PATH,
     cwd: gitCwd,
     gitArguments,
     subcommand: normalizedSubcommand,
   };
 }
 
-export function createGitAskpassBundle(accessToken) {
-  const normalizedAccessToken = assertNonEmptyString(accessToken, "accessToken");
+export function createGitAskpassBundle() {
   const bundleDirPath = fs.mkdtempSync(path.join(os.tmpdir(), "yinshi-git-"));
   fs.chmodSync(bundleDirPath, 0o700);
 
-  const tokenFilePath = path.join(bundleDirPath, "token");
   const askpassPath = path.join(bundleDirPath, "askpass.sh");
-  fs.writeFileSync(tokenFilePath, normalizedAccessToken, { encoding: "utf-8", mode: 0o600 });
-  fs.chmodSync(tokenFilePath, 0o600);
   fs.writeFileSync(
     askpassPath,
-    buildGitAskpassScript(tokenFilePath),
+    buildGitAskpassScript(),
     { encoding: "utf-8", mode: 0o700 },
   );
   fs.chmodSync(askpassPath, 0o700);
@@ -24903,19 +26671,81 @@ export function createGitAskpassBundle(accessToken) {
   };
 }
 
-function createGitExecutionEnvironment(baseEnv, askpassPath) {
+function createGitExecutionEnvironment(baseEnv, askpassPath, credentialSocketPath) {
   const normalizedAskpassPath = assertNonEmptyString(askpassPath, "askpassPath");
-  const executionEnvironment = {
-    ...process.env,
-    ...(baseEnv || {}),
-  };
+  const normalizedSocketPath = assertNonEmptyString(
+    credentialSocketPath,
+    "credentialSocketPath",
+  );
+  const environmentSource = { ...process.env, ...(baseEnv || {}) };
+  const executionEnvironment = {};
+  for (const name of ["HOME", "LANG", "LC_ALL", "PATH", "TEMP", "TMP", "TMPDIR"]) {
+    if (typeof environmentSource[name] === "string") {
+      executionEnvironment[name] = environmentSource[name];
+    }
+  }
   executionEnvironment.GCM_INTERACTIVE = "Never";
   executionEnvironment.GIT_ASKPASS = normalizedAskpassPath;
   executionEnvironment.GIT_CONFIG_NOSYSTEM = "1";
   executionEnvironment.GIT_CONFIG_GLOBAL = os.devNull;
   executionEnvironment.GIT_PAGER = "cat";
   executionEnvironment.GIT_TERMINAL_PROMPT = "0";
+  executionEnvironment.YINSHI_GIT_CREDENTIAL_SOCKET = normalizedSocketPath;
   return executionEnvironment;
+}
+
+async function createGitCredentialBroker(accessToken) {
+  let credential = assertNonEmptyString(accessToken, "accessToken");
+  const askpassBundle = createGitAskpassBundle();
+  const socketPath = path.join(askpassBundle.bundleDirPath, "credential.sock");
+  let credentialIssued = false;
+  const server = net.createServer((socket) => {
+    socket.setTimeout(5000, () => socket.destroy());
+    socket.once("data", (rawPrompt) => {
+      if (rawPrompt.length > 1024) {
+        socket.destroy();
+        return;
+      }
+      const prompt = rawPrompt.toString("utf-8").trim();
+      if (prompt.includes("Username")) {
+        socket.end("x-access-token\n");
+        return;
+      }
+      if (credentialIssued) {
+        socket.destroy();
+        return;
+      }
+      credentialIssued = true;
+      const oneTimeCredential = credential;
+      credential = "";
+      socket.end(`${oneTimeCredential}\n`);
+    });
+  });
+
+  try {
+    await new Promise((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(socketPath, () => {
+        server.removeListener("error", reject);
+        resolve();
+      });
+    });
+    fs.chmodSync(socketPath, 0o600);
+  } catch (error) {
+    server.close();
+    askpassBundle.cleanup();
+    throw error;
+  }
+
+  return {
+    askpassPath: askpassBundle.askpassPath,
+    socketPath,
+    cleanup() {
+      credential = "";
+      server.close();
+      askpassBundle.cleanup();
+    },
+  };
 }
 
 function createGitCommandArguments(gitArguments) {
@@ -24934,7 +26764,7 @@ function createGitCommandArguments(gitArguments) {
   ];
 }
 
-function executeGitCommand(parsedGitCommand, execOptions, gitAuth) {
+async function executeGitCommand(parsedGitCommand, execOptions, gitAuth) {
   if (!parsedGitCommand || typeof parsedGitCommand !== "object") {
     throw new TypeError("parsedGitCommand is required");
   }
@@ -24942,9 +26772,13 @@ function executeGitCommand(parsedGitCommand, execOptions, gitAuth) {
   if (normalizedGitAuth === null) {
     throw new Error("gitAuth is required for authenticated git execution");
   }
-  const askpassBundle = createGitAskpassBundle(normalizedGitAuth.accessToken);
+  const credentialBroker = await createGitCredentialBroker(normalizedGitAuth.accessToken);
   const gitCommandArguments = createGitCommandArguments(parsedGitCommand.gitArguments);
-  const gitEnvironment = createGitExecutionEnvironment(execOptions?.env, askpassBundle.askpassPath);
+  const gitEnvironment = createGitExecutionEnvironment(
+    execOptions?.env,
+    credentialBroker.askpassPath,
+    credentialBroker.socketPath,
+  );
 
   return new Promise((resolve, reject) => {
     const gitChild = spawn(
@@ -24989,7 +26823,7 @@ function executeGitCommand(parsedGitCommand, execOptions, gitAuth) {
       if (execOptions?.signal) {
         execOptions.signal.removeEventListener("abort", onAbort);
       }
-      askpassBundle.cleanup();
+      credentialBroker.cleanup();
     };
 
     gitChild.on("error", (error) => {
@@ -25039,4 +26873,42 @@ export function createGitAwareBashTool(cwd, gitAuth) {
     operations: createGitRuntimeBashOperations(normalizedCwd, gitAuth),
   });
 }
+```
+
+## git_askpass_client.js
+
+The askpass client receives no credential in its arguments, environment, or filesystem. It sends Git's prompt to the short-lived Unix-socket broker and writes the one-time response to Git.
+
+```javascript {chunk="sidecar-src-git-askpass-client-js" file="sidecar/src/git_askpass_client.js"}
+#!/usr/bin/env node
+
+import net from "node:net";
+
+const socketPath = process.env.YINSHI_GIT_CREDENTIAL_SOCKET;
+const prompt = process.argv[2];
+if (typeof socketPath !== "string" || socketPath.length === 0) {
+  throw new Error("YINSHI_GIT_CREDENTIAL_SOCKET is required");
+}
+if (typeof prompt !== "string" || prompt.length === 0 || prompt.length > 1024) {
+  throw new Error("Git askpass prompt is invalid");
+}
+
+const socket = net.createConnection(socketPath);
+let response = "";
+socket.setEncoding("utf-8");
+socket.setTimeout(5000, () => socket.destroy(new Error("Git credential broker timed out")));
+socket.on("connect", () => socket.write(`${prompt}\n`));
+socket.on("data", (chunk) => {
+  response += chunk;
+  if (response.length > 4096) {
+    socket.destroy(new Error("Git credential broker response is too large"));
+  }
+});
+socket.on("end", () => {
+  process.stdout.write(response);
+});
+socket.on("error", (error) => {
+  process.stderr.write(`${error.message}\n`);
+  process.exitCode = 1;
+});
 ```
