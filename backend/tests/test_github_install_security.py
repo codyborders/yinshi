@@ -1,6 +1,7 @@
 """GitHub App install tests prove user-to-installation ownership binding."""
 
 from unittest.mock import AsyncMock, patch
+from urllib.parse import parse_qs, urlparse
 
 from fastapi.testclient import TestClient
 
@@ -81,4 +82,28 @@ def test_install_callback_requires_user_authorization_before_storage(
             "SELECT installation_id FROM github_installations WHERE user_id = ?",
             (tenant.user_id,),
         ).fetchone()
+    assert installation is None
+
+    verification_state = parse_qs(urlparse(location).query)["state"][0]
+    details_mock = AsyncMock()
+    with (
+        TestClient(app) as client,
+        patch(
+            "yinshi.api.auth_routes.verify_github_user_installation",
+            new=AsyncMock(return_value=False),
+            create=True,
+        ),
+        patch("yinshi.api.auth_routes.get_installation_details", new=details_mock),
+    ):
+        client.cookies.set("yinshi_session", create_session_token(tenant.user_id))
+        denied_response = client.get(
+            "/auth/github/install/verify",
+            params={"state": verification_state, "code": "denied-user-code"},
+            follow_redirects=False,
+        )
+
+    assert denied_response.headers["location"] == "/app?github_connect_error=not_granted"
+    assert details_mock.await_count == 0
+    with get_control_db() as db:
+        installation = db.execute("SELECT installation_id FROM github_installations").fetchone()
     assert installation is None

@@ -87,6 +87,43 @@ def _create_github_install_state(user_id: str) -> str:
     return serializer.dumps(user_id, salt="github-install-state")
 
 
+def _create_github_install_verification_state(user_id: str, installation_id: int) -> str:
+    """Sign a user and candidate installation for the GitHub authorization leg."""
+    if not user_id:
+        raise ValueError("user_id must not be empty")
+    if installation_id <= 0:
+        raise ValueError("installation_id must be positive")
+    serializer = _github_install_state_serializer()
+    return serializer.dumps(
+        {"user_id": user_id, "installation_id": installation_id},
+        salt="github-install-verification-state",
+    )
+
+
+def _verify_github_install_verification_state(state: str) -> tuple[str, int] | None:
+    """Return the signed user and installation when authorization state is valid."""
+    if not state:
+        raise ValueError("state must not be empty")
+    serializer = _github_install_state_serializer()
+    try:
+        payload = serializer.loads(
+            state,
+            salt="github-install-verification-state",
+            max_age=_GITHUB_INSTALL_STATE_MAX_AGE_S,
+        )
+    except (BadSignature, BadTimeSignature):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    user_id = payload.get("user_id")
+    installation_id = payload.get("installation_id")
+    if not isinstance(user_id, str) or not user_id:
+        return None
+    if not isinstance(installation_id, int) or installation_id <= 0:
+        return None
+    return user_id, installation_id
+
+
 def _verify_github_install_state(state: str) -> str | None:
     """Verify a GitHub install state token and return the user id."""
     assert state, "state must not be empty"
@@ -473,6 +510,57 @@ async def callback_github(request: Request) -> RedirectResponse:
     return response
 
 
+async def verify_github_user_installation(code: str, installation_id: int) -> bool:
+    """Verify that the authorized GitHub user can access one installation."""
+    if not code:
+        raise ValueError("code must not be empty")
+    if installation_id <= 0:
+        raise ValueError("installation_id must be positive")
+    settings = get_settings()
+    if not settings.github_app_client_id:
+        raise GitHubAppError("GitHub App client ID is not configured")
+    if settings.github_app_client_secret is None:
+        raise GitHubAppError("GitHub App client secret is not configured")
+    if not settings.github_app_user_callback_url:
+        raise GitHubAppError("GitHub App user callback URL is not configured")
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            token_response = await client.post(
+                "https://github.com/login/oauth/access_token",
+                headers={"Accept": "application/json"},
+                data={
+                    "client_id": settings.github_app_client_id,
+                    "client_secret": settings.github_app_client_secret.get_secret_value(),
+                    "code": code,
+                    "redirect_uri": settings.github_app_user_callback_url,
+                },
+            )
+            if token_response.status_code >= 400:
+                return False
+            token_payload = token_response.json()
+            access_token = token_payload.get("access_token")
+            if not isinstance(access_token, str) or not access_token:
+                return False
+            installation_response = await client.get(
+                f"https://api.github.com/user/installations/"
+                f"{installation_id}/repositories?per_page=1",
+                headers={
+                    "Accept": "application/vnd.github+json",
+                    "Authorization": f"Bearer {access_token}",
+                    "X-GitHub-Api-Version": "2022-11-28",
+                },
+            )
+    except (httpx.HTTPError, ValueError) as exc:
+        raise GitHubAppError("GitHub user authorization verification failed") from exc
+
+    if installation_response.status_code in {401, 403, 404}:
+        return False
+    if installation_response.status_code >= 400:
+        raise GitHubAppError("GitHub installation access verification failed")
+    return True
+
+
 @router.get("/github/install", response_model=None)
 async def github_install(request: Request) -> Response:
     """Redirect an authenticated user to the GitHub App install flow."""
@@ -522,14 +610,78 @@ async def github_install_callback(request: Request) -> RedirectResponse:
         return RedirectResponse(url="/app?github_connect_error=not_granted")
 
     settings = get_settings()
+    verification_state = _create_github_install_verification_state(user_id, installation_id)
     authorization_query = urlencode(
         {
             "client_id": settings.github_app_client_id,
             "redirect_uri": settings.github_app_user_callback_url,
-            "state": state,
+            "state": verification_state,
         }
     )
     return RedirectResponse(url=f"https://github.com/login/oauth/authorize?{authorization_query}")
+
+
+@router.get("/github/install/verify")
+async def github_install_verify(request: Request) -> RedirectResponse:
+    """Bind an installation after a GitHub user authorization callback."""
+    state = request.query_params.get("state")
+    code = request.query_params.get("code")
+    if not state or not code:
+        return RedirectResponse(url="/app?github_connect_error=invalid_state")
+
+    state_payload = _verify_github_install_verification_state(state)
+    if state_payload is None:
+        return RedirectResponse(url="/app?github_connect_error=invalid_state")
+    user_id, installation_id = state_payload
+    if _current_user_id(request) != user_id:
+        return RedirectResponse(url="/app?github_connect_error=invalid_state")
+
+    try:
+        user_has_access = await verify_github_user_installation(code, installation_id)
+    except GitHubAppError:
+        logger.exception("GitHub user verification failed for installation=%s", installation_id)
+        return RedirectResponse(url="/app?github_connect_error=install_failed")
+    if not user_has_access:
+        return RedirectResponse(url="/app?github_connect_error=not_granted")
+
+    try:
+        installation = await get_installation_details(installation_id)
+    except GitHubInstallationUnusableError:
+        return RedirectResponse(url="/app?github_connect_error=not_granted")
+    except GitHubAppError:
+        logger.exception("GitHub App verification failed for installation=%s", installation_id)
+        return RedirectResponse(url="/app?github_connect_error=install_failed")
+
+    account = installation.get("account")
+    account_login = account.get("login") if isinstance(account, dict) else None
+    account_type = account.get("type") if isinstance(account, dict) else None
+    html_url = installation.get("html_url")
+    if installation.get("suspended_at"):
+        return RedirectResponse(url="/app?github_connect_error=not_granted")
+    if not isinstance(account_login, str) or not account_login:
+        return RedirectResponse(url="/app?github_connect_error=install_failed")
+    if not isinstance(account_type, str) or not account_type:
+        return RedirectResponse(url="/app?github_connect_error=install_failed")
+    if not isinstance(html_url, str) or not html_url:
+        return RedirectResponse(url="/app?github_connect_error=install_failed")
+
+    with get_control_db() as db:
+        db.execute(
+            """
+            INSERT INTO github_installations (
+                user_id, installation_id, account_login, account_type, html_url
+            ) VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(user_id, installation_id) DO UPDATE SET
+                account_login = excluded.account_login,
+                account_type = excluded.account_type,
+                html_url = excluded.html_url
+            """,
+            (user_id, installation_id, account_login, account_type, html_url),
+        )
+        db.commit()
+
+    await _refresh_connected_github_repos(user_id, account_login)
+    return RedirectResponse(url="/app?github_connected=1")
 
 
 @router.post("/providers/{provider}/start", response_model=ProviderAuthStartOut)

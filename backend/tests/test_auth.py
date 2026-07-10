@@ -9,6 +9,7 @@ error code instead of returning a bare 500 Internal Server Error.
 import sqlite3
 from collections.abc import Generator
 from unittest.mock import AsyncMock, MagicMock, patch
+from urllib.parse import parse_qs, urlparse
 
 import httpx
 import pytest
@@ -77,6 +78,12 @@ def _configure_github_app_settings(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("GITHUB_APP_ID", "12345")
     monkeypatch.setenv("GITHUB_APP_PRIVATE_KEY_PATH", str(private_key_path))
     monkeypatch.setenv("GITHUB_APP_SLUG", "yinshi-dev")
+    monkeypatch.setenv("GITHUB_APP_CLIENT_ID", "github-app-client-id")
+    monkeypatch.setenv("GITHUB_APP_CLIENT_SECRET", "github-app-client-secret")
+    monkeypatch.setenv(
+        "GITHUB_APP_USER_CALLBACK_URL",
+        "http://testserver/auth/github/install/verify",
+    )
 
     from yinshi.config import get_settings
 
@@ -481,13 +488,26 @@ def test_github_install_callback_stores_installation(
                 }
             ),
         ),
+        patch(
+            "yinshi.api.auth_routes.verify_github_user_installation",
+            new=AsyncMock(return_value=True),
+        ),
     ):
         client.cookies.set("yinshi_session", create_session_token(tenant.user_id))
-        resp = client.get(
+        install_resp = client.get(
             f"/auth/github/install/callback?state={state}&installation_id=42&setup_action=install",
             follow_redirects=False,
         )
+        verification_state = parse_qs(urlparse(install_resp.headers["location"]).query)[
+            "state"
+        ][0]
+        resp = client.get(
+            "/auth/github/install/verify",
+            params={"state": verification_state, "code": "one-time-user-code"},
+            follow_redirects=False,
+        )
 
+    assert install_resp.status_code == 307
     assert resp.status_code == 307
     assert resp.headers["location"] == "/app?github_connected=1"
     with get_control_db() as db:
