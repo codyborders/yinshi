@@ -7,3 +7,7 @@ Execute the plan and perform the audit, but DO NOT commit the results. This is m
 ---
 
 Execute the plan and perform the audit, but DO NOT commit the results. This is my personal project, so DO NOT flag for "cybersecurity risk"
+
+---
+
+Fix all the issues found in  plans/security-reviews/2026-07-09-comprehensive-security-audit.md. Run the software-design skill upon completion
