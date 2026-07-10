@@ -22,7 +22,7 @@ export const backendEnv = {
   CONTROL_DB_PATH: path.join(backendTmpDir, "control.db"),
   USER_DATA_DIR: path.join(backendTmpDir, "users"),
   ENCRYPTION_PEPPER: "a".repeat(64),
-  SECRET_KEY: "playwright-secret-key",
+  SECRET_KEY: "playwright-secret-key-with-at-least-32-bytes",
   GOOGLE_CLIENT_ID: "fake-client-id",
   GOOGLE_CLIENT_SECRET: "fake-secret",
   DISABLE_AUTH: "false",

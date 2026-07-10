@@ -1,3 +1,4 @@
+/* Covers public landing navigation and the authenticated mobile drawer through Playwright. */
 import { expect, test } from "@playwright/test";
 
 import { authenticateContext } from "./helpers/testApp";
@@ -5,10 +6,15 @@ import { authenticateContext } from "./helpers/testApp";
 test("landing renders and the auth entrypoint redirects", async ({ page, request }) => {
   await page.goto("/");
 
-  await expect(page.getByRole("heading", { name: "Yinshi" })).toBeVisible();
   await expect(
-    page.getByRole("link", { name: "Sign In / Sign Up" }),
-  ).toHaveAttribute("href", "/auth/login");
+    page.getByRole("heading", {
+      name: "Run coding agents against your repositories from any browser.",
+    }),
+  ).toBeVisible();
+  await expect(page.getByRole("link", { name: "Sign in" })).toHaveAttribute(
+    "href",
+    "/auth/login",
+  );
 
   const response = await request.get("/auth/login", { maxRedirects: 0 });
   expect(response.status()).toBe(307);
