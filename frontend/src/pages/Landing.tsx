@@ -57,42 +57,16 @@ const CAPABILITIES: Capability[] = [
   },
 ];
 
-function GitHubIcon() {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 24 24" fill="currentColor">
-      <path d="M12 .3a12 12 0 0 0-3.8 23.4c.6.1.8-.3.8-.6v-2.1c-3.3.7-4-1.4-4-1.4-.6-1.4-1.4-1.8-1.4-1.8-1.1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1.1 1.8 2.8 1.3 3.5 1 .1-.8.4-1.3.8-1.6-2.7-.3-5.5-1.3-5.5-5.9 0-1.3.5-2.4 1.2-3.2-.1-.3-.5-1.5.1-3.2 0 0 1-.3 3.3 1.2a11.5 11.5 0 0 1 6 0c2.3-1.5 3.3-1.2 3.3-1.2.7 1.7.3 2.9.1 3.2.8.8 1.2 1.9 1.2 3.2 0 4.6-2.8 5.6-5.5 5.9.4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6A12 12 0 0 0 12 .3Z" />
-    </svg>
-  );
-}
-
 function Navigation() {
   return (
     <header className="landing-header">
       <nav className="landing-nav" aria-label="Primary">
         <a className="landing-brand" href="/" aria-label="Yinshi home">
-          <img
-            src="/yinshi-scholar.jpg"
-            alt="Yinshi Scholar"
-            className="landing-brand-image"
-            width={40}
-            height={42}
-          />
           Yinshi
         </a>
-        <div className="landing-nav-actions">
-          <a
-            className="landing-github-link"
-            href="https://github.com/codyborders/yinshi"
-            target="_blank"
-            rel="noopener noreferrer"
-            aria-label="GitHub repository"
-          >
-            <GitHubIcon />
-          </a>
-          <a className="landing-nav-link" href="/auth/login">
-            Sign in
-          </a>
-        </div>
+        <a className="landing-nav-link" href="/auth/login">
+          Sign in
+        </a>
       </nav>
     </header>
   );
@@ -102,7 +76,7 @@ function WorkspacePreview() {
   return (
     <figure className="landing-preview" aria-label="Example Yinshi coding workspace">
       <div className="landing-preview-bar">
-        <strong>codyborders/yinshi</strong>
+        <strong>Web app</strong>
         <span className="landing-preview-status">
           <span aria-hidden="true" />
           pi connected
@@ -131,6 +105,15 @@ function WorkspacePreview() {
 function Hero() {
   return (
     <section className="landing-hero" aria-labelledby="landing-title">
+      <div className="landing-hero-mark">
+        <img
+          src="/yinshi-scholar.jpg"
+          alt="Yinshi Scholar"
+          className="landing-hero-logo"
+          width={180}
+          height={180}
+        />
+      </div>
       <div className="landing-hero-text">
         <p className="landing-subtitle">Browser-based coding workspace</p>
         <h1 id="landing-title" className="landing-title">
@@ -149,7 +132,6 @@ function Hero() {
           </a>
         </div>
       </div>
-      <WorkspacePreview />
     </section>
   );
 }
@@ -268,6 +250,7 @@ export default function Landing() {
           </div>
         ) : null}
         <Hero />
+        <WorkspacePreview />
         <TechnicalFoundation />
         <Workflow />
         <Capabilities />

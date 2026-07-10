@@ -34,7 +34,9 @@ describe("Landing", () => {
     ).toBeInTheDocument();
 
     const workspacePreview = screen.getByLabelText("Example Yinshi coding workspace");
-    expect(within(workspacePreview).getByText("codyborders/yinshi")).toBeInTheDocument();
+    expect(within(workspacePreview).getByText("Web app")).toBeInTheDocument();
+    expect(screen.queryByText(/codyborders/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "GitHub repository" })).not.toBeInTheDocument();
     expect(within(workspacePreview).getByText("session/quiet-pine")).toBeInTheDocument();
     expect(within(workspacePreview).getByText("pi connected")).toBeInTheDocument();
     expect(
@@ -71,6 +73,16 @@ describe("Landing", () => {
     ).toBeInTheDocument();
   });
 
+  it("keeps workspace evidence separate from the hero", () => {
+    renderLanding();
+    const hero = screen.getByRole("region", {
+      name: "Run coding agents against your repositories from any browser.",
+    });
+    expect(
+      within(hero).queryByLabelText("Example Yinshi coding workspace"),
+    ).not.toBeInTheDocument();
+  });
+
   it("states the technical foundation", () => {
     renderLanding();
 
@@ -105,6 +117,21 @@ describe("Landing", () => {
     const img = screen.getByAltText(/yinshi scholar/i);
     expect(img).toBeInTheDocument();
     expect(img).toHaveAttribute("src", "/yinshi-scholar.jpg");
+  });
+
+  it("renders a prominent scholar logo", () => {
+    renderLanding();
+    const logo = screen.getByAltText(/yinshi scholar/i);
+    expect(logo).toHaveAttribute("width", "180");
+    expect(logo).toHaveAttribute("height", "180");
+  });
+
+  it("places the scholar logo in the hero composition", () => {
+    renderLanding();
+    const hero = screen.getByRole("region", {
+      name: "Run coding agents against your repositories from any browser.",
+    });
+    expect(within(hero).getByAltText(/yinshi scholar/i)).toBeInTheDocument();
   });
 
   it("renders sign-in links", () => {
