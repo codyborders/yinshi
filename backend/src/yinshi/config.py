@@ -5,6 +5,7 @@ from __future__ import annotations
 import secrets
 from functools import lru_cache
 
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings
 
 _SECURITY_MODE_VALUES = {"auto", "disabled", "enabled", "required"}
@@ -78,6 +79,9 @@ class Settings(BaseSettings):
     github_app_id: str = ""
     github_app_private_key_path: str = ""
     github_app_slug: str = ""
+    github_app_client_id: str = ""
+    github_app_client_secret: SecretStr | None = None
+    github_app_user_callback_url: str = ""
 
     # Session secret for cookies -- generated randomly if not set
     secret_key: str = ""

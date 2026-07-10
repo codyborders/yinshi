@@ -521,48 +521,15 @@ async def github_install_callback(request: Request) -> RedirectResponse:
     if setup_action == "request":
         return RedirectResponse(url="/app?github_connect_error=not_granted")
 
-    try:
-        installation = await get_installation_details(installation_id)
-    except GitHubInstallationUnusableError:
-        return RedirectResponse(url="/app?github_connect_error=not_granted")
-    except GitHubAppError:
-        logger.exception("GitHub App callback failed for installation=%s", installation_id)
-        return RedirectResponse(url="/app?github_connect_error=install_failed")
-
-    account = installation.get("account")
-    if not isinstance(account, dict):
-        return RedirectResponse(url="/app?github_connect_error=install_failed")
-
-    account_login = account.get("login")
-    account_type = account.get("type")
-    html_url = installation.get("html_url")
-    if installation.get("suspended_at"):
-        return RedirectResponse(url="/app?github_connect_error=not_granted")
-    if not isinstance(account_login, str):
-        return RedirectResponse(url="/app?github_connect_error=install_failed")
-    if not isinstance(account_type, str):
-        return RedirectResponse(url="/app?github_connect_error=install_failed")
-    if not isinstance(html_url, str):
-        return RedirectResponse(url="/app?github_connect_error=install_failed")
-
-    with get_control_db() as db:
-        db.execute(
-            """
-            INSERT INTO github_installations (
-                user_id, installation_id, account_login, account_type, html_url
-            ) VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(user_id, installation_id) DO UPDATE SET
-                account_login = excluded.account_login,
-                account_type = excluded.account_type,
-                html_url = excluded.html_url
-            """,
-            (user_id, installation_id, account_login, account_type, html_url),
-        )
-        db.commit()
-
-    await _refresh_connected_github_repos(user_id, account_login)
-
-    return RedirectResponse(url="/app?github_connected=1")
+    settings = get_settings()
+    authorization_query = urlencode(
+        {
+            "client_id": settings.github_app_client_id,
+            "redirect_uri": settings.github_app_user_callback_url,
+            "state": state,
+        }
+    )
+    return RedirectResponse(url=f"https://github.com/login/oauth/authorize?{authorization_query}")
 
 
 @router.post("/providers/{provider}/start", response_model=ProviderAuthStartOut)
