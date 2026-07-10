@@ -1,0 +1,39 @@
+{
+  "cli_version": "0.7.7",
+  "checkpoint_id": "6fabf39f190e",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 3,
+  "files_touched": [
+    ".github/dependabot.yml",
+    ".github/workflows/ci.yml",
+    "backend/requirements/base.txt",
+    "backend/src/yinshi/model_catalog.py",
+    "backend/tests/test_pi_package_update_assets.py",
+    "backend/tests/test_pi_releases.py",
+    "backend/tests/test_runner_deployment_security.py",
+    "docs/deployment/aws-runner-cloudformation.yaml",
+    "frontend/src/components/__tests__/PiReleaseNotesSection.test.tsx",
+    "sidecar/package-lock.json",
+    "sidecar/package.json",
+    "sidecar/src/git_askpass_client.js",
+    "sidecar/src/git_auth.js",
+    "sidecar/src/sidecar.js",
+    "sidecar/tests/git_auth.test.js"
+  ],
+  "sessions": [
+    {
+      "metadata": "/6f/abf39f190e/0/metadata.json",
+      "transcript": "/6f/abf39f190e/0/full.jsonl",
+      "content_hash": "/6f/abf39f190e/0/content_hash.txt",
+      "prompt": "/6f/abf39f190e/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 3753789,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 175787520,
+    "output_tokens": 391069,
+    "api_call_count": 1040
+  }
+}

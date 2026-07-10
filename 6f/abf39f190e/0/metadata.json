@@ -1,0 +1,52 @@
+{
+  "cli_version": "0.7.7",
+  "checkpoint_id": "6fabf39f190e",
+  "session_id": "019f49c6-5766-7f6b-bea0-db67da2f314a",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-10T15:59:47.453Z",
+  "branch": "main",
+  "checkpoints_count": 3,
+  "save_step_count": 1,
+  "files_touched": [
+    ".github/dependabot.yml",
+    ".github/workflows/ci.yml",
+    "backend/requirements/base.txt",
+    "backend/src/yinshi/model_catalog.py",
+    "backend/tests/test_pi_package_update_assets.py",
+    "backend/tests/test_pi_releases.py",
+    "backend/tests/test_runner_deployment_security.py",
+    "docs/deployment/aws-runner-cloudformation.yaml",
+    "frontend/src/components/__tests__/PiReleaseNotesSection.test.tsx",
+    "sidecar/package-lock.json",
+    "sidecar/package.json",
+    "sidecar/src/git_askpass_client.js",
+    "sidecar/src/git_auth.js",
+    "sidecar/src/sidecar.js",
+    "sidecar/tests/git_auth.test.js"
+  ],
+  "agent": "Pi",
+  "model": "gpt-5.6-sol",
+  "turn_id": "49880dc237c7",
+  "token_usage": {
+    "input_tokens": 3753789,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 175787520,
+    "output_tokens": 391069,
+    "api_call_count": 1040
+  },
+  "session_metrics": {
+    "turn_count": 15
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-07-10T15:59:47.265127Z",
+    "agent_lines": 2068,
+    "agent_removed": 2334,
+    "human_added": 45,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 2113,
+    "total_lines_changed": 4844,
+    "agent_percentage": 90.87530966143683,
+    "metric_version": 2
+  }
+}
