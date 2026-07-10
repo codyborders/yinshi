@@ -9,6 +9,7 @@ import pytest
 def disable_auth_for_database_tests(monkeypatch):
     """Database-only tests should use explicit local no-auth mode."""
     monkeypatch.setenv("DISABLE_AUTH", "true")
+    monkeypatch.setenv("CONTAINER_ENABLED", "false")
 
 
 def test_init_db_creates_tables(db):

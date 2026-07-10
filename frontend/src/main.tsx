@@ -2,33 +2,16 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
 import { datadogRum } from "@datadog/browser-rum";
-import { reactPlugin } from "@datadog/browser-rum-react";
 import App from "./App";
 import { AuthProvider } from "./hooks/useAuth";
+import { createRumConfiguration } from "./rum";
 import "./index.css";
 
 declare const __GIT_COMMIT_HASH__: string;
 
 /* Defer Datadog RUM so it does not compete with first paint. */
 const initDatadogRum = () => {
-  datadogRum.init({
-    applicationId: "6ca07893-ea15-4577-88cb-ef72b856ad3e",
-    clientToken: "pubbe7e2760d9e429d5cda2d2eb49a408be",
-    site: "datadoghq.com",
-    service: "yinshi",
-    env: "prod",
-    version: __GIT_COMMIT_HASH__,
-    sessionSampleRate: 100,
-    sessionReplaySampleRate: 100,
-    trackResources: true,
-    trackUserInteractions: true,
-    trackLongTasks: true,
-    defaultPrivacyLevel: "allow",
-    // Route intake through our own origin so DNS-level blockers targeting
-    // `browser-intake-datadoghq.com` (e.g. NextDNS, Pi-hole) cannot break RUM.
-    proxy: (options) => `/rum${options.path}?${options.parameters}`,
-    plugins: [reactPlugin({ router: false })],
-  });
+  datadogRum.init(createRumConfiguration(__GIT_COMMIT_HASH__));
 };
 
 if ("requestIdleCallback" in window) {
@@ -39,7 +22,7 @@ if ("requestIdleCallback" in window) {
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <BrowserRouter>
+    <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
       <AuthProvider>
         <App />
       </AuthProvider>

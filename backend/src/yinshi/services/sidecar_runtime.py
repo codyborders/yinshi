@@ -8,6 +8,7 @@ import os
 import posixpath
 import re
 import shutil
+import stat
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -265,6 +266,39 @@ def _pi_session_directory_is_safe_for_delete(
         return False
 
     return True
+
+
+def delete_workspace_runtime_home(tenant: TenantContext, workspace_id: str) -> None:
+    """Delete the complete persistent home for one workspace runtime."""
+    if tenant is None:
+        raise ValueError("tenant is required")
+    if not workspace_id:
+        raise ValueError("workspace_id must not be empty")
+    home_path = _workspace_home_expected_path(tenant, workspace_id)
+    runtime_directory = home_path.parent
+    if not runtime_directory.exists():
+        return
+    if runtime_directory.is_symlink() or home_path.is_symlink():
+        raise ValueError("workspace runtime path must not contain symlinks")
+    if not shutil.rmtree.avoids_symlink_attacks:
+        raise RuntimeError("safe descriptor-based directory deletion is unavailable")
+
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    parent_fd = os.open(runtime_directory, directory_flags)
+    try:
+        try:
+            home_stat = os.stat("home", dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return
+        if not stat.S_ISDIR(home_stat.st_mode):
+            raise ValueError("workspace home must be a directory")
+        shutil.rmtree("home", dir_fd=parent_fd)
+    finally:
+        os.close(parent_fd)
+    try:
+        runtime_directory.rmdir()
+    except OSError:
+        logger.warning("Workspace runtime directory was not empty: %s", runtime_directory)
 
 
 def delete_workspace_pi_sessions(tenant: TenantContext | None, workspace_id: str) -> None:

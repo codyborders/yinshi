@@ -11,6 +11,19 @@ from fastapi.testclient import TestClient
 from tests.conftest import _configure_test_env
 
 
+@pytest.fixture(autouse=True)
+def explicit_no_auth_environment(monkeypatch: pytest.MonkeyPatch):
+    """Main-module unit tests should use explicit loopback development mode."""
+    monkeypatch.setenv("DISABLE_AUTH", "true")
+    monkeypatch.setenv("HOST", "127.0.0.1")
+    monkeypatch.setenv("CONTAINER_ENABLED", "false")
+    from yinshi.config import get_settings
+
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
+
 def _configure_startup_env(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
@@ -18,7 +31,7 @@ def _configure_startup_env(
     container_enabled: bool,
 ) -> None:
     """Prepare one isolated startup environment for lifespan tests."""
-    _configure_test_env(monkeypatch, tmp_path, auth_enabled=False)
+    _configure_test_env(monkeypatch, tmp_path, auth_enabled=container_enabled)
     monkeypatch.setenv("CONTAINER_ENABLED", "true" if container_enabled else "false")
 
     from yinshi.config import get_settings
@@ -100,6 +113,29 @@ def test_transport_security_redirects_plain_http() -> None:
     assert response.headers["location"] == "https://testserver/health"
 
 
+def test_transport_security_ignores_forwarded_proto_from_untrusted_client() -> None:
+    """Clients outside the proxy allowlist must not spoof HTTPS headers."""
+    from yinshi.main import TransportSecurityMiddleware
+
+    test_app = FastAPI()
+    test_app.add_middleware(
+        TransportSecurityMiddleware,
+        require_https=True,
+        hsts_enabled=True,
+        trusted_proxy_ips={"127.0.0.1"},
+    )
+
+    @test_app.get("/health")
+    async def health() -> dict[str, str]:
+        return {"status": "ok"}
+
+    with TestClient(test_app, follow_redirects=False) as client:
+        response = client.get("/health", headers={"X-Forwarded-Proto": "https"})
+
+    assert response.status_code == 307
+    assert "Strict-Transport-Security" not in response.headers
+
+
 def test_transport_security_adds_hsts_for_https_forwarded_proto() -> None:
     """Transport middleware should add HSTS when the edge reports HTTPS."""
     from yinshi.main import TransportSecurityMiddleware
@@ -109,6 +145,7 @@ def test_transport_security_adds_hsts_for_https_forwarded_proto() -> None:
         TransportSecurityMiddleware,
         require_https=True,
         hsts_enabled=True,
+        trusted_proxy_ips={"testclient"},
     )
 
     @test_app.get("/health")
@@ -120,6 +157,43 @@ def test_transport_security_adds_hsts_for_https_forwarded_proto() -> None:
 
     assert response.status_code == 200
     assert response.headers["Strict-Transport-Security"] == "max-age=31536000; includeSubDomains"
+
+
+def test_security_headers_are_attached_to_api_responses() -> None:
+    """API responses should prevent sniffing, framing, and referrer disclosure."""
+    from yinshi.main import SecurityHeadersMiddleware
+
+    test_app = FastAPI()
+    test_app.add_middleware(SecurityHeadersMiddleware)
+
+    @test_app.get("/health")
+    async def health() -> dict[str, str]:
+        return {"status": "ok"}
+
+    with TestClient(test_app) as client:
+        response = client.get("/health")
+
+    assert response.headers["X-Content-Type-Options"] == "nosniff"
+    assert response.headers["X-Frame-Options"] == "DENY"
+    assert response.headers["Referrer-Policy"] == "no-referrer"
+    assert "frame-ancestors 'none'" in response.headers["Content-Security-Policy"]
+
+
+def test_request_body_limit_rejects_oversized_payload() -> None:
+    """Global body limits should reject data before endpoint buffering."""
+    from yinshi.main import RequestBodyLimitMiddleware
+
+    test_app = FastAPI()
+    test_app.add_middleware(RequestBodyLimitMiddleware, body_bytes_max=4)
+
+    @test_app.post("/echo")
+    async def echo(request) -> dict[str, int]:
+        return {"size": len(await request.body())}
+
+    with TestClient(test_app) as client:
+        response = client.post("/echo", content=b"12345")
+
+    assert response.status_code == 413
 
 
 def test_startup_without_containers_skips_podman(

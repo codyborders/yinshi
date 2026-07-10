@@ -137,7 +137,6 @@ export default function Landing() {
             className="landing-mascot"
             width={360}
             height={360}
-            fetchPriority="high"
           />
         </div>
         <div className="landing-hero-text">

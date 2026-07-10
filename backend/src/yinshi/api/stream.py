@@ -5,11 +5,12 @@ Tests: test_prompt_session_not_found, test_prompt_streams_sidecar_events,
        test_cancel_no_active_stream in tests/test_api.py
 """
 
+import asyncio
 import json
 import logging
 import sqlite3
 import uuid
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, AsyncIterator
 from dataclasses import dataclass
 from typing import Any, Literal, cast
 
@@ -18,6 +19,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 
 from yinshi.api.deps import check_owner, get_db_for_request, get_tenant, get_user_email
+from yinshi.auth import get_session_identity
 from yinshi.config import get_settings
 from yinshi.exceptions import (
     ContainerNotReadyError,
@@ -32,6 +34,7 @@ from yinshi.model_catalog import get_provider_metadata, normalize_model_ref
 from yinshi.rate_limit import limiter
 from yinshi.services.git_runtime import resolve_git_runtime_auth
 from yinshi.services.keys import record_usage
+from yinshi.services.live_auth_sessions import register_live_auth_session
 from yinshi.services.provider_connections import (
     resolve_provider_connection,
     update_provider_connection_secret,
@@ -57,6 +60,8 @@ _PERSIST_BATCH_SIZE = 10
 _STORED_TURN_SCHEMA = "yinshi.assistant_turn.v1"
 ThinkingLevel = Literal["off", "minimal", "low", "medium", "high", "xhigh"]
 
+_AUTH_SESSION_RECHECK_INTERVAL_S = 1.0
+_STREAM_LIFETIME_S_MAX = 2 * 60 * 60
 _THINKING_LEVEL_DEFAULT: ThinkingLevel = "medium"
 _THINKING_LEVEL_OFF: ThinkingLevel = "off"
 _THINKING_LEVEL_ORDER: tuple[ThinkingLevel, ...] = (
@@ -87,6 +92,91 @@ class ExecutionContext:
     model_ref: str = ""
     runtime_id: str | None = None
     pi_session_file: str | None = None
+
+
+class _AuthSessionRevoked(Exception):
+    """Signal that an active stream's originating auth session was revoked."""
+
+
+class _StreamLifetimeReached(Exception):
+    """Signal that a response reached its independent connection deadline."""
+
+
+async def _session_bound_events(
+    events: AsyncIterator[dict[str, Any]],
+    session_token: str,
+    sidecar: SidecarClient,
+    session_id: str,
+) -> AsyncGenerator[dict[str, Any], None]:
+    """Yield sidecar events until local signaling or durable revocation occurs."""
+    if not session_token:
+        raise ValueError("session_token must not be empty")
+    if not session_id:
+        raise ValueError("session_id must not be empty")
+    identity = get_session_identity(session_token)
+    if identity is None:
+        await sidecar.cancel(session_id)
+        raise _AuthSessionRevoked
+
+    user_id, auth_session_id = identity
+    registration = register_live_auth_session(
+        user_id=user_id,
+        auth_session_id=auth_session_id,
+    )
+    loop = asyncio.get_running_loop()
+    connection_deadline = loop.time() + _STREAM_LIFETIME_S_MAX
+    event_iterator = aiter(events)
+    next_event_task: asyncio.Future[dict[str, Any]] | None = None
+    revocation_task = asyncio.create_task(registration.event.wait())
+    try:
+        while True:
+            if loop.time() >= connection_deadline:
+                await sidecar.cancel(session_id)
+                raise _StreamLifetimeReached
+            next_event_task = asyncio.ensure_future(anext(event_iterator))
+            while not next_event_task.done():
+                remaining_lifetime_s = connection_deadline - loop.time()
+                if remaining_lifetime_s <= 0:
+                    next_event_task.cancel()
+                    await sidecar.cancel(session_id)
+                    raise _StreamLifetimeReached
+                done, _ = await asyncio.wait(
+                    {next_event_task, revocation_task},
+                    timeout=min(_AUTH_SESSION_RECHECK_INTERVAL_S, remaining_lifetime_s),
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if revocation_task in done:
+                    next_event_task.cancel()
+                    await sidecar.cancel(session_id)
+                    raise _AuthSessionRevoked
+                if next_event_task in done:
+                    break
+                if loop.time() >= connection_deadline:
+                    next_event_task.cancel()
+                    await sidecar.cancel(session_id)
+                    raise _StreamLifetimeReached
+                if get_session_identity(session_token) is None:
+                    next_event_task.cancel()
+                    await sidecar.cancel(session_id)
+                    raise _AuthSessionRevoked
+            try:
+                event = next_event_task.result()
+            except StopAsyncIteration:
+                return
+            finally:
+                next_event_task = None
+            if registration.event.is_set() or get_session_identity(session_token) is None:
+                await sidecar.cancel(session_id)
+                raise _AuthSessionRevoked
+            if loop.time() >= connection_deadline:
+                await sidecar.cancel(session_id)
+                raise _StreamLifetimeReached
+            yield event
+    finally:
+        registration.close()
+        revocation_task.cancel()
+        if next_event_task is not None and not next_event_task.done():
+            next_event_task.cancel()
 
 
 class PromptRequest(BaseModel):
@@ -633,6 +723,7 @@ async def prompt_session(
 ) -> StreamingResponse:
     """Send a prompt and stream agent events as SSE."""
     tenant = get_tenant(request)
+    auth_session_token = request.cookies.get("yinshi_session") if tenant else None
     with get_db_for_request(request) as db:
         session = _lookup_session(db, session_id, request)
         if session and tenant:
@@ -773,7 +864,7 @@ async def prompt_session(
 
             logger.info("Streaming started: session=%s turn_id=%s", session_id, turn_id)
 
-            async for event in sidecar.query(
+            sidecar_events = sidecar.query(
                 session_id,
                 prompt,
                 model=context.model_ref or model,
@@ -784,7 +875,20 @@ async def prompt_session(
                 agent_dir=context.agent_dir,
                 settings_payload=effective_settings,
                 pi_session_file=context.pi_session_file,
-            ):
+            )
+            if tenant:
+                if not auth_session_token:
+                    raise _AuthSessionRevoked
+                event_source = _session_bound_events(
+                    sidecar_events,
+                    auth_session_token,
+                    sidecar,
+                    session_id,
+                )
+            else:
+                event_source = sidecar_events
+
+            async for event in event_source:
                 event_type = event.get("type")
                 if not isinstance(event_type, str):
                     raise SidecarError("Sidecar event type must be a string")
@@ -896,6 +1000,14 @@ async def prompt_session(
                     turn_events.append(_stored_turn_event(event))
                     yield f"data: {json.dumps(event)}\n\n"
 
+        except _AuthSessionRevoked:
+            turn_status = "cancelled"
+            logger.info("Prompt stream revoked: session=%s turn_id=%s", session_id, turn_id)
+        except _StreamLifetimeReached:
+            turn_status = "cancelled"
+            logger.info(
+                "Prompt stream lifetime reached: session=%s turn_id=%s", session_id, turn_id
+            )
         except (ConnectionError, OSError, GitError, SidecarError, TypeError, ValueError) as e:
             logger.error(
                 "Sidecar error: session=%s turn_id=%s error=%s",

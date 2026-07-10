@@ -5,7 +5,7 @@ import logging
 import os
 import secrets
 import sqlite3
-from typing import Any
+from typing import Any, cast
 
 from yinshi.config import get_settings
 from yinshi.db import get_control_db
@@ -183,12 +183,13 @@ def _find_user_by_identity(
     provider_user_id: str,
 ) -> sqlite3.Row | None:
     """Return one user row for one OAuth identity, or None when missing."""
-    return db.execute(
+    row = db.execute(
         "SELECT oi.user_id, u.email FROM oauth_identities oi "
         "JOIN users u ON oi.user_id = u.id "
         "WHERE oi.provider = ? AND oi.provider_user_id = ?",
         (provider, provider_user_id),
     ).fetchone()
+    return cast(sqlite3.Row | None, row)
 
 
 def _find_user_by_email(
@@ -196,10 +197,11 @@ def _find_user_by_email(
     email: str,
 ) -> sqlite3.Row | None:
     """Return one user row for one email, or None when missing."""
-    return db.execute(
+    row = db.execute(
         "SELECT id, email FROM users WHERE email = ?",
         (email,),
     ).fetchone()
+    return cast(sqlite3.Row | None, row)
 
 
 def _insert_oauth_identity(

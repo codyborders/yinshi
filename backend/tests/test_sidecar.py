@@ -149,8 +149,8 @@ async def test_sidecar_client_get_runtime_version() -> None:
     client._read_line = AsyncMock(
         return_value={
             "type": "version",
-            "package_name": "@mariozechner/pi-coding-agent",
-            "installed_version": "0.70.2",
+            "package_name": "@earendil-works/pi-coding-agent",
+            "installed_version": "0.80.6",
             "node_version": "v20.20.1",
         }
     )
@@ -161,8 +161,8 @@ async def test_sidecar_client_get_runtime_version() -> None:
     msg = json.loads(written.strip())
     assert msg == {"type": "version", "id": "version"}
     assert payload == {
-        "package_name": "@mariozechner/pi-coding-agent",
-        "installed_version": "0.70.2",
+        "package_name": "@earendil-works/pi-coding-agent",
+        "installed_version": "0.80.6",
         "node_version": "v20.20.1",
     }
 

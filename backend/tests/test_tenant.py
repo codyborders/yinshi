@@ -17,6 +17,7 @@ def tenant_env(tmp_path, monkeypatch):
     monkeypatch.setenv("ENCRYPTION_PEPPER", "a" * 64)
     monkeypatch.setenv("DB_PATH", str(tmp_path / "legacy.db"))
     monkeypatch.setenv("DISABLE_AUTH", "true")
+    monkeypatch.setenv("CONTAINER_ENABLED", "false")
     from yinshi.config import get_settings
 
     get_settings.cache_clear()
@@ -229,6 +230,79 @@ def test_sqlcipher_connection_uses_driver_row_factory(tenant_env, monkeypatch):
     assert fake_connection.row_factory is fake_row_factory
     assert any(statement.startswith("PRAGMA key") for statement in fake_connection.statements)
     assert not fake_connection.closed
+
+
+def test_plaintext_migration_removes_unencrypted_backup(tenant_env, monkeypatch):
+    """Successful SQLCipher migration must not retain a plaintext database copy."""
+    from yinshi.tenant import _migrate_plaintext_user_database
+
+    db_path = Path(tenant_env["tmp_path"]) / "migration.db"
+    connection = sqlite3.connect(db_path)
+    connection.execute("CREATE TABLE marker (value TEXT NOT NULL)")
+    connection.execute("INSERT INTO marker (value) VALUES ('private-marker')")
+    connection.commit()
+    connection.close()
+
+    def fake_copy(source_path: str, target_path: str, sqlcipher_key: bytes) -> None:
+        assert source_path == str(db_path)
+        assert sqlcipher_key == b"k" * 32
+        encrypted_connection = sqlite3.connect(target_path)
+        encrypted_connection.execute("CREATE TABLE encrypted_marker (value TEXT NOT NULL)")
+        encrypted_connection.execute("INSERT INTO encrypted_marker VALUES ('encrypted')")
+        encrypted_connection.commit()
+        encrypted_connection.close()
+
+    monkeypatch.setattr("yinshi.tenant._copy_plaintext_user_database", fake_copy)
+    monkeypatch.setattr(
+        "yinshi.tenant._open_sqlcipher_connection",
+        lambda path, _key: sqlite3.connect(path),
+    )
+
+    _migrate_plaintext_user_database(str(db_path), b"k" * 32)
+
+    migrated_connection = sqlite3.connect(db_path)
+    assert (
+        migrated_connection.execute("SELECT value FROM encrypted_marker").fetchone()[0]
+        == "encrypted"
+    )
+    migrated_connection.close()
+    assert list(db_path.parent.glob("migration.db.plaintext.*.bak")) == []
+
+
+def test_open_encrypted_database_removes_legacy_plaintext_backup(
+    tenant_env,
+    monkeypatch,
+) -> None:
+    """Validated encrypted primaries should trigger cleanup of migration residue."""
+    from yinshi.config import get_settings
+    from yinshi.tenant import TenantContext, _open_user_connection
+
+    monkeypatch.setenv("TENANT_DB_ENCRYPTION", "required")
+    get_settings.cache_clear()
+    data_directory = Path(tenant_env["user_data_dir"]) / "ab" / "abcdef"
+    data_directory.mkdir(parents=True)
+    database_path = data_directory / "yinshi.db"
+    database_path.write_bytes(b"encrypted-primary")
+    backup_path = data_directory / "yinshi.db.plaintext.123.bak"
+    backup_path.write_text("private-legacy-data", encoding="utf-8")
+    tenant = TenantContext(
+        user_id="abcdef",
+        email="user@example.com",
+        data_dir=str(data_directory),
+        db_path=str(database_path),
+    )
+    fake_connection = object()
+    monkeypatch.setattr("yinshi.tenant._tenant_database_key", lambda _tenant: b"k" * 32)
+    monkeypatch.setattr("yinshi.tenant._load_sqlcipher_module", lambda: object())
+    monkeypatch.setattr(
+        "yinshi.tenant._open_sqlcipher_connection",
+        lambda _path, _key: fake_connection,
+    )
+
+    connection = _open_user_connection(str(database_path), tenant)
+
+    assert connection is fake_connection
+    assert not backup_path.exists()
 
 
 def test_required_tenant_db_encryption_fails_without_sqlcipher(tenant_env, monkeypatch):

@@ -1,6 +1,7 @@
 """CRUD endpoints for repositories."""
 
 import logging
+import shutil
 import sqlite3
 import uuid
 from pathlib import Path
@@ -21,7 +22,9 @@ from yinshi.models import RepoCreate, RepoOut, RepoUpdate
 from yinshi.rate_limit import limiter
 from yinshi.services.git import clone_local_repo, clone_repo, validate_local_repo
 from yinshi.services.github_app import GitHubCloneAccess, resolve_github_clone_access
+from yinshi.services.run_coordinator import get_run_coordinator
 from yinshi.services.workspace import delete_workspace
+from yinshi.tenant import TenantContext, validate_user_path
 from yinshi.utils.paths import is_path_inside
 
 logger = logging.getLogger(__name__)
@@ -283,6 +286,30 @@ def update_repo(
         return dict(row)
 
 
+def _delete_managed_repo_root(
+    repo: sqlite3.Row,
+    tenant: TenantContext | None,
+) -> None:
+    """Delete a Yinshi-owned checkout while preserving registered local sources."""
+    root_path = Path(str(repo["root_path"]))
+    if tenant is not None:
+        validate_user_path(tenant, str(root_path))
+        managed_root = True
+    else:
+        legacy_repo_directory = Path.home() / ".yinshi" / "repos"
+        managed_root = bool(repo["remote_url"]) and is_path_inside(
+            str(root_path),
+            str(legacy_repo_directory),
+        )
+    if not managed_root or not root_path.exists():
+        return
+    if root_path.is_symlink():
+        raise ValueError("managed repository root must not be a symlink")
+    if not shutil.rmtree.avoids_symlink_attacks:
+        raise RuntimeError("safe descriptor-based directory deletion is unavailable")
+    shutil.rmtree(root_path)
+
+
 @router.delete("/{repo_id}", status_code=204)
 async def delete_repo(repo_id: str, request: Request) -> None:
     """Delete a repository and all its workspaces."""
@@ -291,19 +318,47 @@ async def delete_repo(repo_id: str, request: Request) -> None:
         if not row:
             raise HTTPException(status_code=404, detail="Repo not found")
         _check_repo_owner(row, request)
+        tenant = get_tenant(request)
         workspace_rows = db.execute(
             "SELECT id FROM workspaces WHERE repo_id = ?",
             (repo_id,),
         ).fetchall()
         for workspace in workspace_rows:
+            workspace_id = str(workspace["id"])
             try:
-                await delete_workspace(db, workspace["id"], tenant=get_tenant(request))
-            except Exception:
-                logger.warning(
+                session_rows = db.execute(
+                    "SELECT id FROM sessions WHERE workspace_id = ?",
+                    (workspace_id,),
+                ).fetchall()
+                coordinator = get_run_coordinator()
+                for session_row in session_rows:
+                    await coordinator.request_cancel(str(session_row["id"]))
+                if tenant is not None:
+                    container_manager = getattr(request.app.state, "container_manager", None)
+                    if container_manager is None:
+                        raise RuntimeError("container manager is unavailable")
+                    await container_manager.destroy_container(
+                        tenant.user_id,
+                        runtime_id=workspace_id,
+                    )
+                await delete_workspace(db, workspace_id, tenant=tenant)
+            except (GitError, OSError, RuntimeError, ValueError):
+                logger.exception(
                     "Failed to delete workspace %s while deleting repo %s",
-                    workspace["id"],
+                    workspace_id,
                     repo_id,
-                    exc_info=True,
                 )
+                raise HTTPException(
+                    status_code=500,
+                    detail="Repository cleanup failed; deletion can be retried",
+                ) from None
+        try:
+            _delete_managed_repo_root(row, tenant)
+        except (OSError, RuntimeError, ValueError):
+            logger.exception("Failed to delete repository checkout %s", repo_id)
+            raise HTTPException(
+                status_code=500,
+                detail="Repository cleanup failed; deletion can be retried",
+            ) from None
         db.execute("DELETE FROM repos WHERE id = ?", (repo_id,))
         db.commit()

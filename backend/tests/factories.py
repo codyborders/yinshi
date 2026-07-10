@@ -90,11 +90,7 @@ def make_mock_sidecar(query_fn: Callable[..., Any], **overrides: Any) -> AsyncMo
     def query_wrapper(*args: Any, **kwargs: Any) -> Any:
         """Adapt modern sidecar kwargs to older test helper signatures."""
         parameters = inspect.signature(query_fn).parameters
-        supported_kwargs = {
-            name: value
-            for name, value in kwargs.items()
-            if name in parameters
-        }
+        supported_kwargs = {name: value for name, value in kwargs.items() if name in parameters}
         if "api_key" in parameters and "api_key" not in supported_kwargs:
             provider_auth = kwargs.get("provider_auth")
             if isinstance(provider_auth, dict):

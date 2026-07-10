@@ -271,8 +271,24 @@ def _copy_plaintext_user_database(source_path: str, target_path: str, sqlcipher_
         target.close()
 
 
+def _validate_encrypted_user_database(db_path: str, sqlcipher_key: bytes) -> None:
+    """Require an encrypted database to open and pass SQLCipher integrity checks."""
+    if not db_path:
+        raise ValueError("db_path must not be empty")
+    if len(sqlcipher_key) != 32:
+        raise ValueError("sqlcipher_key must contain 32 bytes")
+    connection = _open_sqlcipher_connection(db_path, sqlcipher_key)
+    try:
+        integrity_row = connection.execute("PRAGMA integrity_check").fetchone()
+        if integrity_row is None or str(integrity_row[0]).lower() != "ok":
+            raise RuntimeError("Encrypted tenant database failed integrity validation")
+        connection.execute("SELECT count(*) FROM sqlite_master").fetchone()
+    finally:
+        connection.close()
+
+
 def _migrate_plaintext_user_database(db_path: str, sqlcipher_key: bytes) -> None:
-    """Replace a plaintext tenant DB with a SQLCipher-encrypted copy."""
+    """Replace a plaintext tenant DB without retaining the original copy."""
     if not _plaintext_database_readable(db_path):
         return
     backup_path = f"{db_path}.plaintext.{int(time.time())}.bak"
@@ -281,14 +297,35 @@ def _migrate_plaintext_user_database(db_path: str, sqlcipher_key: bytes) -> None
         if os.path.exists(stale_path):
             os.unlink(stale_path)
     _copy_plaintext_user_database(db_path, temp_path, sqlcipher_key)
+    _validate_encrypted_user_database(temp_path, sqlcipher_key)
     os.replace(db_path, backup_path)
-    os.replace(temp_path, db_path)
+    try:
+        os.replace(temp_path, db_path)
+        _validate_encrypted_user_database(db_path, sqlcipher_key)
+        os.chmod(db_path, 0o600)
+    except Exception:
+        if os.path.exists(db_path):
+            os.unlink(db_path)
+        os.replace(backup_path, db_path)
+        raise
+    else:
+        os.unlink(backup_path)
     for suffix in ("-wal", "-shm"):
         stale_path = f"{db_path}{suffix}"
         if os.path.exists(stale_path):
             os.unlink(stale_path)
-    os.chmod(db_path, 0o600)
     logger.info("Migrated plaintext tenant database to encrypted storage at %s", db_path)
+
+
+def _remove_plaintext_migration_backups(db_path: str) -> None:
+    """Remove legacy plaintext backups after the encrypted primary is validated."""
+    if not db_path:
+        raise ValueError("db_path must not be empty")
+    database_path = Path(db_path)
+    pattern = f"{database_path.name}.plaintext.*.bak"
+    for backup_path in database_path.parent.glob(pattern):
+        backup_path.unlink()
+        logger.info("Removed legacy plaintext tenant database backup %s", backup_path)
 
 
 def _encrypted_storage_marker_exists(data_dir: str) -> bool:
@@ -340,7 +377,9 @@ def _open_user_connection(
 
     if os.path.exists(db_path):
         _migrate_plaintext_user_database(db_path, sqlcipher_key)
-    return _open_sqlcipher_connection(db_path, sqlcipher_key)
+    connection = _open_sqlcipher_connection(db_path, sqlcipher_key)
+    _remove_plaintext_migration_backups(db_path)
+    return connection
 
 
 def init_user_db(db_path: str, tenant: TenantContext | None = None) -> None:

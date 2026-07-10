@@ -40,6 +40,7 @@ _AGENT_DIRECTORY_NAME = "agent"
 _SESSION_RUNTIME_DIRECTORY_NAME = "sessions"
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 _MAX_EXTRACTED_BYTES = 200 * 1024 * 1024
+_MAX_ARCHIVE_MEMBERS = 4096
 _EXTRACT_CHUNK_BYTES = 64 * 1024
 _INSTRUCTION_FILENAMES = ("AGENTS.md", "CLAUDE.md")
 _SENSITIVE_JSON_FILENAMES = frozenset(
@@ -486,6 +487,8 @@ def _extract_archive(zip_data: bytes, temp_root: Path) -> None:
         members = archive.infolist()
         if not members:
             raise PiConfigError("Uploaded archive is empty")
+        if len(members) > _MAX_ARCHIVE_MEMBERS:
+            raise PiConfigError("Uploaded archive contains too many files")
 
         for member in members:
             mode_bits = member.external_attr >> 16

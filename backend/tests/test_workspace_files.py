@@ -71,6 +71,27 @@ def test_workspace_changed_files_clear_after_commit(
     assert cleared_response.json()["files"] == []
 
 
+def test_workspace_file_diff_compares_stable_file_with_git_head(
+    noauth_client: TestClient,
+    git_repo: str,
+) -> None:
+    """Diff endpoint should compare a stable worktree read with committed object data."""
+    workspace = _create_workspace(noauth_client, git_repo)
+    workspace_path = Path(workspace["path"])
+    (workspace_path / "README.md").write_text("# Test\n\nChanged\n", encoding="utf-8")
+
+    response = noauth_client.get(
+        f"/api/workspaces/{workspace['id']}/files/diff",
+        params={"path": "README.md"},
+    )
+
+    assert response.status_code == 200
+    diff = response.json()["diff"]
+    assert "--- a/README.md" in diff
+    assert "+++ b/README.md" in diff
+    assert "+Changed" in diff
+
+
 def test_workspace_file_read_never_follows_concurrent_parent_symlink(tmp_path: Path) -> None:
     """A parent-directory swap must not redirect a preview outside the workspace."""
     from yinshi.services.workspace_files import read_text_file

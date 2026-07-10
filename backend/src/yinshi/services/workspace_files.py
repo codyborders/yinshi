@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import difflib
 import errno
 import os
 import stat
@@ -12,7 +13,6 @@ from pathlib import Path
 from typing import Iterator, Literal
 
 from yinshi.exceptions import GitError
-from yinshi.utils.paths import is_path_inside
 
 FileNodeType = Literal["file", "directory"]
 ChangeKind = Literal["added", "copied", "deleted", "modified", "renamed", "untracked", "unknown"]
@@ -82,15 +82,6 @@ class ChangedFile:
     status: str
     kind: ChangeKind
     original_path: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class _VisibleDirectoryEntry:
-    """One lstat-classified child entry safe to include in the UI tree."""
-
-    path: Path
-    relative_path: str
-    node_type: FileNodeType
 
 
 def _workspace_root(workspace_path: str) -> Path:
@@ -235,70 +226,65 @@ def file_tree_to_dicts(nodes: tuple[FileNode, ...]) -> list[dict[str, object]]:
     return [_node_to_dict(node) for node in nodes]
 
 
-def _visible_directory_entries(
-    directory_path: Path, root: Path
-) -> tuple[_VisibleDirectoryEntry, ...]:
-    """Return visible child entries without following symlinks."""
-    entries: list[_VisibleDirectoryEntry] = []
-    for child in directory_path.iterdir():
-        try:
-            relative_path = child.relative_to(root).as_posix()
-        except ValueError:
-            continue
-        if not _is_visible_relative_path(relative_path):
-            continue
-        try:
-            child_stat = child.lstat()
-        except OSError:
-            continue
-        if stat.S_ISLNK(child_stat.st_mode):
-            continue
-        if stat.S_ISDIR(child_stat.st_mode):
-            node_type: FileNodeType = "directory"
-        elif stat.S_ISREG(child_stat.st_mode):
-            node_type = "file"
-        else:
-            continue
-        entries.append(
-            _VisibleDirectoryEntry(
-                path=child,
-                relative_path=relative_path,
-                node_type=node_type,
-            )
-        )
-    return tuple(
-        sorted(entries, key=lambda entry: (entry.node_type == "file", entry.path.name.lower()))
-    )
-
-
 def build_file_tree(workspace_path: str) -> tuple[FileNode, ...]:
-    """Build a bounded visible file tree for one workspace."""
+    """Build a bounded visible file tree through stable directory descriptors."""
     root = _workspace_root(workspace_path)
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    root_fd = os.open(root, directory_flags)
     entry_count = 0
 
-    def build_directory(directory_path: Path) -> tuple[FileNode, ...]:
+    def build_directory(directory_fd: int, parent_path: str = "") -> tuple[FileNode, ...]:
         nonlocal entry_count
+        classified_entries: list[tuple[str, str, FileNodeType]] = []
+        for name in os.listdir(directory_fd):
+            relative_path = f"{parent_path}/{name}" if parent_path else name
+            if not _is_visible_relative_path(relative_path):
+                continue
+            try:
+                child_stat = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+            except OSError:
+                continue
+            if stat.S_ISDIR(child_stat.st_mode):
+                node_type: FileNodeType = "directory"
+            elif stat.S_ISREG(child_stat.st_mode):
+                node_type = "file"
+            else:
+                continue
+            classified_entries.append((name, relative_path, node_type))
+
+        classified_entries.sort(key=lambda entry: (entry[2] == "file", entry[0].lower()))
         children: list[FileNode] = []
-        for entry in _visible_directory_entries(directory_path, root):
+        for name, relative_path, node_type in classified_entries:
             if entry_count >= _MAX_TREE_ENTRIES:
                 break
             entry_count += 1
-            if entry.node_type == "directory":
-                children.append(
-                    FileNode(
-                        name=entry.path.name,
-                        path=entry.relative_path,
-                        type="directory",
-                        children=build_directory(entry.path),
-                    )
+            if node_type == "file":
+                children.append(FileNode(name=name, path=relative_path, type="file"))
+                continue
+            try:
+                child_fd = os.open(name, directory_flags, dir_fd=directory_fd)
+            except OSError as exc:
+                if exc.errno in {errno.ELOOP, errno.ENOENT, errno.ENOTDIR}:
+                    continue
+                raise
+            try:
+                child_nodes = build_directory(child_fd, relative_path)
+            finally:
+                os.close(child_fd)
+            children.append(
+                FileNode(
+                    name=name,
+                    path=relative_path,
+                    type="directory",
+                    children=child_nodes,
                 )
-            else:
-                children.append(
-                    FileNode(name=entry.path.name, path=entry.relative_path, type="file")
-                )
+            )
         return tuple(children)
 
-    return build_directory(root)
+    try:
+        return build_directory(root_fd)
+    finally:
+        os.close(root_fd)
 
 
 def _change_kind(status: str) -> ChangeKind:
@@ -353,7 +339,7 @@ async def changed_files(workspace_path: str) -> tuple[ChangedFile, ...]:
     """Return visible changed files from Git status for one workspace."""
     root = _workspace_root(workspace_path)
     process = await asyncio.create_subprocess_exec(
-        "git",
+        "/usr/bin/git",
         "-C",
         str(root),
         "status",
@@ -442,7 +428,7 @@ def write_text_file(workspace_path: str, relative_path: str, content: str) -> No
 async def _changed_file_for_path(root: Path, display_path: str) -> ChangedFile | None:
     """Return Git status for one path without scanning the whole worktree."""
     process = await asyncio.create_subprocess_exec(
-        "git",
+        "/usr/bin/git",
         "-C",
         str(root),
         "status",
@@ -460,32 +446,52 @@ async def _changed_file_for_path(root: Path, display_path: str) -> ChangedFile |
     return next(iter(_parse_porcelain_z(stdout)), None)
 
 
+async def _head_file_text(root: Path, display_path: str) -> str | None:
+    """Read one committed file from Git's object database without touching the worktree."""
+    process = await asyncio.create_subprocess_exec(
+        "/usr/bin/git",
+        "-C",
+        str(root),
+        "show",
+        f"HEAD:{display_path}",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, _ = await process.communicate()
+    if process.returncode != 0:
+        return None
+    if len(stdout) > _MAX_TEXT_BYTES:
+        raise ValueError("file is too large to preview")
+    if b"\x00" in stdout:
+        raise ValueError("binary files cannot be previewed")
+    return stdout.decode("utf-8", errors="replace")
+
+
 async def diff_file(workspace_path: str, relative_path: str) -> str:
-    """Return a Git diff for one visible file path."""
+    """Return a text diff using stable worktree reads and Git object data."""
     root = _workspace_root(workspace_path)
     file_path = validate_visible_relative_path(workspace_path, relative_path)
     display_path = file_path.relative_to(root).as_posix()
     matching_change = await _changed_file_for_path(root, display_path)
-    if matching_change is not None and matching_change.kind == "untracked":
-        content = read_text_file(workspace_path, display_path)
-        added_lines = [f"+{line}" for line in content.splitlines()]
-        return "\n".join([f"+++ b/{display_path}", *added_lines])
+    if matching_change is not None and matching_change.kind == "deleted":
+        current_content = ""
+    else:
+        current_content = read_text_file(workspace_path, display_path)
 
-    process = await asyncio.create_subprocess_exec(
-        "git",
-        "-C",
-        str(root),
-        "diff",
-        "HEAD",
-        "--",
-        display_path,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
+    committed_content = await _head_file_text(root, display_path)
+    if committed_content is None:
+        if matching_change is None:
+            raise GitError("file does not exist in Git HEAD")
+        committed_content = ""
+
+    diff_lines = difflib.unified_diff(
+        committed_content.splitlines(),
+        current_content.splitlines(),
+        fromfile=f"a/{display_path}",
+        tofile=f"b/{display_path}",
+        lineterm="",
     )
-    stdout, stderr = await process.communicate()
-    if process.returncode != 0:
-        raise GitError(stderr.decode("utf-8", errors="replace") or "git diff failed")
-    return stdout.decode("utf-8", errors="replace")
+    return "\n".join(diff_lines)
 
 
 def _install_secret_hook_guard(hook_path: Path, marker: str, guard_script: str) -> None:

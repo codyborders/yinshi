@@ -9,10 +9,15 @@ hostname to clients.
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 import httpx
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
+
+from yinshi.rate_limit import limiter
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +38,9 @@ MAX_BODY_BYTES = 5 * 1024 * 1024  # 5 MiB
 
 # Connect quickly but allow slower uploads for replay segments on poor links.
 INTAKE_TIMEOUT_S = httpx.Timeout(connect=5.0, read=15.0, write=15.0, pool=5.0)
+_INTAKE_CONCURRENCY_MAX = 16
+_INTAKE_SLOT_WAIT_TIMEOUT_S = 0.1
+_intake_concurrency = asyncio.Semaphore(_INTAKE_CONCURRENCY_MAX)
 
 # Hop-by-hop and transport-specific headers that must not be relayed to the
 # caller. See RFC 7230 section 6.1; `content-encoding`/`content-length` are
@@ -60,8 +68,51 @@ def _validate_intake_path(intake_path: str) -> str:
     return intake_path
 
 
+@asynccontextmanager
+async def _intake_concurrency_slot() -> AsyncIterator[None]:
+    """Bound concurrent body reads and upstream requests across this process."""
+    try:
+        await asyncio.wait_for(
+            _intake_concurrency.acquire(),
+            timeout=_INTAKE_SLOT_WAIT_TIMEOUT_S,
+        )
+    except TimeoutError:
+        raise HTTPException(
+            status_code=503,
+            detail="Intake concurrency limit reached",
+            headers={"Retry-After": "1"},
+        ) from None
+    try:
+        yield
+    finally:
+        _intake_concurrency.release()
+
+
+async def _intake_concurrency_dependency() -> AsyncIterator[None]:
+    """Hold one global intake slot for the duration of a proxy request."""
+    async with _intake_concurrency_slot():
+        yield
+
+
+async def _read_bounded_body(request: Request) -> bytes:
+    """Read request chunks while enforcing the intake memory boundary."""
+    if not isinstance(request, Request):
+        raise TypeError("request must be a Request")
+    body = bytearray()
+    async for chunk in request.stream():
+        if len(body) + len(chunk) > MAX_BODY_BYTES:
+            raise HTTPException(status_code=413, detail="Intake payload too large")
+        body.extend(chunk)
+    return bytes(body)
+
+
 @router.post("/rum/api/v2/{intake_path}")
-async def proxy_datadog_intake(intake_path: str, request: Request) -> Response:
+@limiter.limit("120/minute")
+async def proxy_datadog_intake(
+    intake_path: str,
+    request: Request,
+    _concurrency_slot: None = Depends(_intake_concurrency_dependency),
+) -> Response:
     """Forward a browser SDK intake POST to Datadog and relay the response."""
     validated_intake_path = _validate_intake_path(intake_path)
 
@@ -77,9 +128,7 @@ async def proxy_datadog_intake(intake_path: str, request: Request) -> Response:
         if content_length_bytes > MAX_BODY_BYTES:
             raise HTTPException(status_code=413, detail="Intake payload too large")
 
-    body_bytes = await request.body()
-    if len(body_bytes) > MAX_BODY_BYTES:
-        raise HTTPException(status_code=413, detail="Intake payload too large")
+    body_bytes = await _read_bounded_body(request)
 
     # Preserve the original query string -- the SDK signs batches with
     # per-request parameters (e.g. `dd-api-key`, `dd-request-id`, `ddsource`).

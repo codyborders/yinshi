@@ -197,6 +197,92 @@ def test_terminal_websocket_attaches_authenticated_workspace(
     ]
 
 
+@pytest.mark.asyncio
+async def test_terminal_proxy_stops_forwarding_after_session_revocation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A revoked established session must not send another terminal command."""
+    import yinshi.api.terminals as terminals
+
+    class RevokedWebSocket:
+        def __init__(self) -> None:
+            self.close_code: int | None = None
+
+        async def receive_json(self) -> dict[str, str]:
+            return {"type": "input", "data": "cat /private/file\n"}
+
+        async def send_json(self, _message: dict[str, object]) -> None:
+            return None
+
+        async def close(self, code: int) -> None:
+            self.close_code = code
+
+    class CapturingWriter:
+        def __init__(self) -> None:
+            self.messages: list[bytes] = []
+
+        def write(self, data: bytes) -> None:
+            self.messages.append(data)
+
+        async def drain(self) -> None:
+            return None
+
+    websocket = RevokedWebSocket()
+    writer = CapturingWriter()
+    monkeypatch.setattr(
+        terminals,
+        "get_session_identity",
+        lambda _token: None,
+        raising=False,
+    )
+
+    await terminals._proxy_browser_to_sidecar(
+        websocket,
+        writer,
+        "terminal-id",
+        {"cwd": "/workspace"},
+        "revoked-session-token",
+    )
+
+    assert websocket.close_code == 1008
+    assert writer.messages == []
+
+
+@pytest.mark.asyncio
+async def test_terminal_proxy_stops_output_after_session_revocation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A revoked established session must not receive later terminal output."""
+    import yinshi.api.terminals as terminals
+
+    class OneMessageReader:
+        async def readline(self) -> bytes:
+            return b'{"type":"terminal_output","data":"private output"}\n'
+
+    class RevokedWebSocket:
+        def __init__(self) -> None:
+            self.close_code: int | None = None
+            self.messages: list[dict[str, object]] = []
+
+        async def send_json(self, message: dict[str, object]) -> None:
+            self.messages.append(message)
+
+        async def close(self, code: int) -> None:
+            self.close_code = code
+
+    websocket = RevokedWebSocket()
+    monkeypatch.setattr(terminals, "get_session_identity", lambda _token: None)
+
+    await terminals._proxy_sidecar_to_browser(
+        websocket,
+        OneMessageReader(),
+        "revoked-session-token",
+    )
+
+    assert websocket.close_code == 1008
+    assert websocket.messages == []
+
+
 # --- SEC-H3: Sessions PATCH must use _UPDATABLE_COLUMNS guard ---
 
 

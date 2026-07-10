@@ -17,6 +17,7 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
+import pytest
 from fastapi.testclient import TestClient
 
 from tests.conftest import reset_rate_limiter
@@ -859,6 +860,20 @@ def test_sync_failure_message_is_sanitized(auth_client: TestClient) -> None:
     assert payload is not None
     assert payload["status"] == "error"
     assert payload["error_message"] == "Sync failed. Check server logs for details."
+
+
+def test_extract_archive_rejects_excessive_member_count(tmp_path) -> None:
+    """Thousands of tiny ZIP members should be rejected before extraction."""
+    from yinshi.exceptions import PiConfigError
+    from yinshi.services.pi_config import _extract_archive
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        for index in range(4097):
+            archive.writestr(f"agent/empty-{index}.txt", "")
+
+    with pytest.raises(PiConfigError, match="too many files"):
+        _extract_archive(buffer.getvalue(), tmp_path / "extract")
 
 
 def test_extract_archive_counts_actual_decompressed_bytes(tmp_path) -> None:

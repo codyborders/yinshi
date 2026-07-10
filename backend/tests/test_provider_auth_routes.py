@@ -238,9 +238,7 @@ def test_callback_provider_auth_returns_404_when_flow_is_missing(auth_client: Te
     )
 
     with (
-        patch(
-            "yinshi.api.auth_routes.create_sidecar_connection", return_value=mock_sidecar
-        ),
+        patch("yinshi.api.auth_routes.create_sidecar_connection", return_value=mock_sidecar),
         patch(
             "yinshi.api.auth_routes.resolve_tenant_sidecar_context",
             new=AsyncMock(return_value=_tenant_sidecar_context()),

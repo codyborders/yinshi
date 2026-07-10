@@ -68,7 +68,8 @@ def _unwrap_user_dek(wrapped: bytes, user_id: str) -> bytes:
             raise EncryptionNotConfiguredError(
                 "KEY_ENCRYPTION_KEY is required to unwrap versioned DEK envelopes"
             )
-        keyring = {settings.key_encryption_key_id: key_encryption_key}
+        keyring = settings.key_encryption_keyring_previous
+        keyring[settings.key_encryption_key_id] = key_encryption_key
         return unwrap_dek_with_keks(wrapped, normalized_user_id, keyring)
 
     pepper = settings.encryption_pepper_bytes

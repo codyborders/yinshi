@@ -3,12 +3,13 @@
 import asyncio
 import logging
 import os
-import random
+import secrets
 import string
 import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from urllib.parse import urlparse
 
 from yinshi.exceptions import GitError
 
@@ -75,28 +76,49 @@ _NOUNS = [
     "brook",
 ]
 
-_ALLOWED_URL_SCHEMES = ("https://", "ssh://", "git@")
+_GIT_COMMAND_TIMEOUT_S = 300.0
+_GIT_EXECUTABLE_PATH = "/usr/bin/git"
+_GITHUB_HOST = "github.com"
 
 
 def generate_branch_name(username: str | None = None) -> str:
     """Generate a random branch name like 'username/swift-fox-a3f2'."""
-    adj = random.choice(_ADJECTIVES)
-    noun = random.choice(_NOUNS)
-    suffix = "".join(random.choices(string.ascii_lowercase + string.digits, k=4))
-    bare = f"{adj}-{noun}-{suffix}"
+    adjective = secrets.choice(_ADJECTIVES)
+    noun = secrets.choice(_NOUNS)
+    suffix = "".join(secrets.choice(string.ascii_lowercase + string.digits) for _ in range(4))
+    bare = f"{adjective}-{noun}-{suffix}"
     if username:
         return f"{username}/{bare}"
     return bare
 
 
 def _validate_clone_url(url: str) -> None:
-    """Reject dangerous git URL schemes."""
+    """Allow only canonical GitHub HTTPS repository URLs on the host."""
+    if not isinstance(url, str):
+        raise TypeError("url must be a string")
     if url.startswith("-"):
         raise GitError("Invalid repository URL")
     if url.startswith(("ext::", "file://")):
         raise GitError("URL scheme not allowed")
-    if not any(url.startswith(s) for s in _ALLOWED_URL_SCHEMES):
-        raise GitError("URL must start with https://, ssh://, or git@")
+
+    parsed = urlparse(url)
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise GitError("Only canonical GitHub HTTPS repository URLs are allowed") from exc
+    path_parts = [part for part in parsed.path.split("/") if part]
+    canonical = (
+        parsed.scheme == "https"
+        and parsed.hostname == _GITHUB_HOST
+        and parsed.username is None
+        and parsed.password is None
+        and port is None
+        and len(path_parts) == 2
+        and not parsed.query
+        and not parsed.fragment
+    )
+    if not canonical:
+        raise GitError("Only canonical GitHub HTTPS repository URLs are allowed")
 
 
 @contextmanager
@@ -133,9 +155,20 @@ async def _run_git(
     env: dict[str, str] | None = None,
 ) -> str:
     """Run a git command asynchronously and return stdout."""
-    cmd = ["git"] + args
-    logger.debug("Running: %s (cwd=%s)", " ".join(cmd), cwd)
-    child_env = os.environ.copy()
+    if not args:
+        raise ValueError("args must not be empty")
+    cmd = [_GIT_EXECUTABLE_PATH, *args]
+    logger.debug("Running git %s (cwd=%s)", args[0], cwd)
+    child_env = {
+        "GCM_INTERACTIVE": "Never",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_PAGER": "cat",
+        "GIT_TERMINAL_PROMPT": "0",
+        "HOME": "/nonexistent",
+        "LANG": os.environ.get("LANG", "C.UTF-8"),
+        "PATH": "/usr/bin:/bin",
+    }
     if env is not None:
         child_env.update(env)
     proc = await asyncio.create_subprocess_exec(
@@ -145,7 +178,15 @@ async def _run_git(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    stdout, stderr = await proc.communicate()
+    try:
+        stdout, stderr = await asyncio.wait_for(
+            proc.communicate(),
+            timeout=_GIT_COMMAND_TIMEOUT_S,
+        )
+    except TimeoutError as exc:
+        proc.kill()
+        await proc.wait()
+        raise GitError(f"git {args[0]} timed out") from exc
     if proc.returncode != 0:
         logger.error("git %s failed (cwd=%s): %s", args[0], cwd, stderr.decode().strip())
         raise GitError(f"git {args[0]} failed")
@@ -290,7 +331,7 @@ async def clone_repo(
             except GitError:
                 existing_remote = ""
             if not _remote_urls_match(existing_remote, url):
-                raise GitError(f"Destination already contains a clone of a different repository")
+                raise GitError("Destination already contains a clone of a different repository")
             had_remote_refs_before_fetch = await _has_remote_refs(dest)
             logger.info("Reusing existing clone at %s", dest)
             try:

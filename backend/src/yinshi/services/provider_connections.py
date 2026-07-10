@@ -145,9 +145,7 @@ def _normalize_api_key_with_config_secret(
     """Normalize encrypted secret payloads for api_key_with_config providers."""
     secret_field_keys = {field.key for field in provider_metadata.setup_fields if field.secret}
     required_secret_field_keys = {
-        field.key
-        for field in provider_metadata.setup_fields
-        if field.secret and field.required
+        field.key for field in provider_metadata.setup_fields if field.secret and field.required
     }
     if isinstance(secret, str):
         normalized_api_key = _normalize_text_setting("API key", secret)
@@ -400,7 +398,10 @@ def update_provider_connection_secret(
             (normalized_connection_id, normalized_user_id),
         ).fetchone()
     if row is None:
-        logger.warning("Skipping secret refresh for missing connection %s", normalized_connection_id[:8])
+        logger.warning(
+            "Skipping refresh for missing provider connection %s",
+            normalized_connection_id[:8],
+        )
         return
     normalized_secret = _normalize_connection_secret(
         get_provider_metadata(row["provider"]),
@@ -418,4 +419,4 @@ def update_provider_connection_secret(
             (encrypted_secret, normalized_connection_id, normalized_user_id),
         )
         db.commit()
-    logger.info("Refreshed provider connection secret for %s", normalized_connection_id[:8])
+    logger.info("Refreshed provider connection %s", normalized_connection_id[:8])

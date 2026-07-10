@@ -2,20 +2,32 @@
 
 from __future__ import annotations
 
+from cryptography.exceptions import InvalidTag
+
 from yinshi.config import control_field_encryption_enabled, get_settings
 from yinshi.exceptions import EncryptionNotConfiguredError
 from yinshi.services.crypto import decrypt_text, derive_subkey, encrypt_text, is_encrypted_text
 
 
-def _control_field_key() -> bytes:
-    """Derive the AES key used for encrypted control-plane fields."""
+def _control_field_keys() -> tuple[bytes, ...]:
+    """Derive current and previous AES keys for control-field rotation overlap."""
     settings = get_settings()
     master_key = settings.active_key_encryption_key_bytes
     if not master_key:
         raise EncryptionNotConfiguredError(
             "KEY_ENCRYPTION_KEY or ENCRYPTION_PEPPER is required for control-field encryption"
         )
-    return derive_subkey(master_key, purpose="control-field", context="v1")
+    keys = [derive_subkey(master_key, purpose="control-field", context="v1")]
+    for previous_key in settings.key_encryption_keyring_previous.values():
+        derived_key = derive_subkey(previous_key, purpose="control-field", context="v1")
+        if derived_key not in keys:
+            keys.append(derived_key)
+    return tuple(keys)
+
+
+def _control_field_key() -> bytes:
+    """Return the current AES key used for new control-field encryption."""
+    return _control_field_keys()[0]
 
 
 def _aad(field_name: str, user_id: str) -> str:
@@ -55,4 +67,10 @@ def decrypt_control_text(field_name: str, user_id: str, stored_value: str | None
         raise TypeError("stored_value must be a string or None")
     if not is_encrypted_text(stored_value):
         return stored_value
-    return decrypt_text(stored_value, _control_field_key(), aad=_aad(field_name, user_id))
+    associated_data = _aad(field_name, user_id)
+    for key in _control_field_keys():
+        try:
+            return decrypt_text(stored_value, key, aad=associated_data)
+        except InvalidTag:
+            continue
+    raise InvalidTag("No configured control-field key could decrypt the value")

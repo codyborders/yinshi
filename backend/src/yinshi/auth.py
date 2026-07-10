@@ -13,6 +13,10 @@ from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoin
 from yinshi.config import get_settings
 from yinshi.db import get_control_db
 from yinshi.services.accounts import make_tenant
+from yinshi.services.live_auth_sessions import (
+    signal_auth_session_revoked,
+    signal_user_sessions_revoked,
+)
 from yinshi.tenant import TenantContext
 
 logger = logging.getLogger(__name__)
@@ -146,6 +150,8 @@ def get_session_identity(token: str) -> tuple[str, str] | None:
         return None
     if session_row["revoked_at"] is not None:
         return None
+    if session_row["user_status"] != "active":
+        return None
     return normalized_user_id, normalized_auth_session_id
 
 
@@ -155,7 +161,9 @@ def _load_auth_session_row(user_id: str, auth_session_id: str) -> sqlite3.Row | 
     normalized_auth_session_id = _normalize_auth_session_id(auth_session_id)
     with get_control_db() as db:
         row = db.execute(
-            "SELECT id, revoked_at FROM auth_sessions WHERE id = ? AND user_id = ?",
+            "SELECT a.id, a.revoked_at, u.status AS user_status "
+            "FROM auth_sessions a JOIN users u ON u.id = a.user_id "
+            "WHERE a.id = ? AND a.user_id = ?",
             (normalized_auth_session_id, normalized_user_id),
         ).fetchone()
     return cast(sqlite3.Row | None, row)
@@ -175,6 +183,7 @@ def revoke_auth_session(user_id: str, auth_session_id: str) -> None:
             (normalized_auth_session_id, normalized_user_id),
         )
         db.commit()
+    signal_auth_session_revoked(normalized_auth_session_id)
 
 
 def revoke_auth_sessions(user_id: str) -> None:
@@ -190,6 +199,7 @@ def revoke_auth_sessions(user_id: str) -> None:
             (normalized_user_id,),
         )
         db.commit()
+    signal_user_sessions_revoked(normalized_user_id)
 
 
 def create_session_token(user_id: str) -> str:

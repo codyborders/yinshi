@@ -9,12 +9,14 @@ never hit the network.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
 
 import httpx
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from yinshi.api import datadog_proxy
@@ -120,6 +122,30 @@ def test_proxy_is_open_when_auth_enabled(
     assert response.status_code == 202
 
 
+def test_proxy_streams_request_without_unbounded_body_buffer(
+    noauth_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Proxy should stream and bound chunks instead of calling Request.body()."""
+    from starlette.requests import Request
+
+    async def forbidden_body(_request: Request) -> bytes:
+        raise AssertionError("request.body() must not be used by public intake")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.content == b"bounded-payload"
+        return httpx.Response(202)
+
+    monkeypatch.setattr(Request, "body", forbidden_body)
+    with _patched_upstream(monkeypatch, handler):
+        response = noauth_client.post(
+            "/rum/api/v2/rum?dd-api-key=pub_token",
+            content=b"bounded-payload",
+        )
+
+    assert response.status_code == 202
+
+
 def test_proxy_rejects_oversized_declared_body(
     noauth_client: TestClient,
 ) -> None:
@@ -169,3 +195,18 @@ def test_proxy_strips_cookie_and_host_headers(
             content=b"payload",
         )
     assert response.status_code == 202
+
+
+@pytest.mark.asyncio
+async def test_proxy_rejects_work_above_global_concurrency_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Intake work should fail fast after every global slot is occupied."""
+    monkeypatch.setattr(datadog_proxy, "_intake_concurrency", asyncio.Semaphore(1))
+
+    async with datadog_proxy._intake_concurrency_slot():
+        with pytest.raises(HTTPException) as raised:
+            async with datadog_proxy._intake_concurrency_slot():
+                pytest.fail("second intake acquired an occupied slot")
+
+    assert raised.value.status_code == 503

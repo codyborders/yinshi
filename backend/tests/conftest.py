@@ -34,6 +34,7 @@ def _configure_test_env(
     monkeypatch.setenv("CONTROL_FIELD_ENCRYPTION", "disabled")
     monkeypatch.setenv("USER_DATA_ENCRYPTION", "disabled")
     monkeypatch.setenv("REQUIRE_HTTPS", "disabled")
+    monkeypatch.setenv("TRUSTED_HOSTS", "testserver,localhost,127.0.0.1,[::1]")
     if auth_enabled:
         monkeypatch.setenv("GOOGLE_CLIENT_ID", "fake-client-id")
         monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "fake-secret")

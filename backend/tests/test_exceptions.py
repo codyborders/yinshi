@@ -4,13 +4,13 @@
 def test_exception_hierarchy():
     """All custom exceptions should inherit from YinshiError."""
     from yinshi.exceptions import (
-        YinshiError,
-        RepoNotFoundError,
-        WorkspaceNotFoundError,
-        SessionNotFoundError,
         GitError,
+        RepoNotFoundError,
+        SessionNotFoundError,
         SidecarError,
         SidecarNotConnectedError,
+        WorkspaceNotFoundError,
+        YinshiError,
     )
 
     assert issubclass(RepoNotFoundError, YinshiError)

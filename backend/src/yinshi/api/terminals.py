@@ -9,13 +9,17 @@ from typing import Any, cast
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from yinshi.auth import auth_disabled, resolve_tenant_from_session_token
+from yinshi.auth import auth_disabled, get_session_identity, resolve_tenant_from_session_token
 from yinshi.config import get_settings
 from yinshi.exceptions import (
     ContainerNotReadyError,
     ContainerStartError,
     GitError,
     WorkspaceNotFoundError,
+)
+from yinshi.services.live_auth_sessions import (
+    LiveAuthSessionRegistration,
+    register_live_auth_session,
 )
 from yinshi.services.sidecar_runtime import (
     remap_path_for_container,
@@ -84,10 +88,16 @@ async def _proxy_browser_to_sidecar(
     writer: asyncio.StreamWriter,
     terminal_id: str,
     attach_options: dict[str, Any],
+    session_token: str,
 ) -> None:
-    """Forward browser terminal input and control messages to the sidecar."""
+    """Forward input while the originating auth session remains active."""
+    if not session_token:
+        raise ValueError("session_token must not be empty")
     while True:
         payload = await websocket.receive_json()
+        if get_session_identity(session_token) is None:
+            await websocket.close(code=_TERMINAL_CLOSE_POLICY)
+            return
         if not isinstance(payload, dict):
             continue
         message_type = payload.get("type")
@@ -125,13 +135,46 @@ async def _proxy_browser_to_sidecar(
             await websocket.send_json({"type": "error", "error": "Unknown terminal message"})
 
 
+async def _monitor_terminal_session(
+    websocket: WebSocket,
+    session_token: str,
+    revocation_event: asyncio.Event,
+    connection_lifetime_s_max: int,
+) -> None:
+    """Close a revoked or expired terminal even while both proxies are idle."""
+    if not session_token:
+        raise ValueError("session_token must not be empty")
+    if not isinstance(revocation_event, asyncio.Event):
+        raise TypeError("revocation_event must be an asyncio.Event")
+    if connection_lifetime_s_max <= 0:
+        raise ValueError("connection_lifetime_s_max must be positive")
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + connection_lifetime_s_max
+    while True:
+        remaining_s = deadline - loop.time()
+        session_revoked = revocation_event.is_set() or get_session_identity(session_token) is None
+        if remaining_s <= 0 or session_revoked:
+            await websocket.close(code=_TERMINAL_CLOSE_POLICY)
+            return
+        try:
+            await asyncio.wait_for(revocation_event.wait(), timeout=min(1.0, remaining_s))
+        except TimeoutError:
+            continue
+
+
 async def _proxy_sidecar_to_browser(
     websocket: WebSocket,
     reader: asyncio.StreamReader,
+    session_token: str,
 ) -> None:
-    """Forward sidecar terminal events to the browser."""
+    """Forward terminal events while the originating session remains active."""
+    if not session_token:
+        raise ValueError("session_token must not be empty")
     while True:
         message = await _read_sidecar(reader)
+        if get_session_identity(session_token) is None:
+            await websocket.close(code=_TERMINAL_CLOSE_POLICY)
+            return
         if message is None:
             await websocket.send_json({"type": "error", "error": "Terminal runtime disconnected"})
             return
@@ -147,8 +190,9 @@ async def workspace_terminal(websocket: WebSocket, workspace_id: str) -> None:
         await websocket.close(code=_TERMINAL_CLOSE_POLICY)
         return
 
+    session_token = websocket.cookies.get("yinshi_session")
     tenant = _tenant_from_websocket(websocket)
-    if tenant is None:
+    if tenant is None or not session_token:
         await websocket.close(code=_TERMINAL_CLOSE_POLICY)
         return
 
@@ -201,6 +245,7 @@ async def workspace_terminal(websocket: WebSocket, workspace_id: str) -> None:
 
     reader: asyncio.StreamReader | None = None
     writer: asyncio.StreamWriter | None = None
+    registration: LiveAuthSessionRegistration | None = None
     try:
         async with tenant_container_activity(
             cast(Any, websocket),
@@ -214,6 +259,15 @@ async def workspace_terminal(websocket: WebSocket, workspace_id: str) -> None:
             if init_message is not None and init_message.get("type") != "init_status":
                 await websocket.send_json(init_message)
 
+            identity = get_session_identity(session_token)
+            if identity is None:
+                await websocket.close(code=_TERMINAL_CLOSE_POLICY)
+                return
+            user_id, auth_session_id = identity
+            registration = register_live_auth_session(
+                user_id=user_id,
+                auth_session_id=auth_session_id,
+            )
             attach_options = {
                 "workspaceId": terminal_id,
                 "cwd": effective_cwd,
@@ -226,11 +280,27 @@ async def workspace_terminal(websocket: WebSocket, workspace_id: str) -> None:
                 {"type": "terminal_attach", "id": terminal_id, "options": attach_options},
             )
             browser_task = asyncio.create_task(
-                _proxy_browser_to_sidecar(websocket, writer, terminal_id, attach_options)
+                _proxy_browser_to_sidecar(
+                    websocket,
+                    writer,
+                    terminal_id,
+                    attach_options,
+                    session_token,
+                )
             )
-            sidecar_task = asyncio.create_task(_proxy_sidecar_to_browser(websocket, reader))
+            sidecar_task = asyncio.create_task(
+                _proxy_sidecar_to_browser(websocket, reader, session_token)
+            )
+            session_task = asyncio.create_task(
+                _monitor_terminal_session(
+                    websocket,
+                    session_token,
+                    registration.event,
+                    settings.terminal_keepalive_s,
+                )
+            )
             done, pending = await asyncio.wait(
-                {browser_task, sidecar_task},
+                {browser_task, sidecar_task, session_task},
                 return_when=asyncio.FIRST_COMPLETED,
             )
             for task in pending:
@@ -246,6 +316,8 @@ async def workspace_terminal(websocket: WebSocket, workspace_id: str) -> None:
         except RuntimeError:
             pass
     finally:
+        if registration is not None:
+            registration.close()
         if writer is not None:
             try:
                 await _send_sidecar(writer, {"type": "terminal_detach", "id": terminal_id})

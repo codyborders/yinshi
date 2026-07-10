@@ -29,6 +29,33 @@ def test_settings_ignores_unknown_dotenv_secrets(tmp_path):
     assert secret_marker not in repr(settings)
 
 
+def test_no_auth_mode_rejects_non_loopback_bind(monkeypatch):
+    """Anonymous development mode must not listen on a remote interface."""
+    monkeypatch.setenv("DISABLE_AUTH", "true")
+    monkeypatch.setenv("HOST", "0.0.0.0")
+
+    from yinshi.config import get_settings
+
+    get_settings.cache_clear()
+    with pytest.raises(RuntimeError, match="loopback"):
+        get_settings()
+    get_settings.cache_clear()
+
+
+def test_no_auth_mode_rejects_container_posture(monkeypatch):
+    """Anonymous mode must use the explicit local host-side development posture."""
+    monkeypatch.setenv("DISABLE_AUTH", "true")
+    monkeypatch.setenv("HOST", "127.0.0.1")
+    monkeypatch.setenv("CONTAINER_ENABLED", "true")
+
+    from yinshi.config import get_settings
+
+    get_settings.cache_clear()
+    with pytest.raises(RuntimeError, match="CONTAINER_ENABLED=false"):
+        get_settings()
+    get_settings.cache_clear()
+
+
 def test_settings_from_env(monkeypatch):
     """Settings should read from environment variables."""
     monkeypatch.setenv("DEBUG", "true")
@@ -46,6 +73,7 @@ def test_settings_from_env(monkeypatch):
 def test_get_settings_cached(monkeypatch):
     """get_settings should return the same instance."""
     monkeypatch.setenv("DISABLE_AUTH", "true")
+    monkeypatch.setenv("CONTAINER_ENABLED", "false")
 
     from yinshi.config import get_settings
 
@@ -120,6 +148,7 @@ def test_authenticated_mode_rejects_low_diversity_session_secret(monkeypatch):
 def test_short_encryption_pepper_is_rejected(monkeypatch):
     """ENCRYPTION_PEPPER should fail fast when it is shorter than 32 bytes."""
     monkeypatch.setenv("DISABLE_AUTH", "true")
+    monkeypatch.setenv("CONTAINER_ENABLED", "false")
     monkeypatch.setenv("ENCRYPTION_PEPPER", "aa")
 
     from yinshi.config import get_settings
@@ -133,6 +162,7 @@ def test_short_encryption_pepper_is_rejected(monkeypatch):
 def test_key_encryption_key_requires_key_id(monkeypatch):
     """Server-managed KEKs should carry a non-empty key id for rotation."""
     monkeypatch.setenv("DISABLE_AUTH", "true")
+    monkeypatch.setenv("CONTAINER_ENABLED", "false")
     monkeypatch.setenv("KEY_ENCRYPTION_KEY", "b" * 64)
     monkeypatch.setenv("KEY_ENCRYPTION_KEY_ID", "   ")
 
@@ -147,6 +177,7 @@ def test_key_encryption_key_requires_key_id(monkeypatch):
 def test_invalid_security_mode_is_rejected(monkeypatch):
     """Security mode environment values should fail fast when misspelled."""
     monkeypatch.setenv("DISABLE_AUTH", "true")
+    monkeypatch.setenv("CONTAINER_ENABLED", "false")
     monkeypatch.setenv("TENANT_DB_ENCRYPTION", "sometimes")
 
     from yinshi.config import get_settings

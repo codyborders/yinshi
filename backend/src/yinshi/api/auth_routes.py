@@ -426,16 +426,11 @@ async def callback_google(request: Request) -> RedirectResponse:
     """Handle Google OAuth callback."""
     try:
         token = await oauth.google.authorize_access_token(request)
-    except OAuthError as exc:
-        logger.warning(
-            "Google OAuth rejected: error=%s description=%s",
-            exc.error,
-            exc.description,
-        )
+    except OAuthError:
+        logger.warning("Google OAuth rejected")
         return RedirectResponse(url="/?error=oauth_error")
-    except Exception as exc:
-        # Catches state mismatch, missing session, and other authlib internals.
-        logger.error("Google token exchange failed: %s", exc, exc_info=True)
+    except (ConnectionError, httpx.HTTPError, OSError, TypeError, ValueError):
+        logger.error("Google token exchange failed")
         return RedirectResponse(url="/?error=oauth_error")
 
     user_info = token.get("userinfo")
@@ -455,13 +450,8 @@ async def callback_google(request: Request) -> RedirectResponse:
             avatar_url=user_info.get("picture"),
             provider_data=dict(user_info),
         )
-    except (sqlite3.Error, OSError) as exc:
-        logger.error(
-            "Account provisioning failed for email=%s: %s",
-            email,
-            exc,
-            exc_info=True,
-        )
+    except (sqlite3.Error, OSError):
+        logger.error("Google account provisioning failed")
         return RedirectResponse(url="/?error=account_error")
 
     response = RedirectResponse(url="/app")
@@ -492,15 +482,11 @@ async def callback_github(request: Request) -> RedirectResponse:
     """Handle GitHub OAuth callback."""
     try:
         token = await oauth.github.authorize_access_token(request)
-    except OAuthError as exc:
-        logger.warning(
-            "GitHub OAuth rejected: error=%s description=%s",
-            exc.error,
-            exc.description,
-        )
+    except OAuthError:
+        logger.warning("GitHub OAuth rejected")
         return RedirectResponse(url="/?error=oauth_error")
-    except Exception as exc:
-        logger.error("GitHub token exchange failed: %s", exc, exc_info=True)
+    except (ConnectionError, httpx.HTTPError, OSError, TypeError, ValueError):
+        logger.error("GitHub token exchange failed")
         return RedirectResponse(url="/?error=oauth_error")
 
     # GitHub doesn't include user info in the token; call the API.
@@ -514,8 +500,8 @@ async def callback_github(request: Request) -> RedirectResponse:
             emails_resp = await client.get("https://api.github.com/user/emails", headers=headers)
             emails_resp.raise_for_status()
             emails = emails_resp.json()
-    except (httpx.HTTPError, KeyError) as exc:
-        logger.error("GitHub API call failed: %s", exc, exc_info=True)
+    except (httpx.HTTPError, KeyError):
+        logger.error("GitHub API call failed")
         return RedirectResponse(url="/?error=github_api_error")
 
     # Find the primary verified email, falling back to any verified email.
@@ -540,13 +526,8 @@ async def callback_github(request: Request) -> RedirectResponse:
             avatar_url=user_data.get("avatar_url"),
             provider_data=user_data,
         )
-    except (sqlite3.Error, OSError) as exc:
-        logger.error(
-            "Account provisioning failed for email=%s: %s",
-            email,
-            exc,
-            exc_info=True,
-        )
+    except (sqlite3.Error, OSError):
+        logger.error("GitHub account provisioning failed")
         return RedirectResponse(url="/?error=account_error")
 
     response = RedirectResponse(url="/app")
@@ -716,7 +697,7 @@ async def github_install_verify(request: Request) -> RedirectResponse:
     try:
         user_has_access = await verify_github_user_installation(code, installation_id)
     except GitHubAppError:
-        logger.exception("GitHub user verification failed for installation=%s", installation_id)
+        logger.error("GitHub user installation verification failed")
         return RedirectResponse(url="/app?github_connect_error=install_failed")
     if not user_has_access:
         return RedirectResponse(url="/app?github_connect_error=not_granted")
@@ -726,7 +707,7 @@ async def github_install_verify(request: Request) -> RedirectResponse:
     except GitHubInstallationUnusableError:
         return RedirectResponse(url="/app?github_connect_error=not_granted")
     except GitHubAppError:
-        logger.exception("GitHub App verification failed for installation=%s", installation_id)
+        logger.error("GitHub App installation verification failed")
         return RedirectResponse(url="/app?github_connect_error=install_failed")
 
     account = installation.get("account")

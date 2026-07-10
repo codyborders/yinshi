@@ -12,8 +12,9 @@ from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.sessions import SessionMiddleware
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.responses import RedirectResponse
-from starlette.types import ASGIApp
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from yinshi.api import (
     auth_routes,
@@ -41,6 +42,76 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+class RequestBodyLimitMiddleware:
+    """Reject declared or streamed HTTP bodies above a process-wide limit."""
+
+    def __init__(self, app: ASGIApp, *, body_bytes_max: int) -> None:
+        if body_bytes_max <= 0:
+            raise ValueError("body_bytes_max must be positive")
+        self._app = app
+        self._body_bytes_max = body_bytes_max
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self._app(scope, receive, send)
+            return
+
+        headers = {key.lower(): value for key, value in scope.get("headers", [])}
+        content_length = headers.get(b"content-length")
+        if content_length is not None:
+            try:
+                declared_bytes = int(content_length)
+            except ValueError:
+                await Response(status_code=400)(scope, receive, send)
+                return
+            if declared_bytes > self._body_bytes_max:
+                await Response(status_code=413)(scope, receive, send)
+                return
+
+        received_bytes = 0
+
+        async def limited_receive() -> Message:
+            nonlocal received_bytes
+            message = await receive()
+            if message["type"] == "http.request":
+                received_bytes += len(message.get("body", b""))
+                if received_bytes > self._body_bytes_max:
+                    raise _RequestBodyTooLarge
+            return message
+
+        try:
+            await self._app(scope, limited_receive, send)
+        except _RequestBodyTooLarge:
+            await Response(status_code=413)(scope, receive, send)
+
+
+class _RequestBodyTooLarge(Exception):
+    """Signal an ASGI receive stream that crossed its configured body limit."""
+
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """Attach browser hardening headers to every HTTP response."""
+
+    async def dispatch(
+        self,
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
+        response = await call_next(request)
+        response.headers.setdefault(
+            "Content-Security-Policy",
+            "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+        )
+        response.headers.setdefault("Referrer-Policy", "no-referrer")
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault(
+            "Permissions-Policy",
+            "camera=(), geolocation=(), microphone=()",
+        )
+        return response
+
+
 class TransportSecurityMiddleware(BaseHTTPMiddleware):
     """Enforce HTTPS and HSTS when production transport hardening is enabled."""
 
@@ -50,6 +121,7 @@ class TransportSecurityMiddleware(BaseHTTPMiddleware):
         *,
         require_https: bool,
         hsts_enabled: bool,
+        trusted_proxy_ips: set[str] | None = None,
     ) -> None:
         """Configure transport security behavior from validated settings."""
         super().__init__(app)
@@ -57,8 +129,11 @@ class TransportSecurityMiddleware(BaseHTTPMiddleware):
             raise TypeError("require_https must be a boolean")
         if not isinstance(hsts_enabled, bool):
             raise TypeError("hsts_enabled must be a boolean")
+        if trusted_proxy_ips is not None and not isinstance(trusted_proxy_ips, set):
+            raise TypeError("trusted_proxy_ips must be a set or None")
         self._require_https = require_https
         self._hsts_enabled = hsts_enabled
+        self._trusted_proxy_ips = trusted_proxy_ips or set()
 
     async def dispatch(
         self,
@@ -66,8 +141,11 @@ class TransportSecurityMiddleware(BaseHTTPMiddleware):
         call_next: Callable[[Request], Awaitable[Response]],
     ) -> Response:
         """Redirect plaintext requests and attach HSTS to HTTPS responses."""
-        forwarded_proto = request.headers.get("x-forwarded-proto", request.url.scheme)
-        request_scheme = forwarded_proto.split(",", maxsplit=1)[0].strip().lower()
+        request_scheme = request.url.scheme.lower()
+        client_host = request.client.host.lower() if request.client is not None else ""
+        forwarded_proto = request.headers.get("x-forwarded-proto")
+        if forwarded_proto and client_host in self._trusted_proxy_ips:
+            request_scheme = forwarded_proto.split(",", maxsplit=1)[0].strip().lower()
         if self._require_https:
             if request_scheme != "https":
                 https_url = request.url.replace(scheme="https")
@@ -148,6 +226,16 @@ app.add_middleware(
     TransportSecurityMiddleware,
     require_https=_https_required,
     hsts_enabled=app_settings.hsts_enabled and not app_settings.debug,
+    trusted_proxy_ips=app_settings.trusted_proxy_ip_set,
+)
+app.add_middleware(
+    RequestBodyLimitMiddleware,
+    body_bytes_max=app_settings.request_body_max_bytes,
+)
+app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(
+    TrustedHostMiddleware,
+    allowed_hosts=app_settings.trusted_host_list,
 )
 app.add_middleware(
     CORSMiddleware,

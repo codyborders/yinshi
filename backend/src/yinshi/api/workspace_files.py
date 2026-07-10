@@ -18,13 +18,13 @@ from pydantic import BaseModel, Field
 from yinshi.api.deps import check_workspace_owner, get_db_for_request, get_tenant
 from yinshi.exceptions import GitError, WorkspaceNotFoundError
 from yinshi.services.workspace_files import (
+    _open_workspace_parent,
     build_file_tree,
     changed_files,
     changed_files_to_dicts,
     diff_file,
     ensure_secret_guardrails,
     file_tree_to_dicts,
-    _open_workspace_parent,
     read_text_file,
     write_text_file,
 )

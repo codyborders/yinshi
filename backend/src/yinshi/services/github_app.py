@@ -28,12 +28,9 @@ _GITHUB_API_TIMEOUT_S = 15.0
 _GITHUB_API_VERSION = "2022-11-28"
 _INSTALLATION_REFRESH_WINDOW_S = 300
 _GITHUB_SHORTHAND_RE = re.compile(
-    r"^(?P<owner>[A-Za-z0-9](?:[A-Za-z0-9-]{0,38}))/"
-    r"(?P<repo>[A-Za-z0-9._-]+?)(?:\.git)?$"
+    r"^(?P<owner>[A-Za-z0-9](?:[A-Za-z0-9-]{0,38}))/" r"(?P<repo>[A-Za-z0-9._-]+?)(?:\.git)?$"
 )
-_GITHUB_SCP_RE = re.compile(
-    r"^git@github\.com:(?P<owner>[^/\s]+)/(?P<repo>[^/\s]+?)(?:\.git)?$"
-)
+_GITHUB_SCP_RE = re.compile(r"^git@github\.com:(?P<owner>[^/\s]+)/(?P<repo>[^/\s]+?)(?:\.git)?$")
 
 
 @dataclass(frozen=True)
@@ -74,7 +71,7 @@ class _CachedInstallationToken:
     expires_at_epoch: float
 
 
-_INSTALLATION_TOKEN_CACHE: dict[int, _CachedInstallationToken] = {}
+_INSTALLATION_TOKEN_CACHE: dict[tuple[int, str], _CachedInstallationToken] = {}
 
 
 def _build_clone_url(owner: str, repo: str) -> str:
@@ -206,6 +203,7 @@ async def _request_github_json(
     path: str,
     *,
     bearer_token: str,
+    json_payload: dict[str, Any] | None = None,
 ) -> tuple[int, dict[str, Any]]:
     """Issue a GitHub API request and return status plus parsed JSON."""
     assert method, "method must not be empty"
@@ -213,11 +211,14 @@ async def _request_github_json(
 
     try:
         async with httpx.AsyncClient(timeout=_GITHUB_API_TIMEOUT_S) as client:
-            response = await client.request(
-                method=method,
-                url=f"{_GITHUB_API_BASE_URL}{path}",
-                headers=_github_headers(bearer_token),
-            )
+            request_arguments: dict[str, Any] = {
+                "method": method,
+                "url": f"{_GITHUB_API_BASE_URL}{path}",
+                "headers": _github_headers(bearer_token),
+            }
+            if json_payload is not None:
+                request_arguments["json"] = json_payload
+            response = await client.request(**request_arguments)
     except httpx.HTTPError as exc:
         logger.error("GitHub API request failed for %s %s: %s", method, path, exc)
         raise GitHubAppError("GitHub API request failed") from exc
@@ -250,9 +251,7 @@ async def get_installation_details(installation_id: int) -> dict[str, Any]:
         bearer_token=app_jwt,
     )
     if status_code == 404:
-        raise GitHubInstallationUnusableError(
-            "The GitHub installation is no longer available."
-        )
+        raise GitHubInstallationUnusableError("The GitHub installation is no longer available.")
     if status_code >= 400:
         raise GitHubAppError("Failed to fetch GitHub installation details")
     return payload
@@ -279,11 +278,18 @@ async def get_repo_installation(owner: str, repo: str) -> int | None:
     return installation_id
 
 
-async def get_installation_token(installation_id: int) -> str:
-    """Mint or reuse an access token for a GitHub App installation."""
-    assert installation_id > 0, "installation_id must be positive"
+async def get_installation_token(installation_id: int, repository_name: str) -> str:
+    """Mint or reuse a token restricted to one GitHub repository."""
+    if installation_id <= 0:
+        raise ValueError("installation_id must be positive")
+    normalized_repository_name = repository_name.strip()
+    if not normalized_repository_name:
+        raise ValueError("repository_name must not be empty")
+    if "/" in normalized_repository_name or "\\" in normalized_repository_name:
+        raise ValueError("repository_name must not contain a path separator")
 
-    cached_entry = _INSTALLATION_TOKEN_CACHE.get(installation_id)
+    cache_key = (installation_id, normalized_repository_name.lower())
+    cached_entry = _INSTALLATION_TOKEN_CACHE.get(cache_key)
     if cached_entry is not None:
         refresh_before_epoch = cached_entry.expires_at_epoch - _INSTALLATION_REFRESH_WINDOW_S
         if time.time() < refresh_before_epoch:
@@ -294,6 +300,10 @@ async def get_installation_token(installation_id: int) -> str:
         "POST",
         f"/app/installations/{installation_id}/access_tokens",
         bearer_token=app_jwt,
+        json_payload={
+            "repositories": [normalized_repository_name],
+            "permissions": {"contents": "write"},
+        },
     )
     if status_code in (403, 404):
         raise GitHubInstallationUnusableError(
@@ -310,7 +320,7 @@ async def get_installation_token(installation_id: int) -> str:
         raise GitHubAppError("GitHub installation token response is missing expiry")
 
     expires_at_epoch = _parse_github_timestamp(expires_at_text)
-    _INSTALLATION_TOKEN_CACHE[installation_id] = _CachedInstallationToken(
+    _INSTALLATION_TOKEN_CACHE[cache_key] = _CachedInstallationToken(
         token=access_token,
         expires_at_epoch=expires_at_epoch,
     )
@@ -435,7 +445,7 @@ async def resolve_github_clone_access(
         )
 
     try:
-        access_token = await get_installation_token(installation_id)
+        access_token = await get_installation_token(installation_id, github_remote.repo)
     except GitHubInstallationUnusableError as exc:
         raise GitHubInstallationUnusableError(
             str(exc),
@@ -475,23 +485,15 @@ async def resolve_github_runtime_access_token(
         if installation is None:
             return None
         try:
-            return await get_installation_token(installation_id)
+            return await get_installation_token(installation_id, github_remote.repo)
         except (GitHubAppError, GitHubInstallationUnusableError):
-            logger.warning(
-                "Failed to mint runtime GitHub token for installation %s",
-                installation_id,
-                exc_info=True,
-            )
+            logger.warning("Failed to authorize a runtime Git operation")
             return None
 
     try:
         clone_access = await resolve_github_clone_access(user_id, remote_url)
     except (GitHubAppError, GitHubInstallationUnusableError):
-        logger.warning(
-            "Failed to resolve runtime GitHub clone access for %s",
-            remote_url,
-            exc_info=True,
-        )
+        logger.warning("Failed to resolve runtime GitHub clone access")
         return None
     if clone_access is None:
         return None

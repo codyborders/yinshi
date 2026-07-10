@@ -5,7 +5,8 @@ from __future__ import annotations
 import string
 
 import pytest
-from hypothesis import assume, given, strategies as st
+from hypothesis import assume, given
+from hypothesis import strategies as st
 
 from yinshi.exceptions import GitError
 
@@ -187,21 +188,25 @@ def test_validate_clone_url_rejects_dangerous_prefixes_property(
 
 
 @given(
-    prefix=st.sampled_from(["https://", "ssh://", "git@"]),
-    tail=st.text(
-        alphabet=string.ascii_letters + string.digits + "/:._-@",
+    owner=st.text(
+        alphabet=string.ascii_letters + string.digits + "-",
+        min_size=1,
+        max_size=39,
+    ),
+    repository=st.text(
+        alphabet=string.ascii_letters + string.digits + "._-",
         min_size=1,
         max_size=64,
     ),
 )
-def test_validate_clone_url_accepts_allowed_prefixes_property(
-    prefix: str,
-    tail: str,
+def test_validate_clone_url_accepts_canonical_github_https_property(
+    owner: str,
+    repository: str,
 ) -> None:
-    """Allowed clone prefixes should pass validation."""
+    """Canonical GitHub HTTPS repository URLs should pass validation."""
     from yinshi.services.git import _validate_clone_url
 
-    _validate_clone_url(f"{prefix}{tail}")
+    _validate_clone_url(f"https://github.com/{owner}/{repository}.git")
 
 
 @given(

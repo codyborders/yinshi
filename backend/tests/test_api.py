@@ -1,5 +1,6 @@
 """Tests for REST API endpoints including SSE streaming."""
 
+import asyncio
 import json
 import sqlite3
 import subprocess
@@ -84,6 +85,14 @@ def test_health_endpoint(client: TestClient) -> None:
     resp = client.get("/health")
     assert resp.status_code == 200
     assert resp.json()["status"] == "ok"
+
+
+def test_untrusted_host_is_rejected(client: TestClient) -> None:
+    """Requests with an unconfigured Host header must fail before routing."""
+    response = client.get("/health", headers={"Host": "attacker.example"})
+
+    assert response.status_code == 400
+    assert response.text == "Invalid host header"
 
 
 def test_list_repos_empty(client: TestClient) -> None:
@@ -301,6 +310,88 @@ def test_update_repo_filters_to_updatable_columns(client: TestClient, git_repo: 
     assert data["root_path"] == original["root_path"]
 
 
+def test_delete_workspace_removes_persistent_runtime_home(
+    auth_client: TestClient,
+    git_repo: str,
+) -> None:
+    """Workspace deletion should remove the whole tenant runtime home."""
+    from yinshi.auth import get_session_identity
+    from yinshi.db import get_control_db
+    from yinshi.services.accounts import make_tenant
+    from yinshi.services.sidecar_runtime import _workspace_home_source
+
+    stack = create_full_stack(auth_client, git_repo, name="workspace-home-delete")
+    workspace_id = stack["workspace"]["id"]
+    session_token = auth_client.cookies.get("yinshi_session")
+    assert session_token is not None
+    identity = get_session_identity(session_token)
+    assert identity is not None
+    with get_control_db() as db:
+        user = db.execute("SELECT email FROM users WHERE id = ?", (identity[0],)).fetchone()
+    assert user is not None
+    tenant = make_tenant(identity[0], user["email"])
+    home_path = Path(_workspace_home_source(tenant, workspace_id))
+    private_cache = home_path / ".cache" / "agent" / "private.txt"
+    private_cache.parent.mkdir(parents=True)
+    private_cache.write_text("private runtime state", encoding="utf-8")
+
+    from yinshi.main import app
+
+    container_manager = AsyncMock()
+    app.state.container_manager = container_manager
+    response = auth_client.delete(f"/api/workspaces/{workspace_id}")
+
+    assert response.status_code == 204
+    assert not home_path.exists()
+    container_manager.destroy_container.assert_awaited_once_with(
+        tenant.user_id,
+        runtime_id=workspace_id,
+    )
+
+
+def test_delete_repo_removes_tenant_checkout_and_runtime(
+    auth_client: TestClient,
+    git_repo: str,
+) -> None:
+    """Tenant repo deletion should destroy runtimes and all Yinshi-owned paths."""
+    from yinshi.auth import get_session_identity
+    from yinshi.config import get_settings
+    from yinshi.db import get_control_db
+    from yinshi.main import app
+    from yinshi.services.accounts import make_tenant
+    from yinshi.services.sidecar_runtime import _workspace_home_source
+
+    get_settings().container_enabled = True
+    stack = create_full_stack(auth_client, git_repo, name="repo-path-delete")
+    repo_id = stack["repo"]["id"]
+    workspace_id = stack["workspace"]["id"]
+    repo_root = Path(stack["repo"]["root_path"])
+    assert repo_root.exists()
+
+    session_token = auth_client.cookies.get("yinshi_session")
+    assert session_token is not None
+    identity = get_session_identity(session_token)
+    assert identity is not None
+    with get_control_db() as db:
+        user = db.execute("SELECT email FROM users WHERE id = ?", (identity[0],)).fetchone()
+    assert user is not None
+    tenant = make_tenant(identity[0], user["email"])
+    home_path = Path(_workspace_home_source(tenant, workspace_id))
+    (home_path / "private.txt").write_text("private", encoding="utf-8")
+
+    container_manager = AsyncMock()
+    app.state.container_manager = container_manager
+    response = auth_client.delete(f"/api/repos/{repo_id}")
+
+    assert response.status_code == 204
+    assert not home_path.exists()
+    assert not repo_root.exists()
+    container_manager.destroy_container.assert_awaited_once_with(
+        tenant.user_id,
+        runtime_id=workspace_id,
+    )
+
+
 def test_delete_repo(client: TestClient, git_repo: str) -> None:
     """DELETE /api/repos/:id should remove the repo."""
     create_resp = client.post(
@@ -316,11 +407,11 @@ def test_delete_repo(client: TestClient, git_repo: str) -> None:
     assert resp.status_code == 404
 
 
-def test_delete_repo_continues_on_workspace_failure(
+def test_delete_repo_retains_record_on_workspace_failure(
     client: TestClient,
     git_repo: str,
 ) -> None:
-    """Repo deletion should continue even if one workspace cleanup fails."""
+    """Repo deletion should remain retryable when workspace cleanup fails."""
     repo = client.post(
         "/api/repos",
         json={"name": "test-repo", "local_path": git_repo},
@@ -347,9 +438,10 @@ def test_delete_repo_continues_on_workspace_failure(
     ):
         resp = client.delete(f"/api/repos/{repo['id']}")
 
-    assert resp.status_code == 204
-    assert set(attempted_workspace_ids) == {ws["id"] for ws in workspaces}
-    assert client.get(f"/api/repos/{repo['id']}").status_code == 404
+    assert resp.status_code == 500
+    assert failure_workspace_id in attempted_workspace_ids
+    assert client.get(f"/api/repos/{repo['id']}").status_code == 200
+    assert client.get(f"/api/workspaces/{failure_workspace_id}/sessions").status_code == 200
 
 
 def test_import_repo_rate_limit_returns_429(
@@ -1222,6 +1314,102 @@ def test_prompt_streams_sidecar_events(client: TestClient, session_id: str) -> N
     ]
     assert assistant_message["content"] == "Hello world"
     assert mock_sidecar.warmup.call_args.kwargs["pi_session_file"].endswith(f"{session_id}.jsonl")
+
+
+def test_prompt_stream_stops_after_auth_session_revocation(
+    auth_client: TestClient,
+    git_repo: str,
+) -> None:
+    """Revoking a session should cancel its run before later output is exposed."""
+    from yinshi.api.stream import ExecutionContext
+    from yinshi.auth import get_session_identity, revoke_auth_session
+
+    stack = create_full_stack(auth_client, git_repo, name="revoked-prompt-stream")
+    session_id = stack["session"]["id"]
+    session_token = auth_client.cookies.get("yinshi_session")
+    assert session_token is not None
+    identity = get_session_identity(session_token)
+    assert identity is not None
+
+    async def fake_query(*_args, **_kwargs):
+        yield {
+            "type": "message",
+            "data": {
+                "type": "assistant",
+                "message": {"content": [{"type": "text", "text": "visible-before-revoke"}]},
+            },
+        }
+        revoke_auth_session(*identity)
+        yield {
+            "type": "message",
+            "data": {
+                "type": "assistant",
+                "message": {"content": [{"type": "text", "text": "private-after-revoke"}]},
+            },
+        }
+
+    mock_sidecar = make_mock_sidecar(fake_query)
+    with (
+        patch(
+            "yinshi.api.stream.create_sidecar_connection",
+            return_value=mock_sidecar,
+        ),
+        patch(
+            "yinshi.api.stream._resolve_execution_context",
+            new=AsyncMock(
+                return_value=ExecutionContext(
+                    sidecar_socket=None,
+                    effective_cwd="/tmp",
+                    key_source="api_key",
+                    provider="test-provider",
+                    provider_auth=None,
+                    provider_config=None,
+                    model_ref="test/model",
+                )
+            ),
+        ),
+    ):
+        response = auth_client.post(
+            f"/api/sessions/{session_id}/prompt",
+            json={"prompt": "start revocable run"},
+        )
+
+    assert response.status_code == 200
+    assert "visible-before-revoke" in response.text
+    assert "private-after-revoke" not in response.text
+    mock_sidecar.cancel.assert_awaited_once_with(session_id)
+
+
+@pytest.mark.asyncio
+async def test_session_bound_events_enforces_connection_lifetime(monkeypatch) -> None:
+    """An idle sidecar stream must end at the independent connection deadline."""
+    from yinshi.api import stream
+
+    class LifetimeSidecar:
+        def __init__(self) -> None:
+            self.cancelled_session_ids: list[str] = []
+
+        async def cancel(self, session_id: str) -> None:
+            self.cancelled_session_ids.append(session_id)
+
+    async def idle_events():
+        await asyncio.Event().wait()
+        yield {"type": "unreachable"}
+
+    sidecar = LifetimeSidecar()
+    monkeypatch.setattr(stream, "_STREAM_LIFETIME_S_MAX", 0.01)
+    monkeypatch.setattr(stream, "get_session_identity", lambda _token: ("user", "auth-session"))
+    events = stream._session_bound_events(
+        events=idle_events(),
+        sidecar=sidecar,
+        session_token="signed-session",
+        session_id="prompt-session",
+    )
+
+    with pytest.raises(stream._StreamLifetimeReached):
+        await anext(events)
+
+    assert sidecar.cancelled_session_ids == ["prompt-session"]
 
 
 def test_prompt_rejects_legacy_transcript_without_durable_pi_context(

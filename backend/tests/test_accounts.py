@@ -18,6 +18,7 @@ def account_env(tmp_path, monkeypatch):
     monkeypatch.setenv("ENCRYPTION_PEPPER", "a" * 64)
     monkeypatch.setenv("DB_PATH", str(tmp_path / "legacy.db"))
     monkeypatch.setenv("DISABLE_AUTH", "true")
+    monkeypatch.setenv("CONTAINER_ENABLED", "false")
     from yinshi.config import get_settings
 
     get_settings.cache_clear()

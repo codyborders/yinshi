@@ -14,11 +14,17 @@ export default defineConfig({
   build: {
     rollupOptions: {
       output: {
-        manualChunks: {
-          react: ["react", "react-dom"],
-          router: ["react-router-dom"],
-          datadog: ["@datadog/browser-rum", "@datadog/browser-rum-react"],
-          markdown: ["react-markdown", "remark-gfm"],
+        manualChunks(moduleId) {
+          if (moduleId.includes("node_modules/react-router")) return "router";
+          if (moduleId.includes("node_modules/react")) return "react";
+          if (moduleId.includes("node_modules/@datadog")) return "datadog";
+          if (
+            moduleId.includes("node_modules/react-markdown") ||
+            moduleId.includes("node_modules/remark")
+          ) {
+            return "markdown";
+          }
+          return undefined;
         },
       },
     },

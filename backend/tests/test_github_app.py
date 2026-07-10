@@ -90,8 +90,10 @@ def test_normalize_github_remote_rejects_extra_path_segments() -> None:
 
 
 @pytest.mark.asyncio
-async def test_get_installation_token_uses_cache(github_app_env) -> None:
-    """get_installation_token should reuse a cached token until refresh time."""
+async def test_get_installation_token_is_scoped_and_cached_per_repository(
+    github_app_env,
+) -> None:
+    """Installation tokens should never be reused across repositories."""
     from yinshi.services import github_app
 
     github_app._INSTALLATION_TOKEN_CACHE.clear()
@@ -102,22 +104,41 @@ async def test_get_installation_token_uses_cache(github_app_env) -> None:
             github_app,
             "_request_github_json",
             new=AsyncMock(
-                return_value=(
-                    201,
-                    {
-                        "token": "installation-token",
-                        "expires_at": "2999-01-01T00:00:00Z",
-                    },
-                )
+                side_effect=[
+                    (
+                        201,
+                        {
+                            "token": "repository-one-token",
+                            "expires_at": "2999-01-01T00:00:00Z",
+                        },
+                    ),
+                    (
+                        201,
+                        {
+                            "token": "repository-two-token",
+                            "expires_at": "2999-01-01T00:00:00Z",
+                        },
+                    ),
+                ]
             ),
         ) as request_mock,
     ):
-        first_token = await github_app.get_installation_token(101)
-        second_token = await github_app.get_installation_token(101)
+        first_token = await github_app.get_installation_token(101, "repository-one")
+        cached_token = await github_app.get_installation_token(101, "repository-one")
+        second_token = await github_app.get_installation_token(101, "repository-two")
 
-    assert first_token == "installation-token"
-    assert second_token == "installation-token"
-    assert request_mock.await_count == 1
+    assert first_token == "repository-one-token"
+    assert cached_token == "repository-one-token"
+    assert second_token == "repository-two-token"
+    assert request_mock.await_count == 2
+    assert request_mock.await_args_list[0].kwargs["json_payload"] == {
+        "repositories": ["repository-one"],
+        "permissions": {"contents": "write"},
+    }
+    assert request_mock.await_args_list[1].kwargs["json_payload"] == {
+        "repositories": ["repository-two"],
+        "permissions": {"contents": "write"},
+    }
 
 
 @pytest.mark.asyncio
@@ -276,7 +297,7 @@ async def test_resolve_github_runtime_access_token_uses_stored_installation(
         )
 
     assert token == "runtime-installation-token"
-    token_mock.assert_awaited_once_with(321)
+    token_mock.assert_awaited_once_with(321, "private-repo")
 
 
 @pytest.mark.asyncio

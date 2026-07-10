@@ -1,11 +1,12 @@
 """Tests for BYOK key enforcement and usage logging."""
 
+import json
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
 
-from tests.factories import create_full_stack, parse_sse_events
+from tests.factories import create_full_stack
 
 # --- Fixtures ---
 
@@ -174,6 +175,72 @@ def test_get_user_dek_lazy_generates_for_null_dek(control_env):
     # Second call should return the same DEK
     dek2 = get_user_dek(user_id)
     assert dek == dek2
+
+
+def test_user_dek_rewraps_during_key_rotation(control_env, monkeypatch) -> None:
+    """A previous KEK should unwrap and atomically rewrap a user DEK."""
+    from yinshi.config import get_settings
+    from yinshi.db import get_control_db
+    from yinshi.services.accounts import resolve_or_create_user
+    from yinshi.services.crypto import wrapped_dek_key_id
+    from yinshi.services.keys import get_user_dek
+
+    old_key = "11" * 32
+    new_key = "22" * 32
+    monkeypatch.setenv("KEY_ENCRYPTION_KEY", old_key)
+    monkeypatch.setenv("KEY_ENCRYPTION_KEY_ID", "old-key")
+    monkeypatch.delenv("ENCRYPTION_PEPPER", raising=False)
+    get_settings.cache_clear()
+
+    tenant = resolve_or_create_user(
+        provider="google",
+        provider_user_id="rotation-user",
+        email="rotation@example.com",
+        display_name="Rotation User",
+    )
+    original_dek = get_user_dek(tenant.user_id)
+
+    monkeypatch.setenv("KEY_ENCRYPTION_KEY", new_key)
+    monkeypatch.setenv("KEY_ENCRYPTION_KEY_ID", "new-key")
+    monkeypatch.setenv(
+        "KEY_ENCRYPTION_KEYS_PREVIOUS",
+        json.dumps({"old-key": old_key}),
+    )
+    get_settings.cache_clear()
+
+    assert get_user_dek(tenant.user_id) == original_dek
+    with get_control_db() as db:
+        row = db.execute(
+            "SELECT encrypted_dek FROM users WHERE id = ?",
+            (tenant.user_id,),
+        ).fetchone()
+    assert wrapped_dek_key_id(row["encrypted_dek"]) == "new-key"
+
+
+def test_control_field_decrypts_with_previous_rotation_key(control_env, monkeypatch) -> None:
+    """Encrypted control fields should remain readable during KEK rotation."""
+    from yinshi.config import get_settings
+    from yinshi.services.control_encryption import decrypt_control_text, encrypt_control_text
+
+    old_key = "33" * 32
+    new_key = "44" * 32
+    monkeypatch.setenv("CONTROL_FIELD_ENCRYPTION", "enabled")
+    monkeypatch.setenv("KEY_ENCRYPTION_KEY", old_key)
+    monkeypatch.setenv("KEY_ENCRYPTION_KEY_ID", "old-control-key")
+    monkeypatch.delenv("ENCRYPTION_PEPPER", raising=False)
+    get_settings.cache_clear()
+    encrypted = encrypt_control_text("settings.payload", "rotation-user", "private-value")
+    assert encrypted is not None
+
+    monkeypatch.setenv("KEY_ENCRYPTION_KEY", new_key)
+    monkeypatch.setenv("KEY_ENCRYPTION_KEY_ID", "new-control-key")
+    monkeypatch.setenv(
+        "KEY_ENCRYPTION_KEYS_PREVIOUS",
+        json.dumps({"old-control-key": old_key}),
+    )
+    get_settings.cache_clear()
+
+    assert decrypt_control_text("settings.payload", "rotation-user", encrypted) == "private-value"
 
 
 # --- Unit tests: resolve_api_key_for_prompt ---

@@ -6,6 +6,7 @@ network failures, and provisioning errors redirect to /login with an
 error code instead of returning a bare 500 Internal Server Error.
 """
 
+import asyncio
 import sqlite3
 from collections.abc import Generator
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -126,6 +127,28 @@ def test_auth_disabled_requires_explicit_disable_flag(monkeypatch):
     monkeypatch.setattr("yinshi.auth.get_settings", lambda: settings)
 
     assert auth_disabled() is False
+
+
+def test_disabled_user_session_is_rejected(auth_enabled_app) -> None:
+    """An account status change should invalidate every existing session."""
+    from yinshi.auth import create_session_token, verify_session_token
+    from yinshi.db import get_control_db
+    from yinshi.services.accounts import resolve_or_create_user
+
+    tenant = resolve_or_create_user(
+        provider="google",
+        provider_user_id="disabled-session-user",
+        email="disabled-session@example.com",
+        display_name="Disabled Session User",
+    )
+    token = create_session_token(tenant.user_id)
+    assert verify_session_token(token) == tenant.user_id
+
+    with get_control_db() as db:
+        db.execute("UPDATE users SET status = 'disabled' WHERE id = ?", (tenant.user_id,))
+        db.commit()
+
+    assert verify_session_token(token) is None
 
 
 def test_verify_empty_token(tmp_path, monkeypatch):
@@ -274,14 +297,17 @@ def _assert_error_redirect(response, expected_error: str) -> None:
     assert f"error={expected_error}" in location
 
 
-def test_callback_google_oauth_error_redirects(auth_enabled_app):
+def test_callback_google_oauth_error_redirects(auth_enabled_app, caplog):
     """Google OAuth error (user denied consent, expired code) redirects to /login, not 500."""
     from fastapi.testclient import TestClient
 
     from yinshi.main import app
 
     mock_token_exchange = AsyncMock(
-        side_effect=OAuthError(error="access_denied", description="User denied"),
+        side_effect=OAuthError(
+            error="access_denied",
+            description="upstream-body-secret-marker",
+        ),
     )
 
     with (
@@ -294,15 +320,17 @@ def test_callback_google_oauth_error_redirects(auth_enabled_app):
         resp = client.get("/auth/callback/google", follow_redirects=False)
         _assert_error_redirect(resp, "oauth_error")
 
+    assert "upstream-body-secret-marker" not in caplog.text
 
-def test_callback_google_network_error_redirects(auth_enabled_app):
+
+def test_callback_google_network_error_redirects(auth_enabled_app, caplog):
     """Network error during Google token exchange redirects to /login, not 500."""
     from fastapi.testclient import TestClient
 
     from yinshi.main import app
 
     mock_token_exchange = AsyncMock(
-        side_effect=ConnectionError("Network unreachable"),
+        side_effect=ConnectionError("upstream-response-secret-marker"),
     )
 
     with (
@@ -314,6 +342,8 @@ def test_callback_google_network_error_redirects(auth_enabled_app):
     ):
         resp = client.get("/auth/callback/google", follow_redirects=False)
         _assert_error_redirect(resp, "oauth_error")
+
+    assert "upstream-response-secret-marker" not in caplog.text
 
 
 def test_callback_google_provisioning_error_redirects(auth_enabled_app):
@@ -498,9 +528,7 @@ def test_github_install_callback_stores_installation(
             f"/auth/github/install/callback?state={state}&installation_id=42&setup_action=install",
             follow_redirects=False,
         )
-        verification_state = parse_qs(urlparse(install_resp.headers["location"]).query)[
-            "state"
-        ][0]
+        verification_state = parse_qs(urlparse(install_resp.headers["location"]).query)["state"][0]
         resp = client.get(
             "/auth/github/install/verify",
             params={"state": verification_state, "code": "one-time-user-code"},
@@ -653,9 +681,7 @@ def test_github_install_callback_relinks_existing_user_repos(
             f"/auth/github/install/callback?state={state}&installation_id=42&setup_action=install",
             follow_redirects=False,
         )
-        verification_state = parse_qs(urlparse(install_resp.headers["location"]).query)[
-            "state"
-        ][0]
+        verification_state = parse_qs(urlparse(install_resp.headers["location"]).query)["state"][0]
         resp = client.get(
             "/auth/github/install/verify",
             params={"state": verification_state, "code": "one-time-user-code"},
@@ -717,6 +743,31 @@ def test_list_github_installations_returns_current_user_rows(
             "html_url": "https://github.com/organizations/octo-org/settings/installations/9",
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_auth_session_revocation_signals_live_connections(auth_enabled_app) -> None:
+    """Durable revocation should immediately wake local long-lived connections."""
+    from yinshi.auth import create_session_token, get_session_identity, revoke_auth_session
+    from yinshi.services.live_auth_sessions import register_live_auth_session
+
+    tenant = _create_test_user()
+    token = create_session_token(tenant.user_id)
+    identity = get_session_identity(token)
+    assert identity is not None
+    user_id, auth_session_id = identity
+    registration = register_live_auth_session(
+        user_id=user_id,
+        auth_session_id=auth_session_id,
+    )
+
+    try:
+        revoke_auth_session(user_id=user_id, auth_session_id=auth_session_id)
+        await asyncio.wait_for(registration.event.wait(), timeout=0.2)
+    finally:
+        registration.close()
+
+    assert registration.event.is_set()
 
 
 def test_logout_all_revokes_all_sessions_and_clears_cookie(auth_enabled_app) -> None:

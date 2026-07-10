@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import secrets
 from functools import lru_cache
+from urllib.parse import urlsplit
 
 from pydantic import SecretStr
 from pydantic_settings import BaseSettings
@@ -60,6 +62,7 @@ class Settings(BaseSettings):
     encryption_pepper: str = ""
     key_encryption_key: str = ""
     key_encryption_key_id: str = "local-v1"
+    key_encryption_keys_previous: SecretStr | None = None
 
     # Middle-ground data protection controls. "auto" enables the control in
     # authenticated non-debug deployments while keeping local tests explicit.
@@ -93,22 +96,26 @@ class Settings(BaseSettings):
     sidecar_socket_path: str = "/tmp/yinshi-sidecar.sock"
 
     # Pi package update and release-note metadata
-    pi_package_name: str = "@mariozechner/pi-coding-agent"
-    pi_release_repository: str = "badlogic/pi-mono"
-    pi_update_status_path: str = "/opt/yinshi/.runtime/pi-package-update.json"
-    pi_update_schedule: str = "Daily around 04:17 UTC with up to 1 hour randomized delay"
+    pi_package_name: str = "@earendil-works/pi-coding-agent"
+    pi_release_repository: str = "earendil-works/pi"
+    # Encrypted database backups
+    backup_dir: str = "/var/lib/yinshi/backups"
+    backup_encryption_key: SecretStr | None = None
 
     # CORS
     frontend_url: str = "http://localhost:5173"
 
     # Server
-    host: str = "0.0.0.0"
+    host: str = "127.0.0.1"
     port: int = 8000
 
     # Production transport controls. "auto" requires HTTPS in authenticated
     # non-debug deployments and trusts the edge proxy to provide TLS.
     require_https: str = "auto"
     hsts_enabled: bool = True
+    trusted_proxy_ips: str = "127.0.0.1,::1"
+    trusted_hosts: str = "localhost,127.0.0.1,[::1]"
+    request_body_max_bytes: int = 10 * 1024 * 1024
 
     # Allowed base directory for local repo imports (empty = reject all local imports)
     allowed_repo_base: str = ""
@@ -148,6 +155,32 @@ class Settings(BaseSettings):
         return _decode_hex_secret(self.key_encryption_key, "KEY_ENCRYPTION_KEY")
 
     @property
+    def key_encryption_keyring_previous(self) -> dict[str, bytes]:
+        """Return explicitly configured previous KEKs keyed by their stable IDs."""
+        if self.key_encryption_keys_previous is None:
+            return {}
+        raw_keyring = self.key_encryption_keys_previous.get_secret_value().strip()
+        if not raw_keyring:
+            return {}
+        try:
+            payload = json.loads(raw_keyring)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("KEY_ENCRYPTION_KEYS_PREVIOUS must be a JSON object") from exc
+        if not isinstance(payload, dict):
+            raise RuntimeError("KEY_ENCRYPTION_KEYS_PREVIOUS must be a JSON object")
+        keyring: dict[str, bytes] = {}
+        for raw_key_id, raw_key in payload.items():
+            if not isinstance(raw_key_id, str) or not raw_key_id.strip():
+                raise RuntimeError("Previous key IDs must be non-empty strings")
+            if not isinstance(raw_key, str):
+                raise RuntimeError("Previous KEK values must be hexadecimal strings")
+            key_id = raw_key_id.strip()
+            if key_id == self.key_encryption_key_id.strip():
+                raise RuntimeError("Previous KEK IDs must differ from KEY_ENCRYPTION_KEY_ID")
+            keyring[key_id] = _decode_hex_secret(raw_key, "previous KEK")
+        return keyring
+
+    @property
     def active_key_encryption_key_bytes(self) -> bytes:
         """Return the strongest configured key source for envelope encryption."""
         key_encryption_key_bytes = self.key_encryption_key_bytes
@@ -174,6 +207,26 @@ class Settings(BaseSettings):
     def require_https_mode(self) -> str:
         """Return the normalized HTTPS enforcement mode."""
         return _normalize_mode(self.require_https, "REQUIRE_HTTPS")
+
+    @property
+    def trusted_host_list(self) -> list[str]:
+        """Return explicit hosts plus the configured frontend hostname."""
+        configured_hosts = [
+            host.strip().lower() for host in self.trusted_hosts.split(",") if host.strip()
+        ]
+        frontend_host = urlsplit(self.frontend_url).hostname
+        if frontend_host:
+            configured_hosts.append(frontend_host.lower())
+        return list(dict.fromkeys(configured_hosts))
+
+    @property
+    def trusted_proxy_ip_set(self) -> set[str]:
+        """Return normalized proxy addresses trusted to set forwarding headers."""
+        return {
+            address.strip().lower()
+            for address in self.trusted_proxy_ips.split(",")
+            if address.strip()
+        }
 
 
 def auth_is_enabled(settings: Settings) -> bool:
@@ -234,6 +287,12 @@ def https_required(settings: Settings) -> bool:
 def _validate_settings(settings: Settings) -> None:
     """Reject invalid security-critical configuration."""
     authentication_enabled = auth_is_enabled(settings)
+    if not authentication_enabled:
+        normalized_host = settings.host.strip().lower()
+        if normalized_host not in {"127.0.0.1", "::1", "localhost"}:
+            raise RuntimeError("No-auth mode must bind to a loopback host")
+        if settings.container_enabled:
+            raise RuntimeError("No-auth mode requires CONTAINER_ENABLED=false")
     if authentication_enabled:
         google_configured = bool(settings.google_client_id and settings.google_client_secret)
         github_configured = bool(settings.github_client_id and settings.github_client_secret)
@@ -251,6 +310,7 @@ def _validate_settings(settings: Settings) -> None:
 
     settings.encryption_pepper_bytes
     settings.key_encryption_key_bytes
+    settings.key_encryption_keyring_previous
 
     if authentication_enabled:
         if not settings.debug:
@@ -276,6 +336,13 @@ def _validate_settings(settings: Settings) -> None:
         raise RuntimeError("TERMINAL_KEEPALIVE_S must be at least 300 seconds")
     if settings.terminal_scrollback_lines < 100:
         raise RuntimeError("TERMINAL_SCROLLBACK_LINES must be at least 100")
+    if settings.request_body_max_bytes < 1024:
+        raise RuntimeError("REQUEST_BODY_MAX_BYTES must be at least 1024")
+    if not settings.trusted_host_list:
+        raise RuntimeError("TRUSTED_HOSTS must configure at least one host")
+    if "*" in settings.trusted_host_list:
+        raise RuntimeError("TRUSTED_HOSTS must not trust every host")
+    settings.trusted_proxy_ip_set
 
 
 @lru_cache()

@@ -66,7 +66,7 @@ def test_validate_clone_url_rejects_unknown_scheme():
     """Unknown URL schemes should be rejected."""
     from yinshi.services.git import _validate_clone_url
 
-    with pytest.raises(GitError, match="URL must start with"):
+    with pytest.raises(GitError, match="GitHub HTTPS"):
         _validate_clone_url("ftp://example.com/repo.git")
 
 
@@ -77,18 +77,65 @@ def test_validate_clone_url_allows_https():
     _validate_clone_url("https://github.com/user/repo.git")
 
 
-def test_validate_clone_url_allows_ssh():
-    """ssh:// URLs should be allowed."""
+@pytest.mark.parametrize(
+    "remote_url",
+    [
+        "ssh://git@github.com/user/repo.git",
+        "git@github.com:user/repo.git",
+        "https://127.0.0.1/repo.git",
+        "https://example.com/user/repo.git",
+        "https://token@github.com/user/repo.git",
+        "https://github.com:8443/user/repo.git",
+    ],
+)
+def test_validate_clone_url_rejects_noncanonical_destinations(remote_url):
+    """Host-side cloning should accept only canonical GitHub HTTPS remotes."""
     from yinshi.services.git import _validate_clone_url
 
-    _validate_clone_url("ssh://git@github.com/user/repo.git")
+    with pytest.raises(GitError, match="GitHub HTTPS"):
+        _validate_clone_url(remote_url)
 
 
-def test_validate_clone_url_allows_git_at():
-    """git@ URLs should be allowed."""
-    from yinshi.services.git import _validate_clone_url
+@pytest.mark.asyncio
+async def test_run_git_uses_immutable_binary_without_ambient_credentials(monkeypatch):
+    """Host Git must not inherit service credentials or user-level Git state."""
+    from yinshi.services import git as git_service
 
-    _validate_clone_url("git@github.com:user/repo.git")
+    captured: dict[str, object] = {}
+
+    class FakeProcess:
+        """Return a successful subprocess result without executing Git."""
+
+        returncode = 0
+
+        async def communicate(self):
+            return b"ok\n", b""
+
+    async def fake_create_subprocess_exec(*command, **options):
+        captured["command"] = command
+        captured["environment"] = options["env"]
+        return FakeProcess()
+
+    monkeypatch.setenv("SSH_AUTH_SOCK", "/tmp/ambient-agent.sock")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "ambient-provider-secret")
+    monkeypatch.setenv("HOME", "/tmp/ambient-home")
+    monkeypatch.setattr(
+        git_service.asyncio,
+        "create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+
+    output = await git_service._run_git(["status", "--short"])
+
+    assert output == "ok"
+    assert captured["command"][:2] == ("/usr/bin/git", "status")
+    environment = captured["environment"]
+    assert isinstance(environment, dict)
+    assert environment["HOME"] == "/nonexistent"
+    assert environment["GIT_CONFIG_NOSYSTEM"] == "1"
+    assert environment["GIT_CONFIG_GLOBAL"] == "/dev/null"
+    assert "SSH_AUTH_SOCK" not in environment
+    assert "ANTHROPIC_API_KEY" not in environment
 
 
 @pytest.mark.asyncio
@@ -126,7 +173,7 @@ async def test_clone_repo_reuses_existing_clone_when_git_suffix_differs(
         del env
         assert cwd == str(dest_path)
         if args == ["remote", "get-url", "origin"]:
-            return "https://example.com/acme/yinshi.git"
+            return "https://github.com/acme/yinshi.git"
         if args == ["for-each-ref", "--format=%(refname)", "refs/remotes/origin"]:
             return "refs/remotes/origin/main\n"
         if args == ["fetch", "--all"]:
@@ -137,7 +184,7 @@ async def test_clone_repo_reuses_existing_clone_when_git_suffix_differs(
     monkeypatch.setattr(git_service, "_run_git", fake_run_git)
 
     result = await git_service.clone_repo(
-        "https://example.com/acme/yinshi",
+        "https://github.com/acme/yinshi",
         str(dest_path),
     )
 
@@ -163,7 +210,7 @@ async def test_clone_repo_rejects_incomplete_existing_clone_when_refresh_fails(
         del env
         assert cwd == str(dest_path)
         if args == ["remote", "get-url", "origin"]:
-            return "https://example.com/acme/yinshi.git"
+            return "https://github.com/acme/yinshi.git"
         if args == ["for-each-ref", "--format=%(refname)", "refs/remotes/origin"]:
             return ""
         if args == ["fetch", "--all"]:
@@ -175,7 +222,7 @@ async def test_clone_repo_rejects_incomplete_existing_clone_when_refresh_fails(
 
     with pytest.raises(GitError, match="incomplete"):
         await git_service.clone_repo(
-            "https://example.com/acme/yinshi",
+            "https://github.com/acme/yinshi",
             str(dest_path),
         )
 
