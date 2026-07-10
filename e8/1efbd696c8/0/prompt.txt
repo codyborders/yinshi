@@ -1,0 +1,1 @@
+Run the /pi-frontend-standards extension against the website. Don't apply it to the app, only the landing page. Keep the logo.
