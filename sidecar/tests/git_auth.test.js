@@ -1,9 +1,12 @@
 import fs from "node:fs";
+import path from "node:path";
+import { spawn } from "node:child_process";
 import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
   createGitAskpassBundle,
+  createGitCredentialBroker,
   parseGitCommandForRuntimeAuth,
   tokenizeShellCommand,
 } from "../src/git_auth.js";
@@ -46,6 +49,89 @@ test("parseGitCommandForRuntimeAuth rejects non-git shell commands", () => {
   );
 
   assert.equal(parsedCommand, null);
+});
+
+function runAskpass(credentialBroker, prompt, includeCapability) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(credentialBroker.askpassPath, [prompt], {
+      env: {
+        PATH: process.env.PATH,
+        YINSHI_GIT_CREDENTIAL_SOCKET: credentialBroker.socketPath,
+      },
+      stdio: ["ignore", "pipe", "pipe", includeCapability ? credentialBroker.capabilityFd : "ignore"],
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => { stdout += chunk.toString("utf-8"); });
+    child.stderr.on("data", (chunk) => { stderr += chunk.toString("utf-8"); });
+    child.on("error", reject);
+    child.on("close", (exitCode) => resolve({ exitCode, stdout, stderr }));
+  });
+}
+
+function fillGitCredential(credentialBroker) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(
+      "/usr/bin/git",
+      ["-c", "credential.helper=", "credential", "fill"],
+      {
+        env: {
+          GIT_ASKPASS: credentialBroker.askpassPath,
+          GIT_TERMINAL_PROMPT: "0",
+          PATH: process.env.PATH,
+          YINSHI_GIT_CREDENTIAL_SOCKET: credentialBroker.socketPath,
+        },
+        stdio: ["pipe", "pipe", "pipe", credentialBroker.capabilityFd],
+      },
+    );
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => { stdout += chunk.toString("utf-8"); });
+    child.stderr.on("data", (chunk) => { stderr += chunk.toString("utf-8"); });
+    child.on("error", reject);
+    child.on("close", (exitCode) => resolve({ exitCode, stdout, stderr }));
+    child.stdin.end("protocol=https\nhost=github.com\n\n");
+  });
+}
+
+test("credential capability survives Git askpass execution", async () => {
+  const credentialBroker = await createGitCredentialBroker("inert-git-credential");
+  try {
+    const result = await fillGitCredential(credentialBroker);
+
+    assert.equal(result.exitCode, 0, result.stderr);
+    assert.match(result.stdout, /username=x-access-token/);
+    assert.match(result.stdout, /password=inert-git-credential/);
+  } finally {
+    credentialBroker.cleanup();
+  }
+});
+
+test("credential broker requires an inherited capability and issues once", async () => {
+  const credentialBroker = await createGitCredentialBroker("inert-credential");
+  try {
+    assert.deepEqual(
+      fs.readdirSync(path.dirname(credentialBroker.askpassPath)).sort(),
+      ["askpass.sh", "credential.sock"],
+    );
+    const denied = await runAskpass(credentialBroker, "Password for GitHub", false);
+    assert.notEqual(denied.exitCode, 0);
+    assert.doesNotMatch(denied.stdout, /inert-credential/);
+
+    const username = await runAskpass(credentialBroker, "Username for GitHub", true);
+    assert.equal(username.exitCode, 0);
+    assert.equal(username.stdout.trim(), "x-access-token");
+
+    const password = await runAskpass(credentialBroker, "Password for GitHub", true);
+    assert.equal(password.exitCode, 0);
+    assert.equal(password.stdout.trim(), "inert-credential");
+
+    const replay = await runAskpass(credentialBroker, "Password for GitHub", true);
+    assert.notEqual(replay.exitCode, 0);
+    assert.doesNotMatch(replay.stdout, /inert-credential/);
+  } finally {
+    credentialBroker.cleanup();
+  }
 });
 
 test("createGitAskpassBundle contains no credential material", () => {

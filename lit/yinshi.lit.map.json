@@ -1112,10 +1112,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 441,
+          "outputCount": 505,
           "chunkName": "sidecar-src-git-auth-js",
           "litmdStart": 26434,
-          "litmdCount": 441,
+          "litmdCount": 505,
           "indent": ""
         }
       ]
@@ -1125,10 +1125,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 31,
+          "outputCount": 43,
           "chunkName": "sidecar-src-git-askpass-client-js",
-          "litmdStart": 26882,
-          "litmdCount": 31,
+          "litmdStart": 26946,
+          "litmdCount": 43,
           "indent": ""
         }
       ]

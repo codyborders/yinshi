@@ -26437,6 +26437,7 @@ import os from "node:os";
 import path from "node:path";
 import net from "node:net";
 import { spawn } from "node:child_process";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
 import { createBashTool, createLocalBashOperations } from "@earendil-works/pi-coding-agent";
@@ -26444,6 +26445,7 @@ import { createBashTool, createLocalBashOperations } from "@earendil-works/pi-co
 const GIT_EXECUTABLE_PATH = "/usr/bin/git";
 const GIT_REMOTE_SUBCOMMANDS = new Set(["clone", "fetch", "ls-remote", "pull", "push"]);
 const SHELL_AND_OPERATOR = "&&";
+const GIT_CREDENTIAL_CAPABILITY_FD = 3;
 
 function assertNonEmptyString(value, name) {
   if (typeof value !== "string") {
@@ -26694,19 +26696,73 @@ function createGitExecutionEnvironment(baseEnv, askpassPath, credentialSocketPat
   return executionEnvironment;
 }
 
-async function createGitCredentialBroker(accessToken) {
+function createUnlinkedCapabilityDescriptor(bundleDirPath, capability) {
+  const capabilityPath = path.join(bundleDirPath, "capability");
+  fs.writeFileSync(capabilityPath, capability, {
+    encoding: "utf-8",
+    flag: "wx",
+    mode: 0o600,
+  });
+  const capabilityFd = fs.openSync(capabilityPath, "r");
+  fs.unlinkSync(capabilityPath);
+  return capabilityFd;
+}
+
+function requestHasCapability(request, capability) {
+  if (!request || typeof request !== "object") {
+    return false;
+  }
+  if (typeof request.capability !== "string") {
+    return false;
+  }
+  const receivedCapability = Buffer.from(request.capability, "utf-8");
+  const expectedCapability = Buffer.from(capability, "utf-8");
+  if (receivedCapability.length !== expectedCapability.length) {
+    return false;
+  }
+  return timingSafeEqual(receivedCapability, expectedCapability);
+}
+
+export async function createGitCredentialBroker(accessToken) {
   let credential = assertNonEmptyString(accessToken, "accessToken");
+  let capability = randomBytes(32).toString("hex");
   const askpassBundle = createGitAskpassBundle();
+  let capabilityFd;
+  try {
+    capabilityFd = createUnlinkedCapabilityDescriptor(
+      askpassBundle.bundleDirPath,
+      capability,
+    );
+  } catch (error) {
+    askpassBundle.cleanup();
+    throw error;
+  }
   const socketPath = path.join(askpassBundle.bundleDirPath, "credential.sock");
   let credentialIssued = false;
+  let cleaned = false;
   const server = net.createServer((socket) => {
     socket.setTimeout(5000, () => socket.destroy());
-    socket.once("data", (rawPrompt) => {
-      if (rawPrompt.length > 1024) {
+    socket.once("data", (rawRequest) => {
+      if (rawRequest.length > 2048) {
         socket.destroy();
         return;
       }
-      const prompt = rawPrompt.toString("utf-8").trim();
+      let request;
+      try {
+        request = JSON.parse(rawRequest.toString("utf-8"));
+      } catch {
+        socket.destroy();
+        return;
+      }
+      if (!requestHasCapability(request, capability)) {
+        socket.destroy();
+        return;
+      }
+      const prompt = request.prompt;
+      if (typeof prompt !== "string" || prompt.length === 0 || prompt.length > 1024) {
+        socket.destroy();
+        return;
+      }
       if (prompt.includes("Username")) {
         socket.end("x-access-token\n");
         return;
@@ -26732,6 +26788,7 @@ async function createGitCredentialBroker(accessToken) {
     });
     fs.chmodSync(socketPath, 0o600);
   } catch (error) {
+    fs.closeSync(capabilityFd);
     server.close();
     askpassBundle.cleanup();
     throw error;
@@ -26739,9 +26796,16 @@ async function createGitCredentialBroker(accessToken) {
 
   return {
     askpassPath: askpassBundle.askpassPath,
+    capabilityFd,
     socketPath,
     cleanup() {
+      if (cleaned) {
+        return;
+      }
+      cleaned = true;
       credential = "";
+      capability = "";
+      fs.closeSync(capabilityFd);
       server.close();
       askpassBundle.cleanup();
     },
@@ -26788,7 +26852,7 @@ async function executeGitCommand(parsedGitCommand, execOptions, gitAuth) {
         cwd: parsedGitCommand.cwd,
         detached: true,
         env: gitEnvironment,
-        stdio: ["ignore", "pipe", "pipe"],
+        stdio: ["ignore", "pipe", "pipe", credentialBroker.capabilityFd],
       },
     );
 
@@ -26882,6 +26946,7 @@ The askpass client receives no credential in its arguments, environment, or file
 ```javascript {chunk="sidecar-src-git-askpass-client-js" file="sidecar/src/git_askpass_client.js"}
 #!/usr/bin/env node
 
+import fs from "node:fs";
 import net from "node:net";
 
 const socketPath = process.env.YINSHI_GIT_CREDENTIAL_SOCKET;
@@ -26893,11 +26958,17 @@ if (typeof prompt !== "string" || prompt.length === 0 || prompt.length > 1024) {
   throw new Error("Git askpass prompt is invalid");
 }
 
+const capabilityBuffer = Buffer.alloc(128);
+const capabilityLength = fs.readSync(3, capabilityBuffer, 0, capabilityBuffer.length, 0);
+if (capabilityLength <= 0) {
+  throw new Error("Git credential capability is required");
+}
+const capability = capabilityBuffer.subarray(0, capabilityLength).toString("utf-8");
 const socket = net.createConnection(socketPath);
 let response = "";
 socket.setEncoding("utf-8");
 socket.setTimeout(5000, () => socket.destroy(new Error("Git credential broker timed out")));
-socket.on("connect", () => socket.write(`${prompt}\n`));
+socket.on("connect", () => socket.write(JSON.stringify({ capability, prompt })));
 socket.on("data", (chunk) => {
   response += chunk;
   if (response.length > 4096) {
@@ -26905,6 +26976,11 @@ socket.on("data", (chunk) => {
   }
 });
 socket.on("end", () => {
+  if (response.length === 0) {
+    process.stderr.write("Git credential broker denied the request\n");
+    process.exitCode = 1;
+    return;
+  }
   process.stdout.write(response);
 });
 socket.on("error", (error) => {
