@@ -39,6 +39,26 @@ def _configure_startup_env(
     get_settings.cache_clear()
 
 
+def test_create_app_builds_independent_health_applications(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Application factory should preserve health behavior without shared app state."""
+    _configure_startup_env(monkeypatch, tmp_path, container_enabled=False)
+    import yinshi.main as main
+
+    factory = getattr(main, "create_app", None)
+    assert callable(factory), "yinshi.main.create_app must be public"
+
+    first_app = factory()
+    second_app = factory()
+    assert first_app is not second_app
+    with TestClient(first_app) as client:
+        response = client.get("/health")
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+
+
 def test_startup_fails_closed_when_podman_is_missing(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,

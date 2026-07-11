@@ -31,7 +31,7 @@ from yinshi.api import (
     workspaces,
 )
 from yinshi.auth import AuthMiddleware, setup_oauth
-from yinshi.config import get_settings, https_required
+from yinshi.config import Settings, get_settings, https_required
 from yinshi.db import init_control_db, init_db
 from yinshi.rate_limit import limiter
 
@@ -195,75 +195,105 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     logger.info("Shutdown complete")
 
 
-app_settings = get_settings()
+def _configure_middleware(application: FastAPI, app_settings: Settings) -> None:
+    """Attach the shared hosted middleware stack to one application instance."""
+    if not isinstance(application, FastAPI):
+        raise TypeError("application must be a FastAPI instance")
+    if not isinstance(app_settings, Settings):
+        raise TypeError("app_settings must be Settings")
 
-app = FastAPI(
-    title="Yinshi",
-    lifespan=lifespan,
-    docs_url="/docs" if app_settings.debug else None,
-    openapi_url="/openapi.json" if app_settings.debug else None,
-)
-app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, cast(Any, _rate_limit_exceeded_handler))
+    cors_origins = [app_settings.frontend_url]
+    if app_settings.debug and "http://localhost:5173" not in cors_origins:
+        cors_origins.append("http://localhost:5173")
 
-# CORS
-_cors_origins = [app_settings.frontend_url]
-if app_settings.debug and "http://localhost:5173" not in _cors_origins:
-    _cors_origins.append("http://localhost:5173")
-
-# Middleware order: last registered = outermost = runs first.
-# Auth must run before session, and CORS must be outermost
-# so preflight responses include the correct headers.
-_https_required = https_required(app_settings)
-app.add_middleware(
-    SessionMiddleware,
-    secret_key=app_settings.secret_key,
-    https_only=_https_required,
-    same_site="lax",
-)
-app.add_middleware(AuthMiddleware)
-app.add_middleware(
-    TransportSecurityMiddleware,
-    require_https=_https_required,
-    hsts_enabled=app_settings.hsts_enabled and not app_settings.debug,
-    trusted_proxy_ips=app_settings.trusted_proxy_ip_set,
-)
-app.add_middleware(
-    RequestBodyLimitMiddleware,
-    body_bytes_max=app_settings.request_body_max_bytes,
-)
-app.add_middleware(SecurityHeadersMiddleware)
-app.add_middleware(
-    TrustedHostMiddleware,
-    allowed_hosts=app_settings.trusted_host_list,
-)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=_cors_origins,
-    allow_credentials=True,
-    allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=["Content-Type", "X-Requested-With"],
-)
-
-# Routes
-app.include_router(auth_routes.router)
-app.include_router(catalog.router)
-app.include_router(datadog_proxy.router)
-app.include_router(github.router)
-app.include_router(repos.router)
-app.include_router(runners.router)
-app.include_router(workspaces.router)
-app.include_router(workspace_files.router)
-app.include_router(terminals.router)
-app.include_router(sessions.router)
-app.include_router(stream.router)
-app.include_router(settings.router)
+    # Middleware order: last registered = outermost = runs first.
+    # CORS must remain outermost so preflight responses carry its headers.
+    require_https = https_required(app_settings)
+    application.add_middleware(
+        SessionMiddleware,
+        secret_key=app_settings.secret_key,
+        https_only=require_https,
+        same_site="lax",
+    )
+    application.add_middleware(AuthMiddleware)
+    application.add_middleware(
+        TransportSecurityMiddleware,
+        require_https=require_https,
+        hsts_enabled=app_settings.hsts_enabled and not app_settings.debug,
+        trusted_proxy_ips=app_settings.trusted_proxy_ip_set,
+    )
+    application.add_middleware(
+        RequestBodyLimitMiddleware,
+        body_bytes_max=app_settings.request_body_max_bytes,
+    )
+    application.add_middleware(SecurityHeadersMiddleware)
+    application.add_middleware(
+        TrustedHostMiddleware,
+        allowed_hosts=app_settings.trusted_host_list,
+    )
+    application.add_middleware(
+        CORSMiddleware,
+        allow_origins=cors_origins,
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
+        allow_headers=["Content-Type", "X-Requested-With"],
+    )
 
 
-@app.get("/health")
+def _include_routes(application: FastAPI) -> None:
+    """Attach the hosted control-plane and execution routes."""
+    if not isinstance(application, FastAPI):
+        raise TypeError("application must be a FastAPI instance")
+    routers = (
+        auth_routes.router,
+        catalog.router,
+        datadog_proxy.router,
+        github.router,
+        repos.router,
+        runners.router,
+        workspaces.router,
+        workspace_files.router,
+        terminals.router,
+        sessions.router,
+        stream.router,
+        settings.router,
+    )
+    if not routers:
+        raise RuntimeError("hosted application must include routes")
+    for router in routers:
+        application.include_router(router)
+
+
 async def health() -> dict[str, str]:
-    """Health check endpoint."""
+    """Return process liveness without exposing runtime details."""
     return {"status": "ok"}
+
+
+def create_app() -> FastAPI:
+    """Build one independently configured hosted Yinshi application."""
+    app_settings = get_settings()
+    if not isinstance(app_settings, Settings):
+        raise TypeError("get_settings must return Settings")
+
+    application = FastAPI(
+        title="Yinshi",
+        lifespan=lifespan,
+        docs_url="/docs" if app_settings.debug else None,
+        openapi_url="/openapi.json" if app_settings.debug else None,
+    )
+    application.state.limiter = limiter
+    application.add_exception_handler(
+        RateLimitExceeded,
+        cast(Any, _rate_limit_exceeded_handler),
+    )
+    _configure_middleware(application, app_settings)
+    _include_routes(application)
+    application.add_api_route("/health", health, methods=["GET"])
+    return application
+
+
+app = create_app()
+app_settings = get_settings()
 
 
 if __name__ == "__main__":
