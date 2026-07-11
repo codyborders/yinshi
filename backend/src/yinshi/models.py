@@ -82,6 +82,41 @@ class DesktopAuthorizationRequestOut(BaseModel):
     expires_at: datetime
 
 
+class DesktopTokenRequestIn(BaseModel):
+    """Exchange one browser-approved code using its original PKCE verifier."""
+
+    authorization_code: str = Field(..., min_length=32, max_length=128)
+    code_verifier: str = Field(
+        ...,
+        min_length=43,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9._~-]+$",
+    )
+    device_name: str = Field(..., min_length=1, max_length=120)
+
+
+class DesktopTokenUserOut(BaseModel):
+    """Account identity attached to newly issued desktop credentials."""
+
+    id: str
+    email: str
+
+
+class DesktopTokenOut(BaseModel):
+    """Initial credentials and verification material for one desktop device."""
+
+    token_type: Literal["Bearer"] = "Bearer"
+    access_token: str
+    access_token_expires_at: int
+    refresh_token: str
+    refresh_token_expires_at: int
+    account_lease: str
+    account_lease_expires_at: int
+    device_id: str
+    signing_public_key: str
+    user: DesktopTokenUserOut
+
+
 class RepoCreate(BaseModel):
     """Request to import a repository."""
 

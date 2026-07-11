@@ -1,5 +1,6 @@
 """OAuth login/callback endpoints for Google and GitHub."""
 
+import base64
 import hashlib
 import logging
 import secrets
@@ -37,6 +38,8 @@ from yinshi.exceptions import (
 from yinshi.models import (
     DesktopAuthorizationRequestIn,
     DesktopAuthorizationRequestOut,
+    DesktopTokenOut,
+    DesktopTokenRequestIn,
     ProviderAuthInputIn,
     ProviderAuthStartOut,
     ProviderAuthStatusOut,
@@ -51,6 +54,10 @@ from yinshi.services.desktop_auth import (
 )
 from yinshi.services.desktop_auth import (
     create_desktop_authorization_request as store_desktop_request,
+)
+from yinshi.services.desktop_tokens import (
+    create_desktop_token,
+    desktop_signing_public_key,
 )
 from yinshi.services.github_app import get_installation_details
 from yinshi.services.provider_connections import create_provider_connection
@@ -449,6 +456,120 @@ async def authorize_desktop_request(
             detail="Desktop authorization request was used",
         ) from None
     return RedirectResponse(url=approved_request.callback_url, status_code=307)
+
+
+@router.post("/desktop/token", response_model=DesktopTokenOut)
+@limiter.limit("20/minute")
+async def exchange_desktop_authorization_code(
+    request: Request,
+    body: DesktopTokenRequestIn,
+) -> dict[str, object]:
+    """Consume a PKCE code and issue the first desktop device credentials."""
+    del request
+    code_hash = hashlib.sha256(body.authorization_code.encode("utf-8")).hexdigest()
+    verifier_challenge = (
+        base64.urlsafe_b64encode(hashlib.sha256(body.code_verifier.encode("ascii")).digest())
+        .rstrip(b"=")
+        .decode("ascii")
+    )
+    current_time = int(time.time())
+
+    try:
+        with get_control_db() as database:
+            database.execute("BEGIN IMMEDIATE")
+            row = database.execute(
+                """
+                SELECT request_id_hash, user_id, code_challenge, expires_at, consumed_at
+                FROM desktop_authorization_requests
+                WHERE authorization_code_hash = ?
+                """,
+                (code_hash,),
+            ).fetchone()
+            if row is None or row["user_id"] is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Desktop authorization code is invalid",
+                )
+            if row["consumed_at"] is not None:
+                raise HTTPException(status_code=409, detail="Desktop authorization code was used")
+            if int(row["expires_at"]) <= current_time:
+                raise HTTPException(status_code=410, detail="Desktop authorization code expired")
+            if not secrets.compare_digest(row["code_challenge"], verifier_challenge):
+                raise HTTPException(status_code=400, detail="Desktop PKCE verification failed")
+            user = database.execute(
+                "SELECT id, email FROM users WHERE id = ? AND status = 'active'",
+                (row["user_id"],),
+            ).fetchone()
+            if user is None:
+                raise HTTPException(status_code=403, detail="Desktop account is unavailable")
+
+            device_id = secrets.token_hex(16)
+            access_expires_at = current_time + 15 * 60
+            lease_expires_at = current_time + 30 * 24 * 60 * 60
+            refresh_expires_at = current_time + 90 * 24 * 60 * 60
+            access_token = create_desktop_token(
+                token_type="access",
+                user_id=user["id"],
+                device_id=device_id,
+                issued_at=current_time,
+                expires_at=access_expires_at,
+            )
+            account_lease = create_desktop_token(
+                token_type="lease",
+                user_id=user["id"],
+                device_id=device_id,
+                issued_at=current_time,
+                expires_at=lease_expires_at,
+            )
+            signing_public_key = desktop_signing_public_key()
+            refresh_token = secrets.token_urlsafe(48)
+            refresh_token_hash = hashlib.sha256(refresh_token.encode("utf-8")).hexdigest()
+            device_result = database.execute(
+                """
+                INSERT INTO desktop_devices (
+                    id, user_id, name, created_at,
+                    refresh_token_hash, refresh_token_expires_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    device_id,
+                    user["id"],
+                    body.device_name,
+                    current_time,
+                    refresh_token_hash,
+                    refresh_expires_at,
+                ),
+            )
+            if device_result.rowcount != 1:
+                raise RuntimeError("desktop device was not stored")
+            consume_result = database.execute(
+                """
+                UPDATE desktop_authorization_requests
+                SET consumed_at = ?
+                WHERE request_id_hash = ? AND consumed_at IS NULL
+                """,
+                (current_time, row["request_id_hash"]),
+            )
+            if consume_result.rowcount != 1:
+                raise HTTPException(status_code=409, detail="Desktop authorization code was used")
+            database.commit()
+    except sqlite3.Error:
+        raise HTTPException(
+            status_code=503,
+            detail="Desktop credential storage is temporarily unavailable",
+        ) from None
+    return {
+        "token_type": "Bearer",
+        "access_token": access_token,
+        "access_token_expires_at": access_expires_at,
+        "refresh_token": refresh_token,
+        "refresh_token_expires_at": refresh_expires_at,
+        "account_lease": account_lease,
+        "account_lease_expires_at": lease_expires_at,
+        "device_id": device_id,
+        "signing_public_key": signing_public_key,
+        "user": {"id": user["id"], "email": user["email"]},
+    }
 
 
 @router.post(

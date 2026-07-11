@@ -238,6 +238,17 @@ CREATE TABLE IF NOT EXISTS desktop_authorization_requests (
 CREATE INDEX IF NOT EXISTS idx_desktop_authorization_requests_expiry
 ON desktop_authorization_requests(expires_at);
 
+CREATE TABLE IF NOT EXISTS desktop_devices (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    refresh_token_hash TEXT NOT NULL UNIQUE,
+    refresh_token_expires_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_desktop_devices_user ON desktop_devices(user_id);
+
 CREATE TABLE IF NOT EXISTS usage_log (
     id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
