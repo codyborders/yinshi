@@ -4,16 +4,19 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any, Literal, cast
 
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.responses import RedirectResponse
+from starlette.staticfiles import StaticFiles
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from yinshi.api import (
@@ -91,8 +94,36 @@ class _RequestBodyTooLarge(Exception):
     """Signal an ASGI receive stream that crossed its configured body limit."""
 
 
+_API_CONTENT_SECURITY_POLICY = "default-src 'none'; frame-ancestors 'none'; base-uri 'none'"
+_DESKTOP_CONTENT_SECURITY_POLICY = (
+    "default-src 'self'; "
+    "script-src 'self'; "
+    "style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data:; "
+    "font-src 'self' data:; "
+    "connect-src 'self'; "
+    "object-src 'none'; "
+    "base-uri 'none'; "
+    "frame-ancestors 'none'; "
+    "form-action 'self'"
+)
+
+
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     """Attach browser hardening headers to every HTTP response."""
+
+    def __init__(
+        self,
+        app: ASGIApp,
+        *,
+        content_security_policy: str = _API_CONTENT_SECURITY_POLICY,
+    ) -> None:
+        super().__init__(app)
+        if not isinstance(content_security_policy, str):
+            raise TypeError("content_security_policy must be a string")
+        if not content_security_policy.strip():
+            raise ValueError("content_security_policy must not be empty")
+        self._content_security_policy = content_security_policy
 
     async def dispatch(
         self,
@@ -102,7 +133,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response = await call_next(request)
         response.headers.setdefault(
             "Content-Security-Policy",
-            "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+            self._content_security_policy,
         )
         response.headers.setdefault("Referrer-Policy", "no-referrer")
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
@@ -112,6 +143,19 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             "camera=(), geolocation=(), microphone=()",
         )
         return response
+
+
+class DesktopStaticFiles(StaticFiles):
+    """Serve packaged assets and limit SPA fallback to known UI routes."""
+
+    async def get_response(self, path: str, scope: Scope) -> Response:
+        try:
+            return await super().get_response(path, scope)
+        except StarletteHTTPException as error:
+            is_spa_route = path == "app" or path.startswith("app/")
+            if error.status_code != 404 or not is_spa_route:
+                raise
+            return await super().get_response("index.html", scope)
 
 
 class TransportSecurityMiddleware(BaseHTTPMiddleware):
@@ -197,7 +241,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     logger.info("Shutdown complete")
 
 
-def _configure_middleware(application: FastAPI, app_settings: Settings) -> None:
+def _configure_middleware(
+    application: FastAPI,
+    app_settings: Settings,
+    *,
+    mode: AppMode,
+) -> None:
     """Attach the shared hosted middleware stack to one application instance."""
     if not isinstance(application, FastAPI):
         raise TypeError("application must be a FastAPI instance")
@@ -228,7 +277,13 @@ def _configure_middleware(application: FastAPI, app_settings: Settings) -> None:
         RequestBodyLimitMiddleware,
         body_bytes_max=app_settings.request_body_max_bytes,
     )
-    application.add_middleware(SecurityHeadersMiddleware)
+    content_security_policy = _API_CONTENT_SECURITY_POLICY
+    if mode == "desktop":
+        content_security_policy = _DESKTOP_CONTENT_SECURITY_POLICY
+    application.add_middleware(
+        SecurityHeadersMiddleware,
+        content_security_policy=content_security_policy,
+    )
     application.add_middleware(
         TrustedHostMiddleware,
         allowed_hosts=app_settings.trusted_host_list,
@@ -277,10 +332,22 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-def create_app(*, mode: AppMode = "hosted") -> FastAPI:
+def create_app(
+    *,
+    mode: AppMode = "hosted",
+    desktop_asset_dir: str | Path | None = None,
+) -> FastAPI:
     """Build one independently configured Yinshi application mode."""
     if mode not in ("desktop", "hosted", "worker"):
         raise ValueError(f"Unsupported application mode: {mode}")
+    if desktop_asset_dir is not None and mode != "desktop":
+        raise ValueError("desktop_asset_dir is only valid in desktop mode")
+    asset_directory: Path | None = None
+    if desktop_asset_dir is not None:
+        asset_directory = Path(desktop_asset_dir).resolve()
+        if not asset_directory.is_dir() or not (asset_directory / "index.html").is_file():
+            raise ValueError("desktop_asset_dir must contain index.html")
+
     app_settings = get_settings()
     if not isinstance(app_settings, Settings):
         raise TypeError("get_settings must return Settings")
@@ -297,9 +364,15 @@ def create_app(*, mode: AppMode = "hosted") -> FastAPI:
         RateLimitExceeded,
         cast(Any, _rate_limit_exceeded_handler),
     )
-    _configure_middleware(application, app_settings)
+    _configure_middleware(application, app_settings, mode=mode)
     _include_routes(application, mode=mode)
     application.add_api_route("/health", health, methods=["GET"])
+    if asset_directory is not None:
+        application.mount(
+            "/",
+            DesktopStaticFiles(directory=str(asset_directory), html=True),
+            name="desktop-ui",
+        )
     return application
 
 

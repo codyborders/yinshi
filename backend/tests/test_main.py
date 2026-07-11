@@ -86,6 +86,38 @@ def test_application_mode_limits_worker_route_surface() -> None:
     assert "/rum/api/v2/{intake_path}" not in desktop_paths
 
 
+def test_desktop_mode_serves_spa_with_restricted_fallback_and_csp(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Desktop mode should serve its packaged UI without masking missing API assets."""
+    _configure_startup_env(monkeypatch, tmp_path, container_enabled=False)
+    asset_dir = tmp_path / "frontend"
+    (asset_dir / "assets").mkdir(parents=True)
+    (asset_dir / "index.html").write_text("<main>Yinshi desktop</main>", encoding="utf-8")
+    (asset_dir / "assets" / "app.js").write_text("window.yinshi = true;", encoding="utf-8")
+
+    from yinshi.main import create_app
+
+    desktop_app = create_app(mode="desktop", desktop_asset_dir=asset_dir)
+    with TestClient(desktop_app) as client:
+        root_response = client.get("/")
+        deep_link_response = client.get("/app/session/session-id")
+        asset_response = client.get("/assets/app.js")
+        missing_asset_response = client.get("/assets/missing.js")
+        missing_api_response = client.get("/api/not-a-route")
+
+    assert root_response.text == "<main>Yinshi desktop</main>"
+    assert deep_link_response.text == "<main>Yinshi desktop</main>"
+    assert asset_response.text == "window.yinshi = true;"
+    assert missing_asset_response.status_code == 404
+    assert missing_api_response.status_code == 404
+    csp = root_response.headers["Content-Security-Policy"]
+    assert "default-src 'self'" in csp
+    assert "connect-src 'self'" in csp
+    assert "frame-ancestors 'none'" in csp
+
+
 def test_startup_fails_closed_when_podman_is_missing(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
