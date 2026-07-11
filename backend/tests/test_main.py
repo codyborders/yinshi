@@ -76,6 +76,15 @@ def test_application_mode_limits_worker_route_surface() -> None:
     assert "/auth/login/google" not in worker_paths
     assert "/rum/api/v2/{intake_path}" not in worker_paths
 
+    desktop_app = create_app(mode="desktop")
+    desktop_paths = set(desktop_app.openapi()["paths"])
+    assert desktop_app.state.mode == "desktop"
+    assert "/health" in desktop_paths
+    assert "/api/repos" in desktop_paths
+    assert "/api/settings/runner" not in desktop_paths
+    assert "/auth/login/google" not in desktop_paths
+    assert "/rum/api/v2/{intake_path}" not in desktop_paths
+
 
 def test_startup_fails_closed_when_podman_is_missing(
     tmp_path,

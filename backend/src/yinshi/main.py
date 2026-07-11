@@ -41,7 +41,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-AppMode = Literal["hosted", "worker"]
+AppMode = Literal["desktop", "hosted", "worker"]
 
 
 class RequestBodyLimitMiddleware:
@@ -246,7 +246,7 @@ def _include_routes(application: FastAPI, *, mode: AppMode) -> None:
     """Attach only the route groups allowed for one application mode."""
     if not isinstance(application, FastAPI):
         raise TypeError("application must be a FastAPI instance")
-    if mode not in ("hosted", "worker"):
+    if mode not in ("desktop", "hosted", "worker"):
         raise ValueError(f"Unsupported application mode: {mode}")
 
     execution_routers = (
@@ -279,7 +279,7 @@ async def health() -> dict[str, str]:
 
 def create_app(*, mode: AppMode = "hosted") -> FastAPI:
     """Build one independently configured Yinshi application mode."""
-    if mode not in ("hosted", "worker"):
+    if mode not in ("desktop", "hosted", "worker"):
         raise ValueError(f"Unsupported application mode: {mode}")
     app_settings = get_settings()
     if not isinstance(app_settings, Settings):
