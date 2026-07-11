@@ -59,6 +59,24 @@ def test_create_app_builds_independent_health_applications(
     assert response.json() == {"status": "ok"}
 
 
+def test_application_mode_limits_worker_route_surface() -> None:
+    """Worker mode should expose execution APIs without control-plane routes."""
+    from yinshi.main import create_app
+
+    hosted_paths = set(create_app().openapi()["paths"])
+    assert "/api/repos" in hosted_paths
+    assert "/api/settings/runner" in hosted_paths
+    assert "/auth/login/google" in hosted_paths
+    assert "/rum/api/v2/{intake_path}" in hosted_paths
+
+    worker_paths = set(create_app(mode="worker").openapi()["paths"])
+    assert "/health" in worker_paths
+    assert "/api/repos" in worker_paths
+    assert "/api/settings/runner" not in worker_paths
+    assert "/auth/login/google" not in worker_paths
+    assert "/rum/api/v2/{intake_path}" not in worker_paths
+
+
 def test_startup_fails_closed_when_podman_is_missing(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,

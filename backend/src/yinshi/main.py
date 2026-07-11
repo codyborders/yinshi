@@ -4,7 +4,7 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -40,6 +40,8 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+AppMode = Literal["hosted", "worker"]
 
 
 class RequestBodyLimitMiddleware:
@@ -240,17 +242,16 @@ def _configure_middleware(application: FastAPI, app_settings: Settings) -> None:
     )
 
 
-def _include_routes(application: FastAPI) -> None:
-    """Attach the hosted control-plane and execution routes."""
+def _include_routes(application: FastAPI, *, mode: AppMode) -> None:
+    """Attach only the route groups allowed for one application mode."""
     if not isinstance(application, FastAPI):
         raise TypeError("application must be a FastAPI instance")
-    routers = (
-        auth_routes.router,
+    if mode not in ("hosted", "worker"):
+        raise ValueError(f"Unsupported application mode: {mode}")
+
+    execution_routers = (
         catalog.router,
-        datadog_proxy.router,
-        github.router,
         repos.router,
-        runners.router,
         workspaces.router,
         workspace_files.router,
         terminals.router,
@@ -258,9 +259,16 @@ def _include_routes(application: FastAPI) -> None:
         stream.router,
         settings.router,
     )
-    if not routers:
-        raise RuntimeError("hosted application must include routes")
-    for router in routers:
+    control_routers = (
+        auth_routes.router,
+        datadog_proxy.router,
+        github.router,
+        runners.router,
+    )
+    selected_routers = list(execution_routers)
+    if mode == "hosted":
+        selected_routers = [*control_routers, *execution_routers]
+    for router in selected_routers:
         application.include_router(router)
 
 
@@ -269,8 +277,10 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-def create_app() -> FastAPI:
-    """Build one independently configured hosted Yinshi application."""
+def create_app(*, mode: AppMode = "hosted") -> FastAPI:
+    """Build one independently configured Yinshi application mode."""
+    if mode not in ("hosted", "worker"):
+        raise ValueError(f"Unsupported application mode: {mode}")
     app_settings = get_settings()
     if not isinstance(app_settings, Settings):
         raise TypeError("get_settings must return Settings")
@@ -282,12 +292,13 @@ def create_app() -> FastAPI:
         openapi_url="/openapi.json" if app_settings.debug else None,
     )
     application.state.limiter = limiter
+    application.state.mode = mode
     application.add_exception_handler(
         RateLimitExceeded,
         cast(Any, _rate_limit_exceeded_handler),
     )
     _configure_middleware(application, app_settings)
-    _include_routes(application)
+    _include_routes(application, mode=mode)
     application.add_api_route("/health", health, methods=["GET"])
     return application
 
