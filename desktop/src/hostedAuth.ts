@@ -140,6 +140,88 @@ function validateCallback(callbackUrl: URL, expectedCallback: URL, expectedState
   return code;
 }
 
+export interface ReadHostedDesktopTokenResponseOptions {
+  readonly response: Response;
+  readonly currentTimeSeconds: number;
+  readonly pinnedSigningPublicKey?: string;
+  readonly expectedUserId?: string;
+  readonly expectedDeviceId?: string;
+}
+
+export async function readHostedDesktopTokenResponse(
+  options: ReadHostedDesktopTokenResponseOptions,
+): Promise<HostedDesktopSession> {
+  if (!Number.isSafeInteger(options.currentTimeSeconds) || options.currentTimeSeconds < 1) {
+    throw new TypeError("currentTimeSeconds must be a positive integer");
+  }
+  const tokenBody = await readJsonObject(options.response, 200);
+  if (tokenBody.token_type !== "Bearer") {
+    return invalidResponse();
+  }
+  const accessToken = requiredString(tokenBody.access_token);
+  const accessTokenExpiresAt = safeInteger(tokenBody.access_token_expires_at);
+  const refreshToken = requiredString(tokenBody.refresh_token);
+  const refreshTokenExpiresAt = safeInteger(tokenBody.refresh_token_expires_at);
+  const accountLease = requiredString(tokenBody.account_lease);
+  const accountLeaseExpiresAt = safeInteger(tokenBody.account_lease_expires_at);
+  const deviceId = requiredString(tokenBody.device_id);
+  const receivedSigningPublicKey = requiredString(tokenBody.signing_public_key);
+  const signingPublicKey = assertSigningKeyContinuity(
+    options.pinnedSigningPublicKey,
+    receivedSigningPublicKey,
+  );
+  const userValue = tokenBody.user;
+  if (typeof userValue !== "object" || userValue === null || Array.isArray(userValue)) {
+    return invalidResponse();
+  }
+  const user = userValue as Record<string, unknown>;
+  const userId = requiredString(user.id);
+  const userEmail = requiredString(user.email);
+  if (
+    accessTokenExpiresAt <= options.currentTimeSeconds ||
+    accessTokenExpiresAt - options.currentTimeSeconds > ACCESS_DURATION_SECONDS_MAX
+  ) {
+    return invalidResponse();
+  }
+  if (
+    refreshTokenExpiresAt <= options.currentTimeSeconds ||
+    refreshTokenExpiresAt - options.currentTimeSeconds > REFRESH_DURATION_SECONDS_MAX
+  ) {
+    return invalidResponse();
+  }
+
+  const leaseClaims = verifyAccountLease({
+    token: accountLease,
+    signingPublicKey,
+    currentTimeSeconds: options.currentTimeSeconds,
+  });
+  if (
+    leaseClaims.expiresAt !== accountLeaseExpiresAt ||
+    leaseClaims.userId !== userId ||
+    leaseClaims.deviceId !== deviceId
+  ) {
+    return invalidResponse();
+  }
+  if (options.expectedUserId !== undefined && options.expectedUserId !== userId) {
+    return invalidResponse();
+  }
+  if (options.expectedDeviceId !== undefined && options.expectedDeviceId !== deviceId) {
+    return invalidResponse();
+  }
+  const profile: DesktopCredentialProfile = {
+    version: 1,
+    refreshToken,
+    refreshTokenExpiresAt,
+    accountLease,
+    accountLeaseExpiresAt,
+    signingPublicKey,
+    deviceId,
+    user: { id: userId, email: userEmail },
+  };
+  return { accessToken, accessTokenExpiresAt, profile };
+}
+
+
 export async function startHostedSignIn(
   options: StartHostedSignInOptions,
 ): Promise<HostedDesktopSession> {
@@ -196,64 +278,13 @@ export async function startHostedSignIn(
     redirect: "error",
     signal: AbortSignal.timeout(15_000),
   });
-  const tokenBody = await readJsonObject(tokenResponse, 200);
-  if (tokenBody.token_type !== "Bearer") {
-    return invalidResponse();
-  }
-  const accessToken = requiredString(tokenBody.access_token);
-  const accessTokenExpiresAt = safeInteger(tokenBody.access_token_expires_at);
-  const refreshToken = requiredString(tokenBody.refresh_token);
-  const refreshTokenExpiresAt = safeInteger(tokenBody.refresh_token_expires_at);
-  const accountLease = requiredString(tokenBody.account_lease);
-  const accountLeaseExpiresAt = safeInteger(tokenBody.account_lease_expires_at);
-  const deviceId = requiredString(tokenBody.device_id);
-  const receivedSigningPublicKey = requiredString(tokenBody.signing_public_key);
-  const signingPublicKey = assertSigningKeyContinuity(
-    existingProfile?.signingPublicKey,
-    receivedSigningPublicKey,
-  );
-  const userValue = tokenBody.user;
-  if (typeof userValue !== "object" || userValue === null || Array.isArray(userValue)) {
-    return invalidResponse();
-  }
-  const user = userValue as Record<string, unknown>;
-  const userId = requiredString(user.id);
-  const userEmail = requiredString(user.email);
-  if (
-    accessTokenExpiresAt <= currentTimeSeconds ||
-    accessTokenExpiresAt - currentTimeSeconds > ACCESS_DURATION_SECONDS_MAX
-  ) {
-    return invalidResponse();
-  }
-  if (
-    refreshTokenExpiresAt <= currentTimeSeconds ||
-    refreshTokenExpiresAt - currentTimeSeconds > REFRESH_DURATION_SECONDS_MAX
-  ) {
-    return invalidResponse();
-  }
-
-  const leaseClaims = verifyAccountLease({
-    token: accountLease,
-    signingPublicKey,
+  const session = await readHostedDesktopTokenResponse({
+    response: tokenResponse,
     currentTimeSeconds,
+    ...(existingProfile === null
+      ? {}
+      : { pinnedSigningPublicKey: existingProfile.signingPublicKey }),
   });
-  if (
-    leaseClaims.expiresAt !== accountLeaseExpiresAt ||
-    leaseClaims.userId !== userId ||
-    leaseClaims.deviceId !== deviceId
-  ) {
-    return invalidResponse();
-  }
-  const profile: DesktopCredentialProfile = {
-    version: 1,
-    refreshToken,
-    refreshTokenExpiresAt,
-    accountLease,
-    accountLeaseExpiresAt,
-    signingPublicKey,
-    deviceId,
-    user: { id: userId, email: userEmail },
-  };
-  await options.credentialStore.save(profile);
-  return { accessToken, accessTokenExpiresAt, profile };
+  await options.credentialStore.save(session.profile);
+  return session;
 }
