@@ -5,7 +5,7 @@ const filterRumEvent: RumBeforeSend = (event) => {
   if (!("type" in event)) {
     return false;
   }
-  if (event.type === "error") {
+  if (event.type === "error" || event.type === "resource") {
     return false;
   }
   return true;

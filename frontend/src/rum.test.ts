@@ -23,4 +23,14 @@ describe("createRumConfiguration", () => {
     expect(configuration.beforeSend).toBeTypeOf("function");
     expect(configuration.beforeSend?.(errorEvent, {} as RumEventDomainContext)).toBe(false);
   });
+
+  it("drops resource events because their URLs can contain user input", () => {
+    const configuration = createRumConfiguration("audit-test-version");
+    const resourceEvent = {
+      type: "resource",
+      resource: { url: "https://example.test/CANARY_PRIVATE_PATH?token=secret" },
+    } as Parameters<NonNullable<typeof configuration.beforeSend>>[0];
+
+    expect(configuration.beforeSend?.(resourceEvent, {} as RumEventDomainContext)).toBe(false);
+  });
 });
