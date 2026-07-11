@@ -10,6 +10,7 @@ import re
 import secrets
 import socket
 from collections.abc import Sequence
+from pathlib import Path
 
 import uvicorn
 
@@ -90,7 +91,11 @@ async def _wait_until_started(server: uvicorn.Server, task: asyncio.Task[None]) 
         await asyncio.sleep(0.01)
 
 
-async def serve_desktop_helper(*, ready_fd: int) -> None:
+async def serve_desktop_helper(
+    *,
+    ready_fd: int,
+    asset_dir: str | Path | None = None,
+) -> None:
     """Serve the restricted desktop app and signal readiness over one pipe."""
     if isinstance(ready_fd, bool) or not isinstance(ready_fd, int):
         raise TypeError("ready_fd must be an integer")
@@ -100,7 +105,7 @@ async def serve_desktop_helper(*, ready_fd: int) -> None:
     from yinshi.main import create_app
 
     listener, port = _bind_loopback_socket()
-    application = create_app(mode="desktop")
+    application = create_app(mode="desktop", desktop_asset_dir=asset_dir)
     config = uvicorn.Config(
         application,
         host=_LOOPBACK_HOST,
@@ -129,6 +134,7 @@ def _parse_args(arguments: Sequence[str] | None) -> argparse.Namespace:
     """Parse the private desktop helper command-line contract."""
     parser = argparse.ArgumentParser(prog="yinshi-desktop-helper")
     parser.add_argument("--ready-fd", required=True, type=int)
+    parser.add_argument("--asset-dir", type=Path)
     parsed = parser.parse_args(arguments)
     if parsed.ready_fd < 0:
         parser.error("--ready-fd must not be negative")
@@ -138,7 +144,12 @@ def _parse_args(arguments: Sequence[str] | None) -> argparse.Namespace:
 def main(arguments: Sequence[str] | None = None) -> None:
     """Run the desktop helper until terminated by its Electron parent."""
     parsed = _parse_args(arguments)
-    asyncio.run(serve_desktop_helper(ready_fd=parsed.ready_fd))
+    asyncio.run(
+        serve_desktop_helper(
+            ready_fd=parsed.ready_fd,
+            asset_dir=parsed.asset_dir,
+        )
+    )
 
 
 if __name__ == "__main__":

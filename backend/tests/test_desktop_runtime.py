@@ -51,17 +51,28 @@ def test_serialize_ready_message_rejects_invalid_values(
         serialize_ready_message(port=port, instance_nonce=nonce)
 
 
-def test_desktop_helper_serves_health_after_pipe_readiness(
+def test_desktop_helper_serves_packaged_app_after_pipe_readiness(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Helper should bind loopback, signal readiness privately, and serve health."""
     _configure_test_env(monkeypatch, tmp_path, auth_enabled=False)
+    asset_dir = tmp_path / "frontend"
+    asset_dir.mkdir()
+    (asset_dir / "index.html").write_text("<main>Packaged Yinshi</main>", encoding="utf-8")
     read_fd, write_fd = os.pipe()
     environment = os.environ.copy()
     environment["PYTHONUNBUFFERED"] = "1"
     process = subprocess.Popen(
-        [sys.executable, "-m", "yinshi.desktop_runtime", "--ready-fd", str(write_fd)],
+        [
+            sys.executable,
+            "-m",
+            "yinshi.desktop_runtime",
+            "--ready-fd",
+            str(write_fd),
+            "--asset-dir",
+            str(asset_dir),
+        ],
         cwd=Path(__file__).parents[1],
         env=environment,
         pass_fds=(write_fd,),
@@ -78,8 +89,11 @@ def test_desktop_helper_serves_health_after_pipe_readiness(
         assert ready_line, "desktop helper closed readiness pipe without a message"
         ready = json.loads(ready_line)
         response = httpx.get(f"http://127.0.0.1:{ready['port']}/health", timeout=5.0)
+        app_response = httpx.get(f"http://127.0.0.1:{ready['port']}/", timeout=5.0)
         assert response.status_code == 200
         assert response.json() == {"status": "ok"}
+        assert app_response.text == "<main>Packaged Yinshi</main>"
+        assert "default-src 'self'" in app_response.headers["Content-Security-Policy"]
     finally:
         ready_pipe.close()
         if process.poll() is None:
