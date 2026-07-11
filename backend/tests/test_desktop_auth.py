@@ -219,6 +219,55 @@ def test_exchange_desktop_code_issues_hashed_device_credentials(
     assert body["refresh_token"] not in "|".join(str(value) for value in device_row)
 
 
+def test_desktop_bearer_auth_requires_valid_access_for_active_device(
+    auth_client_factory,
+) -> None:
+    """Only an untampered access token for an active device should authenticate APIs."""
+    browser_client = auth_client_factory(
+        email="bearer-user@example.com",
+        provider_user_id="bearer-user-id",
+    )
+    credentials = _exchange_code(
+        browser_client,
+        _create_approved_code(browser_client),
+    ).json()
+
+    from yinshi.db import get_control_db
+    from yinshi.main import app
+
+    with TestClient(app) as desktop_client:
+        valid_response = desktop_client.get(
+            "/api/repos",
+            headers={"Authorization": f"Bearer {credentials['access_token']}"},
+        )
+        lease_response = desktop_client.get(
+            "/api/repos",
+            headers={"Authorization": f"Bearer {credentials['account_lease']}"},
+        )
+        tampered_token = f"{credentials['access_token'][:-1]}A"
+        tampered_response = desktop_client.get(
+            "/api/repos",
+            headers={"Authorization": f"Bearer {tampered_token}"},
+        )
+
+        with get_control_db() as database:
+            database.execute(
+                "UPDATE desktop_devices SET revoked_at = ? WHERE id = ?",
+                (int(time.time()), credentials["device_id"]),
+            )
+            database.commit()
+        revoked_response = desktop_client.get(
+            "/api/repos",
+            headers={"Authorization": f"Bearer {credentials['access_token']}"},
+        )
+
+    assert valid_response.status_code == 200
+    assert valid_response.json() == []
+    assert lease_response.status_code == 401
+    assert tampered_response.status_code == 401
+    assert revoked_response.status_code == 401
+
+
 def test_refresh_rotation_revokes_device_when_old_token_is_replayed(
     auth_client_factory,
 ) -> None:

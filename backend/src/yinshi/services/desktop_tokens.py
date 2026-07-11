@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import json
+import time
+from dataclasses import dataclass
 from typing import Literal
 
+from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
@@ -17,6 +21,29 @@ _TOKEN_TYPE_HEADERS: dict[DesktopTokenType, str] = {
     "access": "YINSHI-ACCESS",
     "lease": "YINSHI-LEASE",
 }
+
+
+@dataclass(frozen=True, slots=True)
+class VerifiedDesktopAccess:
+    """Identity claims from one valid unexpired desktop access token."""
+
+    user_id: str
+    device_id: str
+
+
+def _decode_base64url(value: str) -> bytes:
+    """Strictly decode one unpadded compact-token segment."""
+    if not isinstance(value, str) or not value:
+        raise ValueError("compact token segment must not be empty")
+    padding = "=" * (-len(value) % 4)
+    try:
+        return base64.b64decode(
+            f"{value}{padding}",
+            altchars=b"-_",
+            validate=True,
+        )
+    except (binascii.Error, ValueError) as error:
+        raise ValueError("compact token segment is not valid base64url") from error
 
 
 def _encode_base64url(value: bytes) -> str:
@@ -42,6 +69,53 @@ def _signing_key() -> Ed25519PrivateKey:
     if len(seed) != 32:
         raise RuntimeError("desktop token signing key derivation failed")
     return Ed25519PrivateKey.from_private_bytes(seed)
+
+
+def verify_desktop_access_token(
+    token: str,
+    *,
+    current_time: int | None = None,
+) -> VerifiedDesktopAccess | None:
+    """Verify one compact access token and return only its identity claims."""
+    if not isinstance(token, str) or not token:
+        return None
+    segments = token.split(".")
+    if len(segments) != 3:
+        return None
+    encoded_header, encoded_payload, encoded_signature = segments
+    try:
+        header = json.loads(_decode_base64url(encoded_header))
+        payload = json.loads(_decode_base64url(encoded_payload))
+        signature = _decode_base64url(encoded_signature)
+    except (UnicodeDecodeError, ValueError, json.JSONDecodeError):
+        return None
+    if header != {"alg": "EdDSA", "typ": "YINSHI-ACCESS", "v": 1}:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("aud") != "yinshi-desktop" or payload.get("v") != 1:
+        return None
+
+    user_id = payload.get("sub")
+    device_id = payload.get("device_id")
+    issued_at = payload.get("iat")
+    expires_at = payload.get("exp")
+    if not isinstance(user_id, str) or not user_id:
+        return None
+    if not isinstance(device_id, str) or not device_id:
+        return None
+    if not isinstance(issued_at, int) or not isinstance(expires_at, int):
+        return None
+    now = int(time.time()) if current_time is None else current_time
+    if issued_at > now + 60 or expires_at <= now or expires_at - issued_at > 15 * 60:
+        return None
+
+    signing_input = f"{encoded_header}.{encoded_payload}".encode("ascii")
+    try:
+        _signing_key().public_key().verify(signature, signing_input)
+    except InvalidSignature:
+        return None
+    return VerifiedDesktopAccess(user_id=user_id, device_id=device_id)
 
 
 def desktop_signing_public_key() -> str:

@@ -13,6 +13,7 @@ from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoin
 from yinshi.config import get_settings
 from yinshi.db import get_control_db
 from yinshi.services.accounts import make_tenant
+from yinshi.services.desktop_tokens import verify_desktop_access_token
 from yinshi.services.live_auth_sessions import (
     signal_auth_session_revoked,
     signal_user_sessions_revoked,
@@ -236,6 +237,28 @@ def auth_disabled() -> bool:
     return settings.disable_auth
 
 
+def _resolve_tenant_from_desktop_token(token: str) -> TenantContext | None:
+    """Resolve an active desktop device and account from one access token."""
+    if not isinstance(token, str) or not token:
+        return None
+    identity = verify_desktop_access_token(token)
+    if identity is None:
+        return None
+    with get_control_db() as db:
+        row = db.execute(
+            """
+            SELECT u.id, u.email, u.status, d.revoked_at
+            FROM desktop_devices d
+            JOIN users u ON u.id = d.user_id
+            WHERE d.id = ? AND d.user_id = ?
+            """,
+            (identity.device_id, identity.user_id),
+        ).fetchone()
+    if row is None or row["status"] != "active" or row["revoked_at"] is not None:
+        return None
+    return make_tenant(row["id"], row["email"])
+
+
 def _resolve_tenant_from_user_id(user_id: str) -> TenantContext | None:
     """Resolve TenantContext from a user_id in the control DB."""
     with get_control_db() as db:
@@ -271,19 +294,26 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if any(path.startswith(p) for p in self.OPEN_PREFIXES):
             return await call_next(request)
 
-        # Check session cookie
-        token = request.cookies.get("yinshi_session")
-        if not token:
-            return Response(status_code=401, content="Not authenticated")
+        authorization = request.headers.get("Authorization")
+        tenant: TenantContext | None = None
+        if authorization is not None:
+            scheme, separator, bearer_token = authorization.partition(" ")
+            if scheme.lower() != "bearer" or separator != " " or not bearer_token:
+                return Response(status_code=401, content="Invalid bearer token")
+            tenant = _resolve_tenant_from_desktop_token(bearer_token)
+            if tenant is None:
+                return Response(status_code=401, content="Invalid bearer token")
+        else:
+            token = request.cookies.get("yinshi_session")
+            if not token:
+                return Response(status_code=401, content="Not authenticated")
 
-        user_id = verify_session_token(token)
-        if not user_id:
-            return Response(status_code=401, content="Invalid session")
-
-        # Resolve tenant context
-        tenant = _resolve_tenant_from_user_id(user_id)
-        if not tenant:
-            return Response(status_code=401, content="User not found")
+            user_id = verify_session_token(token)
+            if not user_id:
+                return Response(status_code=401, content="Invalid session")
+            tenant = _resolve_tenant_from_user_id(user_id)
+            if tenant is None:
+                return Response(status_code=401, content="User not found")
 
         request.state.user_email = tenant.email
         request.state.tenant = tenant
