@@ -222,6 +222,18 @@ CREATE TABLE IF NOT EXISTS auth_sessions (
     revoked_at TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS desktop_authorization_requests (
+    request_id_hash TEXT PRIMARY KEY,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    redirect_uri TEXT NOT NULL,
+    code_challenge TEXT NOT NULL,
+    state TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_desktop_authorization_requests_expiry
+ON desktop_authorization_requests(expires_at);
+
 CREATE TABLE IF NOT EXISTS usage_log (
     id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,

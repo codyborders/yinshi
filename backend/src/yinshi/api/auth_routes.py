@@ -34,9 +34,18 @@ from yinshi.exceptions import (
     GitHubInstallationUnusableError,
     SidecarError,
 )
-from yinshi.models import ProviderAuthInputIn, ProviderAuthStartOut, ProviderAuthStatusOut
+from yinshi.models import (
+    DesktopAuthorizationRequestIn,
+    DesktopAuthorizationRequestOut,
+    ProviderAuthInputIn,
+    ProviderAuthStartOut,
+    ProviderAuthStatusOut,
+)
 from yinshi.rate_limit import limiter
 from yinshi.services.accounts import resolve_or_create_user
+from yinshi.services.desktop_auth import (
+    create_desktop_authorization_request as store_desktop_request,
+)
 from yinshi.services.github_app import get_installation_details
 from yinshi.services.provider_connections import create_provider_connection
 from yinshi.services.sidecar import create_sidecar_connection
@@ -402,6 +411,31 @@ async def _persist_completed_provider_auth(
     except SidecarError as error:
         if "OAuth flow not found" not in str(error):
             raise _provider_auth_sidecar_http_error(error) from error
+
+
+@router.post(
+    "/desktop/requests",
+    response_model=DesktopAuthorizationRequestOut,
+    status_code=201,
+)
+@limiter.limit("20/minute")
+async def create_desktop_authorization_request(
+    request: Request,
+    body: DesktopAuthorizationRequestIn,
+) -> dict[str, object]:
+    """Issue one short-lived opaque desktop authorization request."""
+    del request
+    stored_request = store_desktop_request(
+        redirect_uri=body.redirect_uri,
+        code_challenge=body.code_challenge,
+        state=body.state,
+        frontend_url=get_settings().frontend_url,
+    )
+    return {
+        "request_id": stored_request.request_id,
+        "authorize_url": stored_request.authorize_url,
+        "expires_at": stored_request.expires_at,
+    }
 
 
 # --- Google OAuth ---

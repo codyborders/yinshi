@@ -2,6 +2,7 @@
 
 from datetime import datetime
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field, ValidationInfo, field_validator
 
@@ -34,6 +35,51 @@ def _strip_optional_text(value: str | None, message: str) -> str | None:
     if value is None:
         return None
     return _strip_required_text(value, message)
+
+
+class DesktopAuthorizationRequestIn(BaseModel):
+    """Start a PKCE-bound desktop account authorization request."""
+
+    redirect_uri: str = Field(..., min_length=1, max_length=2048)
+    code_challenge: str = Field(
+        ...,
+        min_length=43,
+        max_length=43,
+        pattern=r"^[A-Za-z0-9_-]+$",
+    )
+    state: str = Field(
+        ...,
+        min_length=16,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9._~-]+$",
+    )
+
+    @field_validator("redirect_uri")
+    @classmethod
+    def validate_loopback_redirect(cls, value: str) -> str:
+        """Accept only the desktop helper's exact numbered IPv4 callback."""
+        if not isinstance(value, str):
+            raise TypeError("redirect_uri must be a string")
+        try:
+            parsed = urlsplit(value)
+            port = parsed.port
+        except ValueError as error:
+            raise ValueError("redirect_uri must contain a valid port") from error
+        if parsed.scheme != "http" or parsed.hostname != "127.0.0.1" or port is None:
+            raise ValueError("redirect_uri must use a numbered IPv4 loopback address")
+        if parsed.path != "/auth/desktop/callback":
+            raise ValueError("redirect_uri must use the desktop callback path")
+        if parsed.username or parsed.password or parsed.query or parsed.fragment:
+            raise ValueError("redirect_uri must not contain credentials, query, or fragment")
+        return value
+
+
+class DesktopAuthorizationRequestOut(BaseModel):
+    """Opaque hosted authorization request returned to a desktop client."""
+
+    request_id: str
+    authorize_url: str
+    expires_at: datetime
 
 
 class RepoCreate(BaseModel):
