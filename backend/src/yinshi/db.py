@@ -228,7 +228,11 @@ CREATE TABLE IF NOT EXISTS desktop_authorization_requests (
     expires_at INTEGER NOT NULL,
     redirect_uri TEXT NOT NULL,
     code_challenge TEXT NOT NULL,
-    state TEXT NOT NULL
+    state TEXT NOT NULL,
+    user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
+    authorization_code_hash TEXT,
+    approved_at INTEGER,
+    consumed_at INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS idx_desktop_authorization_requests_expiry
@@ -424,6 +428,24 @@ def _migrate_control(conn: sqlite3.Connection) -> None:
             WHERE id NOT IN (SELECT id FROM provider_connections)
             """)
         conn.commit()
+
+    desktop_request_columns = {
+        row[1] for row in conn.execute("PRAGMA table_info(desktop_authorization_requests)")
+    }
+    desktop_request_migrations = {
+        "user_id": "ALTER TABLE desktop_authorization_requests ADD COLUMN user_id TEXT REFERENCES users(id) ON DELETE CASCADE",
+        "authorization_code_hash": "ALTER TABLE desktop_authorization_requests ADD COLUMN authorization_code_hash TEXT",
+        "approved_at": "ALTER TABLE desktop_authorization_requests ADD COLUMN approved_at INTEGER",
+        "consumed_at": "ALTER TABLE desktop_authorization_requests ADD COLUMN consumed_at INTEGER",
+    }
+    for column_name, statement in desktop_request_migrations.items():
+        if column_name not in desktop_request_columns:
+            conn.execute(statement)
+    conn.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_desktop_authorization_code_hash
+        ON desktop_authorization_requests(authorization_code_hash)
+        """)
+    conn.commit()
 
     runner_columns = [row[1] for row in conn.execute("PRAGMA table_info(user_runners)")]
     if not runner_columns:

@@ -44,6 +44,12 @@ from yinshi.models import (
 from yinshi.rate_limit import limiter
 from yinshi.services.accounts import resolve_or_create_user
 from yinshi.services.desktop_auth import (
+    DesktopAuthorizationExpiredError,
+    DesktopAuthorizationNotFoundError,
+    DesktopAuthorizationUsedError,
+    approve_desktop_authorization_request,
+)
+from yinshi.services.desktop_auth import (
     create_desktop_authorization_request as store_desktop_request,
 )
 from yinshi.services.github_app import get_installation_details
@@ -411,6 +417,38 @@ async def _persist_completed_provider_auth(
     except SidecarError as error:
         if "OAuth flow not found" not in str(error):
             raise _provider_auth_sidecar_http_error(error) from error
+
+
+@router.get("/desktop/authorize/{request_id}")
+async def authorize_desktop_request(
+    request_id: str,
+    request: Request,
+) -> RedirectResponse:
+    """Return a PKCE authorization code to one validated desktop callback."""
+    user_id = _current_user_id(request)
+    if user_id is None:
+        raise HTTPException(status_code=401, detail="Sign in before authorizing the desktop app")
+    try:
+        approved_request = approve_desktop_authorization_request(
+            request_id=request_id,
+            user_id=user_id,
+        )
+    except DesktopAuthorizationNotFoundError:
+        raise HTTPException(
+            status_code=404,
+            detail="Desktop authorization request not found",
+        ) from None
+    except DesktopAuthorizationExpiredError:
+        raise HTTPException(
+            status_code=410,
+            detail="Desktop authorization request expired",
+        ) from None
+    except DesktopAuthorizationUsedError:
+        raise HTTPException(
+            status_code=409,
+            detail="Desktop authorization request was used",
+        ) from None
+    return RedirectResponse(url=approved_request.callback_url, status_code=307)
 
 
 @router.post(

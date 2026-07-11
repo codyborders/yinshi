@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import time
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from fastapi.testclient import TestClient
@@ -52,6 +52,57 @@ def test_create_desktop_authorization_request(noauth_client: TestClient) -> None
     assert row["state"] == REQUEST_STATE
     assert row["expires_at"] > int(time.time())
     assert body["request_id"] not in "|".join(str(value) for value in row)
+
+
+def test_authorize_desktop_request_issues_one_hashed_callback_code(
+    auth_client_factory,
+) -> None:
+    """A signed-in browser should approve a request once without storing its raw code."""
+    client = auth_client_factory(
+        email="desktop-user@example.com",
+        provider_user_id="desktop-user-id",
+    )
+    created_response = client.post(
+        "/auth/desktop/requests",
+        json={
+            "redirect_uri": CALLBACK_URI,
+            "code_challenge": PKCE_CHALLENGE,
+            "state": REQUEST_STATE,
+        },
+        headers=DEFAULT_TEST_HEADERS,
+    )
+    assert created_response.status_code == 201
+    created = created_response.json()
+    authorize_path = urlsplit(created["authorize_url"]).path
+
+    response = client.get(authorize_path, follow_redirects=False)
+
+    assert response.status_code == 307
+    callback = urlsplit(response.headers["location"])
+    assert f"{callback.scheme}://{callback.netloc}{callback.path}" == CALLBACK_URI
+    callback_query = parse_qs(callback.query)
+    assert callback_query["state"] == [REQUEST_STATE]
+    authorization_code = callback_query["code"][0]
+    assert len(authorization_code) >= 32
+
+    from yinshi.db import get_control_db
+
+    request_digest = hashlib.sha256(created["request_id"].encode("utf-8")).hexdigest()
+    with get_control_db() as database:
+        row = database.execute(
+            "SELECT * FROM desktop_authorization_requests WHERE request_id_hash = ?",
+            (request_digest,),
+        ).fetchone()
+    assert row is not None
+    assert row["user_id"] == getattr(client, "yinshi_tenant").user_id
+    assert (
+        row["authorization_code_hash"]
+        == hashlib.sha256(authorization_code.encode("utf-8")).hexdigest()
+    )
+    assert authorization_code not in "|".join(str(value) for value in row)
+
+    repeated_response = client.get(authorize_path, follow_redirects=False)
+    assert repeated_response.status_code == 409
 
 
 @pytest.mark.parametrize(

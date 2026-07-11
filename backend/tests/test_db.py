@@ -214,6 +214,66 @@ def test_init_control_db_creates_pi_config_tables(tmp_path, monkeypatch):
         get_settings.cache_clear()
 
 
+def test_control_db_migrates_existing_desktop_authorization_requests(
+    tmp_path,
+    monkeypatch,
+):
+    """Desktop auth migration should be additive, idempotent, and preserve pending rows."""
+    control_path = tmp_path / "control.db"
+    monkeypatch.setenv("CONTROL_DB_PATH", str(control_path))
+    monkeypatch.setenv("SECRET_KEY", "test-secret")
+    monkeypatch.setenv("ENCRYPTION_PEPPER", "a" * 64)
+
+    connection = sqlite3.connect(control_path)
+    connection.execute("""
+        CREATE TABLE desktop_authorization_requests (
+            request_id_hash TEXT PRIMARY KEY,
+            created_at INTEGER NOT NULL,
+            expires_at INTEGER NOT NULL,
+            redirect_uri TEXT NOT NULL,
+            code_challenge TEXT NOT NULL,
+            state TEXT NOT NULL
+        )
+        """)
+    connection.execute(
+        """
+        INSERT INTO desktop_authorization_requests
+        (request_id_hash, created_at, expires_at, redirect_uri, code_challenge, state)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        ("digest", 100, 200, "http://127.0.0.1:43123/auth/desktop/callback", "c" * 43, "state"),
+    )
+    connection.commit()
+    connection.close()
+
+    from yinshi.config import get_settings
+    from yinshi.db import get_control_db, init_control_db
+
+    get_settings.cache_clear()
+    try:
+        init_control_db()
+        init_control_db()
+        with get_control_db() as database:
+            columns = {
+                row[1]
+                for row in database.execute("PRAGMA table_info(desktop_authorization_requests)")
+            }
+            row = database.execute(
+                "SELECT * FROM desktop_authorization_requests WHERE request_id_hash = 'digest'"
+            ).fetchone()
+            indexes = {
+                index[1]
+                for index in database.execute("PRAGMA index_list(desktop_authorization_requests)")
+            }
+        assert {"user_id", "authorization_code_hash", "approved_at", "consumed_at"} <= columns
+        assert row is not None
+        assert row["redirect_uri"] == "http://127.0.0.1:43123/auth/desktop/callback"
+        assert row["user_id"] is None
+        assert "idx_desktop_authorization_code_hash" in indexes
+    finally:
+        get_settings.cache_clear()
+
+
 def test_control_field_encryption_migrates_existing_pi_settings(tmp_path, monkeypatch):
     """Control DB migration should encrypt existing sensitive settings payloads."""
     monkeypatch.setenv("CONTROL_DB_PATH", str(tmp_path / "control.db"))
