@@ -19,7 +19,6 @@ from yinshi.services.desktop_tokens import (
 _AUTHORIZATION_TTL = timedelta(minutes=10)
 
 
-@dataclass(frozen=True, slots=True)
 class DesktopAuthorizationNotFoundError(Exception):
     """Raised when an opaque request id has no matching stored record."""
 
@@ -44,6 +43,10 @@ class DesktopAccountUnavailableError(Exception):
     """Raised when the approved account can no longer receive credentials."""
 
 
+class DesktopRefreshInvalidError(Exception):
+    """Raised after an invalid, expired, revoked, or replayed refresh credential."""
+
+
 @dataclass(frozen=True, slots=True)
 class DesktopTokenExchange:
     """Initial account and credential material for one registered desktop."""
@@ -58,6 +61,48 @@ class DesktopTokenExchange:
     signing_public_key: str
     user_id: str
     user_email: str
+
+
+def _issue_desktop_tokens(
+    *,
+    user_id: str,
+    user_email: str,
+    device_id: str,
+    issued_at: int,
+) -> DesktopTokenExchange:
+    """Create one internally consistent access, refresh, and lease credential set."""
+    if not user_id or not user_email or not device_id:
+        raise ValueError("desktop token identity fields must not be empty")
+    if not isinstance(issued_at, int) or issued_at < 1:
+        raise ValueError("issued_at must be a positive integer")
+
+    access_expires_at = issued_at + 15 * 60
+    lease_expires_at = issued_at + 30 * 24 * 60 * 60
+    refresh_expires_at = issued_at + 90 * 24 * 60 * 60
+    return DesktopTokenExchange(
+        access_token=create_desktop_token(
+            token_type="access",
+            user_id=user_id,
+            device_id=device_id,
+            issued_at=issued_at,
+            expires_at=access_expires_at,
+        ),
+        access_token_expires_at=access_expires_at,
+        refresh_token=secrets.token_urlsafe(48),
+        refresh_token_expires_at=refresh_expires_at,
+        account_lease=create_desktop_token(
+            token_type="lease",
+            user_id=user_id,
+            device_id=device_id,
+            issued_at=issued_at,
+            expires_at=lease_expires_at,
+        ),
+        account_lease_expires_at=lease_expires_at,
+        device_id=device_id,
+        signing_public_key=desktop_signing_public_key(),
+        user_id=user_id,
+        user_email=user_email,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,27 +171,13 @@ def exchange_desktop_authorization_code(
         if user is None:
             raise DesktopAccountUnavailableError
 
-        device_id = secrets.token_hex(16)
-        access_expires_at = current_time + 15 * 60
-        lease_expires_at = current_time + 30 * 24 * 60 * 60
-        refresh_expires_at = current_time + 90 * 24 * 60 * 60
-        access_token = create_desktop_token(
-            token_type="access",
+        credentials = _issue_desktop_tokens(
             user_id=user["id"],
-            device_id=device_id,
+            user_email=user["email"],
+            device_id=secrets.token_hex(16),
             issued_at=current_time,
-            expires_at=access_expires_at,
         )
-        account_lease = create_desktop_token(
-            token_type="lease",
-            user_id=user["id"],
-            device_id=device_id,
-            issued_at=current_time,
-            expires_at=lease_expires_at,
-        )
-        signing_public_key = desktop_signing_public_key()
-        refresh_token = secrets.token_urlsafe(48)
-        refresh_token_hash = hashlib.sha256(refresh_token.encode("utf-8")).hexdigest()
+        refresh_token_hash = hashlib.sha256(credentials.refresh_token.encode("utf-8")).hexdigest()
         device_result = database.execute(
             """
             INSERT INTO desktop_devices (
@@ -155,12 +186,12 @@ def exchange_desktop_authorization_code(
             ) VALUES (?, ?, ?, ?, ?, ?)
             """,
             (
-                device_id,
+                credentials.device_id,
                 user["id"],
                 device_name.strip(),
                 current_time,
                 refresh_token_hash,
-                refresh_expires_at,
+                credentials.refresh_token_expires_at,
             ),
         )
         if device_result.rowcount != 1:
@@ -177,18 +208,86 @@ def exchange_desktop_authorization_code(
             raise DesktopAuthorizationUsedError
         database.commit()
 
-    return DesktopTokenExchange(
-        access_token=access_token,
-        access_token_expires_at=access_expires_at,
-        refresh_token=refresh_token,
-        refresh_token_expires_at=refresh_expires_at,
-        account_lease=account_lease,
-        account_lease_expires_at=lease_expires_at,
-        device_id=device_id,
-        signing_public_key=signing_public_key,
-        user_id=user["id"],
-        user_email=user["email"],
-    )
+    return credentials
+
+
+def rotate_desktop_refresh_token(*, refresh_token: str) -> DesktopTokenExchange:
+    """Rotate a current refresh token or revoke its device when an old token reappears."""
+    if not isinstance(refresh_token, str):
+        raise TypeError("refresh_token must be a string")
+    if len(refresh_token) < 32 or len(refresh_token) > 256:
+        raise DesktopRefreshInvalidError
+
+    refresh_token_hash = hashlib.sha256(refresh_token.encode("utf-8")).hexdigest()
+    current_time = int(time.time())
+    with get_control_db() as database:
+        database.execute("BEGIN IMMEDIATE")
+        device = database.execute(
+            """
+            SELECT d.*, u.email, u.status AS user_status
+            FROM desktop_devices d
+            JOIN users u ON u.id = d.user_id
+            WHERE d.refresh_token_hash = ?
+            """,
+            (refresh_token_hash,),
+        ).fetchone()
+        if device is None:
+            used_token = database.execute(
+                """
+                SELECT device_id FROM desktop_used_refresh_tokens
+                WHERE token_hash = ?
+                """,
+                (refresh_token_hash,),
+            ).fetchone()
+            if used_token is not None:
+                database.execute(
+                    """
+                    UPDATE desktop_devices
+                    SET revoked_at = ?
+                    WHERE id = ? AND revoked_at IS NULL
+                    """,
+                    (current_time, used_token["device_id"]),
+                )
+                database.commit()
+            raise DesktopRefreshInvalidError
+        if device["user_status"] != "active" or device["revoked_at"] is not None:
+            raise DesktopRefreshInvalidError
+        if int(device["refresh_token_expires_at"]) <= current_time:
+            raise DesktopRefreshInvalidError
+
+        credentials = _issue_desktop_tokens(
+            user_id=device["user_id"],
+            user_email=device["email"],
+            device_id=device["id"],
+            issued_at=current_time,
+        )
+        new_refresh_token_hash = hashlib.sha256(
+            credentials.refresh_token.encode("utf-8")
+        ).hexdigest()
+        database.execute(
+            """
+            INSERT INTO desktop_used_refresh_tokens (token_hash, device_id, rotated_at)
+            VALUES (?, ?, ?)
+            """,
+            (refresh_token_hash, device["id"], current_time),
+        )
+        result = database.execute(
+            """
+            UPDATE desktop_devices
+            SET refresh_token_hash = ?, refresh_token_expires_at = ?
+            WHERE id = ? AND refresh_token_hash = ? AND revoked_at IS NULL
+            """,
+            (
+                new_refresh_token_hash,
+                credentials.refresh_token_expires_at,
+                device["id"],
+                refresh_token_hash,
+            ),
+        )
+        if result.rowcount != 1:
+            raise DesktopRefreshInvalidError
+        database.commit()
+    return credentials
 
 
 def approve_desktop_authorization_request(

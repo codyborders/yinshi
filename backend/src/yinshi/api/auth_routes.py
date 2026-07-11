@@ -53,6 +53,8 @@ from yinshi.services.desktop_auth import (
     DesktopAuthorizationUsedError,
     DesktopCodeInvalidError,
     DesktopPkceMismatchError,
+    DesktopRefreshInvalidError,
+    DesktopTokenExchange,
     approve_desktop_authorization_request,
 )
 from yinshi.services.desktop_auth import (
@@ -61,9 +63,8 @@ from yinshi.services.desktop_auth import (
 from yinshi.services.desktop_auth import (
     exchange_desktop_authorization_code as exchange_desktop_code,
 )
-from yinshi.services.desktop_tokens import (
-    create_desktop_token,
-    desktop_signing_public_key,
+from yinshi.services.desktop_auth import (
+    rotate_desktop_refresh_token,
 )
 from yinshi.services.github_app import get_installation_details
 from yinshi.services.provider_connections import create_provider_connection
@@ -464,6 +465,26 @@ async def authorize_desktop_request(
     return RedirectResponse(url=approved_request.callback_url, status_code=307)
 
 
+def _desktop_token_response(exchange: DesktopTokenExchange) -> dict[str, object]:
+    """Serialize one service-issued desktop credential set for the API."""
+    if not isinstance(exchange, DesktopTokenExchange):
+        raise TypeError("exchange must be DesktopTokenExchange")
+    if not exchange.access_token or not exchange.refresh_token or not exchange.account_lease:
+        raise ValueError("desktop credential set must be complete")
+    return {
+        "token_type": "Bearer",
+        "access_token": exchange.access_token,
+        "access_token_expires_at": exchange.access_token_expires_at,
+        "refresh_token": exchange.refresh_token,
+        "refresh_token_expires_at": exchange.refresh_token_expires_at,
+        "account_lease": exchange.account_lease,
+        "account_lease_expires_at": exchange.account_lease_expires_at,
+        "device_id": exchange.device_id,
+        "signing_public_key": exchange.signing_public_key,
+        "user": {"id": exchange.user_id, "email": exchange.user_email},
+    }
+
+
 @router.post("/desktop/refresh", response_model=DesktopTokenOut)
 @limiter.limit("60/minute")
 async def refresh_desktop_credentials(
@@ -472,100 +493,19 @@ async def refresh_desktop_credentials(
 ) -> dict[str, object]:
     """Rotate one current desktop refresh credential."""
     del request
-    refresh_token = body.refresh_token
-    refresh_token_hash = hashlib.sha256(refresh_token.encode("utf-8")).hexdigest()
-    current_time = int(time.time())
-
-    with get_control_db() as database:
-        database.execute("BEGIN IMMEDIATE")
-        device = database.execute(
-            """
-            SELECT d.*, u.email, u.status AS user_status
-            FROM desktop_devices d
-            JOIN users u ON u.id = d.user_id
-            WHERE d.refresh_token_hash = ?
-            """,
-            (refresh_token_hash,),
-        ).fetchone()
-        if device is None:
-            used_token = database.execute(
-                """
-                SELECT device_id FROM desktop_used_refresh_tokens
-                WHERE token_hash = ?
-                """,
-                (refresh_token_hash,),
-            ).fetchone()
-            if used_token is not None:
-                database.execute(
-                    """
-                    UPDATE desktop_devices
-                    SET revoked_at = ?
-                    WHERE id = ? AND revoked_at IS NULL
-                    """,
-                    (current_time, used_token["device_id"]),
-                )
-                database.commit()
-            raise HTTPException(status_code=401, detail="Desktop refresh credential is invalid")
-        if device["user_status"] != "active" or device["revoked_at"] is not None:
-            raise HTTPException(status_code=401, detail="Desktop refresh credential is invalid")
-        if int(device["refresh_token_expires_at"]) <= current_time:
-            raise HTTPException(status_code=401, detail="Desktop refresh credential expired")
-
-        new_refresh_token = secrets.token_urlsafe(48)
-        new_refresh_token_hash = hashlib.sha256(new_refresh_token.encode("utf-8")).hexdigest()
-        refresh_expires_at = current_time + 90 * 24 * 60 * 60
-        database.execute(
-            """
-            INSERT INTO desktop_used_refresh_tokens (token_hash, device_id, rotated_at)
-            VALUES (?, ?, ?)
-            """,
-            (refresh_token_hash, device["id"], current_time),
-        )
-        result = database.execute(
-            """
-            UPDATE desktop_devices
-            SET refresh_token_hash = ?, refresh_token_expires_at = ?
-            WHERE id = ? AND refresh_token_hash = ? AND revoked_at IS NULL
-            """,
-            (
-                new_refresh_token_hash,
-                refresh_expires_at,
-                device["id"],
-                refresh_token_hash,
-            ),
-        )
-        if result.rowcount != 1:
-            raise HTTPException(status_code=401, detail="Desktop refresh credential is invalid")
-        database.commit()
-
-    access_expires_at = current_time + 15 * 60
-    lease_expires_at = current_time + 30 * 24 * 60 * 60
-    access_token = create_desktop_token(
-        token_type="access",
-        user_id=device["user_id"],
-        device_id=device["id"],
-        issued_at=current_time,
-        expires_at=access_expires_at,
-    )
-    account_lease = create_desktop_token(
-        token_type="lease",
-        user_id=device["user_id"],
-        device_id=device["id"],
-        issued_at=current_time,
-        expires_at=lease_expires_at,
-    )
-    return {
-        "token_type": "Bearer",
-        "access_token": access_token,
-        "access_token_expires_at": access_expires_at,
-        "refresh_token": new_refresh_token,
-        "refresh_token_expires_at": refresh_expires_at,
-        "account_lease": account_lease,
-        "account_lease_expires_at": lease_expires_at,
-        "device_id": device["id"],
-        "signing_public_key": desktop_signing_public_key(),
-        "user": {"id": device["user_id"], "email": device["email"]},
-    }
+    try:
+        exchange = rotate_desktop_refresh_token(refresh_token=body.refresh_token)
+    except DesktopRefreshInvalidError:
+        raise HTTPException(
+            status_code=401,
+            detail="Desktop refresh credential is invalid",
+        ) from None
+    except sqlite3.Error:
+        raise HTTPException(
+            status_code=503,
+            detail="Desktop credential storage is temporarily unavailable",
+        ) from None
+    return _desktop_token_response(exchange)
 
 
 @router.post("/desktop/token", response_model=DesktopTokenOut)
@@ -607,18 +547,7 @@ async def exchange_desktop_authorization_code(
             status_code=503,
             detail="Desktop credential storage is temporarily unavailable",
         ) from None
-    return {
-        "token_type": "Bearer",
-        "access_token": exchange.access_token,
-        "access_token_expires_at": exchange.access_token_expires_at,
-        "refresh_token": exchange.refresh_token,
-        "refresh_token_expires_at": exchange.refresh_token_expires_at,
-        "account_lease": exchange.account_lease,
-        "account_lease_expires_at": exchange.account_lease_expires_at,
-        "device_id": exchange.device_id,
-        "signing_public_key": exchange.signing_public_key,
-        "user": {"id": exchange.user_id, "email": exchange.user_email},
-    }
+    return _desktop_token_response(exchange)
 
 
 @router.post(
