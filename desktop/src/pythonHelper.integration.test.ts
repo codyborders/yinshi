@@ -44,7 +44,25 @@ it("starts the real Python helper and reaches loopback health", async () => {
       shutdownTimeoutMs: 5_000,
     });
 
-    const response = await fetch(`http://127.0.0.1:${helper.ready.port}/health`, {
+    const origin = `http://127.0.0.1:${helper.ready.port}`;
+    const unauthenticated = await fetch(`${origin}/health`, {
+      signal: AbortSignal.timeout(5_000),
+    });
+    expect(unauthenticated.status).toBe(401);
+
+    const bootstrap = await fetch(`${origin}/desktop/bootstrap`, {
+      method: "POST",
+      headers: { "X-Yinshi-Bootstrap": helper.ready.instanceNonce },
+      redirect: "error",
+      signal: AbortSignal.timeout(5_000),
+    });
+    expect(bootstrap.status).toBe(204);
+    const cookie = bootstrap.headers.get("set-cookie");
+    expect(cookie).toContain("HttpOnly");
+    expect(cookie).not.toContain(helper.ready.instanceNonce);
+
+    const response = await fetch(`${origin}/health`, {
+      headers: { Cookie: cookie?.split(";", 1)[0] ?? "" },
       signal: AbortSignal.timeout(5_000),
     });
     expect(response.status).toBe(200);

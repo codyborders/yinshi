@@ -88,12 +88,41 @@ def test_desktop_helper_serves_packaged_app_after_pipe_readiness(
         ready_line = ready_pipe.readline()
         assert ready_line, "desktop helper closed readiness pipe without a message"
         ready = json.loads(ready_line)
-        response = httpx.get(f"http://127.0.0.1:{ready['port']}/health", timeout=5.0)
-        app_response = httpx.get(f"http://127.0.0.1:{ready['port']}/", timeout=5.0)
-        assert response.status_code == 200
-        assert response.json() == {"status": "ok"}
-        assert app_response.text == "<main>Packaged Yinshi</main>"
-        assert "default-src 'self'" in app_response.headers["Content-Security-Policy"]
+        base_url = f"http://127.0.0.1:{ready['port']}"
+        with httpx.Client(base_url=base_url, timeout=5.0) as client:
+            assert client.get("/health").status_code == 401
+            assert client.get("/").status_code == 401
+            invalid_bootstrap = client.post(
+                "/desktop/bootstrap",
+                headers={"X-Yinshi-Bootstrap": "a" * 43},
+            )
+            assert invalid_bootstrap.status_code == 403
+
+            bootstrap = client.post(
+                "/desktop/bootstrap",
+                headers={"X-Yinshi-Bootstrap": ready["instanceNonce"]},
+            )
+            assert bootstrap.status_code == 204
+            cookie = bootstrap.headers["Set-Cookie"]
+            assert "HttpOnly" in cookie
+            assert "SameSite=Strict" in cookie
+            assert "Path=/" in cookie
+            assert ready["instanceNonce"] not in cookie
+            assert ready["instanceNonce"] not in str(bootstrap.request.url)
+
+            response = client.get("/health")
+            app_response = client.get("/")
+            assert response.status_code == 200
+            assert response.json() == {"status": "ok"}
+            assert app_response.text == "<main>Packaged Yinshi</main>"
+            assert "default-src 'self'" in app_response.headers["Content-Security-Policy"]
+
+        replay = httpx.post(
+            f"{base_url}/desktop/bootstrap",
+            headers={"X-Yinshi-Bootstrap": ready["instanceNonce"]},
+            timeout=5.0,
+        )
+        assert replay.status_code == 409
     finally:
         ready_pipe.close()
         if process.poll() is None:

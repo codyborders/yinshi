@@ -102,10 +102,15 @@ async def serve_desktop_helper(
     if ready_fd < 0:
         raise ValueError("ready_fd must not be negative")
 
+    from yinshi.desktop_bootstrap import DesktopBootstrapMiddleware
     from yinshi.main import create_app
 
     listener, port = _bind_loopback_socket()
-    application = create_app(mode="desktop", desktop_asset_dir=asset_dir)
+    instance_nonce = secrets.token_urlsafe(32)
+    application = DesktopBootstrapMiddleware(
+        create_app(mode="desktop", desktop_asset_dir=asset_dir),
+        instance_nonce=instance_nonce,
+    )
     config = uvicorn.Config(
         application,
         host=_LOOPBACK_HOST,
@@ -119,7 +124,7 @@ async def serve_desktop_helper(
         await _wait_until_started(server, server_task)
         ready_message = serialize_ready_message(
             port=port,
-            instance_nonce=secrets.token_urlsafe(32),
+            instance_nonce=instance_nonce,
         )
         _write_all(ready_fd, ready_message)
         await server_task
