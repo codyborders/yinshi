@@ -82,6 +82,12 @@ class DesktopAuthorizationRequestOut(BaseModel):
     expires_at: datetime
 
 
+class DesktopRefreshRequestIn(BaseModel):
+    """Rotate one current desktop refresh credential."""
+
+    refresh_token: str = Field(..., min_length=32, max_length=256)
+
+
 class DesktopTokenRequestIn(BaseModel):
     """Exchange one browser-approved code using its original PKCE verifier."""
 

@@ -219,6 +219,66 @@ def test_exchange_desktop_code_issues_hashed_device_credentials(
     assert body["refresh_token"] not in "|".join(str(value) for value in device_row)
 
 
+def test_refresh_rotation_revokes_device_when_old_token_is_replayed(
+    auth_client_factory,
+) -> None:
+    """Refresh reuse should revoke the device and invalidate its newest credential."""
+    client = auth_client_factory(
+        email="refresh-user@example.com",
+        provider_user_id="refresh-user-id",
+    )
+    initial = _exchange_code(client, _create_approved_code(client)).json()
+
+    rotated_response = client.post(
+        "/auth/desktop/refresh",
+        json={"refresh_token": initial["refresh_token"]},
+        headers=DEFAULT_TEST_HEADERS,
+    )
+
+    assert rotated_response.status_code == 200
+    rotated = rotated_response.json()
+    assert rotated["device_id"] == initial["device_id"]
+    assert rotated["refresh_token"] != initial["refresh_token"]
+
+    from yinshi.db import get_control_db
+
+    old_hash = hashlib.sha256(initial["refresh_token"].encode("utf-8")).hexdigest()
+    new_hash = hashlib.sha256(rotated["refresh_token"].encode("utf-8")).hexdigest()
+    with get_control_db() as database:
+        device_row = database.execute(
+            "SELECT * FROM desktop_devices WHERE id = ?",
+            (initial["device_id"],),
+        ).fetchone()
+        used_row = database.execute(
+            "SELECT * FROM desktop_used_refresh_tokens WHERE token_hash = ?",
+            (old_hash,),
+        ).fetchone()
+    assert device_row is not None
+    assert device_row["refresh_token_hash"] == new_hash
+    assert used_row is not None
+    assert initial["refresh_token"] not in "|".join(str(value) for value in used_row)
+
+    replay_response = client.post(
+        "/auth/desktop/refresh",
+        json={"refresh_token": initial["refresh_token"]},
+        headers=DEFAULT_TEST_HEADERS,
+    )
+    newest_response = client.post(
+        "/auth/desktop/refresh",
+        json={"refresh_token": rotated["refresh_token"]},
+        headers=DEFAULT_TEST_HEADERS,
+    )
+    assert replay_response.status_code == 401
+    assert newest_response.status_code == 401
+
+    with get_control_db() as database:
+        revoked_at = database.execute(
+            "SELECT revoked_at FROM desktop_devices WHERE id = ?",
+            (initial["device_id"],),
+        ).fetchone()["revoked_at"]
+    assert revoked_at is not None
+
+
 def test_exchange_desktop_code_rolls_back_when_device_storage_fails(
     auth_client_factory,
     monkeypatch: pytest.MonkeyPatch,

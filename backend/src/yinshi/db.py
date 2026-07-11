@@ -244,10 +244,20 @@ CREATE TABLE IF NOT EXISTS desktop_devices (
     name TEXT NOT NULL,
     created_at INTEGER NOT NULL,
     refresh_token_hash TEXT NOT NULL UNIQUE,
-    refresh_token_expires_at INTEGER NOT NULL
+    refresh_token_expires_at INTEGER NOT NULL,
+    revoked_at INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS idx_desktop_devices_user ON desktop_devices(user_id);
+
+CREATE TABLE IF NOT EXISTS desktop_used_refresh_tokens (
+    token_hash TEXT PRIMARY KEY,
+    device_id TEXT NOT NULL REFERENCES desktop_devices(id) ON DELETE CASCADE,
+    rotated_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_desktop_used_refresh_tokens_device
+ON desktop_used_refresh_tokens(device_id);
 
 CREATE TABLE IF NOT EXISTS usage_log (
     id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
@@ -439,6 +449,11 @@ def _migrate_control(conn: sqlite3.Connection) -> None:
             WHERE id NOT IN (SELECT id FROM provider_connections)
             """)
         conn.commit()
+
+    desktop_device_columns = {row[1] for row in conn.execute("PRAGMA table_info(desktop_devices)")}
+    if "revoked_at" not in desktop_device_columns:
+        conn.execute("ALTER TABLE desktop_devices ADD COLUMN revoked_at INTEGER")
+    conn.commit()
 
     desktop_request_columns = {
         row[1] for row in conn.execute("PRAGMA table_info(desktop_authorization_requests)")
