@@ -1,11 +1,39 @@
 import type { RumBeforeSend } from "@datadog/browser-rum";
 import { reactPlugin } from "@datadog/browser-rum-react";
 
+function normalizeRumViewUrl(rawUrl: string): string {
+  if (typeof rawUrl !== "string" || rawUrl.length === 0) {
+    return "/other";
+  }
+
+  let pathname: string;
+  try {
+    pathname = new URL(rawUrl, "https://yinshi.invalid").pathname;
+  } catch {
+    return "/other";
+  }
+  if (/^\/app\/session\/[^/]+\/?$/.test(pathname)) {
+    return "/app/session/:sessionId";
+  }
+  return "/other";
+}
+
 const filterRumEvent: RumBeforeSend = (event) => {
-  if (!("type" in event)) {
+  if (!("type" in event) || event.type !== "view") {
     return false;
   }
-  return event.type === "view";
+  if (event.usr !== undefined || event.account !== undefined) {
+    return false;
+  }
+  if (event.context !== undefined && Object.keys(event.context).length > 0) {
+    return false;
+  }
+
+  const normalizedPath = normalizeRumViewUrl(event.view.url);
+  event.view.url = normalizedPath;
+  event.view.name = normalizedPath;
+  event.view.referrer = "";
+  return true;
 };
 
 export function createRumConfiguration(version: string) {
@@ -24,9 +52,9 @@ export function createRumConfiguration(version: string) {
     // Coding sessions render private source, prompts, and tool output. Replay
     // remains disabled even though the SDK package supports it.
     sessionReplaySampleRate: 0,
-    trackResources: true,
+    trackResources: false,
     trackUserInteractions: false,
-    trackLongTasks: true,
+    trackLongTasks: false,
     defaultPrivacyLevel: "mask" as const,
     beforeSend: filterRumEvent,
     proxy: (options: { path: string; parameters: string }) =>
