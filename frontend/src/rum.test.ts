@@ -33,4 +33,16 @@ describe("createRumConfiguration", () => {
 
     expect(configuration.beforeSend?.(resourceEvent, {} as RumEventDomainContext)).toBe(false);
   });
+
+  it.each(["action", "long_task", "transition", "vital"] as const)(
+    "drops %s events because only view-performance metadata is allowlisted",
+    (type) => {
+      const configuration = createRumConfiguration("audit-test-version");
+      const event = { type } as Parameters<
+        NonNullable<typeof configuration.beforeSend>
+      >[0];
+
+      expect(configuration.beforeSend?.(event, {} as RumEventDomainContext)).toBe(false);
+    },
+  );
 });
