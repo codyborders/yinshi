@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import secrets
 import time
@@ -10,6 +11,10 @@ from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
 
 from yinshi.db import get_control_db
+from yinshi.services.desktop_tokens import (
+    create_desktop_token,
+    desktop_signing_public_key,
+)
 
 _AUTHORIZATION_TTL = timedelta(minutes=10)
 
@@ -24,7 +29,35 @@ class DesktopAuthorizationExpiredError(Exception):
 
 
 class DesktopAuthorizationUsedError(Exception):
-    """Raised when a stored request has already issued its one-time code."""
+    """Raised when a stored request or code has already been consumed."""
+
+
+class DesktopCodeInvalidError(Exception):
+    """Raised when a desktop authorization code cannot identify an account."""
+
+
+class DesktopPkceMismatchError(Exception):
+    """Raised when the submitted verifier does not match the stored challenge."""
+
+
+class DesktopAccountUnavailableError(Exception):
+    """Raised when the approved account can no longer receive credentials."""
+
+
+@dataclass(frozen=True, slots=True)
+class DesktopTokenExchange:
+    """Initial account and credential material for one registered desktop."""
+
+    access_token: str
+    access_token_expires_at: int
+    refresh_token: str
+    refresh_token_expires_at: int
+    account_lease: str
+    account_lease_expires_at: int
+    device_id: str
+    signing_public_key: str
+    user_id: str
+    user_email: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,6 +74,121 @@ class DesktopAuthorizationRequest:
     request_id: str
     authorize_url: str
     expires_at: datetime
+
+
+def exchange_desktop_authorization_code(
+    *,
+    authorization_code: str,
+    code_verifier: str,
+    device_name: str,
+) -> DesktopTokenExchange:
+    """Atomically consume a PKCE code and store one desktop refresh credential."""
+    for name, value in (
+        ("authorization_code", authorization_code),
+        ("code_verifier", code_verifier),
+        ("device_name", device_name),
+    ):
+        if not isinstance(value, str):
+            raise TypeError(f"{name} must be a string")
+        if not value.strip():
+            raise ValueError(f"{name} must not be empty")
+
+    code_hash = hashlib.sha256(authorization_code.encode("utf-8")).hexdigest()
+    verifier_challenge = (
+        base64.urlsafe_b64encode(hashlib.sha256(code_verifier.encode("ascii")).digest())
+        .rstrip(b"=")
+        .decode("ascii")
+    )
+    current_time = int(time.time())
+
+    with get_control_db() as database:
+        database.execute("BEGIN IMMEDIATE")
+        row = database.execute(
+            """
+            SELECT request_id_hash, user_id, code_challenge, expires_at, consumed_at
+            FROM desktop_authorization_requests
+            WHERE authorization_code_hash = ?
+            """,
+            (code_hash,),
+        ).fetchone()
+        if row is None or row["user_id"] is None:
+            raise DesktopCodeInvalidError
+        if row["consumed_at"] is not None:
+            raise DesktopAuthorizationUsedError
+        if int(row["expires_at"]) <= current_time:
+            raise DesktopAuthorizationExpiredError
+        if not secrets.compare_digest(row["code_challenge"], verifier_challenge):
+            raise DesktopPkceMismatchError
+        user = database.execute(
+            "SELECT id, email FROM users WHERE id = ? AND status = 'active'",
+            (row["user_id"],),
+        ).fetchone()
+        if user is None:
+            raise DesktopAccountUnavailableError
+
+        device_id = secrets.token_hex(16)
+        access_expires_at = current_time + 15 * 60
+        lease_expires_at = current_time + 30 * 24 * 60 * 60
+        refresh_expires_at = current_time + 90 * 24 * 60 * 60
+        access_token = create_desktop_token(
+            token_type="access",
+            user_id=user["id"],
+            device_id=device_id,
+            issued_at=current_time,
+            expires_at=access_expires_at,
+        )
+        account_lease = create_desktop_token(
+            token_type="lease",
+            user_id=user["id"],
+            device_id=device_id,
+            issued_at=current_time,
+            expires_at=lease_expires_at,
+        )
+        signing_public_key = desktop_signing_public_key()
+        refresh_token = secrets.token_urlsafe(48)
+        refresh_token_hash = hashlib.sha256(refresh_token.encode("utf-8")).hexdigest()
+        device_result = database.execute(
+            """
+            INSERT INTO desktop_devices (
+                id, user_id, name, created_at,
+                refresh_token_hash, refresh_token_expires_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                device_id,
+                user["id"],
+                device_name.strip(),
+                current_time,
+                refresh_token_hash,
+                refresh_expires_at,
+            ),
+        )
+        if device_result.rowcount != 1:
+            raise RuntimeError("desktop device was not stored")
+        consume_result = database.execute(
+            """
+            UPDATE desktop_authorization_requests
+            SET consumed_at = ?
+            WHERE request_id_hash = ? AND consumed_at IS NULL
+            """,
+            (current_time, row["request_id_hash"]),
+        )
+        if consume_result.rowcount != 1:
+            raise DesktopAuthorizationUsedError
+        database.commit()
+
+    return DesktopTokenExchange(
+        access_token=access_token,
+        access_token_expires_at=access_expires_at,
+        refresh_token=refresh_token,
+        refresh_token_expires_at=refresh_expires_at,
+        account_lease=account_lease,
+        account_lease_expires_at=lease_expires_at,
+        device_id=device_id,
+        signing_public_key=signing_public_key,
+        user_id=user["id"],
+        user_email=user["email"],
+    )
 
 
 def approve_desktop_authorization_request(

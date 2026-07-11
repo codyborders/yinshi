@@ -232,9 +232,9 @@ def test_exchange_desktop_code_rolls_back_when_device_storage_fails(
     user_id = getattr(client, "yinshi_tenant").user_id
     collision_id = "fixed-device-id"
 
-    from yinshi.api import auth_routes
     from yinshi.db import get_control_db
     from yinshi.main import app
+    from yinshi.services import desktop_auth
 
     with get_control_db() as database:
         database.execute(
@@ -247,13 +247,13 @@ def test_exchange_desktop_code_rolls_back_when_device_storage_fails(
         )
         database.commit()
 
-    original_token_hex = auth_routes.secrets.token_hex
-    monkeypatch.setattr(auth_routes.secrets, "token_hex", lambda _: collision_id)
+    original_token_hex = desktop_auth.secrets.token_hex
+    monkeypatch.setattr(desktop_auth.secrets, "token_hex", lambda _: collision_id)
     with TestClient(app, raise_server_exceptions=False) as failure_client:
         failure_client.cookies.update(client.cookies)
         failure_client.headers.update(DEFAULT_TEST_HEADERS)
         failure_response = _exchange_code(failure_client, authorization_code)
-    monkeypatch.setattr(auth_routes.secrets, "token_hex", original_token_hex)
+    monkeypatch.setattr(desktop_auth.secrets, "token_hex", original_token_hex)
 
     code_hash = hashlib.sha256(authorization_code.encode("utf-8")).hexdigest()
     with get_control_db() as database:

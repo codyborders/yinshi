@@ -1,6 +1,5 @@
 """OAuth login/callback endpoints for Google and GitHub."""
 
-import base64
 import hashlib
 import logging
 import secrets
@@ -47,17 +46,19 @@ from yinshi.models import (
 from yinshi.rate_limit import limiter
 from yinshi.services.accounts import resolve_or_create_user
 from yinshi.services.desktop_auth import (
+    DesktopAccountUnavailableError,
     DesktopAuthorizationExpiredError,
     DesktopAuthorizationNotFoundError,
     DesktopAuthorizationUsedError,
+    DesktopCodeInvalidError,
+    DesktopPkceMismatchError,
     approve_desktop_authorization_request,
 )
 from yinshi.services.desktop_auth import (
     create_desktop_authorization_request as store_desktop_request,
 )
-from yinshi.services.desktop_tokens import (
-    create_desktop_token,
-    desktop_signing_public_key,
+from yinshi.services.desktop_auth import (
+    exchange_desktop_authorization_code as exchange_desktop_code,
 )
 from yinshi.services.github_app import get_installation_details
 from yinshi.services.provider_connections import create_provider_connection
@@ -466,93 +467,32 @@ async def exchange_desktop_authorization_code(
 ) -> dict[str, object]:
     """Consume a PKCE code and issue the first desktop device credentials."""
     del request
-    code_hash = hashlib.sha256(body.authorization_code.encode("utf-8")).hexdigest()
-    verifier_challenge = (
-        base64.urlsafe_b64encode(hashlib.sha256(body.code_verifier.encode("ascii")).digest())
-        .rstrip(b"=")
-        .decode("ascii")
-    )
-    current_time = int(time.time())
-
     try:
-        with get_control_db() as database:
-            database.execute("BEGIN IMMEDIATE")
-            row = database.execute(
-                """
-                SELECT request_id_hash, user_id, code_challenge, expires_at, consumed_at
-                FROM desktop_authorization_requests
-                WHERE authorization_code_hash = ?
-                """,
-                (code_hash,),
-            ).fetchone()
-            if row is None or row["user_id"] is None:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Desktop authorization code is invalid",
-                )
-            if row["consumed_at"] is not None:
-                raise HTTPException(status_code=409, detail="Desktop authorization code was used")
-            if int(row["expires_at"]) <= current_time:
-                raise HTTPException(status_code=410, detail="Desktop authorization code expired")
-            if not secrets.compare_digest(row["code_challenge"], verifier_challenge):
-                raise HTTPException(status_code=400, detail="Desktop PKCE verification failed")
-            user = database.execute(
-                "SELECT id, email FROM users WHERE id = ? AND status = 'active'",
-                (row["user_id"],),
-            ).fetchone()
-            if user is None:
-                raise HTTPException(status_code=403, detail="Desktop account is unavailable")
-
-            device_id = secrets.token_hex(16)
-            access_expires_at = current_time + 15 * 60
-            lease_expires_at = current_time + 30 * 24 * 60 * 60
-            refresh_expires_at = current_time + 90 * 24 * 60 * 60
-            access_token = create_desktop_token(
-                token_type="access",
-                user_id=user["id"],
-                device_id=device_id,
-                issued_at=current_time,
-                expires_at=access_expires_at,
-            )
-            account_lease = create_desktop_token(
-                token_type="lease",
-                user_id=user["id"],
-                device_id=device_id,
-                issued_at=current_time,
-                expires_at=lease_expires_at,
-            )
-            signing_public_key = desktop_signing_public_key()
-            refresh_token = secrets.token_urlsafe(48)
-            refresh_token_hash = hashlib.sha256(refresh_token.encode("utf-8")).hexdigest()
-            device_result = database.execute(
-                """
-                INSERT INTO desktop_devices (
-                    id, user_id, name, created_at,
-                    refresh_token_hash, refresh_token_expires_at
-                ) VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    device_id,
-                    user["id"],
-                    body.device_name,
-                    current_time,
-                    refresh_token_hash,
-                    refresh_expires_at,
-                ),
-            )
-            if device_result.rowcount != 1:
-                raise RuntimeError("desktop device was not stored")
-            consume_result = database.execute(
-                """
-                UPDATE desktop_authorization_requests
-                SET consumed_at = ?
-                WHERE request_id_hash = ? AND consumed_at IS NULL
-                """,
-                (current_time, row["request_id_hash"]),
-            )
-            if consume_result.rowcount != 1:
-                raise HTTPException(status_code=409, detail="Desktop authorization code was used")
-            database.commit()
+        exchange = exchange_desktop_code(
+            authorization_code=body.authorization_code,
+            code_verifier=body.code_verifier,
+            device_name=body.device_name,
+        )
+    except (DesktopCodeInvalidError, DesktopPkceMismatchError):
+        raise HTTPException(
+            status_code=400,
+            detail="Desktop authorization code or PKCE verifier is invalid",
+        ) from None
+    except DesktopAuthorizationUsedError:
+        raise HTTPException(
+            status_code=409,
+            detail="Desktop authorization code was used",
+        ) from None
+    except DesktopAuthorizationExpiredError:
+        raise HTTPException(
+            status_code=410,
+            detail="Desktop authorization code expired",
+        ) from None
+    except DesktopAccountUnavailableError:
+        raise HTTPException(
+            status_code=403,
+            detail="Desktop account is unavailable",
+        ) from None
     except sqlite3.Error:
         raise HTTPException(
             status_code=503,
@@ -560,15 +500,15 @@ async def exchange_desktop_authorization_code(
         ) from None
     return {
         "token_type": "Bearer",
-        "access_token": access_token,
-        "access_token_expires_at": access_expires_at,
-        "refresh_token": refresh_token,
-        "refresh_token_expires_at": refresh_expires_at,
-        "account_lease": account_lease,
-        "account_lease_expires_at": lease_expires_at,
-        "device_id": device_id,
-        "signing_public_key": signing_public_key,
-        "user": {"id": user["id"], "email": user["email"]},
+        "access_token": exchange.access_token,
+        "access_token_expires_at": exchange.access_token_expires_at,
+        "refresh_token": exchange.refresh_token,
+        "refresh_token_expires_at": exchange.refresh_token_expires_at,
+        "account_lease": exchange.account_lease,
+        "account_lease_expires_at": exchange.account_lease_expires_at,
+        "device_id": exchange.device_id,
+        "signing_public_key": exchange.signing_public_key,
+        "user": {"id": exchange.user_id, "email": exchange.user_email},
     }
 
 
