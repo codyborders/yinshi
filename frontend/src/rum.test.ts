@@ -1,3 +1,4 @@
+import type { RumErrorEvent, RumEventDomainContext } from "@datadog/browser-rum";
 import { describe, expect, it } from "vitest";
 
 import { createRumConfiguration } from "./rum";
@@ -10,5 +11,16 @@ describe("createRumConfiguration", () => {
     expect(configuration.defaultPrivacyLevel).toBe("mask");
     expect(configuration.trackUserInteractions).toBe(false);
     expect(configuration.sessionSampleRate).toBeLessThanOrEqual(10);
+  });
+
+  it("drops automatic error events because their messages can contain user input", () => {
+    const configuration = createRumConfiguration("audit-test-version");
+    const errorEvent = {
+      type: "error",
+      error: { message: "CANARY_PRIVATE_PROMPT", source: "source" },
+    } as RumErrorEvent;
+
+    expect(configuration.beforeSend).toBeTypeOf("function");
+    expect(configuration.beforeSend?.(errorEvent, {} as RumEventDomainContext)).toBe(false);
   });
 });

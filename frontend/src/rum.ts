@@ -1,4 +1,15 @@
+import type { RumBeforeSend } from "@datadog/browser-rum";
 import { reactPlugin } from "@datadog/browser-rum-react";
+
+const filterRumEvent: RumBeforeSend = (event) => {
+  if (!("type" in event)) {
+    return false;
+  }
+  if (event.type === "error") {
+    return false;
+  }
+  return true;
+};
 
 export function createRumConfiguration(version: string) {
   if (typeof version !== "string" || version.trim().length === 0) {
@@ -20,6 +31,7 @@ export function createRumConfiguration(version: string) {
     trackUserInteractions: false,
     trackLongTasks: true,
     defaultPrivacyLevel: "mask" as const,
+    beforeSend: filterRumEvent,
     proxy: (options: { path: string; parameters: string }) =>
       `/rum${options.path}?${options.parameters}`,
     plugins: [reactPlugin({ router: false })],
