@@ -245,7 +245,8 @@ CREATE TABLE IF NOT EXISTS desktop_devices (
     created_at INTEGER NOT NULL,
     refresh_token_hash TEXT NOT NULL UNIQUE,
     refresh_token_expires_at INTEGER NOT NULL,
-    revoked_at INTEGER
+    revoked_at INTEGER,
+    last_seen_at INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS idx_desktop_devices_user ON desktop_devices(user_id);
@@ -451,8 +452,13 @@ def _migrate_control(conn: sqlite3.Connection) -> None:
         conn.commit()
 
     desktop_device_columns = {row[1] for row in conn.execute("PRAGMA table_info(desktop_devices)")}
-    if "revoked_at" not in desktop_device_columns:
-        conn.execute("ALTER TABLE desktop_devices ADD COLUMN revoked_at INTEGER")
+    desktop_device_migrations = {
+        "revoked_at": "ALTER TABLE desktop_devices ADD COLUMN revoked_at INTEGER",
+        "last_seen_at": "ALTER TABLE desktop_devices ADD COLUMN last_seen_at INTEGER",
+    }
+    for column_name, statement in desktop_device_migrations.items():
+        if column_name not in desktop_device_columns:
+            conn.execute(statement)
     conn.commit()
 
     desktop_request_columns = {

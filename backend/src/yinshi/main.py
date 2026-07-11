@@ -23,6 +23,7 @@ from yinshi.api import (
     auth_routes,
     catalog,
     datadog_proxy,
+    desktop_devices,
     github,
     repos,
     runners,
@@ -317,6 +318,7 @@ def _include_routes(application: FastAPI, *, mode: AppMode) -> None:
     control_routers = (
         auth_routes.router,
         datadog_proxy.router,
+        desktop_devices.router,
         github.router,
         runners.router,
     )

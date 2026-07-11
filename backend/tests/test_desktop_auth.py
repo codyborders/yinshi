@@ -244,7 +244,9 @@ def test_desktop_bearer_auth_requires_valid_access_for_active_device(
             "/api/repos",
             headers={"Authorization": f"Bearer {credentials['account_lease']}"},
         )
-        tampered_token = f"{credentials['access_token'][:-1]}A"
+        signature_tail = credentials["access_token"][-1]
+        replacement_tail = "A" if signature_tail != "A" else "B"
+        tampered_token = f"{credentials['access_token'][:-1]}{replacement_tail}"
         tampered_response = desktop_client.get(
             "/api/repos",
             headers={"Authorization": f"Bearer {tampered_token}"},
@@ -266,6 +268,80 @@ def test_desktop_bearer_auth_requires_valid_access_for_active_device(
     assert lease_response.status_code == 401
     assert tampered_response.status_code == 401
     assert revoked_response.status_code == 401
+
+
+def test_users_list_and_revoke_only_their_desktop_devices(auth_client_factory) -> None:
+    """Device administration should expose ownership and invalidate revoked access."""
+    owner_browser = auth_client_factory(
+        email="device-owner@example.com",
+        provider_user_id="device-owner-id",
+    )
+    first_credentials = _exchange_code(
+        owner_browser,
+        _create_approved_code(owner_browser),
+    ).json()
+    second_code = _create_approved_code(owner_browser)
+    second_response = owner_browser.post(
+        "/auth/desktop/token",
+        json={
+            "authorization_code": second_code,
+            "code_verifier": PKCE_VERIFIER,
+            "device_name": "Second Mac",
+        },
+    )
+    assert second_response.status_code == 200
+    second_credentials = second_response.json()
+
+    other_browser = auth_client_factory(
+        email="other-device-owner@example.com",
+        provider_user_id="other-device-owner-id",
+    )
+    other_credentials = _exchange_code(
+        other_browser,
+        _create_approved_code(other_browser),
+    ).json()
+
+    from yinshi.main import app
+
+    first_headers = {"Authorization": f"Bearer {first_credentials['access_token']}"}
+    other_headers = {
+        "Authorization": f"Bearer {other_credentials['access_token']}",
+        "X-Requested-With": "XMLHttpRequest",
+    }
+    with TestClient(app) as desktop_client:
+        list_response = desktop_client.get(
+            "/api/account/desktop-devices",
+            headers=first_headers,
+        )
+        foreign_revoke_response = desktop_client.delete(
+            f"/api/account/desktop-devices/{first_credentials['device_id']}",
+            headers=other_headers,
+        )
+        revoke_response = desktop_client.delete(
+            f"/api/account/desktop-devices/{second_credentials['device_id']}",
+            headers={**first_headers, "X-Requested-With": "XMLHttpRequest"},
+        )
+        revoked_access_response = desktop_client.get(
+            "/api/account/desktop-devices",
+            headers={"Authorization": f"Bearer {second_credentials['access_token']}"},
+        )
+        updated_list_response = desktop_client.get(
+            "/api/account/desktop-devices",
+            headers=first_headers,
+        )
+
+    assert list_response.status_code == 200
+    listed_devices = list_response.json()
+    assert {device["name"] for device in listed_devices} == {"Test Mac", "Second Mac"}
+    assert all(device["last_seen_at"] is not None for device in listed_devices)
+    assert foreign_revoke_response.status_code == 404
+    assert revoke_response.status_code == 204
+    assert revoked_access_response.status_code == 401
+    updated_devices = updated_list_response.json()
+    revoked_device = next(
+        device for device in updated_devices if device["id"] == second_credentials["device_id"]
+    )
+    assert revoked_device["revoked_at"] is not None
 
 
 def test_refresh_rotation_revokes_device_when_old_token_is_replayed(

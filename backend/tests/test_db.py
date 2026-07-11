@@ -226,6 +226,16 @@ def test_control_db_migrates_existing_desktop_authorization_requests(
 
     connection = sqlite3.connect(control_path)
     connection.execute("""
+        CREATE TABLE desktop_devices (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            refresh_token_hash TEXT NOT NULL UNIQUE,
+            refresh_token_expires_at INTEGER NOT NULL
+        )
+        """)
+    connection.execute("""
         CREATE TABLE desktop_authorization_requests (
             request_id_hash TEXT PRIMARY KEY,
             created_at INTEGER NOT NULL,
@@ -258,6 +268,9 @@ def test_control_db_migrates_existing_desktop_authorization_requests(
                 row[1]
                 for row in database.execute("PRAGMA table_info(desktop_authorization_requests)")
             }
+            device_columns = {
+                row[1] for row in database.execute("PRAGMA table_info(desktop_devices)")
+            }
             row = database.execute(
                 "SELECT * FROM desktop_authorization_requests WHERE request_id_hash = 'digest'"
             ).fetchone()
@@ -266,6 +279,7 @@ def test_control_db_migrates_existing_desktop_authorization_requests(
                 for index in database.execute("PRAGMA index_list(desktop_authorization_requests)")
             }
         assert {"user_id", "authorization_code_hash", "approved_at", "consumed_at"} <= columns
+        assert {"revoked_at", "last_seen_at"} <= device_columns
         assert row is not None
         assert row["redirect_uri"] == "http://127.0.0.1:43123/auth/desktop/callback"
         assert row["user_id"] is None

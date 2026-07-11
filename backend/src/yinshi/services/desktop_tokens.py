@@ -37,13 +37,17 @@ def _decode_base64url(value: str) -> bytes:
         raise ValueError("compact token segment must not be empty")
     padding = "=" * (-len(value) % 4)
     try:
-        return base64.b64decode(
+        decoded = base64.b64decode(
             f"{value}{padding}",
             altchars=b"-_",
             validate=True,
         )
     except (binascii.Error, ValueError) as error:
         raise ValueError("compact token segment is not valid base64url") from error
+    canonical_value = base64.urlsafe_b64encode(decoded).rstrip(b"=").decode("ascii")
+    if canonical_value != value:
+        raise ValueError("compact token segment is not canonical base64url")
+    return decoded
 
 
 def _encode_base64url(value: bytes) -> str:

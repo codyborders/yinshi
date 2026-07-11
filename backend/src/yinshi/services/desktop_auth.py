@@ -182,8 +182,8 @@ def exchange_desktop_authorization_code(
             """
             INSERT INTO desktop_devices (
                 id, user_id, name, created_at,
-                refresh_token_hash, refresh_token_expires_at
-            ) VALUES (?, ?, ?, ?, ?, ?)
+                refresh_token_hash, refresh_token_expires_at, last_seen_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 credentials.device_id,
@@ -192,6 +192,7 @@ def exchange_desktop_authorization_code(
                 current_time,
                 refresh_token_hash,
                 credentials.refresh_token_expires_at,
+                current_time,
             ),
         )
         if device_result.rowcount != 1:
@@ -274,12 +275,13 @@ def rotate_desktop_refresh_token(*, refresh_token: str) -> DesktopTokenExchange:
         result = database.execute(
             """
             UPDATE desktop_devices
-            SET refresh_token_hash = ?, refresh_token_expires_at = ?
+            SET refresh_token_hash = ?, refresh_token_expires_at = ?, last_seen_at = ?
             WHERE id = ? AND refresh_token_hash = ? AND revoked_at IS NULL
             """,
             (
                 new_refresh_token_hash,
                 credentials.refresh_token_expires_at,
+                current_time,
                 device["id"],
                 refresh_token_hash,
             ),
