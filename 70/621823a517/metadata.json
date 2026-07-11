@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.7.7",
+  "checkpoint_id": "70621823a517",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 4,
+  "files_touched": [
+    "backend/src/yinshi/main.py",
+    "backend/tests/test_main.py"
+  ],
+  "sessions": [
+    {
+      "metadata": "/70/621823a517/0/metadata.json",
+      "transcript": "/70/621823a517/0/full.jsonl",
+      "content_hash": "/70/621823a517/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 7178,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 1388032,
+    "output_tokens": 1155,
+    "api_call_count": 7
+  }
+}
