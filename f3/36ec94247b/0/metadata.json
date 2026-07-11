@@ -1,0 +1,44 @@
+{
+  "cli_version": "0.7.7",
+  "checkpoint_id": "f336ec94247b",
+  "session_id": "019f4e6f-89f2-7f82-9bf9-a4790d571aa6",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-11T03:54:18.572995Z",
+  "branch": "main",
+  "checkpoints_count": 4,
+  "files_touched": [
+    "desktop/package.json",
+    "desktop/tsconfig.json",
+    "desktop/src/security.test.ts",
+    "desktop/src/security.ts",
+    "desktop/tsconfig.build.json",
+    "desktop/vitest.config.ts"
+  ],
+  "agent": "Pi",
+  "model": "gpt-5.6-sol",
+  "turn_id": "18dbb6409432",
+  "checkpoint_transcript_start": 491,
+  "transcript_lines_at_start": 491,
+  "token_usage": {
+    "input_tokens": 19872,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 4664832,
+    "output_tokens": 4388,
+    "api_call_count": 23
+  },
+  "session_metrics": {
+    "turn_count": 4
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-07-11T03:54:18.535655Z",
+    "agent_lines": 105,
+    "agent_removed": 0,
+    "human_added": 4827,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 4932,
+    "total_lines_changed": 4932,
+    "agent_percentage": 2.1289537712895377,
+    "metric_version": 2
+  }
+}
