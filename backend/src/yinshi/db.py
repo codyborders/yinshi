@@ -1,17 +1,33 @@
 """SQLite database connection and schema management."""
 
+import importlib
 import logging
+import os
+import secrets
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from types import ModuleType
+from typing import cast
 
-from yinshi.config import control_field_encryption_enabled, get_settings
+from yinshi.config import (
+    control_field_encryption_enabled,
+    get_settings,
+    tenant_db_encryption_enabled,
+    tenant_db_encryption_required,
+)
 from yinshi.model_catalog import DEFAULT_SESSION_MODEL
 
 logger = logging.getLogger(__name__)
 
 _SCHEMA_VERSION = 5
+_SQLCIPHER_MODULE_NAMES = ("sqlcipher3.dbapi2", "pysqlcipher3.dbapi2")
+
+
+class DatabaseEncryptionError(RuntimeError):
+    """Raised when a required application database cannot be encrypted or unlocked."""
+
 
 SCHEMA_SQL = f"""
 PRAGMA journal_mode = WAL;
@@ -86,11 +102,212 @@ def _open_connection(db_path: str, *, check_same_thread: bool = True) -> sqlite3
     return conn
 
 
+def _load_sqlcipher_module() -> ModuleType:
+    """Load a compatible SQLCipher DB-API driver or raise a sanitized error."""
+    for module_name in _SQLCIPHER_MODULE_NAMES:
+        try:
+            module = importlib.import_module(module_name)
+        except ImportError:
+            continue
+        if hasattr(module, "connect") and hasattr(module, "Row"):
+            return module
+    raise DatabaseEncryptionError("SQLCipher is unavailable for required database encryption")
+
+
+def _application_database_key(*, context: str) -> bytes:
+    """Derive one database key from the configured Keychain-injected pepper."""
+    if context not in {"control", "local"}:
+        raise ValueError("database key context is invalid")
+    from yinshi.services.crypto import derive_subkey
+
+    settings = get_settings()
+    return derive_subkey(
+        settings.encryption_pepper_bytes,
+        purpose="application-sqlcipher",
+        context=context,
+    )
+
+
+def _sqlcipher_error_type(sqlcipher_module: ModuleType) -> type[Exception]:
+    """Return a safe exception class exported by one SQLCipher driver."""
+    database_error = getattr(sqlcipher_module, "DatabaseError", sqlite3.DatabaseError)
+    if not isinstance(database_error, type) or not issubclass(database_error, Exception):
+        return sqlite3.DatabaseError
+    return database_error
+
+
+def _open_keyed_connection(
+    db_path: str,
+    *,
+    sqlcipher_module: ModuleType,
+    database_key: bytes,
+) -> sqlite3.Connection:
+    """Open and immediately validate one SQLCipher database with an exact key."""
+    if len(database_key) != 32:
+        raise ValueError("database_key must contain 32 bytes")
+    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+    connection = cast(sqlite3.Connection, sqlcipher_module.connect(db_path))
+    connection.row_factory = getattr(sqlcipher_module, "Row")
+    connection.execute(f"PRAGMA key = \"x'{database_key.hex()}'\"")  # noqa: S608
+    connection.execute("PRAGMA cipher_memory_security = ON")
+    connection.execute("PRAGMA foreign_keys = ON")
+    connection.execute("PRAGMA busy_timeout = 5000")
+    try:
+        cipher_version = connection.execute("PRAGMA cipher_version").fetchone()
+        connection.execute("SELECT count(*) FROM sqlite_master").fetchone()
+    except (sqlite3.DatabaseError, _sqlcipher_error_type(sqlcipher_module)) as error:
+        connection.close()
+        raise DatabaseEncryptionError("Application database could not be unlocked") from error
+    if cipher_version is None or not cipher_version[0]:
+        connection.close()
+        raise DatabaseEncryptionError("SQLCipher driver did not report a cipher version")
+    os.chmod(db_path, 0o600)
+    return connection
+
+
+def _plaintext_database_readable(db_path: str) -> bool:
+    """Return whether an existing application database is plaintext SQLite."""
+    if not os.path.isfile(db_path):
+        return False
+    try:
+        connection = _open_connection(db_path)
+        try:
+            connection.execute("SELECT count(*) FROM sqlite_master").fetchone()
+            return True
+        finally:
+            connection.close()
+    except sqlite3.DatabaseError:
+        return False
+
+
+def _validate_encrypted_database(
+    db_path: str,
+    *,
+    sqlcipher_module: ModuleType,
+    database_key: bytes,
+) -> None:
+    """Require an encrypted database to open and pass SQLCipher integrity checks."""
+    connection = _open_keyed_connection(
+        db_path,
+        sqlcipher_module=sqlcipher_module,
+        database_key=database_key,
+    )
+    try:
+        integrity = connection.execute("PRAGMA integrity_check").fetchone()
+        if integrity is None or str(integrity[0]).lower() != "ok":
+            raise DatabaseEncryptionError(
+                "Encrypted application database failed integrity validation"
+            )
+    finally:
+        connection.close()
+
+
+def _migrate_plaintext_application_database(
+    db_path: str,
+    *,
+    sqlcipher_module: ModuleType,
+    database_key: bytes,
+) -> None:
+    """Export plaintext SQLite into SQLCipher and atomically replace the original."""
+    temporary_path = f"{db_path}.encrypted.tmp"
+    backup_path = f"{db_path}.plaintext.{secrets.token_hex(8)}"
+    for path in (temporary_path, f"{temporary_path}-wal", f"{temporary_path}-shm"):
+        if os.path.exists(path):
+            os.unlink(path)
+
+    source = cast(sqlite3.Connection, sqlcipher_module.connect(db_path))
+    try:
+        source.execute("PRAGMA wal_checkpoint(FULL)").fetchone()
+        integrity = source.execute("PRAGMA integrity_check").fetchone()
+        if integrity is None or str(integrity[0]).lower() != "ok":
+            raise DatabaseEncryptionError(
+                "Plaintext application database failed integrity validation"
+            )
+        source.execute(
+            "ATTACH DATABASE ? AS encrypted KEY ?",
+            (temporary_path, f"x'{database_key.hex()}'"),
+        )
+        try:
+            source.execute("SELECT sqlcipher_export('encrypted')").fetchone()
+        finally:
+            source.execute("DETACH DATABASE encrypted")
+    except (sqlite3.DatabaseError, _sqlcipher_error_type(sqlcipher_module)) as error:
+        raise DatabaseEncryptionError("Application database encryption migration failed") from error
+    finally:
+        source.close()
+
+    _validate_encrypted_database(
+        temporary_path,
+        sqlcipher_module=sqlcipher_module,
+        database_key=database_key,
+    )
+    os.replace(db_path, backup_path)
+    try:
+        os.replace(temporary_path, db_path)
+        _validate_encrypted_database(
+            db_path,
+            sqlcipher_module=sqlcipher_module,
+            database_key=database_key,
+        )
+        os.chmod(db_path, 0o600)
+    except (DatabaseEncryptionError, OSError):
+        if os.path.exists(db_path):
+            os.unlink(db_path)
+        os.replace(backup_path, db_path)
+        raise
+    else:
+        os.unlink(backup_path)
+    finally:
+        if os.path.exists(temporary_path):
+            os.unlink(temporary_path)
+    for suffix in ("-wal", "-shm"):
+        sidecar_path = f"{db_path}{suffix}"
+        if os.path.exists(sidecar_path):
+            os.unlink(sidecar_path)
+    logger.info("Migrated an application database to SQLCipher")
+
+
+def _open_application_connection(db_path: str, *, context: str) -> sqlite3.Connection:
+    """Open one application database under configured encryption policy."""
+    settings = get_settings()
+    if not tenant_db_encryption_enabled(settings):
+        return _open_connection(db_path)
+    try:
+        sqlcipher_module = _load_sqlcipher_module()
+    except DatabaseEncryptionError:
+        if tenant_db_encryption_required(settings):
+            raise
+        logger.warning("SQLCipher unavailable; opening application database without encryption")
+        return _open_connection(db_path)
+
+    database_key = _application_database_key(context=context)
+    if os.path.exists(db_path):
+        try:
+            return _open_keyed_connection(
+                db_path,
+                sqlcipher_module=sqlcipher_module,
+                database_key=database_key,
+            )
+        except DatabaseEncryptionError:
+            if not _plaintext_database_readable(db_path):
+                raise
+            _migrate_plaintext_application_database(
+                db_path,
+                sqlcipher_module=sqlcipher_module,
+                database_key=database_key,
+            )
+    return _open_keyed_connection(
+        db_path,
+        sqlcipher_module=sqlcipher_module,
+        database_key=database_key,
+    )
+
+
 @contextmanager
 def get_db() -> Iterator[sqlite3.Connection]:
     """Get a SQLite connection as a context manager."""
     settings = get_settings()
-    conn = _open_connection(settings.db_path)
+    conn = _open_application_connection(settings.db_path, context="local")
     try:
         yield conn
     finally:
@@ -378,7 +595,7 @@ BEGIN UPDATE provider_connections SET updated_at = CURRENT_TIMESTAMP WHERE id = 
 def get_control_db() -> Iterator[sqlite3.Connection]:
     """Get a connection to the control plane database."""
     settings = get_settings()
-    conn = _open_connection(settings.control_db_path)
+    conn = _open_application_connection(settings.control_db_path, context="control")
     try:
         yield conn
     finally:

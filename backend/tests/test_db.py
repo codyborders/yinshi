@@ -214,6 +214,100 @@ def test_init_control_db_creates_pi_config_tables(tmp_path, monkeypatch):
         get_settings.cache_clear()
 
 
+def test_required_database_encryption_uses_sqlcipher_and_rejects_wrong_key(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Required mode should encrypt every database and fail closed on key mismatch."""
+    from tests.conftest import _configure_test_env
+    from yinshi.config import get_settings
+    from yinshi.db import (
+        DatabaseEncryptionError,
+        get_control_db,
+        get_db,
+        init_control_db,
+        init_db,
+    )
+
+    _configure_test_env(monkeypatch, tmp_path, auth_enabled=False)
+    monkeypatch.setenv("TENANT_DB_ENCRYPTION", "required")
+    get_settings.cache_clear()
+    get_settings()
+
+    try:
+        init_db()
+        init_control_db()
+        assert not (tmp_path / "legacy.db").read_bytes().startswith(b"SQLite format 3")
+        assert not (tmp_path / "control.db").read_bytes().startswith(b"SQLite format 3")
+        with get_db() as database:
+            assert database.execute("PRAGMA cipher_version").fetchone()[0]
+            assert database.execute("SELECT COUNT(*) FROM repos").fetchone()[0] == 0
+        with get_control_db() as database:
+            assert database.execute("PRAGMA cipher_version").fetchone()[0]
+            assert database.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0
+
+        monkeypatch.setenv("ENCRYPTION_PEPPER", "bb" * 32)
+        get_settings.cache_clear()
+        with pytest.raises(DatabaseEncryptionError, match="unlock"):
+            with get_db() as database:
+                database.execute("SELECT COUNT(*) FROM repos").fetchone()
+    finally:
+        get_settings.cache_clear()
+
+
+def test_required_database_encryption_migrates_plaintext_without_data_loss(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Required mode should atomically replace existing plaintext application databases."""
+    from tests.conftest import _configure_test_env
+    from yinshi.config import get_settings
+    from yinshi.db import get_control_db, get_db, init_control_db, init_db
+
+    _configure_test_env(monkeypatch, tmp_path, auth_enabled=False)
+    monkeypatch.setenv("TENANT_DB_ENCRYPTION", "disabled")
+    get_settings.cache_clear()
+    try:
+        init_db()
+        init_control_db()
+        with get_db() as database:
+            database.execute(
+                "INSERT INTO repos (id, name, root_path) VALUES (?, ?, ?)",
+                ("repo-id", "Retained Repo", "/tmp/retained"),
+            )
+            database.commit()
+        with get_control_db() as database:
+            database.execute(
+                "INSERT INTO users (id, email) VALUES (?, ?)",
+                ("user-id", "retained@example.com"),
+            )
+            database.commit()
+        assert (tmp_path / "legacy.db").read_bytes().startswith(b"SQLite format 3")
+        assert (tmp_path / "control.db").read_bytes().startswith(b"SQLite format 3")
+
+        monkeypatch.setenv("TENANT_DB_ENCRYPTION", "required")
+        get_settings.cache_clear()
+        init_db()
+        init_control_db()
+
+        assert not (tmp_path / "legacy.db").read_bytes().startswith(b"SQLite format 3")
+        assert not (tmp_path / "control.db").read_bytes().startswith(b"SQLite format 3")
+        with get_db() as database:
+            assert (
+                database.execute("SELECT name FROM repos WHERE id = ?", ("repo-id",)).fetchone()[0]
+                == "Retained Repo"
+            )
+        with get_control_db() as database:
+            assert (
+                database.execute("SELECT email FROM users WHERE id = ?", ("user-id",)).fetchone()[0]
+                == "retained@example.com"
+            )
+        assert not list(tmp_path.glob("*.plaintext.*"))
+        assert not list(tmp_path.glob("*.encrypted.tmp"))
+    finally:
+        get_settings.cache_clear()
+
+
 def test_control_db_migrates_existing_desktop_authorization_requests(
     tmp_path,
     monkeypatch,
