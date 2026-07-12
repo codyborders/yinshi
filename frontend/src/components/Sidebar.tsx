@@ -332,7 +332,11 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
 
   return (
     <aside className="flex h-full w-72 flex-col border-r border-gray-800 bg-gray-900">
-      <div className="flex items-center justify-between px-4 py-3 border-b border-gray-800">
+      <div
+        className={`flex items-center justify-between border-b border-gray-800 py-3 ${
+          window.yinshiDesktop !== undefined ? "pl-24 pr-4" : "px-4"
+        }`}
+      >
         <span className="text-xs font-semibold uppercase tracking-wider text-gray-500">
           Workspaces
         </span>

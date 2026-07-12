@@ -93,6 +93,19 @@ describe("Sidebar repo settings", () => {
     });
   });
 
+  it("keeps the desktop title clear of macOS window controls", () => {
+    Object.defineProperty(window, "yinshiDesktop", {
+      configurable: true,
+      value: { signOut: vi.fn() },
+    });
+
+    renderSidebar();
+
+    expect(screen.getByText("Workspaces").parentElement?.className).toContain(
+      "pl-24",
+    );
+  });
+
   it("aggregates paired BYOC repositories with explicit location labels", async () => {
     mockGet.mockImplementation(async (path: string) => {
       if (path === "/api/repos") return [];
@@ -148,7 +161,9 @@ describe("Sidebar repo settings", () => {
     fireEvent.click(screen.getByTitle("Repo settings"));
 
     const textarea = screen.getByLabelText("AGENTS.md override");
-    fireEvent.change(textarea, { target: { value: "Repo runtime instructions" } });
+    fireEvent.change(textarea, {
+      target: { value: "Repo runtime instructions" },
+    });
     fireEvent.click(screen.getByRole("button", { name: "Save AGENTS.md" }));
 
     await waitFor(() =>
@@ -188,7 +203,9 @@ describe("Sidebar repo settings", () => {
 
     renderSidebar();
     fireEvent.click(await screen.findByTitle("Add repository"));
-    fireEvent.click(screen.getByRole("button", { name: "Choose local repository" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Choose local repository" }),
+    );
 
     await waitFor(() => expect(importLocalRepository).toHaveBeenCalledTimes(1));
     expect(mockPost).not.toHaveBeenCalled();
