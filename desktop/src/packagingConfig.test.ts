@@ -6,6 +6,7 @@ import { build } from "esbuild";
 import { describe, expect, it } from "vitest";
 
 interface PackageManifest {
+  readonly scripts?: Readonly<Record<string, string>>;
   readonly build?: {
     readonly extraResources?: Array<{
       readonly from?: string;
@@ -39,6 +40,8 @@ describe("desktop packaging configuration", () => {
       to: "sidecar/node_modules",
       filter: ["**/*"],
     });
+    expect(manifest.scripts?.["build:helper"]).toContain("YINSHI_TEST_PYTHON");
+    expect(manifest.scripts?.["build:helper"]).toContain(".venv/bin/python");
   });
 
   it("bundles the sandbox preload as CommonJS and loads that artifact", async () => {
