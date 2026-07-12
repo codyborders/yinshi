@@ -1,20 +1,9 @@
-import { randomUUID } from "node:crypto";
 import {
-  chmod,
-  lstat,
-  mkdir,
-  open,
-  readFile,
-  rename,
-  rm,
-} from "node:fs/promises";
-import path from "node:path";
+  SecureJsonStore,
+  type SafeStorageAdapter,
+} from "./secureJsonStore.js";
 
-export interface SafeStorageAdapter {
-  isEncryptionAvailable(): boolean;
-  encryptString(value: string): Buffer;
-  decryptString(value: Buffer): string;
-}
+export type { SafeStorageAdapter } from "./secureJsonStore.js";
 
 export interface DesktopCredentialProfile {
   readonly version: 1;
@@ -33,10 +22,6 @@ export interface DesktopCredentialProfile {
 export interface DesktopCredentialStoreOptions {
   readonly directoryPath: string;
   readonly safeStorage: SafeStorageAdapter;
-}
-
-function isNodeError(error: unknown): error is NodeJS.ErrnoException {
-  return error instanceof Error && "code" in error;
 }
 
 function requiredString(value: unknown, name: string): string {
@@ -92,108 +77,27 @@ function validateProfile(value: unknown): DesktopCredentialProfile {
   };
 }
 
-async function ensureOwnerOnlyDirectory(directoryPath: string): Promise<void> {
-  await mkdir(directoryPath, { mode: 0o700, recursive: true });
-  const information = await lstat(directoryPath);
-  if (!information.isDirectory() || information.isSymbolicLink()) {
-    throw new Error("desktop credential directory must be a real directory");
-  }
-  await chmod(directoryPath, 0o700);
-}
-
-async function assertOwnerOnlyFile(filePath: string): Promise<boolean> {
-  let information;
-  try {
-    information = await lstat(filePath);
-  } catch (error) {
-    if (isNodeError(error) && error.code === "ENOENT") {
-      return false;
-    }
-    throw error;
-  }
-  if (!information.isFile() || information.isSymbolicLink()) {
-    throw new Error("desktop credential path must be a regular file");
-  }
-  if ((information.mode & 0o077) !== 0) {
-    throw new Error("desktop credential file permissions are unsafe");
-  }
-  return true;
-}
-
 export class DesktopCredentialStore {
-  readonly #directoryPath: string;
-  readonly #filePath: string;
-  readonly #safeStorage: SafeStorageAdapter;
+  readonly #store: SecureJsonStore<DesktopCredentialProfile>;
 
   constructor(options: DesktopCredentialStoreOptions) {
-    if (typeof options.directoryPath !== "string" || !path.isAbsolute(options.directoryPath)) {
-      throw new TypeError("directoryPath must be an absolute path");
-    }
-    if (typeof options.safeStorage?.isEncryptionAvailable !== "function") {
-      throw new TypeError("safeStorage must implement Electron safeStorage methods");
-    }
-    this.#directoryPath = options.directoryPath;
-    this.#filePath = path.join(options.directoryPath, "credentials.bin");
-    this.#safeStorage = options.safeStorage;
+    this.#store = new SecureJsonStore({
+      directoryPath: options.directoryPath,
+      fileName: "credentials.bin",
+      safeStorage: options.safeStorage,
+      validate: validateProfile,
+    });
   }
 
-  async save(profile: DesktopCredentialProfile): Promise<void> {
-    const validatedProfile = validateProfile(profile);
-    if (!this.#safeStorage.isEncryptionAvailable()) {
-      throw new Error("Keychain encryption is unavailable");
-    }
-    await ensureOwnerOnlyDirectory(this.#directoryPath);
-    await assertOwnerOnlyFile(this.#filePath);
-
-    const encryptedProfile = this.#safeStorage.encryptString(JSON.stringify(validatedProfile));
-    if (!Buffer.isBuffer(encryptedProfile) || encryptedProfile.length === 0) {
-      throw new Error("Keychain encryption returned no credential data");
-    }
-    const temporaryPath = path.join(
-      this.#directoryPath,
-      `credentials.${randomUUID()}.tmp`,
-    );
-    try {
-      const temporaryFile = await open(temporaryPath, "wx", 0o600);
-      try {
-        await temporaryFile.writeFile(encryptedProfile);
-        await temporaryFile.sync();
-      } finally {
-        await temporaryFile.close();
-      }
-      await rename(temporaryPath, this.#filePath);
-      await chmod(this.#filePath, 0o600);
-    } finally {
-      await rm(temporaryPath, { force: true });
-    }
+  save(profile: DesktopCredentialProfile): Promise<void> {
+    return this.#store.save(profile);
   }
 
-  async load(): Promise<DesktopCredentialProfile | null> {
-    await ensureOwnerOnlyDirectory(this.#directoryPath);
-    if (!(await assertOwnerOnlyFile(this.#filePath))) {
-      return null;
-    }
-    if (!this.#safeStorage.isEncryptionAvailable()) {
-      throw new Error("Keychain encryption is unavailable");
-    }
-    const encryptedProfile = await readFile(this.#filePath);
-    if (encryptedProfile.length === 0) {
-      throw new Error("desktop credential file is empty");
-    }
-    let parsedProfile: unknown;
-    try {
-      parsedProfile = JSON.parse(this.#safeStorage.decryptString(encryptedProfile));
-    } catch {
-      throw new Error("desktop credential file cannot be decrypted");
-    }
-    return validateProfile(parsedProfile);
+  load(): Promise<DesktopCredentialProfile | null> {
+    return this.#store.load();
   }
 
-  async clear(): Promise<void> {
-    await ensureOwnerOnlyDirectory(this.#directoryPath);
-    if (!(await assertOwnerOnlyFile(this.#filePath))) {
-      return;
-    }
-    await rm(this.#filePath);
+  clear(): Promise<void> {
+    return this.#store.clear();
   }
 }
