@@ -16,7 +16,7 @@ import {
   shell,
   type IpcMainInvokeEvent,
 } from "electron";
-import { autoUpdater } from "electron-updater";
+import updaterPackage from "electron-updater";
 
 import { resumeDesktopAccount } from "./accountSession.js";
 import { DesktopAppController } from "./appController.js";
@@ -46,6 +46,8 @@ import { RuntimeSecretStore } from "./runtimeSecrets.js";
 import { createBrowserWindowOptions } from "./security.js";
 import { createShellPolicy } from "./shellPolicy.js";
 import { startSidecar } from "./sidecarSupervisor.js";
+
+const { autoUpdater } = updaterPackage;
 
 const HOSTED_API_BASE_URL = "https://yinshi.io";
 const EXTERNAL_ORIGINS = Object.freeze([

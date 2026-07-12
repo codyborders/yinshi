@@ -99,7 +99,7 @@
       "gatekeeperAssess": false,
       "entitlements": "packaging/entitlements.mac.plist",
       "entitlementsInherit": "packaging/entitlements.mac.inherit.plist",
-      "minimumSystemVersion": "15.0",
+      "minimumSystemVersion": "14.0",
       "extendInfo": {
         "LSApplicationCategoryType": "public.app-category.developer-tools",
         "NSHighResolutionCapable": true,
