@@ -15,6 +15,7 @@ export interface StartManagedHelperOptions {
   command: string;
   arguments: string[];
   environment: Record<string, string>;
+  workingDirectory?: string;
   readinessTimeoutMs: number;
   shutdownTimeoutMs: number;
 }
@@ -97,6 +98,7 @@ export async function startManagedHelper(
   }
 
   const child = spawn(options.command, options.arguments, {
+    cwd: options.workingDirectory,
     env: options.environment,
     stdio: ["ignore", "ignore", "ignore", "pipe"],
   });

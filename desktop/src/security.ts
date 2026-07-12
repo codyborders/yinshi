@@ -21,6 +21,10 @@ export function createBrowserWindowOptions(
       sandbox: true,
       webSecurity: true,
       allowRunningInsecureContent: false,
+      webviewTag: false,
+      devTools: false,
+      navigateOnDragDrop: false,
+      spellcheck: false,
     },
   };
 }

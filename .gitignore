@@ -29,6 +29,8 @@ node_modules/
 .next/
 out/
 frontend/dist/
+desktop/runtime/
+desktop/release/
 
 # TypeScript
 *.tsbuildinfo

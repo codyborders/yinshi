@@ -2,18 +2,113 @@
   "name": "yinshi-desktop",
   "private": true,
   "version": "0.1.0",
+  "description": "Yinshi desktop workspace manager for coding agents",
+  "author": "Yinshi",
+  "license": "UNLICENSED",
   "type": "module",
   "main": "dist/main.js",
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "build:frontend": "npm --prefix ../frontend run build",
+    "build:helper": "(cd ../backend && .venv/bin/pyinstaller --noconfirm --clean desktop-helper.spec)",
+    "prepare:runtime": "node scripts/prepareRuntime.mjs",
+    "bundle": "npm run build:frontend && npm run build:helper && npm run prepare:runtime && npm run build",
+    "pack:mac": "npm run bundle && electron-builder --mac --dir --arm64",
+    "dist:mac": "npm run bundle && YINSHI_RELEASE_BUILD=1 electron-builder --mac dmg --arm64 --publish never",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
+  "dependencies": {
+    "electron-updater": "6.7.3"
+  },
   "devDependencies": {
+    "@electron/notarize": "3.1.1",
     "@types/node": "24.13.3",
     "electron": "43.1.0",
     "electron-builder": "26.15.3",
     "typescript": "5.9.3",
     "vitest": "4.1.10"
+  },
+  "build": {
+    "appId": "io.yinshi.desktop",
+    "productName": "Yinshi",
+    "artifactName": "Yinshi-${version}-${arch}.${ext}",
+    "asar": true,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "assets/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../frontend/dist",
+        "to": "frontend"
+      },
+      {
+        "from": "../backend/dist/yinshi-desktop-helper",
+        "to": "helper/yinshi-desktop-helper"
+      },
+      {
+        "from": "runtime/node",
+        "to": "node"
+      },
+      {
+        "from": "runtime/sidecar",
+        "to": "sidecar"
+      },
+      {
+        "from": "runtime/git/bin",
+        "to": "bin"
+      },
+      {
+        "from": "runtime/git/libexec",
+        "to": "libexec"
+      },
+      {
+        "from": "runtime/git/share",
+        "to": "share"
+      },
+      {
+        "from": "runtime/git/COPYING",
+        "to": "licenses/Git-COPYING"
+      },
+      {
+        "from": "runtime/sources",
+        "to": "sources"
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ],
+      "icon": "assets/icon.png",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "packaging/entitlements.mac.plist",
+      "entitlementsInherit": "packaging/entitlements.mac.inherit.plist",
+      "minimumSystemVersion": "15.0",
+      "extendInfo": {
+        "LSApplicationCategoryType": "public.app-category.developer-tools",
+        "NSHighResolutionCapable": true,
+        "NSSupportsAutomaticGraphicsSwitching": true
+      }
+    },
+    "dmg": {
+      "sign": false
+    },
+    "afterSign": "scripts/notarize.cjs",
+    "publish": {
+      "provider": "generic",
+      "url": "https://yinshi.io/downloads/desktop/mac"
+    }
   }
 }

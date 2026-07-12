@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none'"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Sign in to Yinshi</title>
+    <link rel="stylesheet" href="./signin.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="signin-card" aria-labelledby="signin-heading">
+        <div class="brand-mark" aria-hidden="true">Y</div>
+        <p class="eyebrow">Yinshi for Mac</p>
+        <h1 id="signin-heading">Your coding work, where you want it.</h1>
+        <p class="lede">
+          Sign in once to use local workspaces on this Mac, connect to hosted runners, and manage
+          your own cloud.
+        </p>
+        <button class="signin-button" type="button" data-sign-in>Sign in with Yinshi</button>
+        <p class="status" data-status aria-live="polite">
+          A browser window will open so your password never enters the desktop app.
+        </p>
+      </section>
+      <aside class="privacy-note" aria-label="Local data protection">
+        <span class="privacy-rule" aria-hidden="true"></span>
+        <div>
+          <strong>Local by default</strong>
+          <p>Repositories and credentials stay on this Mac unless you explicitly copy a workspace.</p>
+        </div>
+      </aside>
+    </main>
+    <script type="module" src="../dist/signInRenderer.js"></script>
+  </body>
+</html>
