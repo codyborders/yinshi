@@ -59,6 +59,7 @@ describe("Sidebar repo settings", () => {
     mockPatch.mockReset();
     mockLogout.mockReset();
     mockToggleTheme.mockReset();
+    delete (window as { yinshiDesktop?: YinshiDesktopBridge }).yinshiDesktop;
 
     mockGet.mockImplementation(async (path: string) => {
       if (path === "/api/repos") {
@@ -112,6 +113,43 @@ describe("Sidebar repo settings", () => {
       }),
     );
     expect(await screen.findByText("Repo instructions saved.")).toBeTruthy();
+  });
+
+  it("imports a desktop-selected repository without exposing a local path", async () => {
+    const importLocalRepository = vi.fn().mockResolvedValue({
+      status: "imported",
+      repository: { id: "repo-2", name: "local-repo" },
+    });
+    Object.defineProperty(window, "yinshiDesktop", {
+      configurable: true,
+      value: { importLocalRepository, signOut: vi.fn() },
+    });
+    mockGet.mockImplementation(async (path: string) => {
+      if (path === "/api/repos") return [];
+      if (path === "/api/github/installations") return [];
+      if (path === "/api/repos/repo-2") {
+        return {
+          id: "repo-2",
+          created_at: "2026-07-10T00:00:00Z",
+          updated_at: "2026-07-10T00:00:00Z",
+          name: "local-repo",
+          remote_url: null,
+          root_path: "/private/path-must-not-cross-ipc",
+          custom_prompt: null,
+          agents_md: null,
+        };
+      }
+      throw new Error(`Unexpected GET ${path}`);
+    });
+
+    renderSidebar();
+    fireEvent.click(await screen.findByTitle("Add repository"));
+    fireEvent.click(screen.getByRole("button", { name: "Choose local repository" }));
+
+    await waitFor(() => expect(importLocalRepository).toHaveBeenCalledTimes(1));
+    expect(mockPost).not.toHaveBeenCalled();
+    expect(await screen.findByText("local-repo")).toBeTruthy();
+    delete (window as { yinshiDesktop?: YinshiDesktopBridge }).yinshiDesktop;
   });
 
   it("opens the repo settings editor from a collapsed repo", async () => {

@@ -725,6 +725,24 @@ function ImportForm({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [errorAction, setErrorAction] = useState<ImportAction | null>(null);
+  const desktopBridge = window.yinshiDesktop;
+
+  async function handleDesktopImport() {
+    if (!desktopBridge) return;
+    setSubmitting(true);
+    setError(null);
+    setErrorAction(null);
+    try {
+      const result = await desktopBridge.importLocalRepository();
+      if (result.status === "cancelled") return;
+      const repo = await api.get<Repo>(`/api/repos/${result.repository.id}`);
+      onDone(repo);
+    } catch {
+      setError("Local repository import failed. Check the repository and try again.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -740,6 +758,10 @@ function ImportForm({
       if (isGitUrl(value)) {
         body.remote_url = value;
       } else if (isLocalPath(value)) {
+        if (desktopBridge) {
+          setError("Use Choose local repository so Yinshi can keep the selected checkout untouched.");
+          return;
+        }
         body.local_path = value;
       } else if (isGithubShorthand(value)) {
         body.remote_url = `https://github.com/${value}`;
@@ -811,9 +833,22 @@ function ImportForm({
           )}
         </div>
       )}
+      {desktopBridge && (
+        <button
+          type="button"
+          onClick={handleDesktopImport}
+          disabled={submitting}
+          className="flex w-full items-center justify-center gap-2 rounded-md border border-gray-700 bg-gray-900 px-3 py-2 text-xs font-medium text-gray-200 hover:border-gray-500 hover:bg-gray-800 disabled:opacity-40"
+        >
+          <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" aria-hidden="true">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 9.75h16.5m-15-4.5h4.129c.414 0 .81.171 1.094.472l1.054 1.117c.283.3.679.472 1.093.472h6.13c.828 0 1.5.672 1.5 1.5v8.939a1.5 1.5 0 0 1-1.5 1.5H5.25a1.5 1.5 0 0 1-1.5-1.5v-11a1.5 1.5 0 0 1 1.5-1.5Z" />
+          </svg>
+          {submitting ? "Importing local repository..." : "Choose local repository"}
+        </button>
+      )}
       <input
         type="text"
-        placeholder="GitHub URL, user/repo, or local path"
+        placeholder={desktopBridge ? "GitHub URL or user/repo" : "GitHub URL, user/repo, or local path"}
         value={input}
         onChange={(e) => setInput(e.target.value)}
         className="w-full rounded-md bg-gray-800 px-3 py-2 text-sm text-gray-100 placeholder-gray-500 outline-none focus:ring-1 focus:ring-blue-500"
