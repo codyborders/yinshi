@@ -102,10 +102,13 @@ async def serve_desktop_helper(
     if ready_fd < 0:
         raise ValueError("ready_fd must not be negative")
 
+    from yinshi.config import get_settings
     from yinshi.desktop_bootstrap import DesktopBootstrapMiddleware
     from yinshi.main import create_app
 
     listener, port = _bind_loopback_socket()
+    os.environ["FRONTEND_URL"] = f"http://127.0.0.1:{port}"
+    get_settings.cache_clear()
     instance_nonce = secrets.token_urlsafe(32)
     application = DesktopBootstrapMiddleware(
         create_app(mode="desktop", desktop_asset_dir=asset_dir),

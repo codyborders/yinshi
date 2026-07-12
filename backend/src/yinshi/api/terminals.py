@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import stat
 from typing import Any, cast
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -16,6 +18,10 @@ from yinshi.exceptions import (
     ContainerStartError,
     GitError,
     WorkspaceNotFoundError,
+)
+from yinshi.services.desktop_terminal import (
+    DesktopTerminalContext,
+    resolve_desktop_terminal_context,
 )
 from yinshi.services.live_auth_sessions import (
     LiveAuthSessionRegistration,
@@ -88,14 +94,12 @@ async def _proxy_browser_to_sidecar(
     writer: asyncio.StreamWriter,
     terminal_id: str,
     attach_options: dict[str, Any],
-    session_token: str,
+    session_token: str | None,
 ) -> None:
     """Forward input while the originating auth session remains active."""
-    if not session_token:
-        raise ValueError("session_token must not be empty")
     while True:
         payload = await websocket.receive_json()
-        if get_session_identity(session_token) is None:
+        if session_token is not None and get_session_identity(session_token) is None:
             await websocket.close(code=_TERMINAL_CLOSE_POLICY)
             return
         if not isinstance(payload, dict):
@@ -165,14 +169,12 @@ async def _monitor_terminal_session(
 async def _proxy_sidecar_to_browser(
     websocket: WebSocket,
     reader: asyncio.StreamReader,
-    session_token: str,
+    session_token: str | None,
 ) -> None:
     """Forward terminal events while the originating session remains active."""
-    if not session_token:
-        raise ValueError("session_token must not be empty")
     while True:
         message = await _read_sidecar(reader)
-        if get_session_identity(session_token) is None:
+        if session_token is not None and get_session_identity(session_token) is None:
             await websocket.close(code=_TERMINAL_CLOSE_POLICY)
             return
         if message is None:
@@ -183,11 +185,105 @@ async def _proxy_sidecar_to_browser(
         await websocket.send_json(message)
 
 
+async def _run_desktop_terminal_proxy(
+    websocket: WebSocket,
+    context: DesktopTerminalContext,
+    workspace_id: str,
+) -> None:
+    """Attach a bootstrapped desktop renderer directly to its local sidecar."""
+    if not isinstance(context, DesktopTerminalContext):
+        raise TypeError("context must be DesktopTerminalContext")
+    if not workspace_id:
+        raise ValueError("workspace_id must not be empty")
+    try:
+        socket_information = os.stat(context.socket_path, follow_symlinks=False)
+    except OSError:
+        await websocket.close(code=_TERMINAL_CLOSE_UNAVAILABLE)
+        return
+    if not stat.S_ISSOCK(socket_information.st_mode) or socket_information.st_mode & 0o077:
+        await websocket.close(code=_TERMINAL_CLOSE_POLICY)
+        return
+    if hasattr(os, "getuid") and socket_information.st_uid != os.getuid():
+        await websocket.close(code=_TERMINAL_CLOSE_POLICY)
+        return
+
+    settings = get_settings()
+    await websocket.accept()
+    reader: asyncio.StreamReader | None = None
+    writer: asyncio.StreamWriter | None = None
+    try:
+        reader, writer = await asyncio.open_unix_connection(context.socket_path)
+        init_message = await _read_sidecar(reader)
+        if init_message is not None and init_message.get("type") != "init_status":
+            await websocket.send_json(init_message)
+        attach_options = {
+            "workspaceId": workspace_id,
+            "cwd": context.workspace_path,
+            "cols": 100,
+            "rows": 30,
+            "scrollbackLines": settings.terminal_scrollback_lines,
+        }
+        await _send_sidecar(
+            writer,
+            {"type": "terminal_attach", "id": workspace_id, "options": attach_options},
+        )
+        browser_task = asyncio.create_task(
+            _proxy_browser_to_sidecar(
+                websocket,
+                writer,
+                workspace_id,
+                attach_options,
+                None,
+            )
+        )
+        sidecar_task = asyncio.create_task(_proxy_sidecar_to_browser(websocket, reader, None))
+        done, pending = await asyncio.wait(
+            {browser_task, sidecar_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+        for task in done:
+            task.result()
+    except WebSocketDisconnect:
+        logger.info("Desktop terminal detached")
+    except (ConnectionError, OSError, ValueError, json.JSONDecodeError):
+        logger.exception("Desktop terminal proxy failed")
+        try:
+            await websocket.send_json({"type": "error", "error": "Terminal proxy failed"})
+        except RuntimeError:
+            pass
+    finally:
+        if writer is not None:
+            try:
+                await _send_sidecar(
+                    writer,
+                    {"type": "terminal_detach", "id": workspace_id},
+                )
+            except (ConnectionError, OSError):
+                pass
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except OSError:
+                pass
+
+
 @router.websocket("/api/workspaces/{workspace_id}/terminal")
 async def workspace_terminal(websocket: WebSocket, workspace_id: str) -> None:
     """Attach the browser to the persistent terminal for one workspace runtime."""
     if not _origin_allowed(websocket.headers.get("origin")):
         await websocket.close(code=_TERMINAL_CLOSE_POLICY)
+        return
+
+    if getattr(websocket.app.state, "mode", None) == "desktop":
+        try:
+            desktop_context = resolve_desktop_terminal_context(workspace_id)
+        except (LookupError, PermissionError, TypeError, ValueError):
+            await websocket.close(code=_TERMINAL_CLOSE_POLICY)
+            return
+        await _run_desktop_terminal_proxy(websocket, desktop_context, workspace_id)
         return
 
     session_token = websocket.cookies.get("yinshi_session")

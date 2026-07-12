@@ -294,7 +294,7 @@ def _configure_middleware(
         allow_origins=cors_origins,
         allow_credentials=True,
         allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
-        allow_headers=["Content-Type", "X-Requested-With"],
+        allow_headers=["Authorization", "Content-Type", "X-Requested-With"],
     )
 
 

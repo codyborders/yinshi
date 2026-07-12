@@ -117,6 +117,18 @@ def test_desktop_helper_serves_packaged_app_after_pipe_readiness(
             assert app_response.text == "<main>Packaged Yinshi</main>"
             assert "default-src 'self'" in app_response.headers["Content-Security-Policy"]
 
+            preflight = client.options(
+                "/api/repos",
+                headers={
+                    "Origin": base_url,
+                    "Access-Control-Request-Method": "GET",
+                    "Access-Control-Request-Headers": "authorization,x-requested-with",
+                },
+            )
+            assert preflight.status_code == 200
+            assert preflight.headers["Access-Control-Allow-Origin"] == base_url
+            assert "Authorization" in preflight.headers["Access-Control-Allow-Headers"]
+
         replay = httpx.post(
             f"{base_url}/desktop/bootstrap",
             headers={"X-Yinshi-Bootstrap": ready["instanceNonce"]},
