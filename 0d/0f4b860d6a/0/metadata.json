@@ -1,0 +1,92 @@
+{
+  "cli_version": "0.7.7",
+  "checkpoint_id": "0d0f4b860d6a",
+  "session_id": "019f4e6f-89f2-7f82-9bf9-a4790d571aa6",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-12T05:45:54.678299Z",
+  "branch": "main",
+  "checkpoints_count": 2,
+  "save_step_count": 3,
+  "files_touched": [
+    "backend/requirements/base.txt",
+    "backend/src/yinshi/api/runner_relay.py",
+    "backend/src/yinshi/api/runners.py",
+    "backend/src/yinshi/db.py",
+    "backend/src/yinshi/main.py",
+    "backend/src/yinshi/models.py",
+    "backend/src/yinshi/runner_agent.py",
+    "backend/src/yinshi/services/runner_agent_relay.py",
+    "backend/src/yinshi/services/runner_capabilities.py",
+    "backend/src/yinshi/services/runner_noise.py",
+    "backend/src/yinshi/services/runner_noise_session.py",
+    "backend/src/yinshi/services/runner_relay.py",
+    "backend/src/yinshi/services/runner_rpc.py",
+    "backend/src/yinshi/services/runners.py",
+    "backend/tests/test_runner_agent_relay.py",
+    "backend/tests/test_runner_capabilities.py",
+    "backend/tests/test_runner_noise.py",
+    "backend/tests/test_runner_noise_session.py",
+    "backend/tests/test_runner_relay.py",
+    "backend/tests/test_runner_rpc.py",
+    "backend/tests/test_runners.py",
+    "desktop/src/desktopApi.ts",
+    "desktop/src/hostedApiGateway.test.ts",
+    "desktop/src/hostedApiGateway.ts",
+    "desktop/src/main.ts",
+    "desktop/src/preload.ts",
+    "frontend/package-lock.json",
+    "frontend/package.json",
+    "frontend/src/api/client.test.ts",
+    "frontend/src/api/client.ts",
+    "frontend/src/components/CloudRunnerSection.tsx",
+    "frontend/src/components/__tests__/CloudRunnerSection.test.tsx",
+    "frontend/src/crypto/noiseIk.test.ts",
+    "frontend/src/crypto/noiseIk.ts",
+    "frontend/src/runner/encryptedRunnerClient.test.ts",
+    "frontend/src/runner/encryptedRunnerClient.ts",
+    "frontend/src/types/desktop.d.ts",
+    "frontend/src/types/noise-c-wasm.d.ts",
+    "plans/osx-desktop-app.md"
+  ],
+  "agent": "Pi",
+  "model": "gpt-5.6-sol",
+  "turn_id": "18dbb6409432",
+  "token_usage": {
+    "input_tokens": 5854333,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 283909120,
+    "output_tokens": 514655,
+    "api_call_count": 1495
+  },
+  "session_metrics": {
+    "turn_count": 9
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-07-12T05:45:54.514919Z",
+    "agent_lines": 5251,
+    "agent_removed": 50,
+    "human_added": 1052,
+    "human_modified": 218,
+    "human_removed": 0,
+    "total_committed": 6521,
+    "total_lines_changed": 6573,
+    "agent_percentage": 80.6481058877225,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 3,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
+}

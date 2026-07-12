@@ -1,0 +1,63 @@
+{
+  "cli_version": "0.7.7",
+  "checkpoint_id": "0d0f4b860d6a",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 2,
+  "files_touched": [
+    "backend/requirements/base.txt",
+    "backend/src/yinshi/api/runner_relay.py",
+    "backend/src/yinshi/api/runners.py",
+    "backend/src/yinshi/db.py",
+    "backend/src/yinshi/main.py",
+    "backend/src/yinshi/models.py",
+    "backend/src/yinshi/runner_agent.py",
+    "backend/src/yinshi/services/runner_agent_relay.py",
+    "backend/src/yinshi/services/runner_capabilities.py",
+    "backend/src/yinshi/services/runner_noise.py",
+    "backend/src/yinshi/services/runner_noise_session.py",
+    "backend/src/yinshi/services/runner_relay.py",
+    "backend/src/yinshi/services/runner_rpc.py",
+    "backend/src/yinshi/services/runners.py",
+    "backend/tests/test_runner_agent_relay.py",
+    "backend/tests/test_runner_capabilities.py",
+    "backend/tests/test_runner_noise.py",
+    "backend/tests/test_runner_noise_session.py",
+    "backend/tests/test_runner_relay.py",
+    "backend/tests/test_runner_rpc.py",
+    "backend/tests/test_runners.py",
+    "desktop/src/desktopApi.ts",
+    "desktop/src/hostedApiGateway.test.ts",
+    "desktop/src/hostedApiGateway.ts",
+    "desktop/src/main.ts",
+    "desktop/src/preload.ts",
+    "frontend/package-lock.json",
+    "frontend/package.json",
+    "frontend/src/api/client.test.ts",
+    "frontend/src/api/client.ts",
+    "frontend/src/components/CloudRunnerSection.tsx",
+    "frontend/src/components/__tests__/CloudRunnerSection.test.tsx",
+    "frontend/src/crypto/noiseIk.test.ts",
+    "frontend/src/crypto/noiseIk.ts",
+    "frontend/src/runner/encryptedRunnerClient.test.ts",
+    "frontend/src/runner/encryptedRunnerClient.ts",
+    "frontend/src/types/desktop.d.ts",
+    "frontend/src/types/noise-c-wasm.d.ts",
+    "plans/osx-desktop-app.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/0d/0f4b860d6a/0/metadata.json",
+      "transcript": "/0d/0f4b860d6a/0/full.jsonl",
+      "content_hash": "/0d/0f4b860d6a/0/content_hash.txt",
+      "prompt": "/0d/0f4b860d6a/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 5854333,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 283909120,
+    "output_tokens": 514655,
+    "api_call_count": 1495
+  }
+}
