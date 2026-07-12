@@ -12,10 +12,12 @@ export class DesktopSignInRequiredError extends Error {
   }
 }
 
-
 export interface ResumeDesktopAccountOptions {
   readonly apiBaseUrl: string;
-  readonly fetch: (input: string | URL, init?: RequestInit) => Promise<Response>;
+  readonly fetch: (
+    input: string | URL,
+    init?: RequestInit,
+  ) => Promise<Response>;
   readonly credentialStore: HostedAuthCredentialStore;
   readonly currentTimeSeconds?: number;
 }
@@ -73,10 +75,14 @@ export async function resumeDesktopAccount(
   options: ResumeDesktopAccountOptions,
 ): Promise<DesktopAccountSession> {
   const apiBaseUrl = validateApiBaseUrl(options.apiBaseUrl);
-  const currentTimeSeconds = options.currentTimeSeconds ?? Math.floor(Date.now() / 1_000);
-  if (!Number.isSafeInteger(currentTimeSeconds) || currentTimeSeconds < 1) {
-    throw new TypeError("currentTimeSeconds must be a positive integer");
-  }
+  const currentTimeSeconds = (): number => {
+    const value = options.currentTimeSeconds ?? Math.floor(Date.now() / 1_000);
+    if (!Number.isSafeInteger(value) || value < 1) {
+      throw new TypeError("currentTimeSeconds must be a positive integer");
+    }
+    return value;
+  };
+  currentTimeSeconds();
   const profile = await options.credentialStore.load();
   if (profile === null) {
     return { mode: "signed-out" };
@@ -84,26 +90,29 @@ export async function resumeDesktopAccount(
 
   let refreshResponse: Response;
   try {
-    refreshResponse = await options.fetch(new URL("auth/desktop/refresh", apiBaseUrl), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ refresh_token: profile.refreshToken }),
-      redirect: "error",
-      signal: AbortSignal.timeout(15_000),
-    });
+    refreshResponse = await options.fetch(
+      new URL("auth/desktop/refresh", apiBaseUrl),
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ refresh_token: profile.refreshToken }),
+        redirect: "error",
+        signal: AbortSignal.timeout(15_000),
+      },
+    );
   } catch {
-    assertOfflineLease(profile, currentTimeSeconds);
+    assertOfflineLease(profile, currentTimeSeconds());
     return { mode: "offline", profile };
   }
   if (refreshResponse.status >= 500 && refreshResponse.status <= 599) {
-    assertOfflineLease(profile, currentTimeSeconds);
+    assertOfflineLease(profile, currentTimeSeconds());
     return { mode: "offline", profile };
   }
   let hostedSession;
   try {
     hostedSession = await readHostedDesktopTokenResponse({
       response: refreshResponse,
-      currentTimeSeconds,
+      currentTimeSeconds: currentTimeSeconds(),
       pinnedSigningPublicKey: profile.signingPublicKey,
       expectedUserId: profile.user.id,
       expectedDeviceId: profile.deviceId,

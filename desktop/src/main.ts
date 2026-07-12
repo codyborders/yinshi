@@ -283,12 +283,11 @@ async function configureApplication(): Promise<DesktopAppController> {
   ): Promise<Response> => session.defaultSession.fetch(input.toString(), init);
 
   const hostedAccessSession = new HostedAccessSession({
-    resume: (currentTimeSeconds) =>
+    resume: () =>
       resumeDesktopAccount({
         apiBaseUrl: HOSTED_API_BASE_URL,
         fetch: fetchAdapter,
         credentialStore,
-        currentTimeSeconds,
       }),
   });
   const hostedApiGateway = new HostedApiGateway({

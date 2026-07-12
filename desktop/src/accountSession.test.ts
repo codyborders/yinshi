@@ -1,6 +1,6 @@
 import { generateKeyPairSync, sign, type KeyObject } from "node:crypto";
 
-import { expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 
 import type { DesktopCredentialProfile } from "./credentialStore.js";
 import { resumeDesktopAccount } from "./accountSession.js";
@@ -57,6 +57,10 @@ function createProfile(issuedAt: number): DesktopCredentialProfile {
   return createProfileFixture(issuedAt).profile;
 }
 
+afterEach(() => {
+  vi.useRealTimers();
+});
+
 it("restores local access from a valid account lease when hosted refresh is offline", async () => {
   const issuedAt = 1_700_000_000;
   const profile = createProfile(issuedAt);
@@ -108,7 +112,11 @@ it("rotates refresh credentials online while keeping access tokens in memory", a
   const currentTimeSeconds = issuedAt + 10;
   const { profile, privateKey } = createProfileFixture(issuedAt);
   const leaseExpiresAt = currentTimeSeconds + 30 * 24 * 60 * 60;
-  const rotatedLease = signLease(privateKey, currentTimeSeconds, leaseExpiresAt);
+  const rotatedLease = signLease(
+    privateKey,
+    currentTimeSeconds,
+    leaseExpiresAt,
+  );
   let savedProfile: DesktopCredentialProfile | undefined;
   let refreshRequest: Record<string, unknown> | undefined;
 
@@ -116,7 +124,10 @@ it("rotates refresh credentials online while keeping access tokens in memory", a
     apiBaseUrl: "https://api.yinshi.io",
     currentTimeSeconds,
     fetch: async (_input, init) => {
-      refreshRequest = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      refreshRequest = JSON.parse(String(init?.body)) as Record<
+        string,
+        unknown
+      >;
       return new Response(
         JSON.stringify({
           token_type: "Bearer",
@@ -150,6 +161,44 @@ it("rotates refresh credentials online while keeping access tokens in memory", a
   expect(session.profile).toEqual(savedProfile);
   expect(savedProfile?.refreshToken).toBe("rotated-refresh-token");
   expect(savedProfile).not.toHaveProperty("accessToken");
+});
+
+it("validates rotated credentials against time after a delayed refresh", async () => {
+  const issuedAt = 1_700_000_000;
+  const responseIssuedAt = issuedAt + 2;
+  const { profile, privateKey } = createProfileFixture(issuedAt);
+  const leaseExpiresAt = responseIssuedAt + 30 * 24 * 60 * 60;
+  const rotatedLease = signLease(privateKey, responseIssuedAt, leaseExpiresAt);
+  vi.useFakeTimers();
+  vi.setSystemTime(issuedAt * 1_000);
+
+  const session = await resumeDesktopAccount({
+    apiBaseUrl: "https://api.yinshi.io",
+    fetch: async () => {
+      vi.setSystemTime(responseIssuedAt * 1_000);
+      return new Response(
+        JSON.stringify({
+          token_type: "Bearer",
+          access_token: "rotated-access-token",
+          access_token_expires_at: responseIssuedAt + 15 * 60,
+          refresh_token: "rotated-refresh-token",
+          refresh_token_expires_at: responseIssuedAt + 90 * 24 * 60 * 60,
+          account_lease: rotatedLease,
+          account_lease_expires_at: leaseExpiresAt,
+          device_id: "device-id",
+          signing_public_key: profile.signingPublicKey,
+          user: { id: "user-id", email: "user@example.com" },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    },
+    credentialStore: {
+      load: async () => profile,
+      save: async () => undefined,
+    },
+  });
+
+  expect(session.mode).toBe("online");
 });
 
 it("locks instead of falling back offline when hosted refresh rejects the device", async () => {

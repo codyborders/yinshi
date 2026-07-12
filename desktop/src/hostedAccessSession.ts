@@ -2,7 +2,7 @@ import type { DesktopAccountSession } from "./accountSession.js";
 import type { DesktopCredentialProfile } from "./credentialStore.js";
 
 export interface HostedAccessSessionOptions {
-  readonly resume: (currentTimeSeconds: number) => Promise<DesktopAccountSession>;
+  readonly resume: () => Promise<DesktopAccountSession>;
 }
 
 export class HostedAccessSession {
@@ -63,7 +63,7 @@ export class HostedAccessSession {
 
     const refreshEpoch = this.#epoch;
     const refreshPromise = (async () => {
-      const account = await this.#resume(currentTimeSeconds);
+      const account = await this.#resume();
       if (this.#epoch !== refreshEpoch) {
         throw new Error("Hosted account changed while access was refreshing");
       }
@@ -85,7 +85,8 @@ export class HostedAccessSession {
 
   #applyAccount(account: DesktopAccountSession): void {
     this.#profile = account.mode === "signed-out" ? undefined : account.profile;
-    this.#accessToken = account.mode === "online" ? account.accessToken : undefined;
+    this.#accessToken =
+      account.mode === "online" ? account.accessToken : undefined;
     this.#accessTokenExpiresAt =
       account.mode === "online" ? account.accessTokenExpiresAt : undefined;
   }

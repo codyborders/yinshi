@@ -38,6 +38,7 @@ describe("HostedAccessSession", () => {
     expect(first).toBe("a".repeat(40));
     expect(second).toBe(first);
     expect(resume).toHaveBeenCalledOnce();
+    expect(resume).toHaveBeenCalledWith();
     expect(session.profile).toEqual(profile);
   });
 
