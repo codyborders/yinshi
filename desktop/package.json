@@ -61,6 +61,13 @@
         "to": "sidecar"
       },
       {
+        "from": "runtime/sidecar/node_modules",
+        "to": "sidecar/node_modules",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
         "from": "runtime/git/bin",
         "to": "bin"
       },

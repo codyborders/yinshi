@@ -5,7 +5,9 @@ import { buildRuntimeLaunchConfig } from "./runtimeLaunchConfig.js";
 it("builds profile-scoped bundled commands without inheriting provider secrets", () => {
   const config = buildRuntimeLaunchConfig({
     resourcesPath: "/Applications/Yinshi.app/Contents/Resources",
-    profileDirectoryPath: "/Users/test/Library/Application Support/Yinshi/profiles/profile-hash",
+    profileDirectoryPath:
+      "/Users/test/Library/Application Support/Yinshi/profiles/profile-hash",
+    socketDirectoryPath: "/Users/test/Library/Application Support/Yinshi/run",
     runtimeSecrets: {
       version: 1,
       secretKey: "s".repeat(64),
@@ -46,20 +48,32 @@ it("builds profile-scoped bundled commands without inheriting provider secrets",
   expect(config.sidecar.args).toEqual([
     "/Applications/Yinshi.app/Contents/Resources/sidecar/src/index.js",
   ]);
+  expect(config.helper.environment.HOST).toBe("127.0.0.1");
   expect(config.helper.environment.TENANT_DB_ENCRYPTION).toBe("required");
   expect(config.helper.environment.CONTROL_FIELD_ENCRYPTION).toBe("required");
   expect(config.helper.environment.ENCRYPTION_PEPPER).toBe("a".repeat(64));
   expect(config.helper.environment.KEY_ENCRYPTION_KEY).toBe("b".repeat(64));
-  expect(config.helper.environment.ALLOWED_REPO_BASE).toContain("/profile-hash/repositories");
+  expect(config.helper.environment.ALLOWED_REPO_BASE).toContain(
+    "/profile-hash/repositories",
+  );
   expect(config.helper.environment.DB_PATH).toContain("/profile-hash/local.db");
-  expect(config.helper.environment.CONTROL_DB_PATH).toContain("/profile-hash/control.db");
-  expect(config.helper.environment.SIDECAR_SOCKET_PATH).toContain("/profile-hash/run/sidecar.sock");
+  expect(config.helper.environment.CONTROL_DB_PATH).toContain(
+    "/profile-hash/control.db",
+  );
+  expect(config.helper.environment.SIDECAR_SOCKET_PATH).toBe(
+    "/Users/test/Library/Application Support/Yinshi/run/profile-hash.sock",
+  );
   expect(config.sidecar.environment.SIDECAR_SOCKET_PATH).toBe(
     config.helper.environment.SIDECAR_SOCKET_PATH,
   );
-  expect(config.sidecar.environment.SSH_AUTH_SOCK).toBe("/private/tmp/ssh-agent.sock");
+  expect(config.sidecar.environment.SSH_AUTH_SOCK).toBe(
+    "/private/tmp/ssh-agent.sock",
+  );
 
-  for (const environment of [config.helper.environment, config.sidecar.environment]) {
+  for (const environment of [
+    config.helper.environment,
+    config.sidecar.environment,
+  ]) {
     expect(environment).not.toHaveProperty("OPENAI_API_KEY");
     expect(environment).not.toHaveProperty("AWS_SECRET_ACCESS_KEY");
     expect(environment).not.toHaveProperty("NODE_OPTIONS");

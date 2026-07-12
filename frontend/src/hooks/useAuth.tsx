@@ -1,4 +1,10 @@
-import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useState,
+  type ReactNode,
+} from "react";
 
 type AuthStatus = "loading" | "authenticated" | "unauthenticated" | "disabled";
 
@@ -28,6 +34,21 @@ export function AuthProvider({ children }: AuthProviderProps) {
   useEffect(() => {
     async function checkAuth() {
       try {
+        const desktopApi = window.yinshiDesktop;
+        if (desktopApi !== undefined) {
+          const profiles = await desktopApi.listProfiles();
+          const activeProfile = profiles.find(
+            (profile) => profile.active && profile.hasCredentials,
+          );
+          if (activeProfile === undefined) {
+            setStatus("unauthenticated");
+            return;
+          }
+          setEmail(activeProfile.user.email);
+          setUserId(activeProfile.user.id);
+          setStatus("authenticated");
+          return;
+        }
         const res = await fetch("/auth/me", { credentials: "include" });
         if (!res.ok) {
           setStatus("unauthenticated");
@@ -49,11 +70,15 @@ export function AuthProvider({ children }: AuthProviderProps) {
   }, []);
 
   async function logout() {
-    await fetch("/auth/logout", {
-      method: "POST",
-      credentials: "include",
-      headers: { "X-Requested-With": "XMLHttpRequest" },
-    }).catch(() => {});
+    if (window.yinshiDesktop !== undefined) {
+      await window.yinshiDesktop.signOut();
+    } else {
+      await fetch("/auth/logout", {
+        method: "POST",
+        credentials: "include",
+        headers: { "X-Requested-With": "XMLHttpRequest" },
+      }).catch(() => {});
+    }
     setStatus("unauthenticated");
     setEmail(null);
     setUserId(null);

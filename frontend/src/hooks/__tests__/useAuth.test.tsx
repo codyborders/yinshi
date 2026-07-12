@@ -26,14 +26,44 @@ function renderWithAuth(initialEntry = "/") {
 describe("useAuth", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    Reflect.deleteProperty(window, "yinshiDesktop");
+  });
+
+  it("uses the active desktop profile without calling the helper auth route", async () => {
+    const fetch = vi.spyOn(globalThis, "fetch");
+    Object.defineProperty(window, "yinshiDesktop", {
+      configurable: true,
+      value: {
+        listProfiles: vi.fn().mockResolvedValue([
+          {
+            user: { id: "desktop-user", email: "desktop@example.com" },
+            hasCredentials: true,
+            active: true,
+          },
+        ]),
+      },
+    });
+
+    renderWithAuth();
+
+    await waitFor(() => {
+      expect(screen.getByTestId("status").textContent).toBe("authenticated");
+      expect(screen.getByTestId("email").textContent).toBe(
+        "desktop@example.com",
+      );
+    });
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it("sets status to authenticated when /auth/me returns authenticated: true", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
-      new Response(JSON.stringify({ authenticated: true, email: "user@test.com" }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      }),
+      new Response(
+        JSON.stringify({ authenticated: true, email: "user@test.com" }),
+        {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        },
+      ),
     );
 
     renderWithAuth();
@@ -72,7 +102,9 @@ describe("useAuth", () => {
   });
 
   it("sets status to unauthenticated on network error", async () => {
-    vi.spyOn(globalThis, "fetch").mockRejectedValueOnce(new Error("Network error"));
+    vi.spyOn(globalThis, "fetch").mockRejectedValueOnce(
+      new Error("Network error"),
+    );
 
     renderWithAuth();
 

@@ -10,18 +10,23 @@ export interface StartLocalRuntimeOptions {
   readonly sidecar: ChildLaunchConfig;
   readonly socketPath: string;
   readonly startSidecar: (options: SidecarOptions) => Promise<ManagedSidecar>;
-  readonly startHelper: (options: StartManagedHelperOptions) => Promise<ManagedHelper>;
+  readonly startHelper: (
+    options: StartManagedHelperOptions,
+  ) => Promise<ManagedHelper>;
 }
 
 export async function startLocalRuntime(
   options: StartLocalRuntimeOptions,
 ): Promise<ManagedHelper> {
   if (options.helper.environment.SIDECAR_SOCKET_PATH !== options.socketPath) {
-    throw new Error("helper sidecar socket path does not match runtime socket path");
+    throw new Error(
+      "helper sidecar socket path does not match runtime socket path",
+    );
   }
   if (options.sidecar.environment.SIDECAR_SOCKET_PATH !== options.socketPath) {
     throw new Error("sidecar socket path does not match runtime socket path");
   }
+  console.info("Desktop local runtime starting sidecar");
   const sidecar = await options.startSidecar({
     command: options.sidecar.command,
     args: options.sidecar.args,
@@ -32,8 +37,10 @@ export async function startLocalRuntime(
     shutdownTimeoutMs: 5_000,
   });
 
+  console.info("Desktop local runtime sidecar ready");
   let helper: ManagedHelper;
   try {
+    console.info("Desktop local runtime starting helper");
     helper = await options.startHelper({
       command: options.helper.command,
       arguments: [...options.helper.args],
@@ -54,6 +61,7 @@ export async function startLocalRuntime(
     throw startupError;
   }
 
+  console.info("Desktop local runtime helper ready");
   let stopOperation: Promise<void> | undefined;
   return {
     ready: helper.ready,

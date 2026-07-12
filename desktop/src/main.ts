@@ -32,7 +32,7 @@ import { bootstrapHelperSession } from "./helperBootstrap.js";
 import { startManagedHelper, type ManagedHelper } from "./helperSupervisor.js";
 import { HostedAccessSession } from "./hostedAccessSession.js";
 import { HostedApiGateway } from "./hostedApiGateway.js";
-import { startHostedSignIn } from "./hostedAuth.js";
+import { startHostedSignIn, type HostedSignInStage } from "./hostedAuth.js";
 import { startLocalRuntime } from "./localRuntime.js";
 import {
   cloneRepositoryIntoProfile,
@@ -242,8 +242,16 @@ function requestFromAllowedPage(
   if (sourceUrl === undefined) {
     return false;
   }
+  const fromSignInPage = sourceUrl === pathToFileURL(signInFilePath()).href;
   if (channel === DESKTOP_IPC_CHANNELS.signIn) {
-    return sourceUrl === pathToFileURL(signInFilePath()).href;
+    return fromSignInPage;
+  }
+  if (
+    fromSignInPage &&
+    (channel === DESKTOP_IPC_CHANNELS.listProfiles ||
+      channel === DESKTOP_IPC_CHANNELS.switchProfile)
+  ) {
+    return true;
   }
   if (applicationOrigin === undefined) {
     return false;
@@ -301,9 +309,17 @@ async function configureApplication(): Promise<DesktopAppController> {
       return account;
     },
     signIn: async () => {
-      const listener = await startAuthCallbackListener({
-        timeoutMs: 5 * 60 * 1_000,
-      });
+      let stage: HostedSignInStage | "starting-listener" = "starting-listener";
+      let listener;
+      try {
+        listener = await startAuthCallbackListener({
+          timeoutMs: 5 * 60 * 1_000,
+        });
+      } catch (error) {
+        const errorName = error instanceof Error ? error.name : "UnknownError";
+        console.error(`Desktop sign-in failed during ${stage}: ${errorName}`);
+        throw new Error("Desktop sign-in failed");
+      }
       try {
         const account = await startHostedSignIn({
           apiBaseUrl: HOSTED_API_BASE_URL,
@@ -315,9 +331,16 @@ async function configureApplication(): Promise<DesktopAppController> {
           },
           waitForCallback: async () => listener.waitForCallback(),
           credentialStore,
+          onProgress: (nextStage) => {
+            stage = nextStage;
+            console.info(`Desktop sign-in entered ${nextStage}`);
+          },
         });
         hostedAccessSession.setAccount({ mode: "online", ...account });
         return account;
+      } catch {
+        console.error(`Desktop sign-in failed during ${stage}`);
+        throw new Error("Desktop sign-in failed");
       } finally {
         await listener.close();
       }
@@ -327,12 +350,16 @@ async function configureApplication(): Promise<DesktopAppController> {
       await credentialStore.clear();
     },
     startHelper: async (profile): Promise<ManagedHelper> => {
+      console.info("Desktop local runtime preparing profile");
       const profileDirectory = profileDirectoryPath(profile.user.id);
       await ensureProfileDirectories(profileDirectory);
+      console.info("Desktop local runtime loading secrets");
       const runtimeSecrets = await runtimeSecretStore.loadOrCreate();
+      console.info("Desktop local runtime building launch configuration");
       const packagedConfig = buildRuntimeLaunchConfig({
         resourcesPath: process.resourcesPath,
         profileDirectoryPath: profileDirectory,
+        socketDirectoryPath: path.join(app.getPath("userData"), "run"),
         runtimeSecrets,
         shellEnvironment: shellEnvironment(),
       });
@@ -344,6 +371,7 @@ async function configureApplication(): Promise<DesktopAppController> {
       if (socketPath === undefined) {
         throw new Error("desktop sidecar socket path is unavailable");
       }
+      console.info("Desktop local runtime starting child processes");
       return startLocalRuntime({
         helper: launchConfig.helper,
         sidecar: launchConfig.sidecar,
@@ -368,7 +396,7 @@ async function configureApplication(): Promise<DesktopAppController> {
     loadApplication: async (origin) => {
       applicationOrigin = origin;
       const window = requireWindow();
-      await window.loadURL(`${origin}/`);
+      await window.loadURL(`${origin}/app`);
       if (!window.isVisible()) {
         window.show();
       }

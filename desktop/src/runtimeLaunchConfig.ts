@@ -18,6 +18,7 @@ const SHELL_ENVIRONMENT_KEYS = [
 export interface RuntimeLaunchConfigOptions {
   readonly resourcesPath: string;
   readonly profileDirectoryPath: string;
+  readonly socketDirectoryPath: string;
   readonly runtimeSecrets: RuntimeSecrets;
   readonly shellEnvironment: Readonly<Record<string, string | undefined>>;
 }
@@ -35,7 +36,11 @@ export interface RuntimeLaunchConfig {
 }
 
 function requireAbsolutePath(value: string, name: string): string {
-  if (typeof value !== "string" || !path.isAbsolute(value) || value.includes("\0")) {
+  if (
+    typeof value !== "string" ||
+    !path.isAbsolute(value) ||
+    value.includes("\0")
+  ) {
     throw new TypeError(`${name} must be an absolute path`);
   }
   return path.normalize(value);
@@ -81,16 +86,35 @@ function validateRuntimeSecrets(secrets: RuntimeSecrets): void {
 export function buildRuntimeLaunchConfig(
   options: RuntimeLaunchConfigOptions,
 ): RuntimeLaunchConfig {
-  const resourcesPath = requireAbsolutePath(options.resourcesPath, "resourcesPath");
+  const resourcesPath = requireAbsolutePath(
+    options.resourcesPath,
+    "resourcesPath",
+  );
   const profileDirectoryPath = requireAbsolutePath(
     options.profileDirectoryPath,
     "profileDirectoryPath",
+  );
+  const socketDirectoryPath = requireAbsolutePath(
+    options.socketDirectoryPath,
+    "socketDirectoryPath",
   );
   validateRuntimeSecrets(options.runtimeSecrets);
   const shellEnvironment = copyShellEnvironment(options.shellEnvironment);
 
   const runDirectoryPath = path.join(profileDirectoryPath, "run");
-  const sidecarSocketPath = path.join(runDirectoryPath, "sidecar.sock");
+  const profileName = path.basename(profileDirectoryPath);
+  if (!/^[A-Za-z0-9._-]{1,64}$/.test(profileName)) {
+    throw new Error(
+      "profile directory name is unsafe for runtime socket selection",
+    );
+  }
+  const sidecarSocketPath = path.join(
+    socketDirectoryPath,
+    `${profileName.slice(0, 16)}.sock`,
+  );
+  if (Buffer.byteLength(sidecarSocketPath, "utf-8") > 100) {
+    throw new Error("sidecar socket path exceeds the macOS Unix-socket limit");
+  }
   const bundledBinaryPath = path.join(resourcesPath, "bin");
   const inheritedPath = shellEnvironment.PATH;
   if (inheritedPath === undefined) {
@@ -116,6 +140,7 @@ export function buildRuntimeLaunchConfig(
     DEBUG: "false",
     DISABLE_AUTH: "true",
     ENCRYPTION_PEPPER: options.runtimeSecrets.encryptionPepper,
+    HOST: "127.0.0.1",
     HSTS_ENABLED: "false",
     KEY_ENCRYPTION_KEY: options.runtimeSecrets.keyEncryptionKey,
     KEY_ENCRYPTION_KEY_ID: "desktop-v1",
@@ -147,7 +172,9 @@ export function buildRuntimeLaunchConfig(
     sidecar: {
       command: path.join(resourcesPath, "node", "bin", "node"),
       workingDirectory: profileDirectoryPath,
-      args: Object.freeze([path.join(resourcesPath, "sidecar", "src", "index.js")]),
+      args: Object.freeze([
+        path.join(resourcesPath, "sidecar", "src", "index.js"),
+      ]),
       environment: sidecarEnvironment,
     },
   };

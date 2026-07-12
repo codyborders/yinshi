@@ -7,6 +7,11 @@ import { describe, expect, it } from "vitest";
 
 interface PackageManifest {
   readonly build?: {
+    readonly extraResources?: Array<{
+      readonly from?: string;
+      readonly to?: string;
+      readonly filter?: string[];
+    }>;
     readonly mac?: {
       readonly minimumSystemVersion?: string;
       readonly target?: Array<{
@@ -28,6 +33,11 @@ describe("desktop packaging configuration", () => {
     expect(manifest.build?.mac?.target).toContainEqual({
       target: "dmg",
       arch: ["arm64"],
+    });
+    expect(manifest.build?.extraResources).toContainEqual({
+      from: "runtime/sidecar/node_modules",
+      to: "sidecar/node_modules",
+      filter: ["**/*"],
     });
   });
 
