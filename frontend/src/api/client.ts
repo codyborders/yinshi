@@ -42,12 +42,7 @@ export interface ProviderDescriptor {
 }
 
 export type ThinkingLevel =
-  | "off"
-  | "minimal"
-  | "low"
-  | "medium"
-  | "high"
-  | "xhigh";
+  "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
 export interface ModelDescriptor {
   ref: string;
@@ -83,9 +78,7 @@ export interface ProviderConnection {
 
 export type CloudRunnerStatus = "pending" | "online" | "offline" | "revoked";
 export type RunnerStorageProfile =
-  | "aws_ebs_s3_files"
-  | "archil_shared_files"
-  | "archil_all_posix";
+  "aws_ebs_s3_files" | "archil_shared_files" | "archil_all_posix";
 
 export interface CloudRunner {
   id: string;
@@ -224,7 +217,14 @@ export interface WorkspaceFileNode {
 export interface WorkspaceChangedFile {
   path: string;
   status: string;
-  kind: "added" | "copied" | "deleted" | "modified" | "renamed" | "untracked" | "unknown";
+  kind:
+    | "added"
+    | "copied"
+    | "deleted"
+    | "modified"
+    | "renamed"
+    | "untracked"
+    | "unknown";
   original_path: string | null;
 }
 
@@ -325,15 +325,19 @@ const DESKTOP_HOSTED_RUNNER_PATHS = new Set([
 ]);
 
 async function desktopHostedRequest<T>(
-  method: string,
+  method: DesktopHostedApiRequest["method"],
   path: string,
   body: unknown,
+  forceHosted = false,
 ): Promise<T | undefined> {
   const bridge = window.yinshiDesktop;
-  if (bridge === undefined || !DESKTOP_HOSTED_RUNNER_PATHS.has(path)) {
+  if (
+    bridge === undefined ||
+    (!forceHosted && !DESKTOP_HOSTED_RUNNER_PATHS.has(path))
+  ) {
     return undefined;
   }
-  if (method !== "DELETE" && method !== "GET" && method !== "POST") {
+  if (!["DELETE", "GET", "PATCH", "POST", "PUT"].includes(method)) {
     throw new TypeError("Desktop hosted API method is not supported");
   }
   if (
@@ -347,7 +351,11 @@ async function desktopHostedRequest<T>(
       ? { method, path }
       : { method, path, body: body as Readonly<Record<string, unknown>> };
   const response = await bridge.hostedRequest(hostedRequest);
-  if (!Number.isInteger(response.status) || response.status < 100 || response.status > 599) {
+  if (
+    !Number.isInteger(response.status) ||
+    response.status < 100 ||
+    response.status > 599
+  ) {
     throw new Error("Desktop hosted API returned an invalid status");
   }
   if (response.status < 200 || response.status > 299) {
@@ -360,7 +368,7 @@ async function desktopHostedRequest<T>(
 }
 
 async function request<T>(
-  method: string,
+  method: DesktopHostedApiRequest["method"],
   path: string,
   body?: unknown,
 ): Promise<T> {
@@ -392,6 +400,17 @@ async function request<T>(
   return res.json();
 }
 
+async function hostedRequest<T>(
+  method: DesktopHostedApiRequest["method"],
+  path: string,
+  body?: unknown,
+): Promise<T> {
+  if (window.yinshiDesktop !== undefined) {
+    return (await desktopHostedRequest<T>(method, path, body, true)) as T;
+  }
+  return request<T>(method, path, body);
+}
+
 export const api = {
   get: <T>(path: string) => request<T>("GET", path),
   post: <T>(path: string, body?: unknown) => request<T>("POST", path, body),
@@ -420,30 +439,16 @@ export const api = {
   },
 };
 
-export async function pollAuthFlow(
-  provider: string,
-  flowId: string,
-): Promise<ProviderAuthStatus> {
-  return request<ProviderAuthStatus>(
-    "GET",
-    `/auth/providers/${provider}/callback?flow_id=${encodeURIComponent(flowId)}`,
-  );
-}
-
-export async function submitAuthFlowInput(
-  provider: string,
-  flowId: string,
-  authorizationInput: string,
-): Promise<ProviderAuthStatus> {
-  return request<ProviderAuthStatus>(
-    "POST",
-    `/auth/providers/${provider}/callback`,
-    {
-      flow_id: flowId,
-      authorization_input: authorizationInput,
-    },
-  );
-}
+export const hostedApi = {
+  get: <T>(path: string) => hostedRequest<T>("GET", path),
+  post: <T>(path: string, body?: unknown) =>
+    hostedRequest<T>("POST", path, body),
+  patch: <T>(path: string, body?: unknown) =>
+    hostedRequest<T>("PATCH", path, body),
+  put: <T>(path: string, body?: unknown) => hostedRequest<T>("PUT", path, body),
+  delete: (path: string) => hostedRequest<void>("DELETE", path),
+  upload: <T>(path: string, file: File) => api.upload<T>(path, file),
+};
 
 export type SSEEvent =
   | { type: "assistant"; message: { content: ContentBlock[] } }
@@ -495,7 +500,7 @@ export interface ContentBlock {
   input?: unknown;
 }
 
-function normalizeEvent(raw: Record<string, unknown>): SSEEvent {
+export function normalizeEvent(raw: Record<string, unknown>): SSEEvent {
   if (raw.type === "tool_use") {
     return {
       type: "tool_use",
@@ -564,11 +569,6 @@ export async function* streamPrompt(
   } finally {
     reader.releaseLock();
   }
-}
-
-export function workspaceTerminalUrl(workspaceId: string): string {
-  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-  return `${protocol}//${window.location.host}/api/workspaces/${workspaceId}/terminal`;
 }
 
 export async function cancelSession(sessionId: string): Promise<void> {

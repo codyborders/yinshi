@@ -51,7 +51,8 @@ def test_runner_relay_runtime_requires_welcome_before_transfer(
     assert runtime.active_transfer_ids == ()
 
 
-def test_runner_relay_runtime_rejects_unknown_or_malformed_frames(
+@pytest.mark.asyncio
+async def test_runner_relay_runtime_rejects_unknown_or_malformed_frames(
     tmp_path: Path,
     db: sqlite3.Connection,
 ) -> None:
@@ -64,4 +65,7 @@ def test_runner_relay_runtime_rejects_unknown_or_malformed_frames(
             json.dumps({"extra": True, "runner_id": "runner-1", "type": "welcome"})
         )
     with pytest.raises(ValueError, match="not open"):
-        runtime.handle_binary(uuid.uuid4().bytes + b"ciphertext", current_time=1_900_000_000)
+        await runtime.handle_binary(
+            uuid.uuid4().bytes + b"ciphertext",
+            current_time=1_900_000_000,
+        )

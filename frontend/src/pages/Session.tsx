@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { useParams } from "react-router-dom";
-import { api, type Message, type SessionInfo, type ThinkingLevel } from "../api/client";
+import { type Message, type SessionInfo, type ThinkingLevel } from "../api/client";
 import ChatView from "../components/ChatView";
 import WorkspaceInspector from "../components/WorkspaceInspector";
 import { useAgentStream, type ChatMessage } from "../hooks/useAgentStream";
@@ -16,6 +16,7 @@ import {
   getSessionModelOption,
   resolveSessionModelKey,
 } from "../models/sessionModels";
+import { useRuntimeResource } from "../runtime/useRuntimeResource";
 import { parseStoredTurnBlocks } from "../utils/turnEvents";
 
 let cmdIdCounter = 0;
@@ -62,11 +63,15 @@ function storedInspectorWidth(): number {
 }
 
 export default function Session() {
-  const { id } = useParams<{ id: string }>();
+  const { id: encodedSessionId } = useParams<{ id: string }>();
+  const runtimeState = useRuntimeResource(encodedSessionId);
+  const runtimeResource = runtimeState.resource;
+  const id = runtimeResource?.resourceId;
+  const transport = runtimeResource?.transport;
   const { messages, sendPrompt, cancel, streaming, setMessages } =
-    useAgentStream(id);
-  const { catalog, loading: loadingCatalog } = useCatalog();
-  const piCommands = usePiCommands();
+    useAgentStream(id, transport);
+  const { catalog, loading: loadingCatalog } = useCatalog(transport);
+  const piCommands = usePiCommands(transport);
   const [sessionModel, setSessionModel] = useState(DEFAULT_SESSION_MODEL);
   const [loadingHistory, setLoadingHistory] = useState(true);
   const [historyError, setHistoryError] = useState<string | null>(null);
@@ -84,14 +89,27 @@ export default function Session() {
   const isDesktopInspectorVisible = useMediaQuery(DESKTOP_INSPECTOR_QUERY);
   const wasStreamingRef = useRef(false);
 
+  useEffect(() => {
+    setLoadingHistory(true);
+    setHistoryError(null);
+  }, [encodedSessionId]);
+
+  useEffect(() => {
+    if (runtimeState.error) {
+      setHistoryError(runtimeState.error);
+      setLoadingHistory(false);
+    }
+  }, [runtimeState.error]);
+
   // Load existing message history
   useEffect(() => {
-    if (!id) return;
+    if (!id || !transport) return;
     let cancelled = false;
+    const runtimeTransport = transport;
 
     async function loadHistory() {
       try {
-        const history = await api.get<Message[]>(
+        const history = await runtimeTransport.get<Message[]>(
           `/api/sessions/${id}/messages`,
         );
         if (cancelled) return;
@@ -114,8 +132,7 @@ export default function Session() {
         });
         setMessages(mapped);
         setHistoryError(null);
-      } catch (error) {
-        console.error(`Failed to load session history for ${id}`, error);
+      } catch {
         if (!cancelled) {
           setHistoryError("Failed to load session history.");
         }
@@ -128,21 +145,22 @@ export default function Session() {
     return () => {
       cancelled = true;
     };
-  }, [id, setMessages]);
+  }, [id, setMessages, transport]);
 
   useEffect(() => {
-    if (!id) return;
+    if (!id || !transport) return;
     let cancelled = false;
+    const runtimeTransport = transport;
 
     async function loadSession() {
       try {
-        const session = await api.get<SessionInfo>(`/api/sessions/${id}`);
+        const session = await runtimeTransport.get<SessionInfo>(`/api/sessions/${id}`);
         if (cancelled) return;
         setSessionModel(session.model);
         setWorkspaceId(session.workspace_id);
         setPiContextVersion(session.pi_context_version);
-      } catch (error) {
-        console.error(`Failed to load session metadata for ${id}`, error);
+      } catch {
+        if (!cancelled) setHistoryError("Failed to load session metadata.");
       }
     }
 
@@ -150,7 +168,7 @@ export default function Session() {
     return () => {
       cancelled = true;
     };
-  }, [id]);
+  }, [id, transport]);
 
   useEffect(() => {
     setPendingModelSelection(null);
@@ -182,7 +200,7 @@ export default function Session() {
 
   const updateSessionModel = useCallback(
     async (requestedModel: string, announce: boolean) => {
-      if (!id) return false;
+      if (!id || !transport) return false;
       if (!catalog) return false;
 
       const connectedProviderIds = new Set(
@@ -233,7 +251,7 @@ export default function Session() {
 
       setUpdatingModel(true);
       try {
-        const updated = await api.patch<{ model: string }>(
+        const updated = await transport.patch<{ model: string }>(
           `/api/sessions/${id}`,
           { model: resolvedModel },
         );
@@ -253,7 +271,7 @@ export default function Session() {
         setUpdatingModel(false);
       }
     },
-    [addSystemMessage, catalog, id],
+    [addSystemMessage, catalog, id, transport],
   );
 
   const handleCommand = useCallback(
@@ -291,7 +309,10 @@ export default function Session() {
 
         case "tree":
           try {
-            const data = await api.get<{ files: string[] }>(
+            if (!transport) {
+              throw new Error("Runtime transport is unavailable");
+            }
+            const data = await transport.get<{ files: string[] }>(
               `/api/sessions/${id}/tree`,
             );
             if (data.files.length === 0) {
@@ -337,6 +358,7 @@ export default function Session() {
       messages,
       sessionModel,
       setMessages,
+      transport,
       updateSessionModel,
     ],
   );
@@ -601,7 +623,7 @@ export default function Session() {
             </div>
           )}
         </main>
-        {workspaceId && isDesktopInspectorVisible && (
+        {workspaceId && transport && isDesktopInspectorVisible && (
           <>
             <div
               role="separator"
@@ -611,6 +633,7 @@ export default function Session() {
             />
             <WorkspaceInspector
               workspaceId={workspaceId}
+              transport={transport}
               refreshKey={fileRefreshKey}
               className="flex"
               style={{ width: inspectorWidth }}
@@ -618,7 +641,7 @@ export default function Session() {
           </>
         )}
       </div>
-      {workspaceId && workspacePanelOpen && (
+      {workspaceId && transport && workspacePanelOpen && (
         <div className="fixed inset-0 z-50 bg-gray-950 lg:hidden">
           <div className="flex h-full min-h-0 flex-col">
             <div className="flex items-center justify-between border-b border-gray-800 px-4 py-3">
@@ -633,6 +656,7 @@ export default function Session() {
             </div>
             <WorkspaceInspector
               workspaceId={workspaceId}
+              transport={transport}
               refreshKey={fileRefreshKey}
               className="flex-1"
             />

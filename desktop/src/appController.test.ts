@@ -76,6 +76,35 @@ it("gates helper startup on account state and tears it down on sign-out", async 
   ]);
 });
 
+it("restarts the helper after a stored profile is selected", async () => {
+  const events: string[] = [];
+  const controller = new DesktopAppController({
+    resumeAccount: async () => ({ mode: "offline", profile }),
+    signIn: async () => {
+      throw new Error("not called");
+    },
+    clearCredentials: async () => undefined,
+    startHelper: async () => ({
+      ready: { port: 43123, instanceNonce: "a".repeat(43) },
+      processId: 123,
+      running: true,
+      stop: async () => {
+        events.push("helper:stop");
+      },
+    }),
+    bootstrapHelper: async () => "http://127.0.0.1:43123",
+    showSignIn: async () => undefined,
+    loadApplication: async () => {
+      events.push("view:app");
+    },
+  });
+
+  await controller.start();
+  await controller.switchProfile();
+
+  expect(events).toEqual(["view:app", "helper:stop", "view:app"]);
+});
+
 it("shows sign-in without starting a helper when the offline lease is locked", async () => {
   let helperStarted = false;
   let signInShown = false;

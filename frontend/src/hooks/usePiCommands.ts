@@ -5,11 +5,12 @@ import {
   subscribePiCommands,
 } from "../api/piCommandsCache";
 import type { SlashCommand } from "../components/SlashCommandMenu";
+import type { RuntimeTransport } from "../runtime/runtimeTransport";
 
 const EMPTY_COMMANDS: SlashCommand[] = [];
 const COMMAND_RETRY_DELAY_MS = 3000;
 
-export function usePiCommands(): SlashCommand[] {
+export function usePiCommands(runtimeTransport?: RuntimeTransport): SlashCommand[] {
   const [commands, setCommands] = useState<SlashCommand[]>(EMPTY_COMMANDS);
 
   useEffect(() => {
@@ -42,7 +43,7 @@ export function usePiCommands(): SlashCommand[] {
       const currentVersion = loadVersion + 1;
       loadVersion = currentVersion;
       try {
-        const loaded = await getCachedPiCommands();
+        const loaded = await getCachedPiCommands(runtimeTransport);
         if (!disposed && currentVersion === loadVersion) {
           clearRetry();
           setCommands(loaded);
@@ -70,7 +71,7 @@ export function usePiCommands(): SlashCommand[] {
       clearRetry();
       unsubscribe();
     };
-  }, []);
+  }, [runtimeTransport]);
 
   return commands;
 }

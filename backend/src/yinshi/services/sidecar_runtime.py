@@ -244,25 +244,17 @@ def _pi_session_directory_is_safe_for_delete(
     yinshi_directory = home_path / ".yinshi"
     for path in (home_path, yinshi_directory, session_directory):
         if path.is_symlink():
-            logger.warning("Refusing to delete Pi session files through symlink %s", path)
+            logger.warning("Refusing to delete Pi session files through a symlink")
             return False
 
     try:
         resolved_session_directory = session_directory.resolve(strict=False)
-    except OSError as exc:
-        logger.warning(
-            "Refusing to delete Pi session files because %s could not be resolved: %s",
-            session_directory,
-            exc,
-        )
+    except OSError:
+        logger.warning("Refusing to delete Pi session files because path resolution failed")
         return False
 
     if resolved_session_directory != expected_session_directory:
-        logger.warning(
-            "Refusing to delete Pi session files outside workspace home: %s resolved to %s",
-            session_directory,
-            resolved_session_directory,
-        )
+        logger.warning("Refusing to delete Pi session files outside workspace home")
         return False
 
     return True
@@ -298,7 +290,7 @@ def delete_workspace_runtime_home(tenant: TenantContext, workspace_id: str) -> N
     try:
         runtime_directory.rmdir()
     except OSError:
-        logger.warning("Workspace runtime directory was not empty: %s", runtime_directory)
+        logger.warning("Workspace runtime directory was not empty after cleanup")
 
 
 def delete_workspace_pi_sessions(tenant: TenantContext | None, workspace_id: str) -> None:

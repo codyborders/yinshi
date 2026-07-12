@@ -1,5 +1,5 @@
 interface DesktopHostedApiRequest {
-  readonly method: "DELETE" | "GET" | "POST";
+  readonly method: "DELETE" | "GET" | "PATCH" | "POST" | "PUT";
   readonly path: string;
   readonly body?: Readonly<Record<string, unknown>>;
 }
@@ -11,6 +11,18 @@ interface DesktopHostedApiResponse {
 
 interface YinshiDesktopBridge {
   hostedRequest(request: DesktopHostedApiRequest): Promise<DesktopHostedApiResponse>;
+  fileVaultStatus(): Promise<{
+    readonly status: "disabled" | "enabled" | "unknown";
+  }>;
+  listProfiles(): Promise<
+    readonly {
+      readonly user: { readonly id: string; readonly email: string };
+      readonly hasCredentials: boolean;
+      readonly active: boolean;
+    }[]
+  >;
+  switchProfile(userId: string): Promise<void>;
+  removeProfile(userId: string): Promise<void>;
   importLocalRepository(): Promise<
     | { readonly status: "cancelled" }
     | {

@@ -6,12 +6,14 @@ const {
   mockGet,
   mockPost,
   mockPatch,
+  mockListRunnerRepositories,
   mockLogout,
   mockToggleTheme,
 } = vi.hoisted(() => ({
   mockGet: vi.fn(),
   mockPost: vi.fn(),
   mockPatch: vi.fn(),
+  mockListRunnerRepositories: vi.fn(),
   mockLogout: vi.fn(),
   mockToggleTheme: vi.fn(),
 }));
@@ -29,6 +31,10 @@ vi.mock("../../hooks/useTheme", () => ({
     theme: "dark",
     toggle: mockToggleTheme,
   })),
+}));
+
+vi.mock("../../runner/repositories", () => ({
+  listRunnerRepositories: mockListRunnerRepositories,
 }));
 
 vi.mock("../../api/client", () => ({
@@ -57,6 +63,7 @@ describe("Sidebar repo settings", () => {
     mockGet.mockReset();
     mockPost.mockReset();
     mockPatch.mockReset();
+    mockListRunnerRepositories.mockReset();
     mockLogout.mockReset();
     mockToggleTheme.mockReset();
     delete (window as { yinshiDesktop?: YinshiDesktopBridge }).yinshiDesktop;
@@ -83,6 +90,43 @@ describe("Sidebar repo settings", () => {
         return [];
       }
       throw new Error(`Unexpected GET ${path}`);
+    });
+  });
+
+  it("aggregates paired BYOC repositories with explicit location labels", async () => {
+    mockGet.mockImplementation(async (path: string) => {
+      if (path === "/api/repos") return [];
+      if (path === "/api/github/installations") return [];
+      if (path === "/api/settings/runner") {
+        return {
+          id: "runner-1",
+          status: "online",
+          noise_public_key: "MeAwP9ZBjS-MDni5HyLoyu0Pvkhlbc9HZ-SDT3Abj2I",
+          noise_key_confirmed: true,
+        };
+      }
+      throw new Error(`Unexpected GET ${path}`);
+    });
+    mockListRunnerRepositories.mockResolvedValue([
+      {
+        id: "a".repeat(32),
+        created_at: "2026-07-10T00:00:00Z",
+        updated_at: "2026-07-10T00:00:00Z",
+        name: "remote-project",
+        remote_url: "https://example.com/team/project.git",
+        root_path: "/runner/repos/project",
+        custom_prompt: null,
+        agents_md: null,
+      },
+    ]);
+
+    renderSidebar();
+
+    expect(await screen.findByText("remote-project")).toBeTruthy();
+    expect(screen.getByText("BYOC")).toBeTruthy();
+    expect(mockListRunnerRepositories).toHaveBeenCalledWith({
+      runnerId: "runner-1",
+      runnerPublicKey: "MeAwP9ZBjS-MDni5HyLoyu0Pvkhlbc9HZ-SDT3Abj2I",
     });
   });
 

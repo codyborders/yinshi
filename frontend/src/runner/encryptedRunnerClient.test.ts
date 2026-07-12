@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   checkEncryptedRunnerHealth,
+  connectEncryptedRunner,
+  requestEncryptedRunner,
   type RunnerClientDependencies,
 } from "./encryptedRunnerClient";
 
@@ -39,7 +41,10 @@ class FakeWebSocket extends EventTarget {
   }
 }
 
-function dependencies(socket: FakeWebSocket): RunnerClientDependencies {
+function dependencies(
+  socket: FakeWebSocket,
+  responseBody: unknown = { protocol: "yinshi-runner-v1", status: "ok" },
+): RunnerClientDependencies {
   return {
     createKeypair: async () => ({
       privateKey: Uint8Array.of(...new Array<number>(32).fill(1)),
@@ -57,7 +62,14 @@ function dependencies(socket: FakeWebSocket): RunnerClientDependencies {
       encrypt: () => Uint8Array.of(2),
       decrypt: () =>
         new TextEncoder().encode(
-          '{"body":{"protocol":"yinshi-runner-v1","status":"ok"},"request_id":"22222222-2222-4222-8222-222222222222","sequence":0,"status":200,"type":"response","v":1}',
+          JSON.stringify({
+            body: responseBody,
+            request_id: "22222222-2222-4222-8222-222222222222",
+            sequence: 0,
+            status: 200,
+            type: "response",
+            v: 2,
+          }),
         ),
       dispose: vi.fn(),
     }),
@@ -97,6 +109,101 @@ describe("checkEncryptedRunnerHealth", () => {
     );
     expect(Array.from(socket.sent[1] as Uint8Array)).toEqual([1]);
     expect(Array.from(socket.sent[2] as Uint8Array)).toEqual([2]);
+  });
+
+  it("supports repository requests through the same encrypted contract", async () => {
+    const socket = new FakeWebSocket();
+    const clientDependencies = dependencies(socket, []);
+
+    await expect(
+      requestEncryptedRunner<unknown[]>(
+        {
+          expectedRunnerPublicKey: runnerPublicKey,
+          scopes: ["repository.read"],
+          method: "GET",
+          path: "/api/repos",
+        },
+        clientDependencies,
+      ),
+    ).resolves.toEqual([]);
+    expect(clientDependencies.issueCapability).toHaveBeenCalledWith({
+      initiator_public_key: clientPublicKey,
+      scopes: ["repository.read"],
+      max_session_bytes: 65_536,
+    });
+  });
+
+  it("reuses one Noise session for ordered multi-request transfers", async () => {
+    const socket = new FakeWebSocket();
+    const clientDependencies = dependencies(socket);
+    const requestIds = [
+      "22222222-2222-4222-8222-222222222222",
+      "33333333-3333-4333-8333-333333333333",
+    ];
+    const originalCreateInitiator = clientDependencies.createInitiator;
+    clientDependencies.createRequestId = vi
+      .fn()
+      .mockReturnValueOnce(requestIds[0])
+      .mockReturnValueOnce(requestIds[1]);
+    clientDependencies.createInitiator = async (options) => {
+      const initiator = await originalCreateInitiator(options);
+      let responseSequence = 0;
+      return {
+        ...initiator,
+        decrypt: () => {
+          const sequence = responseSequence;
+          responseSequence += 1;
+          return new TextEncoder().encode(
+            JSON.stringify({
+              body: { sequence },
+              request_id: requestIds[sequence],
+              sequence,
+              status: 200,
+              type: "response",
+              v: 2,
+            }),
+          );
+        },
+      };
+    };
+
+    const connection = await connectEncryptedRunner(
+      {
+        expectedRunnerPublicKey: runnerPublicKey,
+        scopes: ["repository.read"],
+      },
+      clientDependencies,
+    );
+    await expect(
+      connection.request({ method: "GET", path: "/api/repos" }),
+    ).resolves.toEqual({ sequence: 0 });
+    await expect(
+      connection.request({
+        method: "GET",
+        path: `/api/repos/${"a".repeat(32)}`,
+      }),
+    ).resolves.toEqual({ sequence: 1 });
+    connection.close();
+
+    expect(clientDependencies.issueCapability).toHaveBeenCalledTimes(1);
+    expect(socket.sent).toHaveLength(4);
+  });
+
+  it("clears the ephemeral private key when capability issuance fails", async () => {
+    const socket = new FakeWebSocket();
+    const clientDependencies = dependencies(socket);
+    const privateKey = Uint8Array.of(...new Array<number>(32).fill(7));
+    clientDependencies.createKeypair = async () => ({
+      privateKey,
+      publicKey: Uint8Array.from(Buffer.from(clientPublicKey + "=", "base64url")),
+    });
+    clientDependencies.issueCapability = vi.fn().mockRejectedValue(new Error("offline"));
+
+    await expect(
+      checkEncryptedRunnerHealth(runnerPublicKey, clientDependencies),
+    ).rejects.toThrow("offline");
+    expect(privateKey.every((value) => value === 0)).toBe(true);
+    expect(clientDependencies.openWebSocket).not.toHaveBeenCalled();
   });
 
   it("rejects a responder key change before opening the relay", async () => {

@@ -59,9 +59,14 @@ def test_create_app_builds_independent_health_applications(
     assert response.json() == {"status": "ok"}
 
 
-def test_application_mode_limits_worker_route_surface() -> None:
+def test_application_mode_limits_worker_route_surface(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Worker mode should expose execution APIs without control-plane routes."""
+    _configure_startup_env(monkeypatch, tmp_path, container_enabled=False)
     from yinshi.main import create_app
+    from yinshi.tenant import TenantContext
+    from yinshi.worker_auth import WorkerPrincipal
 
     hosted_paths = set(create_app().openapi()["paths"])
     assert "/api/repos" in hosted_paths
@@ -69,10 +74,23 @@ def test_application_mode_limits_worker_route_surface() -> None:
     assert "/auth/login/google" in hosted_paths
     assert "/rum/api/v2/{intake_path}" in hosted_paths
 
-    worker_paths = set(create_app(mode="worker").openapi()["paths"])
+    worker_data_directory = tmp_path / "worker"
+    worker_principal = WorkerPrincipal(
+        tenant=TenantContext(
+            user_id="worker-test-user",
+            email="worker@runner.invalid",
+            data_dir=str(worker_data_directory),
+            db_path=str(worker_data_directory / "yinshi.db"),
+        ),
+        bearer_token="w" * 48,
+    )
+    worker_paths = set(
+        create_app(mode="worker", worker_principal=worker_principal).openapi()["paths"]
+    )
     assert "/health" in worker_paths
     assert "/api/repos" in worker_paths
     assert "/api/settings/runner" not in worker_paths
+    assert "/auth/providers/{provider}/start" in worker_paths
     assert "/auth/login/google" not in worker_paths
     assert "/rum/api/v2/{intake_path}" not in worker_paths
 
@@ -82,8 +100,11 @@ def test_application_mode_limits_worker_route_surface() -> None:
     assert "/health" in desktop_paths
     assert "/api/repos" in desktop_paths
     assert "/api/settings/runner" not in desktop_paths
+    assert "/auth/providers/{provider}/start" in desktop_paths
     assert "/auth/login/google" not in desktop_paths
     assert "/rum/api/v2/{intake_path}" not in desktop_paths
+    with TestClient(desktop_app) as desktop_client:
+        assert desktop_client.get("/api/repos").status_code == 200
 
 
 def test_desktop_mode_serves_spa_with_restricted_fallback_and_csp(

@@ -25,7 +25,7 @@ class RunCoordinator:
 
         async with self._lock:
             self._runs[session_id] = sidecar
-            logger.debug("Run registered: session=%s", session_id)
+            logger.debug("Run registered")
 
     async def request_cancel(self, session_id: str) -> bool:
         """Request cancellation for a run. Returns True when a run was found."""
@@ -38,7 +38,7 @@ class RunCoordinator:
             return False
 
         await sidecar.cancel(session_id)
-        logger.info("Cancel requested: session=%s", session_id)
+        logger.info("Run cancellation requested")
         return True
 
     async def release(self, session_id: str) -> None:
@@ -48,7 +48,7 @@ class RunCoordinator:
 
         async with self._lock:
             self._runs.pop(session_id, None)
-            logger.debug("Run released: session=%s", session_id)
+            logger.debug("Run released")
 
 
 _coordinator: RunCoordinator | None = None

@@ -7,7 +7,7 @@ import {
 } from "../crypto/noiseIk";
 
 const RUNNER_PROTOCOL = "yinshi-runner-v1";
-const RUNNER_SESSION_BYTES = 65_536;
+const RUNNER_HEALTH_SESSION_BYTES = 65_536;
 const SOCKET_TIMEOUT_MS = 15_000;
 const RUNNER_PUBLIC_KEY_BYTES = 32;
 
@@ -35,6 +35,39 @@ export interface RunnerHealth {
   readonly status: "ok";
 }
 
+export interface EncryptedRunnerConnectionOptions {
+  readonly expectedRunnerPublicKey: string;
+  readonly scopes: readonly string[];
+  readonly maxSessionBytes?: number;
+}
+
+export interface EncryptedRunnerOperation {
+  readonly method: "DELETE" | "GET" | "PATCH" | "POST" | "PUT";
+  readonly path: string;
+  readonly query?: Readonly<Record<string, string>>;
+  readonly body?: unknown;
+}
+
+export interface EncryptedRunnerRequest
+  extends EncryptedRunnerConnectionOptions, EncryptedRunnerOperation {}
+
+export interface EncryptedRunnerConnection {
+  request<T>(operation: EncryptedRunnerOperation): Promise<T>;
+  close(): void;
+}
+
+export class RunnerRpcError extends Error {
+  readonly status: number;
+  readonly body: unknown;
+
+  constructor(status: number, body: unknown) {
+    super(`Runner RPC failed with status ${status}`);
+    this.name = "RunnerRpcError";
+    this.status = status;
+    this.body = body;
+  }
+}
+
 export interface RunnerClientDependencies {
   createKeypair(): Promise<NoiseIkKeypair>;
   createInitiator(options: {
@@ -42,7 +75,9 @@ export interface RunnerClientDependencies {
     readonly responderStaticPublicKey: Uint8Array;
     readonly prologue: Uint8Array;
   }): Promise<NoiseIkInitiator>;
-  issueCapability(request: RunnerCapabilityRequest): Promise<RunnerCapabilityResponse>;
+  issueCapability(
+    request: RunnerCapabilityRequest,
+  ): Promise<RunnerCapabilityResponse>;
   openWebSocket(url: string): WebSocket;
   createRequestId(): string;
 }
@@ -55,7 +90,10 @@ function encodeBase64url(value: Uint8Array): string {
   for (const byte of value) {
     binary += String.fromCharCode(byte);
   }
-  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  return btoa(binary)
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
 }
 
 function decodePublicKey(value: string): Uint8Array {
@@ -64,12 +102,15 @@ function decodePublicKey(value: string): Uint8Array {
   }
   let binary: string;
   try {
-    binary = atob(`${value.replace(/-/g, "+").replace(/_/g, "/") }=`);
+    binary = atob(`${value.replace(/-/g, "+").replace(/_/g, "/")}=`);
   } catch {
     throw new Error("Runner public key is not canonical base64url");
   }
   const key = Uint8Array.from(binary, (character) => character.charCodeAt(0));
-  if (key.length !== RUNNER_PUBLIC_KEY_BYTES || encodeBase64url(key) !== value) {
+  if (
+    key.length !== RUNNER_PUBLIC_KEY_BYTES ||
+    encodeBase64url(key) !== value
+  ) {
     throw new Error("Runner public key must contain 32 canonical bytes");
   }
   return key;
@@ -78,6 +119,7 @@ function decodePublicKey(value: string): Uint8Array {
 function validateCapability(
   value: RunnerCapabilityResponse,
   expectedRunnerPublicKey: string,
+  expectedSessionBytes: number,
 ): RunnerCapabilityResponse {
   if (value === null || typeof value !== "object") {
     throw new Error("Runner capability response is invalid");
@@ -103,7 +145,10 @@ function validateCapability(
   ) {
     throw new Error("Runner capability is expired or invalid");
   }
-  if (value.max_frame_bytes !== 65_535 || value.max_session_bytes !== RUNNER_SESSION_BYTES) {
+  if (
+    value.max_frame_bytes !== 65_535 ||
+    value.max_session_bytes !== expectedSessionBytes
+  ) {
     throw new Error("Runner capability limits are invalid");
   }
   const relayUrl = new URL(value.relay_url);
@@ -117,7 +162,10 @@ function validateCapability(
   ) {
     throw new Error("Runner relay URL is invalid");
   }
-  if (relayUrl.protocol !== "wss:" && window.location.hostname !== "localhost") {
+  if (
+    relayUrl.protocol !== "wss:" &&
+    window.location.hostname !== "localhost"
+  ) {
     throw new Error("Runner relay URL must use TLS");
   }
   if (typeof value.capability !== "string" || value.capability.length < 64) {
@@ -202,10 +250,15 @@ async function sendAndReceive(
   return response;
 }
 
-function parseHandshakeResponse(value: Uint8Array, expectedTransferId: string): void {
+function parseHandshakeResponse(
+  value: Uint8Array,
+  expectedTransferId: string,
+): void {
   let payload: unknown;
   try {
-    payload = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(value));
+    payload = JSON.parse(
+      new TextDecoder("utf-8", { fatal: true }).decode(value),
+    );
   } catch {
     throw new Error("Runner handshake response is invalid");
   }
@@ -222,31 +275,43 @@ function parseHandshakeResponse(value: Uint8Array, expectedTransferId: string): 
   }
 }
 
-function parseHealthResponse(value: Uint8Array, requestId: string): RunnerHealth {
+function parseRpcResponse(
+  value: Uint8Array,
+  requestId: string,
+  expectedSequence: number,
+): { status: number; body: unknown } {
   let payload: unknown;
   try {
-    payload = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(value));
+    payload = JSON.parse(
+      new TextDecoder("utf-8", { fatal: true }).decode(value),
+    );
   } catch {
-    throw new Error("Runner health response is invalid");
+    throw new Error("Runner RPC response is invalid");
   }
   if (payload === null || typeof payload !== "object") {
-    throw new Error("Runner health response is invalid");
+    throw new Error("Runner RPC response is invalid");
   }
   const response = payload as Record<string, unknown>;
-  const body = response.body;
   if (
     Object.keys(response).length !== 6 ||
-    response.v !== 1 ||
+    response.v !== 2 ||
     response.type !== "response" ||
-    response.sequence !== 0 ||
+    response.sequence !== expectedSequence ||
     response.request_id !== requestId ||
-    response.status !== 200 ||
-    body === null ||
-    typeof body !== "object"
+    !Number.isSafeInteger(response.status) ||
+    (response.status as number) < 100 ||
+    (response.status as number) > 599
   ) {
-    throw new Error("Runner health response did not match the request");
+    throw new Error("Runner RPC response did not match the request");
   }
-  const health = body as Record<string, unknown>;
+  return { status: response.status as number, body: response.body };
+}
+
+function validateHealth(value: unknown): RunnerHealth {
+  if (value === null || typeof value !== "object") {
+    throw new Error("Runner health response body is invalid");
+  }
+  const health = value as Record<string, unknown>;
   if (
     Object.keys(health).length !== 2 ||
     health.protocol !== RUNNER_PROTOCOL ||
@@ -261,28 +326,85 @@ const defaultDependencies: RunnerClientDependencies = {
   createKeypair: createNoiseIkKeypair,
   createInitiator: createNoiseIkInitiator,
   issueCapability: (request) =>
-    api.post<RunnerCapabilityResponse>("/api/settings/runner/capabilities", request),
+    api.post<RunnerCapabilityResponse>(
+      "/api/settings/runner/capabilities",
+      request,
+    ),
   openWebSocket: (url) => new WebSocket(url),
   createRequestId: () => crypto.randomUUID(),
 };
 
-export async function checkEncryptedRunnerHealth(
-  expectedRunnerPublicKey: string,
+function validateOperation(operation: EncryptedRunnerOperation): {
+  readonly method: EncryptedRunnerOperation["method"];
+  readonly path: string;
+  readonly query: Readonly<Record<string, string>>;
+  readonly body: unknown;
+} {
+  const { method, path, query = {}, body = null } = operation;
+  if (!path.startsWith("/") || path.includes("?") || path.includes("#")) {
+    throw new TypeError("Runner request path must be normalized");
+  }
+  const queryEntries = Object.entries(query);
+  if (queryEntries.length > 16)
+    throw new TypeError("Runner request query is too large");
+  for (const [key, value] of queryEntries) {
+    if (
+      !/^[A-Za-z0-9_]{1,64}$/u.test(key) ||
+      typeof value !== "string" ||
+      value.length > 2_048
+    ) {
+      throw new TypeError("Runner request query is invalid");
+    }
+  }
+  if (!new Set(["DELETE", "GET", "PATCH", "POST", "PUT"]).has(method)) {
+    throw new TypeError("Runner request method is invalid");
+  }
+  return { method, path, query, body };
+}
+
+export async function connectEncryptedRunner(
+  options: EncryptedRunnerConnectionOptions,
   dependencies: RunnerClientDependencies = defaultDependencies,
-): Promise<RunnerHealth> {
-  decodePublicKey(expectedRunnerPublicKey);
-  const keypair = await dependencies.createKeypair();
-  const clientPublicKey = encodeBase64url(keypair.publicKey);
-  const capability = validateCapability(
-    await dependencies.issueCapability({
-      initiator_public_key: clientPublicKey,
-      scopes: ["worker.health"],
-      max_session_bytes: RUNNER_SESSION_BYTES,
-    }),
+): Promise<EncryptedRunnerConnection> {
+  const {
     expectedRunnerPublicKey,
-  );
+    scopes,
+    maxSessionBytes = RUNNER_HEALTH_SESSION_BYTES,
+  } = options;
+  decodePublicKey(expectedRunnerPublicKey);
+  if (
+    !Array.isArray(scopes) ||
+    scopes.length === 0 ||
+    scopes.some((scope) => !scope)
+  ) {
+    throw new TypeError("Runner request scopes must not be empty");
+  }
+  if (
+    !Number.isSafeInteger(maxSessionBytes) ||
+    maxSessionBytes < 65_536 ||
+    maxSessionBytes > 1_073_741_824
+  ) {
+    throw new RangeError("Runner session byte limit is invalid");
+  }
+
+  const keypair = await dependencies.createKeypair();
+  if (keypair.privateKey.length !== 32 || keypair.publicKey.length !== 32) {
+    keypair.privateKey.fill(0);
+    throw new Error("Runner client keypair is invalid");
+  }
+  const clientPublicKey = encodeBase64url(keypair.publicKey);
+  let capability: RunnerCapabilityResponse;
   let initiator: NoiseIkInitiator;
   try {
+    capability = validateCapability(
+      await dependencies.issueCapability({
+        initiator_public_key: clientPublicKey,
+        scopes,
+        max_session_bytes: maxSessionBytes,
+      }),
+      expectedRunnerPublicKey,
+      maxSessionBytes,
+    );
     initiator = await dependencies.createInitiator({
       staticPrivateKey: keypair.privateKey,
       responderStaticPublicKey: decodePublicKey(capability.runner_public_key),
@@ -291,14 +413,35 @@ export async function checkEncryptedRunnerHealth(
   } finally {
     keypair.privateKey.fill(0);
   }
-  const socket = dependencies.openWebSocket(capability.relay_url);
+
+  let socket: WebSocket;
+  try {
+    socket = dependencies.openWebSocket(capability.relay_url);
+  } catch (error) {
+    initiator.dispose();
+    throw error;
+  }
   socket.binaryType = "arraybuffer";
+  let closed = false;
+  let requestPending = false;
+  let nextSequence = 0;
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    initiator.dispose();
+    if (
+      socket.readyState === WebSocket.OPEN ||
+      socket.readyState === WebSocket.CONNECTING
+    ) {
+      socket.close(1000, "Runner connection complete");
+    }
+  };
+
   try {
     await waitForOpen(socket);
     const ready = await sendAndReceive(socket, capability.capability);
-    if (ready !== '{"type":"ready"}') {
+    if (ready !== '{"type":"ready"}')
       throw new Error("Runner relay did not become ready");
-    }
     const handshakeMessage = initiator.writeHandshakeMessage(
       new TextEncoder().encode(capability.capability),
     );
@@ -310,31 +453,103 @@ export async function checkEncryptedRunnerHealth(
       initiator.readHandshakeMessage(new Uint8Array(handshakeResponse)),
       capability.transfer_id,
     );
-
-    const requestId = dependencies.createRequestId();
-    const request = new TextEncoder().encode(
-      JSON.stringify({
-        body: null,
-        method: "GET",
-        path: "/health",
-        request_id: requestId,
-        sequence: 0,
-        type: "request",
-        v: 1,
-      }),
-    );
-    const encryptedResponse = await sendAndReceive(socket, initiator.encrypt(request));
-    if (!(encryptedResponse instanceof ArrayBuffer)) {
-      throw new Error("Runner RPC response must be binary");
-    }
-    return parseHealthResponse(
-      initiator.decrypt(new Uint8Array(encryptedResponse)),
-      requestId,
-    );
-  } finally {
-    initiator.dispose();
-    if (socket.readyState === WebSocket.OPEN) {
-      socket.close(1000, "Runner health check complete");
-    }
+  } catch (error) {
+    close();
+    throw error;
   }
+
+  return {
+    async request<T>(operation: EncryptedRunnerOperation): Promise<T> {
+      if (closed) throw new Error("Runner connection is closed");
+      if (requestPending)
+        throw new Error("Runner connection requests must be sequential");
+      if (nextSequence >= 1_048_576) {
+        close();
+        throw new Error("Runner connection reached its message limit");
+      }
+      const { method, path, query, body } = validateOperation(operation);
+      requestPending = true;
+      const sequence = nextSequence;
+      try {
+        const requestId = dependencies.createRequestId();
+        const request = new TextEncoder().encode(
+          JSON.stringify({
+            body,
+            method,
+            path,
+            query,
+            request_id: requestId,
+            sequence,
+            type: "request",
+            v: 2,
+          }),
+        );
+        if (request.length > 49_152)
+          throw new Error("Runner RPC request is too large");
+        const encryptedResponse = await sendAndReceive(
+          socket,
+          initiator.encrypt(request),
+        );
+        if (!(encryptedResponse instanceof ArrayBuffer)) {
+          throw new Error("Runner RPC response must be binary");
+        }
+        const response = parseRpcResponse(
+          initiator.decrypt(new Uint8Array(encryptedResponse)),
+          requestId,
+          sequence,
+        );
+        nextSequence += 1;
+        if (response.status < 200 || response.status > 299) {
+          throw new RunnerRpcError(response.status, response.body);
+        }
+        return response.body as T;
+      } catch (error) {
+        if (!(error instanceof RunnerRpcError)) close();
+        throw error;
+      } finally {
+        requestPending = false;
+      }
+    },
+    close,
+  };
+}
+
+export async function requestEncryptedRunner<T>(
+  requestOptions: EncryptedRunnerRequest,
+  dependencies: RunnerClientDependencies = defaultDependencies,
+): Promise<T> {
+  const {
+    expectedRunnerPublicKey,
+    scopes,
+    maxSessionBytes,
+    method,
+    path,
+    query,
+    body,
+  } = requestOptions;
+  const connection = await connectEncryptedRunner(
+    { expectedRunnerPublicKey, scopes, maxSessionBytes },
+    dependencies,
+  );
+  try {
+    return await connection.request<T>({ method, path, query, body });
+  } finally {
+    connection.close();
+  }
+}
+
+export async function checkEncryptedRunnerHealth(
+  expectedRunnerPublicKey: string,
+  dependencies: RunnerClientDependencies = defaultDependencies,
+): Promise<RunnerHealth> {
+  const response = await requestEncryptedRunner<unknown>(
+    {
+      expectedRunnerPublicKey,
+      scopes: ["worker.health"],
+      method: "GET",
+      path: "/health",
+    },
+    dependencies,
+  );
+  return validateHealth(response);
 }

@@ -651,7 +651,7 @@ class ContainerManager:
                 if count:
                     logger.info("Reaped %d idle container(s)", count)
             except Exception:
-                logger.exception("Error in container reaper")
+                logger.error("Error in container reaper")
 
     async def destroy_all(self) -> None:
         """Destroy all managed containers (shutdown hook)."""

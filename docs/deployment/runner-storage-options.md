@@ -21,6 +21,21 @@ Yinshi can run with no runner at all, with an AWS-native bring-your-own-cloud ru
 
 The runner token file defaults to `/var/lib/yinshi/runner-token` for every profile. Bearer material does not need to live on shared storage.
 
+## Runner 0.2 secure state
+
+Runner 0.2 keeps identity and replay state under `YINSHI_RUNNER_DATA_DIR`. Each file is owner-only:
+
+- `runner-noise.key` contains the persistent X25519 responder identity used for fingerprint pairing.
+- `control-capability-signing.pub` pins the Ed25519 control-plane capability key.
+- `runner-capability-replay.sqlite3` records consumed one-time capability identifiers.
+- `worker-runtime/account.binding` contains an opaque SHA-256 account binding that prevents a restarted runner from accepting a different account.
+
+Live SQLCipher databases follow `YINSHI_RUNNER_SQLITE_DIR`: `control.db` stores location-scoped provider credentials and `users/<account-hash>/yinshi.db` stores tenant records. Repository clones, worktrees, Pi configuration, and session context follow `YINSHI_RUNNER_SHARED_FILES_DIR/users`. The SQLCipher keys come from domain-separated HKDF output derived from the runner identity. This split keeps active SQLite off S3-style shared mounts while allowing project files to use the configured shared filesystem.
+
+Back up the Noise key with the runner data. Replacing it changes the full pairing fingerprint and requires explicit confirmation in Yinshi. Replacing the control-plane signing key also stops the runner until it is deliberately re-registered.
+
+The runner opens an outbound authenticated WebSocket to `/runner/relay`; no inbound runner port is required. The CloudFormation template installs Node.js 22 and starts the source-pinned sidecar before the Python runner. Prompts and terminals use its owner-controlled Unix socket at `SIDECAR_SOCKET_PATH`. Scoped encrypted RPC handlers accept repository, workspace, session, file, terminal, provider, and Pi configuration requests. Provider credentials are encrypted in the runner-local control database and are never copied from another execution location.
+
 ## Hosted Yinshi
 
 Hosted Yinshi is the current product path. Do not create a runner registration token for this option. Yinshi uses its existing hosted runtime and storage.
@@ -95,7 +110,7 @@ For clean shutdown customization, unmount Archil with `archil unmount` so pendin
 
 ## CloudFormation usage
 
-Use `docs/deployment/aws-runner-cloudformation.yaml` for runner launch. Set `RunnerStorageProfile` to one of the profile values above.
+Use `docs/deployment/aws-runner-cloudformation.yaml` for runner launch. Set `RunnerStorageProfile` to one of the profile values above. Set `YinshiReleaseCommit` to a reviewed 40-character Git commit; the bootstrap checks out that exact revision for both the Python runner and Node sidecar.
 
 For AWS BYOC, `SharedFilesMountCommand` can be empty during early testing or can mount S3 Files at `/mnt/yinshi-s3-files`.
 

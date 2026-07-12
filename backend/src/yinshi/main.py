@@ -25,12 +25,15 @@ from yinshi.api import (
     datadog_proxy,
     desktop_devices,
     github,
+    prompt_runs,
     repos,
     runner_relay,
     runners,
+    runtime_uploads,
     sessions,
     settings,
     stream,
+    terminal_channels,
     terminals,
     workspace_files,
     workspaces,
@@ -39,6 +42,16 @@ from yinshi.auth import AuthMiddleware, setup_oauth
 from yinshi.config import Settings, get_settings, https_required
 from yinshi.db import init_control_db, init_db
 from yinshi.rate_limit import limiter
+from yinshi.services.encrypted_uploads import EncryptedUploadManager
+from yinshi.services.prompt_journal import PromptJournal
+from yinshi.services.relay_process_lock import RelayProcessLock
+from yinshi.services.terminal_journal import TerminalJournal
+from yinshi.tenant import TenantContext
+from yinshi.worker_auth import (
+    WorkerPrincipal,
+    WorkerPrincipalMiddleware,
+    prepare_worker_principal_storage,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -94,6 +107,25 @@ class RequestBodyLimitMiddleware:
 
 class _RequestBodyTooLarge(Exception):
     """Signal an ASGI receive stream that crossed its configured body limit."""
+
+
+class DesktopTenantMiddleware:
+    """Inject one profile-local identity behind the desktop bootstrap boundary."""
+
+    def __init__(self, application: ASGIApp, *, tenant: TenantContext) -> None:
+        if not callable(application):
+            raise TypeError("desktop tenant application must be callable")
+        if not isinstance(tenant, TenantContext) or not tenant.user_id:
+            raise ValueError("desktop tenant must have an identity")
+        self._application = application
+        self._tenant = tenant
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] in {"http", "websocket"}:
+            state = scope.setdefault("state", {})
+            state["tenant"] = self._tenant
+            state["user_email"] = self._tenant.email
+        await self._application(scope, receive, send)
 
 
 _API_CONTENT_SECURITY_POLICY = "default-src 'none'; frame-ancestors 'none'; base-uri 'none'"
@@ -230,16 +262,34 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     else:
         app.state.container_manager = None
 
-    yield
+    relay_process_lock: RelayProcessLock | None = None
+    if app.state.mode == "hosted":
+        relay_process_lock = RelayProcessLock(
+            Path(app_settings.control_db_path).parent / "relay-process.lock"
+        )
+        relay_process_lock.acquire()
 
-    if reaper_task:
-        reaper_task.cancel()
+    try:
+        yield
+    finally:
         try:
-            await reaper_task
-        except asyncio.CancelledError:
-            pass
-    if app.state.container_manager:
-        await app.state.container_manager.destroy_all()
+            prompt_journal = getattr(app.state, "prompt_journal", None)
+            if isinstance(prompt_journal, PromptJournal):
+                await prompt_journal.close()
+            terminal_journal = getattr(app.state, "terminal_journal", None)
+            if isinstance(terminal_journal, TerminalJournal):
+                await terminal_journal.close_all()
+            if reaper_task:
+                reaper_task.cancel()
+                try:
+                    await reaper_task
+                except asyncio.CancelledError:
+                    pass
+            if app.state.container_manager:
+                await app.state.container_manager.destroy_all()
+        finally:
+            if relay_process_lock is not None:
+                relay_process_lock.release()
     logger.info("Shutdown complete")
 
 
@@ -248,12 +298,34 @@ def _configure_middleware(
     app_settings: Settings,
     *,
     mode: AppMode,
+    worker_principal: WorkerPrincipal | None,
 ) -> None:
     """Attach the shared hosted middleware stack to one application instance."""
     if not isinstance(application, FastAPI):
         raise TypeError("application must be a FastAPI instance")
     if not isinstance(app_settings, Settings):
         raise TypeError("app_settings must be Settings")
+
+    if mode == "worker":
+        if worker_principal is None:
+            raise ValueError("worker mode requires a WorkerPrincipal")
+        application.add_middleware(
+            RequestBodyLimitMiddleware,
+            body_bytes_max=app_settings.request_body_max_bytes,
+        )
+        application.add_middleware(
+            SecurityHeadersMiddleware,
+            content_security_policy=_API_CONTENT_SECURITY_POLICY,
+        )
+        application.add_middleware(
+            TrustedHostMiddleware,
+            allowed_hosts=app_settings.trusted_host_list,
+        )
+        application.add_middleware(
+            WorkerPrincipalMiddleware,
+            principal=worker_principal,
+        )
+        return
 
     cors_origins = [app_settings.frontend_url]
     if app_settings.debug and "http://localhost:5173" not in cors_origins:
@@ -269,6 +341,14 @@ def _configure_middleware(
         same_site="lax",
     )
     application.add_middleware(AuthMiddleware)
+    if mode == "desktop":
+        desktop_tenant = TenantContext(
+            user_id="desktop-local",
+            email="desktop-local@yinshi.invalid",
+            data_dir=str(Path(app_settings.user_data_dir).resolve()),
+            db_path=str(Path(app_settings.db_path).resolve()),
+        )
+        application.add_middleware(DesktopTenantMiddleware, tenant=desktop_tenant)
     application.add_middleware(
         TransportSecurityMiddleware,
         require_https=require_https,
@@ -307,12 +387,16 @@ def _include_routes(application: FastAPI, *, mode: AppMode) -> None:
         raise ValueError(f"Unsupported application mode: {mode}")
 
     execution_routers = (
+        auth_routes.provider_router,
         catalog.router,
         repos.router,
         workspaces.router,
         workspace_files.router,
         terminals.router,
+        terminal_channels.router,
         sessions.router,
+        prompt_runs.router,
+        runtime_uploads.router,
         stream.router,
         settings.router,
     )
@@ -340,12 +424,19 @@ def create_app(
     *,
     mode: AppMode = "hosted",
     desktop_asset_dir: str | Path | None = None,
+    worker_principal: WorkerPrincipal | None = None,
 ) -> FastAPI:
     """Build one independently configured Yinshi application mode."""
     if mode not in ("desktop", "hosted", "worker"):
         raise ValueError(f"Unsupported application mode: {mode}")
     if desktop_asset_dir is not None and mode != "desktop":
         raise ValueError("desktop_asset_dir is only valid in desktop mode")
+    if mode == "worker" and worker_principal is None:
+        raise ValueError("worker mode requires a WorkerPrincipal")
+    if mode != "worker" and worker_principal is not None:
+        raise ValueError("worker_principal is only valid in worker mode")
+    if worker_principal is not None:
+        prepare_worker_principal_storage(worker_principal)
     asset_directory: Path | None = None
     if desktop_asset_dir is not None:
         asset_directory = Path(desktop_asset_dir).resolve()
@@ -364,11 +455,19 @@ def create_app(
     )
     application.state.limiter = limiter
     application.state.mode = mode
+    application.state.encrypted_upload_manager = EncryptedUploadManager()
+    application.state.prompt_journal = PromptJournal()
+    application.state.terminal_journal = TerminalJournal()
     application.add_exception_handler(
         RateLimitExceeded,
         cast(Any, _rate_limit_exceeded_handler),
     )
-    _configure_middleware(application, app_settings, mode=mode)
+    _configure_middleware(
+        application,
+        app_settings,
+        mode=mode,
+        worker_principal=worker_principal,
+    )
     _include_routes(application, mode=mode)
     application.add_api_route("/health", health, methods=["GET"])
     if asset_directory is not None:

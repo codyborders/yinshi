@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 
-import { api, type PiReleaseNotes } from "../api/client";
+import { type PiReleaseNotes } from "../api/client";
+import type { RuntimeTransport } from "../runtime/runtimeTransport";
 
-export function usePiReleaseNotes() {
+export function usePiReleaseNotes(transport: RuntimeTransport) {
   const [releaseNotes, setReleaseNotes] = useState<PiReleaseNotes | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -10,7 +11,9 @@ export function usePiReleaseNotes() {
   const loadReleaseNotes = useCallback(async (isCancelled: () => boolean = () => false) => {
     setLoading(true);
     try {
-      const loadedReleaseNotes = await api.get<PiReleaseNotes>("/api/settings/pi-release-notes");
+      const loadedReleaseNotes = await transport.get<PiReleaseNotes>(
+        "/api/settings/pi-release-notes",
+      );
       if (isCancelled()) {
         return;
       }
@@ -26,7 +29,7 @@ export function usePiReleaseNotes() {
         setLoading(false);
       }
     }
-  }, []);
+  }, [transport]);
 
   useEffect(() => {
     let cancelled = false;

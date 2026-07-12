@@ -392,6 +392,23 @@ def test_delete_repo_removes_tenant_checkout_and_runtime(
     )
 
 
+def test_delete_repo_without_container_runtime(
+    auth_client: TestClient,
+    git_repo: str,
+) -> None:
+    """Tenant repo deletion should work when local execution disables containers."""
+    from yinshi.config import get_settings
+    from yinshi.main import app
+
+    get_settings().container_enabled = False
+    stack = create_full_stack(auth_client, git_repo, name="local-repo-delete")
+    app.state.container_manager = None
+
+    response = auth_client.delete(f"/api/repos/{stack['repo']['id']}")
+
+    assert response.status_code == 204
+
+
 def test_delete_repo(client: TestClient, git_repo: str) -> None:
     """DELETE /api/repos/:id should remove the repo."""
     create_resp = client.post(

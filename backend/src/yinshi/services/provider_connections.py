@@ -419,4 +419,4 @@ def update_provider_connection_secret(
             (encrypted_secret, normalized_connection_id, normalized_user_id),
         )
         db.commit()
-    logger.info("Refreshed provider connection %s", normalized_connection_id[:8])
+    logger.info("Refreshed provider connection")

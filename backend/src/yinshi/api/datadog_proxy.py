@@ -154,14 +154,10 @@ async def proxy_datadog_intake(
                 headers=forwarded_headers,
             )
     except httpx.TimeoutException:
-        logger.warning("Datadog intake timeout for path=%s", validated_intake_path)
+        logger.warning("Datadog intake request timed out")
         raise HTTPException(status_code=504, detail="Intake timeout") from None
     except httpx.HTTPError as error:
-        logger.warning(
-            "Datadog intake transport error path=%s error=%s",
-            validated_intake_path,
-            error,
-        )
+        logger.warning("Datadog intake transport error")
         raise HTTPException(status_code=502, detail="Intake unreachable") from error
 
     # Strip hop-by-hop and transport-specific headers before relaying.

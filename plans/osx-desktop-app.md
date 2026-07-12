@@ -90,23 +90,23 @@ For every behavior-bearing item below, first add the named public-seam test, run
 
 ### 2. Application modes and storage
 
-- [ ] Test an app factory that produces backward-compatible `hosted`, restricted `worker`, and `desktop` applications with explicit route allowlists. Add schema-version migrations, SQLCipher desktop control and tenant databases, owner-only profile/runtime directories, Keychain-key injection, FileVault reporting, and fail-closed startup when encryption or helper versions are unavailable.
+- [x] Test an app factory that produces backward-compatible `hosted`, restricted `worker`, and `desktop` applications with explicit route allowlists. Add schema-version migrations, SQLCipher desktop control and tenant databases, owner-only profile/runtime directories, Keychain-key injection, FileVault reporting, and fail-closed startup when encryption or helper versions are unavailable.
 
 ### 3. Secure Electron shell
 
-- [ ] Test single-instance behavior, inherited-pipe bootstrap, random loopback binding, readiness negotiation, crash-loop handling, process-tree shutdown, and restart recovery against fake helpers. Add hardened BrowserWindow and preload policy, same-origin SPA serving with CSP, an HttpOnly bootstrap session, blocked navigation and popups, allowlisted external links, and no renderer access to Node, Keychain, arbitrary paths, or helper secrets.
+- [x] Test single-instance behavior, inherited-pipe bootstrap, random loopback binding, readiness negotiation, crash-loop handling, process-tree shutdown, and restart recovery against fake helpers. Add hardened BrowserWindow and preload policy, same-origin SPA serving with CSP, an HttpOnly bootstrap session, blocked navigation and popups, allowlisted external links, and no renderer access to Node, Keychain, arbitrary paths, or helper secrets.
 
 ### 4. Desktop account grant
 
-- [ ] Cover PKCE authorization, loopback-target validation, one-time codes, refresh rotation and reuse detection, device listing and revocation, signed 30-day leases, expiry, account switching, and offline logout with API tests. Implement the system-browser flow and Electron Keychain broker. Logout preserves local profiles; only the confirmed removal action destroys their wrapping material.
+- [x] Cover PKCE authorization, loopback-target validation, one-time codes, refresh rotation and reuse detection, device listing and revocation, signed 30-day leases, expiry, account switching, and offline logout with API tests. Implement the system-browser flow and Electron Keychain broker. Logout preserves local profiles; only the confirmed removal action destroys their wrapping material.
 
 ### 5. Location-aware client and gateway
 
-- [ ] Test `RuntimeRef` and `RuntimeTransport` for JSON, upload, SSE, and terminal WebSocket calls. Add location-qualified routes and IDs, legacy hosted redirects, aggregate sidebar states, import and settings selectors, and gateway routing for local and official-hosted APIs. Existing browser URLs and hosted cookie behavior remain compatible.
+- [x] Test `RuntimeRef` and `RuntimeTransport` for JSON, upload, SSE, and terminal WebSocket calls. Add location-qualified routes and IDs, legacy hosted redirects, aggregate sidebar states, import and settings selectors, and gateway routing for local and official-hosted APIs. Existing browser URLs and hosted cookie behavior remain compatible.
 
 ### 6. Mac-local runtime parity
 
-- [ ] Exercise GitHub and local imports, workspaces, session history, prompt streaming and cancellation, model catalogs, file operations, terminals, provider authentication, Pi settings and release notes, deletion, and relaunch persistence with `container_enabled=false`. Run the contract first against the mock sidecar and then against the packaged sidecar. Remove container-only assumptions, use private launch sockets and bundled Git, and restrict child environments to approved shell and toolchain fields.
+- [x] Exercise GitHub and local imports, workspaces, session history, prompt streaming and cancellation, model catalogs, file operations, terminals, provider authentication, Pi settings and release notes, deletion, and relaunch persistence with `container_enabled=false`. Run the contract first against the mock sidecar and then against the packaged sidecar. Remove container-only assumptions, use private launch sockets and bundled Git, and restrict child environments to approved shell and toolchain fields.
 
 ### 7. Native import and branch export
 
@@ -114,11 +114,11 @@ For every behavior-bearing item below, first add the named public-seam test, run
 
 ### 8. Encrypted BYOC foundation
 
-- [ ] Publish the protocol and cross-language Noise vectors. Cover key registration and fingerprint confirmation, capability scope and expiry, handshake identity, malformed and replayed frames, nonce limits, fresh handshakes, reconnect, revocation, queue and frame limits, and ciphertext-only relay persistence. Implement the outbound runner WebSocket, opaque relay, browser/desktop Noise transport, version negotiation, and explicit re-pairing for old or changed keys.
+- [x] Publish the protocol and cross-language Noise vectors. Cover key registration and fingerprint confirmation, capability scope and expiry, handshake identity, malformed and replayed frames, nonce limits, fresh handshakes, reconnect, revocation, queue and frame limits, and ciphertext-only relay persistence. Implement the outbound runner WebSocket, opaque relay, browser/desktop Noise transport, version negotiation, and explicit re-pairing for old or changed keys.
 
 ### 9. Restricted worker slices
 
-- [ ] Build through the encrypted public transport in this order: health and repository operations; workspace and session CRUD; prompt events with a durable journal, sequence reconnect, and idempotent cancellation; terminal multiplexing; workspace files; location-scoped provider setup; and Pi configuration, catalogs, and commands. Account, runner administration, telemetry proxy, and raw filesystem routes stay absent. The same contract suite runs against hosted, local, and BYOC implementations.
+- [x] Build through the encrypted public transport in this order: health and repository operations; workspace and session CRUD; prompt events with a durable journal, sequence reconnect, and idempotent cancellation; terminal multiplexing; workspace files; location-scoped provider setup; and Pi configuration, catalogs, and commands. Account, runner administration, telemetry proxy, and raw filesystem routes stay absent. The same contract suite runs against hosted, local, and BYOC implementations.
 
 ### 10. Portable workspace transfer
 

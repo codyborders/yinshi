@@ -1,5 +1,6 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { RuntimeTransport } from "../../runtime/runtimeTransport";
 
 const { apiMock } = vi.hoisted(() => ({
   apiMock: {
@@ -30,6 +31,12 @@ vi.mock("../../api/client", () => {
 
 import { usePiConfig } from "../usePiConfig";
 
+const transport = {
+  runtime: { location: "hosted" },
+  ...apiMock,
+  put: vi.fn(),
+} as unknown as RuntimeTransport;
+
 const READY_CONFIG = {
   id: "cfg-1",
   created_at: "2026-03-20T12:00:00Z",
@@ -57,7 +64,7 @@ describe("usePiConfig", () => {
       }),
     );
 
-    const { result } = renderHook(() => usePiConfig());
+    const { result } = renderHook(() => usePiConfig(transport));
 
     await waitFor(() => {
       expect(result.current.config?.enabled_categories).toEqual(["settings", "models"]);
@@ -99,7 +106,7 @@ describe("usePiConfig", () => {
   it("rolls back the optimistic toggle on failure", async () => {
     apiMock.patch.mockRejectedValueOnce(new Error("Patch failed"));
 
-    const { result } = renderHook(() => usePiConfig());
+    const { result } = renderHook(() => usePiConfig(transport));
 
     await waitFor(() => {
       expect(result.current.config?.enabled_categories).toEqual(["settings", "models"]);

@@ -9,18 +9,19 @@ import {
 import { Terminal, type ITheme } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
+import type { WorkspaceChangedFile, WorkspaceFileNode } from "../api/client";
 import {
-  api,
-  workspaceTerminalUrl,
-  type WorkspaceChangedFile,
-  type WorkspaceFileNode,
-} from "../api/client";
+  openRuntimeTerminal,
+  type RuntimeTerminalChannel,
+} from "../runtime/terminalChannel";
+import type { RuntimeTransport } from "../runtime/runtimeTransport";
 
 type InspectorTab = "files" | "changes";
 type ViewerMode = "preview" | "diff" | "edit";
 
 interface WorkspaceInspectorProps {
   workspaceId: string;
+  transport: RuntimeTransport;
   refreshKey: number;
   active?: boolean;
   className?: string;
@@ -31,8 +32,6 @@ const TERMINAL_HEIGHT_DEFAULT = 260;
 const TERMINAL_HEIGHT_MIN = 140;
 const TERMINAL_HEIGHT_MAX = 620;
 const FILE_STATUS_REFRESH_MS = 15000;
-const TERMINAL_ACCESS_DENIED_CLOSE_CODE = 1008;
-const TERMINAL_TEMPORARY_FAILURE_CLOSE_CODE = 1011;
 const TERMINAL_RECONNECT_DELAY_MS = 2000;
 const TERMINAL_ACCENT_COLOR = "#c23b22";
 const TERMINAL_SELECTION_BACKGROUND = "rgba(194, 59, 34, 0.28)";
@@ -104,17 +103,19 @@ function countFiles(nodes: WorkspaceFileNode[]): number {
   }, 0);
 }
 
-function terminalReconnectStatus(closeCode: number): string {
-  if (closeCode === TERMINAL_TEMPORARY_FAILURE_CLOSE_CODE) {
-    return "Terminal unavailable. Retrying...";
-  }
-  return "Disconnected. Retrying...";
-}
-
-function themeVariableColor(variableName: string, fallback: string, alpha?: number): string {
-  const rawValue = getComputedStyle(document.documentElement).getPropertyValue(variableName).trim();
+function themeVariableColor(
+  variableName: string,
+  fallback: string,
+  alpha?: number,
+): string {
+  const rawValue = getComputedStyle(document.documentElement)
+    .getPropertyValue(variableName)
+    .trim();
   const components = rawValue.split(/\s+/).map(Number);
-  if (components.length !== 3 || components.some((component) => !Number.isFinite(component))) {
+  if (
+    components.length !== 3 ||
+    components.some((component) => !Number.isFinite(component))
+  ) {
     return fallback;
   }
   const [red, green, blue] = components;
@@ -137,10 +138,26 @@ function terminalTheme(): ITheme {
     cursorAccent: background,
     selectionBackground: TERMINAL_SELECTION_BACKGROUND,
     selectionForeground: themeVariableColor("--gray-50", "#0f0c09"),
-    selectionInactiveBackground: themeVariableColor("--gray-600", "rgba(168, 148, 120, 0.24)", 0.24),
-    scrollbarSliderBackground: themeVariableColor("--gray-400", "rgba(107, 93, 79, 0.24)", 0.24),
-    scrollbarSliderHoverBackground: themeVariableColor("--gray-400", "rgba(107, 93, 79, 0.38)", 0.38),
-    scrollbarSliderActiveBackground: themeVariableColor("--gray-400", "rgba(107, 93, 79, 0.5)", 0.5),
+    selectionInactiveBackground: themeVariableColor(
+      "--gray-600",
+      "rgba(168, 148, 120, 0.24)",
+      0.24,
+    ),
+    scrollbarSliderBackground: themeVariableColor(
+      "--gray-400",
+      "rgba(107, 93, 79, 0.24)",
+      0.24,
+    ),
+    scrollbarSliderHoverBackground: themeVariableColor(
+      "--gray-400",
+      "rgba(107, 93, 79, 0.38)",
+      0.38,
+    ),
+    scrollbarSliderActiveBackground: themeVariableColor(
+      "--gray-400",
+      "rgba(107, 93, 79, 0.5)",
+      0.5,
+    ),
   };
 }
 
@@ -163,7 +180,11 @@ function FileTree({
                 {node.name}
               </summary>
               <div className="ml-3 border-l border-gray-800 pl-2">
-                <FileTree nodes={node.children} selectedPath={selectedPath} onSelect={onSelect} />
+                <FileTree
+                  nodes={node.children}
+                  selectedPath={selectedPath}
+                  onSelect={onSelect}
+                />
               </div>
             </details>
           ) : (
@@ -188,12 +209,14 @@ function FileTree({
 
 function FileViewer({
   workspaceId,
+  transport,
   path,
   mode,
   onModeChange,
   onSaved,
 }: {
   workspaceId: string;
+  transport: RuntimeTransport;
   path: string | null;
   mode: ViewerMode;
   onModeChange: (mode: ViewerMode) => void;
@@ -219,17 +242,20 @@ function FileViewer({
       mode === "diff"
         ? `/api/workspaces/${workspaceId}/files/diff?path=${encodedPath}`
         : `/api/workspaces/${workspaceId}/files/preview?path=${encodedPath}`;
-    api
+    transport
       .get<{ content?: string; diff?: string }>(endpoint)
       .then((response) => {
         if (cancelled) return;
-        const value = mode === "diff" ? response.diff ?? "" : response.content ?? "";
+        const value =
+          mode === "diff" ? (response.diff ?? "") : (response.content ?? "");
         setContent(value);
         setDraft(value);
       })
       .catch((apiError) => {
         if (cancelled) return;
-        setError(apiError instanceof Error ? apiError.message : "Failed to load file");
+        setError(
+          apiError instanceof Error ? apiError.message : "Failed to load file",
+        );
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -237,33 +263,45 @@ function FileViewer({
     return () => {
       cancelled = true;
     };
-  }, [mode, path, workspaceId]);
+  }, [mode, path, transport, workspaceId]);
 
   const save = useCallback(async () => {
     if (!path) return;
     setLoading(true);
     setError(null);
     try {
-      await api.put(`/api/workspaces/${workspaceId}/files/content?path=${encodeURIComponent(path)}`, {
-        content: draft,
-      });
+      await transport.put(
+        `/api/workspaces/${workspaceId}/files/content?path=${encodeURIComponent(path)}`,
+        {
+          content: draft,
+        },
+      );
       setContent(draft);
       onSaved();
     } catch (apiError) {
-      setError(apiError instanceof Error ? apiError.message : "Failed to save file");
+      setError(
+        apiError instanceof Error ? apiError.message : "Failed to save file",
+      );
     } finally {
       setLoading(false);
     }
-  }, [draft, onSaved, path, workspaceId]);
+  }, [draft, onSaved, path, transport, workspaceId]);
 
   if (!path) {
-    return <div className="p-3 text-xs text-gray-500">Select a file to preview it.</div>;
+    return (
+      <div className="p-3 text-xs text-gray-500">
+        Select a file to preview it.
+      </div>
+    );
   }
 
   return (
     <div className="flex h-full min-h-0 flex-col border-t border-gray-800 bg-gray-950/60">
       <div className="flex items-center gap-1 border-b border-gray-800 px-2 py-2">
-        <div className="min-w-0 flex-1 truncate text-xs font-medium text-gray-300" title={path}>
+        <div
+          className="min-w-0 flex-1 truncate text-xs font-medium text-gray-300"
+          title={path}
+        >
           {path}
         </div>
         {(["preview", "diff", "edit"] as ViewerMode[]).map((viewerMode) => (
@@ -280,15 +318,23 @@ function FileViewer({
             {viewerMode}
           </button>
         ))}
-        <a
-          href={`/api/workspaces/${workspaceId}/files/download?path=${encodeURIComponent(path)}`}
-          className="rounded px-2 py-1 text-[11px] text-gray-500 hover:bg-gray-800 hover:text-gray-200"
-        >
-          Download
-        </a>
+        {transport.runtime.location !== "byoc" ? (
+          <a
+            href={`/api/workspaces/${workspaceId}/files/download?path=${encodeURIComponent(path)}`}
+            className="rounded px-2 py-1 text-[11px] text-gray-500 hover:bg-gray-800 hover:text-gray-200"
+          >
+            Download
+          </a>
+        ) : null}
       </div>
-      {error && <div className="border-b border-red-900/40 bg-red-950/40 px-3 py-2 text-xs text-red-200">{error}</div>}
-      {loading && <div className="px-3 py-2 text-xs text-gray-500">Loading...</div>}
+      {error && (
+        <div className="border-b border-red-900/40 bg-red-950/40 px-3 py-2 text-xs text-red-200">
+          {error}
+        </div>
+      )}
+      {loading && (
+        <div className="px-3 py-2 text-xs text-gray-500">Loading...</div>
+      )}
       {mode === "edit" ? (
         <div className="flex min-h-0 flex-1 flex-col">
           <textarea
@@ -317,23 +363,33 @@ function FileViewer({
   );
 }
 
-function TerminalPane({ workspaceId, active }: { workspaceId: string; active: boolean }) {
+function RuntimeTerminalPane({
+  workspaceId,
+  transport,
+  active,
+}: {
+  workspaceId: string;
+  transport: RuntimeTransport;
+  active: boolean;
+}) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
-  const socketRef = useRef<WebSocket | null>(null);
+  const channelRef = useRef<RuntimeTerminalChannel | null>(null);
   const [status, setStatus] = useState(active ? "Connecting..." : "Paused");
   const [connectionVersion, setConnectionVersion] = useState(0);
 
   const fit = useCallback(() => {
     const terminal = terminalRef.current;
     const fitAddon = fitRef.current;
-    const socket = socketRef.current;
     if (!terminal || !fitAddon) return;
     try {
       fitAddon.fit();
-      if (socket?.readyState === WebSocket.OPEN) {
-        socket.send(JSON.stringify({ type: "resize", cols: terminal.cols, rows: terminal.rows }));
+      const channel = channelRef.current;
+      if (channel) {
+        void channel.resize(terminal.cols, terminal.rows).catch(() => {
+          setStatus("Terminal resize failed");
+        });
       }
     } catch {
       // The terminal can be hidden during mobile drawer transitions.
@@ -345,9 +401,11 @@ function TerminalPane({ workspaceId, active }: { workspaceId: string; active: bo
       setStatus("Paused");
       return;
     }
-
     const container = containerRef.current;
     if (!container) return;
+    const abortController = new AbortController();
+    let disposed = false;
+    let reconnectTimer: number | null = null;
     setStatus("Connecting...");
 
     const terminal = new Terminal({
@@ -362,95 +420,108 @@ function TerminalPane({ workspaceId, active }: { workspaceId: string; active: bo
     terminal.open(container);
     terminalRef.current = terminal;
     fitRef.current = fitAddon;
+    try {
+      fitAddon.fit();
+    } catch {
+      // Initial layout can still be hidden while a drawer opens.
+    }
 
-    const socket = new WebSocket(workspaceTerminalUrl(workspaceId));
-    socketRef.current = socket;
-    let disposed = false;
-    let reconnectTimer: number | null = null;
-    const showStatus = (nextStatus: string) => {
-      if (!disposed) setStatus(nextStatus);
-    };
-    const reconnect = (nextStatus: string) => {
-      if (disposed) return;
-      setStatus(nextStatus);
-      reconnectTimer = window.setTimeout(() => {
-        if (!disposed) {
-          setConnectionVersion((value) => value + 1);
-        }
-      }, TERMINAL_RECONNECT_DELAY_MS);
-    };
-    const disposable = terminal.onData((data) => {
-      if (socket.readyState === WebSocket.OPEN) {
-        socket.send(JSON.stringify({ type: "input", data }));
+    const inputSubscription = terminal.onData((data) => {
+      const channel = channelRef.current;
+      if (channel) {
+        void channel
+          .sendInput(data)
+          .catch(() => setStatus("Terminal input failed"));
       }
     });
-
-    socket.addEventListener("open", () => {
-      showStatus("Connected");
-      fit();
-    });
-    socket.addEventListener("message", (event) => {
-      try {
-        const message = JSON.parse(String(event.data));
-        if (message.type === "terminal_ready") {
-          if (typeof message.replay === "string" && message.replay) {
-            terminal.write(message.replay);
-          }
-          showStatus("Connected");
-          fit();
-        } else if (message.type === "terminal_data" && typeof message.data === "string") {
-          terminal.write(message.data);
-        } else if (message.type === "terminal_exit") {
-          showStatus("Shell exited. Restart to open a new terminal.");
-        } else if (message.type === "error") {
-          showStatus(typeof message.error === "string" ? message.error : "Terminal error");
-        }
-      } catch {
-        showStatus("Received malformed terminal event");
-      }
-    });
-    socket.addEventListener("close", (event) => {
-      if (event.code === TERMINAL_ACCESS_DENIED_CLOSE_CODE) {
-        showStatus("Terminal access denied");
-        return;
-      }
-      reconnect(terminalReconnectStatus(event.code));
-    });
-    socket.addEventListener("error", () => showStatus("Terminal connection failed"));
-
     const observer = new ResizeObserver(() => fit());
     observer.observe(container);
     const themeObserver = new MutationObserver(() => {
       terminal.options.theme = terminalTheme();
     });
-    themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
-    window.setTimeout(fit, 0);
+    themeObserver.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["class"],
+    });
+
+    void (async () => {
+      try {
+        const channel = await openRuntimeTerminal(transport, workspaceId, {
+          cols: terminal.cols,
+          rows: terminal.rows,
+          signal: abortController.signal,
+        });
+        if (disposed) {
+          await channel.close();
+          return;
+        }
+        channelRef.current = channel;
+        setStatus("Connected");
+        for await (const event of channel.events()) {
+          if (event.type === "terminal_ready") {
+            if (typeof event.replay === "string" && event.replay) {
+              terminal.write(event.replay);
+            }
+            setStatus("Connected");
+            fit();
+          } else if (
+            event.type === "terminal_data" &&
+            typeof event.data === "string"
+          ) {
+            terminal.write(event.data);
+          } else if (event.type === "terminal_exit") {
+            setStatus("Shell exited. Restart to open a new terminal.");
+          } else if (event.type === "error") {
+            setStatus(
+              typeof event.error === "string" ? event.error : "Terminal error",
+            );
+          }
+        }
+        if (!disposed) {
+          setStatus("Disconnected. Retrying...");
+          reconnectTimer = window.setTimeout(
+            () => setConnectionVersion((value) => value + 1),
+            TERMINAL_RECONNECT_DELAY_MS,
+          );
+        }
+      } catch (error) {
+        if (
+          disposed ||
+          (error instanceof DOMException && error.name === "AbortError")
+        )
+          return;
+        setStatus(
+          error instanceof Error ? error.message : "Terminal connection failed",
+        );
+        reconnectTimer = window.setTimeout(
+          () => setConnectionVersion((value) => value + 1),
+          TERMINAL_RECONNECT_DELAY_MS,
+        );
+      }
+    })();
 
     return () => {
       disposed = true;
-      if (reconnectTimer !== null) {
-        window.clearTimeout(reconnectTimer);
-      }
+      abortController.abort();
+      if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
       themeObserver.disconnect();
       observer.disconnect();
-      disposable.dispose();
-      socket.close();
+      inputSubscription.dispose();
+      const channel = channelRef.current;
+      channelRef.current = null;
+      if (channel) void channel.close().catch(() => undefined);
       terminal.dispose();
       terminalRef.current = null;
       fitRef.current = null;
-      socketRef.current = null;
     };
-  }, [active, connectionVersion, fit, workspaceId]);
+  }, [active, connectionVersion, fit, transport, workspaceId]);
 
   const restart = useCallback(() => {
-    const socket = socketRef.current;
     terminalRef.current?.reset();
-    if (socket?.readyState === WebSocket.OPEN) {
-      socket.send(JSON.stringify({ type: "restart" }));
-      return;
-    }
-    setStatus("Connecting...");
-    if (socket?.readyState !== WebSocket.CONNECTING) {
+    const channel = channelRef.current;
+    if (channel) {
+      void channel.restart().catch(() => setStatus("Terminal restart failed"));
+    } else {
       setConnectionVersion((value) => value + 1);
     }
   }, []);
@@ -461,7 +532,11 @@ function TerminalPane({ workspaceId, active }: { workspaceId: string; active: bo
         <div className="text-xs font-medium text-gray-300">Terminal</div>
         <div className="flex items-center gap-2">
           <span className="text-[11px] text-gray-500">{status}</span>
-          <button type="button" onClick={restart} className="rounded px-2 py-1 text-[11px] text-gray-400 hover:bg-gray-800 hover:text-gray-100">
+          <button
+            type="button"
+            onClick={restart}
+            className="rounded px-2 py-1 text-[11px] text-gray-400 hover:bg-gray-800 hover:text-gray-100"
+          >
             Restart
           </button>
         </div>
@@ -471,7 +546,14 @@ function TerminalPane({ workspaceId, active }: { workspaceId: string; active: bo
   );
 }
 
-export default function WorkspaceInspector({ workspaceId, refreshKey, active = true, className = "", style }: WorkspaceInspectorProps) {
+export default function WorkspaceInspector({
+  workspaceId,
+  transport,
+  refreshKey,
+  active = true,
+  className = "",
+  style,
+}: WorkspaceInspectorProps) {
   const [tab, setTab] = useState<InspectorTab>("files");
   const [files, setFiles] = useState<WorkspaceFileNode[]>([]);
   const [changes, setChanges] = useState<WorkspaceChangedFile[]>([]);
@@ -484,29 +566,41 @@ export default function WorkspaceInspector({ workspaceId, refreshKey, active = t
     if (!active) return;
     try {
       const [treeResponse, changedResponse] = await Promise.all([
-        api.get<{ files: WorkspaceFileNode[] }>(`/api/workspaces/${workspaceId}/files/tree`),
-        api.get<{ files: WorkspaceChangedFile[] }>(`/api/workspaces/${workspaceId}/files/changed`),
+        transport.get<{ files: WorkspaceFileNode[] }>(
+          `/api/workspaces/${workspaceId}/files/tree`,
+        ),
+        transport.get<{ files: WorkspaceChangedFile[] }>(
+          `/api/workspaces/${workspaceId}/files/changed`,
+        ),
       ]);
       setFiles(treeResponse.files);
       setChanges(changedResponse.files);
       setError(null);
     } catch (apiError) {
-      setError(apiError instanceof Error ? apiError.message : "Failed to load workspace files");
+      setError(
+        apiError instanceof Error
+          ? apiError.message
+          : "Failed to load workspace files",
+      );
     }
-  }, [active, workspaceId]);
+  }, [active, transport, workspaceId]);
 
   const refreshChanges = useCallback(async () => {
     if (!active) return;
     try {
-      const changedResponse = await api.get<{ files: WorkspaceChangedFile[] }>(
-        `/api/workspaces/${workspaceId}/files/changed`,
-      );
+      const changedResponse = await transport.get<{
+        files: WorkspaceChangedFile[];
+      }>(`/api/workspaces/${workspaceId}/files/changed`);
       setChanges(changedResponse.files);
       setError(null);
     } catch (apiError) {
-      setError(apiError instanceof Error ? apiError.message : "Failed to load workspace changes");
+      setError(
+        apiError instanceof Error
+          ? apiError.message
+          : "Failed to load workspace changes",
+      );
     }
-  }, [active, workspaceId]);
+  }, [active, transport, workspaceId]);
 
   useEffect(() => {
     void refresh();
@@ -535,7 +629,10 @@ export default function WorkspaceInspector({ workspaceId, refreshKey, active = t
       const onMove = (moveEvent: PointerEvent) => {
         const nextHeight = Math.min(
           TERMINAL_HEIGHT_MAX,
-          Math.max(TERMINAL_HEIGHT_MIN, startHeight - (moveEvent.clientY - startY)),
+          Math.max(
+            TERMINAL_HEIGHT_MIN,
+            startHeight - (moveEvent.clientY - startY),
+          ),
         );
         setTerminalHeight(nextHeight);
         sessionStorage.setItem("yinshi-terminal-height", String(nextHeight));
@@ -551,7 +648,10 @@ export default function WorkspaceInspector({ workspaceId, refreshKey, active = t
   );
 
   return (
-    <aside style={style} className={`flex min-h-0 flex-col border-l border-gray-800 bg-gray-900 ${className}`}>
+    <aside
+      style={style}
+      className={`flex min-h-0 flex-col border-l border-gray-800 bg-gray-900 ${className}`}
+    >
       <div className="flex items-center border-b border-gray-800 px-3 py-2">
         <button
           type="button"
@@ -567,18 +667,33 @@ export default function WorkspaceInspector({ workspaceId, refreshKey, active = t
         >
           Changes <span className="text-gray-500">{changes.length}</span>
         </button>
-        <button type="button" onClick={() => void refresh()} className="ml-auto rounded px-2 py-1 text-[11px] text-gray-500 hover:bg-gray-800 hover:text-gray-200">
+        <button
+          type="button"
+          onClick={() => void refresh()}
+          className="ml-auto rounded px-2 py-1 text-[11px] text-gray-500 hover:bg-gray-800 hover:text-gray-200"
+        >
           Refresh
         </button>
       </div>
 
-      {error && <div className="border-b border-red-900/40 bg-red-950/40 px-3 py-2 text-xs text-red-200">{error}</div>}
+      {error && (
+        <div className="border-b border-red-900/40 bg-red-950/40 px-3 py-2 text-xs text-red-200">
+          {error}
+        </div>
+      )}
 
       <div className="flex min-h-0 flex-1 flex-col">
         <div className="min-h-0 flex-1 overflow-auto p-2">
           {tab === "files" ? (
             files.length ? (
-              <FileTree nodes={files} selectedPath={selectedPath} onSelect={(path) => { setSelectedPath(path); setViewerMode("preview"); }} />
+              <FileTree
+                nodes={files}
+                selectedPath={selectedPath}
+                onSelect={(path) => {
+                  setSelectedPath(path);
+                  setViewerMode("preview");
+                }}
+              />
             ) : (
               <div className="p-3 text-xs text-gray-500">No visible files.</div>
             )
@@ -593,22 +708,29 @@ export default function WorkspaceInspector({ workspaceId, refreshKey, active = t
                     setViewerMode("diff");
                   }}
                   className={`flex w-full items-center gap-2 rounded px-2 py-1 text-left text-xs ${
-                    selectedPath === file.path ? "bg-blue-500/15 text-blue-200" : "text-gray-300 hover:bg-gray-800 hover:text-gray-100"
+                    selectedPath === file.path
+                      ? "bg-blue-500/15 text-blue-200"
+                      : "text-gray-300 hover:bg-gray-800 hover:text-gray-100"
                   }`}
                   title={file.path}
                 >
-                  <span className="w-5 shrink-0 rounded bg-gray-800 px-1 text-center font-mono text-[10px] text-gray-400">{statusLabel(file)}</span>
+                  <span className="w-5 shrink-0 rounded bg-gray-800 px-1 text-center font-mono text-[10px] text-gray-400">
+                    {statusLabel(file)}
+                  </span>
                   <span className="truncate">{file.path}</span>
                 </button>
               ))}
             </div>
           ) : (
-            <div className="p-3 text-xs text-gray-500">No uncommitted changes.</div>
+            <div className="p-3 text-xs text-gray-500">
+              No uncommitted changes.
+            </div>
           )}
         </div>
         <div className="h-[42%] min-h-[180px] max-h-[50%]">
           <FileViewer
             workspaceId={workspaceId}
+            transport={transport}
             path={selectedPath}
             mode={viewerMode}
             onModeChange={setViewerMode}
@@ -624,7 +746,11 @@ export default function WorkspaceInspector({ workspaceId, refreshKey, active = t
         className="h-1.5 cursor-row-resize border-y border-gray-800 bg-gray-800/80 hover:bg-blue-500/40"
       />
       <div style={{ height: terminalHeight }} className="shrink-0">
-        <TerminalPane workspaceId={workspaceId} active={active} />
+        <RuntimeTerminalPane
+          workspaceId={workspaceId}
+          transport={transport}
+          active={active}
+        />
       </div>
     </aside>
   );

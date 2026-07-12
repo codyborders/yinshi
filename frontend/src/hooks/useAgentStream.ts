@@ -1,6 +1,11 @@
 import { useCallback, useRef, useState } from "react";
 import { cancelSession, streamPrompt, type ThinkingLevel } from "../api/client";
 import {
+  startRuntimePrompt,
+  type RuntimePromptHandle,
+} from "../runtime/promptStream";
+import type { RuntimeTransport } from "../runtime/runtimeTransport";
+import {
   applyTurnEventToBlocks,
   blocksToContent,
   type TurnBlock,
@@ -26,10 +31,15 @@ function nextId(): string {
 
 export type RunState = "idle" | "running" | "stopping";
 
-export function useAgentStream(sessionId: string | undefined) {
+export function useAgentStream(
+  sessionId: string | undefined,
+  runtimeTransport?: RuntimeTransport,
+) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [runState, setRunState] = useState<RunState>("idle");
   const abortRef = useRef<AbortController | null>(null);
+  const promptHandleRef = useRef<RuntimePromptHandle | null>(null);
+  const promptStartRef = useRef<Promise<RuntimePromptHandle> | null>(null);
   const queuedPromptRef = useRef<{
     prompt: string;
     model?: string;
@@ -101,13 +111,27 @@ export function useAgentStream(sessionId: string | undefined) {
       }
 
       try {
-        for await (const event of streamPrompt(
-          sessionId,
-          normalizedPrompt,
-          model,
-          thinking,
-          controller.signal,
-        )) {
+        const promptStart = runtimeTransport
+          ? startRuntimePrompt(runtimeTransport, sessionId, {
+              prompt: normalizedPrompt,
+              model,
+              thinking,
+              signal: controller.signal,
+            })
+          : null;
+        promptStartRef.current = promptStart;
+        const runtimePrompt = promptStart ? await promptStart : null;
+        promptHandleRef.current = runtimePrompt;
+        const eventSource = runtimePrompt
+          ? runtimePrompt.events()
+          : streamPrompt(
+              sessionId,
+              normalizedPrompt,
+              model,
+              thinking,
+              controller.signal,
+            );
+        for await (const event of eventSource) {
           const applyResult = applyTurnEventToBlocks(blocks, event, nextId);
           if (applyResult.status) {
             turnStatus = applyResult.status;
@@ -134,6 +158,8 @@ export function useAgentStream(sessionId: string | undefined) {
       } finally {
         if (rafId) cancelAnimationFrame(rafId);
         abortRef.current = null;
+        promptHandleRef.current = null;
+        promptStartRef.current = null;
 
         const queuedPrompt = queuedPromptRef.current;
         queuedPromptRef.current = null;
@@ -149,7 +175,7 @@ export function useAgentStream(sessionId: string | undefined) {
         }
       }
     },
-    [sessionId],
+    [runtimeTransport, sessionId],
   );
 
   const cancel = useCallback(async () => {
@@ -157,12 +183,20 @@ export function useAgentStream(sessionId: string | undefined) {
     setRunState("stopping");
     if (sessionId) {
       try {
-        await cancelSession(sessionId);
+        if (runtimeTransport) {
+          const promptHandle =
+            promptHandleRef.current ?? (await promptStartRef.current);
+          if (promptHandle) {
+            await promptHandle.cancel();
+          }
+        } else {
+          await cancelSession(sessionId);
+        }
       } catch {
         /* best-effort */
       }
     }
-  }, [sessionId, runState]);
+  }, [runtimeTransport, sessionId, runState]);
 
   const sendPrompt = useCallback(
     async (prompt: string, model?: string, thinking?: ThinkingLevel) => {

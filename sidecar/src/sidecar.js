@@ -31,6 +31,8 @@ const OFF_THINKING_LEVEL = "off";
 const STANDARD_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high"];
 const XHIGH_THINKING_LEVELS = [...STANDARD_THINKING_LEVELS, "xhigh"];
 const THINKING_LEVELS = new Set(XHIGH_THINKING_LEVELS);
+const OAUTH_FLOW_COUNT_MAX = 8;
+const OAUTH_FLOW_TTL_MS = 30 * 60 * 1000;
 const LEGACY_MODEL_ALIASES = new Map([
   ["haiku", "anthropic/claude-haiku-4-5-20251001"],
   ["minimax", DEFAULT_MODEL_REF],
@@ -364,9 +366,7 @@ function createWebUIContext(sessionId, socket, model) {
   return {
     // ── notifications ────────────────────────────────────────────────
     notify(message, level = "info") {
-      console.log(
-        `[sidecar][ui.notify] session=${sessionId} level=${level} len=${String(message ?? "").length}`,
-      );
+      console.log(`[sidecar][ui.notify] level=${level}`);
       emitWithLevel(message, level);
     },
     // ── status/widget/title (TUI-only surfaces) ──────────────────────
@@ -968,7 +968,7 @@ export class YinshiSidecar {
       const value = trimmed.slice(eqIndex + 1).trim();
       if (!process.env[key]) {
         process.env[key] = value;
-        console.log(`[sidecar] Loaded env: ${key}=***`);
+        console.log("[sidecar] Loaded one environment entry");
       }
     }
   }
@@ -1103,7 +1103,7 @@ export class YinshiSidecar {
         resolve();
       });
       this.server.on("error", (err) => {
-        console.error("[sidecar] Server error:", err.message);
+        console.error("[sidecar] Server error");
         reject(err);
       });
     });
@@ -1126,7 +1126,7 @@ export class YinshiSidecar {
         this.handleData(trimmed, socket);
       }
     });
-    socket.on("error", (err) => console.error("[sidecar] Socket error:", err.message));
+    socket.on("error", () => console.error("[sidecar] Socket error"));
     socket.on("close", () => {
       this.detachTerminalSocket(socket);
       console.log("[sidecar] Connection closed");
@@ -1356,6 +1356,27 @@ export class YinshiSidecar {
     }
   }
 
+  _pruneExpiredOAuthFlows(currentTimeMs = Date.now()) {
+    if (!Number.isSafeInteger(currentTimeMs) || currentTimeMs < 0) {
+      throw new TypeError("OAuth flow clock must be a non-negative safe integer");
+    }
+    for (const [flowId, flow] of this.activeOAuthFlows) {
+      if (!Number.isSafeInteger(flow.createdAtMs)) {
+        this.activeOAuthFlows.delete(flowId);
+        continue;
+      }
+      if (currentTimeMs - flow.createdAtMs < OAUTH_FLOW_TTL_MS) {
+        continue;
+      }
+      if (typeof flow.manualInputReject === "function") {
+        flow.manualInputReject(new Error("OAuth flow expired"));
+      }
+      flow.manualInputResolve = null;
+      flow.manualInputReject = null;
+      this.activeOAuthFlows.delete(flowId);
+    }
+  }
+
   async startOAuthFlow(id, socket, providerId) {
     try {
       if (typeof providerId !== "string" || !providerId) {
@@ -1365,11 +1386,16 @@ export class YinshiSidecar {
       if (!provider) {
         throw new Error(`OAuth provider is not available: ${providerId}`);
       }
+      this._pruneExpiredOAuthFlows();
+      if (this.activeOAuthFlows.size >= OAUTH_FLOW_COUNT_MAX) {
+        throw new Error("Too many active OAuth flows");
+      }
 
       const flowId = randomUUID();
       const flow = {
         id: flowId,
         provider: providerId,
+        createdAtMs: Date.now(),
         status: "starting",
         authUrl: null,
         instructions: null,
@@ -1449,6 +1475,7 @@ export class YinshiSidecar {
   }
 
   handleOAuthStatus(id, socket, flowId) {
+    this._pruneExpiredOAuthFlows();
     if (typeof flowId !== "string" || !flowId) {
       sendToSocket(socket, { id: id || "oauth-status", type: "error", error: "flowId is required" });
       return;
@@ -1476,6 +1503,7 @@ export class YinshiSidecar {
   }
 
   submitOAuthFlowInput(id, socket, flowId, authorizationInput) {
+    this._pruneExpiredOAuthFlows();
     if (typeof flowId !== "string" || !flowId) {
       sendToSocket(socket, { id: id || "oauth-submit", type: "error", error: "flowId is required" });
       return;
@@ -1506,6 +1534,7 @@ export class YinshiSidecar {
   }
 
   clearOAuthFlow(id, socket, flowId) {
+    this._pruneExpiredOAuthFlows();
     if (typeof flowId !== "string" || !flowId) {
       sendToSocket(socket, { id: id || "oauth-clear", type: "error", error: "flowId is required" });
       return;
@@ -1573,12 +1602,10 @@ export class YinshiSidecar {
     // handlers call ctx.ui.notify() can surface output in the chat. Without
     // this binding, notify() calls silently vanish in RPC mode.
     const runner = session.extensionRunner;
-    console.log(
-      `[sidecar] session ${sessionId} extensionRunner=${runner ? "present" : "MISSING"}`,
-    );
+    console.log(`[sidecar] extension runner ${runner ? "available" : "unavailable"}`);
     if (runner) {
       runner.setUIContext(createWebUIContext(sessionId, socket, model));
-      console.log(`[sidecar] session ${sessionId} UI context bound`);
+      console.log("[sidecar] UI context bound");
     }
     if (resetWarning) {
       sendStatusToSocket(
@@ -1589,19 +1616,13 @@ export class YinshiSidecar {
         "warning",
       );
     }
-    console.log(
-      `[sidecar] Created pi session ${sessionId} with model ${model.name || model.id}`
-      + (agentDir ? ` and agentDir ${agentDir}` : "")
-      + (openedPiSessionFile
-        ? ` and piSessionFile ${openedPiSessionFile}`
-        : ""),
-    );
+    console.log("[sidecar] Pi session created");
     return { session, model, piSessionFile: openedPiSessionFile };
   }
 
   async warmupSession(sessionId, socket, options) {
     if (this.activeSessions.has(sessionId)) {
-      console.log(`[sidecar] Session ${sessionId} already exists`);
+      console.log("[sidecar] Pi session already active");
       return;
     }
 
@@ -1644,9 +1665,9 @@ export class YinshiSidecar {
         unsubscribe: null,
         cancelRequested: false,
       });
-      console.log(`[sidecar] Warmed up session ${sessionId}`);
+      console.log("[sidecar] Pi session warmed");
     } catch (err) {
-      console.error(`[sidecar] Warmup failed: ${err.message}`);
+      console.error("[sidecar] Warmup failed");
       sendToSocket(socket, { id: sessionId, type: "error", error: err.message });
     }
   }
@@ -1661,9 +1682,7 @@ export class YinshiSidecar {
     const importedSettings = options.settings || null;
     let entry = this.activeSessions.get(sessionId);
     let clearFinalizeTimer = () => {};
-    console.log(
-      `[sidecar] processQuery session=${sessionId} model=${modelRef} hasEntry=${!!entry} promptLen=${prompt?.length ?? 0}`,
-    );
+    console.log(`[sidecar] Prompt accepted warm=${Boolean(entry)}`);
 
     try {
       const requestedPiSessionFile = normalizePiSessionFile(options.piSessionFile || null);
@@ -1770,9 +1789,7 @@ export class YinshiSidecar {
       };
 
       entry.unsubscribe = piSession.subscribe((event) => {
-        // Temporary diagnostic so we can see every event pi emits while we
-        // track down why turns never reach the browser.
-        console.log(`[sidecar][event] session=${sessionId} type=${event.type}`);
+        console.log(`[sidecar][event] type=${event.type}`);
         switch (event.type) {
           case "message_update": {
             const assistantEvent = event.assistantMessageEvent;
@@ -1854,7 +1871,7 @@ export class YinshiSidecar {
             pendingResult = null;
             clearFinalizeTimer();
             console.log(
-              `[sidecar] Retrying (attempt ${event.attempt}/${event.maxAttempts}): ${event.errorMessage}`,
+              `[sidecar] Retrying provider request (attempt ${event.attempt}/${event.maxAttempts})`,
             );
             sendStatusToSocket(
               socket,
@@ -1909,9 +1926,9 @@ export class YinshiSidecar {
         }
       });
 
-      console.log(`[sidecar] piSession.prompt start session=${sessionId}`);
+      console.log("[sidecar] Prompt started");
       await piSession.prompt(prompt);
-      console.log(`[sidecar] piSession.prompt end session=${sessionId}`);
+      console.log("[sidecar] Prompt ended");
       // Clear cancelRequested after normal completion
       entry.cancelRequested = false;
 
@@ -1919,7 +1936,7 @@ export class YinshiSidecar {
       // extension command inline (e.g. `/rtk-stats`). Synthesise the result
       // event so the client stream loop terminates cleanly instead of hanging.
       if (!agentEndEmitted && !resultSent) {
-        console.log(`[sidecar] synthesising result for session ${sessionId}`);
+        console.log("[sidecar] Synthesising inline-command result");
         sendToSocket(socket, buildResultMessage(usage));
         resultSent = true;
       }
@@ -1927,7 +1944,7 @@ export class YinshiSidecar {
       clearFinalizeTimer();
       const errorMessage = err instanceof Error ? err.message : String(err);
       if (entry?.cancelRequested) {
-        console.log(`[sidecar] Session ${sessionId} cancelled by user`);
+        console.log("[sidecar] Prompt cancelled by user");
         sendToSocket(socket, {
           id: sessionId,
           type: "cancelled",
@@ -1935,7 +1952,7 @@ export class YinshiSidecar {
         // Clear cancelRequested after handling cancellation
         entry.cancelRequested = false;
       } else {
-        console.error(`[sidecar] Error in session ${sessionId}:`, errorMessage);
+        console.error("[sidecar] Prompt failed");
         sendToSocket(socket, {
           id: sessionId,
           type: "error",
@@ -1948,10 +1965,10 @@ export class YinshiSidecar {
   async cancelSession(sessionId) {
     const entry = this.activeSessions.get(sessionId);
     if (!entry) {
-      console.log(`[sidecar] Session ${sessionId} not found`);
+      console.log("[sidecar] Cancellation target not found");
       return;
     }
-    console.log(`[sidecar] Cancelling session ${sessionId}`);
+    console.log("[sidecar] Cancelling prompt");
     entry.cancelRequested = true;
     entry.piSession.abortCompaction();
     entry.piSession.abortRetry();

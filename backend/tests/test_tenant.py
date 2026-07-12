@@ -127,6 +127,8 @@ def test_get_user_db_creates_and_returns_connection(tenant_env):
         assert "workspaces" in table_names
         assert "sessions" in table_names
         assert "messages" in table_names
+        assert "prompt_runs" in table_names
+        assert "prompt_events" in table_names
 
 
 def test_init_user_db_schema_no_owner_email(tenant_env):

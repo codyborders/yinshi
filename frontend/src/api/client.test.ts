@@ -2,6 +2,20 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { api, ApiError } from "./client";
 
+function desktopBridge(
+  hostedRequest: YinshiDesktopBridge["hostedRequest"],
+): YinshiDesktopBridge {
+  return {
+    hostedRequest,
+    fileVaultStatus: vi.fn(),
+    listProfiles: vi.fn(),
+    switchProfile: vi.fn(),
+    removeProfile: vi.fn(),
+    importLocalRepository: vi.fn(),
+    signOut: vi.fn(),
+  };
+}
+
 afterEach(() => {
   delete (window as { yinshiDesktop?: YinshiDesktopBridge }).yinshiDesktop;
   vi.unstubAllGlobals();
@@ -13,11 +27,8 @@ describe("desktop hosted API bridge", () => {
       status: 200,
       body: { id: "runner-1", status: "online" },
     });
-    (window as { yinshiDesktop?: YinshiDesktopBridge }).yinshiDesktop = {
-      hostedRequest,
-      importLocalRepository: vi.fn(),
-      signOut: vi.fn(),
-    };
+    (window as { yinshiDesktop?: YinshiDesktopBridge }).yinshiDesktop =
+      desktopBridge(hostedRequest);
     const fetch = vi.fn();
     vi.stubGlobal("fetch", fetch);
 
@@ -37,11 +48,8 @@ describe("desktop hosted API bridge", () => {
       status: 409,
       body: { detail: "Runner Noise key must be confirmed" },
     });
-    (window as { yinshiDesktop?: YinshiDesktopBridge }).yinshiDesktop = {
-      hostedRequest,
-      importLocalRepository: vi.fn(),
-      signOut: vi.fn(),
-    };
+    (window as { yinshiDesktop?: YinshiDesktopBridge }).yinshiDesktop =
+      desktopBridge(hostedRequest);
 
     const error = await api
       .post("/api/settings/runner/capabilities", {

@@ -11,11 +11,12 @@ const runner = {
 
 describe("HostedApiGateway", () => {
   it("adds the memory-only bearer token for an allowlisted runner request", async () => {
-    const fetch = vi.fn(async (_input: string | URL, _init?: RequestInit) =>
-      new Response(JSON.stringify(runner), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      }),
+    const fetch = vi.fn(
+      async (_input: string | URL, _init?: RequestInit) =>
+        new Response(JSON.stringify(runner), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
     );
     const gateway = new HostedApiGateway({
       apiBaseUrl: "https://yinshi.example/",
@@ -45,11 +46,12 @@ describe("HostedApiGateway", () => {
   });
 
   it("adds CSRF proof to an allowlisted hosted mutation", async () => {
-    const fetch = vi.fn(async (_input: string | URL, _init?: RequestInit) =>
-      new Response(JSON.stringify({ capability: "signed" }), {
-        status: 201,
-        headers: { "Content-Type": "application/json" },
-      }),
+    const fetch = vi.fn(
+      async (_input: string | URL, _init?: RequestInit) =>
+        new Response(JSON.stringify({ capability: "signed" }), {
+          status: 201,
+          headers: { "Content-Type": "application/json" },
+        }),
     );
     const gateway = new HostedApiGateway({
       apiBaseUrl: "https://yinshi.example",
@@ -71,12 +73,78 @@ describe("HostedApiGateway", () => {
     });
   });
 
-  it("rejects route confusion, invalid bodies, and oversized responses", async () => {
-    const fetch = vi.fn(async (_input: string | URL, _init?: RequestInit) =>
-      new Response("x".repeat(1_048_577), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
+  it("allows exact hosted execution routes without exposing the bearer token", async () => {
+    const fetch = vi.fn(
+      async (_input: string | URL, _init?: RequestInit) =>
+        new Response(JSON.stringify({ model: "anthropic/claude-sonnet-4" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+    );
+    const gateway = new HostedApiGateway({
+      apiBaseUrl: "https://yinshi.example",
+      fetch,
+      getAccessToken: async () => "memory-only-access-token-value-123456789",
+    });
+    const sessionId = "a".repeat(32);
+
+    await gateway.request({
+      method: "PATCH",
+      path: `/api/sessions/${sessionId}`,
+      body: { model: "anthropic/claude-sonnet-4" },
+    });
+
+    const [url, init] = fetch.mock.calls[0]!;
+    expect(url.toString()).toBe(
+      `https://yinshi.example/api/sessions/${sessionId}`,
+    );
+    expect(url.toString()).not.toContain("memory-only-access-token");
+    expect(init?.method).toBe("PATCH");
+  });
+
+  it("allows only canonical provider OAuth callback query data", async () => {
+    const fetch = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ status: "pending" }), {
+          status: 202,
+          headers: { "Content-Type": "application/json" },
+        }),
+    );
+    const gateway = new HostedApiGateway({
+      apiBaseUrl: "https://yinshi.example",
+      fetch,
+      getAccessToken: async () => "memory-only-access-token-value-123456789",
+    });
+    const flowId = "11111111-1111-4111-8111-111111111111";
+
+    await expect(
+      gateway.request({
+        method: "GET",
+        path: `/auth/providers/openai-codex/callback?flow_id=${flowId}`,
       }),
+    ).resolves.toEqual({ status: 202, body: { status: "pending" } });
+    await expect(
+      gateway.request({
+        method: "GET",
+        path: "/auth/providers/openai-codex/callback",
+      }),
+    ).rejects.toThrow("Hosted API route is not allowed");
+    await expect(
+      gateway.request({
+        method: "POST",
+        path: `/auth/providers/openai-codex/callback?flow_id=${flowId}`,
+        body: { flow_id: flowId, authorization_input: "code" },
+      }),
+    ).rejects.toThrow("Hosted API route is not allowed");
+  });
+
+  it("rejects route confusion, invalid bodies, and oversized responses", async () => {
+    const fetch = vi.fn(
+      async (_input: string | URL, _init?: RequestInit) =>
+        new Response("x".repeat(1_048_577), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
     );
     const gateway = new HostedApiGateway({
       apiBaseUrl: "https://yinshi.example",
@@ -85,7 +153,13 @@ describe("HostedApiGateway", () => {
     });
 
     await expect(
-      gateway.request({ method: "GET", path: "/api/settings/runner/../devices" }),
+      gateway.request({
+        method: "GET",
+        path: "/api/settings/runner/../devices",
+      }),
+    ).rejects.toThrow("Hosted API route is not allowed");
+    await expect(
+      gateway.request({ method: "GET", path: "/api/untrusted/../repos" }),
     ).rejects.toThrow("Hosted API route is not allowed");
     await expect(
       gateway.request({

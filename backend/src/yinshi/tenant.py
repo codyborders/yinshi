@@ -109,6 +109,31 @@ CREATE TABLE IF NOT EXISTS messages (
     turn_status TEXT
 );
 
+CREATE TABLE IF NOT EXISTS prompt_runs (
+    id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    idempotency_key TEXT NOT NULL,
+    status TEXT DEFAULT 'starting' NOT NULL CHECK (
+        status IN ('starting', 'running', 'stopping', 'completed', 'failed', 'cancelled', 'interrupted')
+    ),
+    UNIQUE(session_id, idempotency_key)
+);
+
+CREATE TABLE IF NOT EXISTS prompt_events (
+    run_id TEXT NOT NULL REFERENCES prompt_runs(id) ON DELETE CASCADE,
+    sequence INTEGER NOT NULL CHECK (sequence >= 0),
+    event_json TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    PRIMARY KEY(run_id, sequence)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_prompt_runs_active_session
+    ON prompt_runs(session_id)
+    WHERE status IN ('starting', 'running', 'stopping');
+CREATE INDEX IF NOT EXISTS idx_prompt_events_run
+    ON prompt_events(run_id, sequence);
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_messages_turn_id ON messages(turn_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_workspace ON sessions(workspace_id);
@@ -314,7 +339,7 @@ def _migrate_plaintext_user_database(db_path: str, sqlcipher_key: bytes) -> None
         stale_path = f"{db_path}{suffix}"
         if os.path.exists(stale_path):
             os.unlink(stale_path)
-    logger.info("Migrated plaintext tenant database to encrypted storage at %s", db_path)
+    logger.info("Migrated plaintext tenant database to encrypted storage")
 
 
 def _remove_plaintext_migration_backups(db_path: str) -> None:
@@ -325,7 +350,7 @@ def _remove_plaintext_migration_backups(db_path: str) -> None:
     pattern = f"{database_path.name}.plaintext.*.bak"
     for backup_path in database_path.parent.glob(pattern):
         backup_path.unlink()
-        logger.info("Removed legacy plaintext tenant database backup %s", backup_path)
+        logger.info("Removed legacy plaintext tenant database backup")
 
 
 def _encrypted_storage_marker_exists(data_dir: str) -> bool:

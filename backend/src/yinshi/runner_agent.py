@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
-import hashlib
 import json
 import logging
 import os
@@ -22,6 +21,7 @@ from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed, InvalidStatus
 from websockets.typing import Origin
 
+from yinshi.runner_worker import RunnerWorkerManager
 from yinshi.services.runner_agent_relay import (
     RunnerAgentRelayRuntime,
     RunnerRelaySessionError,
@@ -29,7 +29,7 @@ from yinshi.services.runner_agent_relay import (
 from yinshi.services.runner_noise import load_or_create_runner_noise_keypair
 
 logger = logging.getLogger(__name__)
-RUNNER_VERSION = "0.1.0"
+RUNNER_VERSION = "0.2.0"
 RunnerStorageProfile = Literal[
     "aws_ebs_s3_files",
     "archil_shared_files",
@@ -471,12 +471,6 @@ def _runner_status_payload(config: RunnerAgentConfig) -> dict[str, Any]:
     }
 
 
-def _runner_noise_fingerprint(config: RunnerAgentConfig) -> str:
-    """Return the full pairing fingerprint printed by the runner service."""
-    keypair = load_or_create_runner_noise_keypair(config.noise_private_key_file)
-    return f"SHA256:{hashlib.sha256(keypair.public_key).hexdigest()}"
-
-
 def _runner_registration_payload(config: RunnerAgentConfig) -> dict[str, Any]:
     """Build registration fields including the persistent Noise responder identity."""
     if config.registration_token is None:
@@ -540,7 +534,10 @@ def _runner_relay_url(control_url: str) -> str:
     return urlunsplit((websocket_scheme, parsed_url.netloc, "/runner/relay", "", ""))
 
 
-def _runner_relay_runtime(config: RunnerAgentConfig) -> RunnerAgentRelayRuntime:
+def _runner_relay_runtime(
+    config: RunnerAgentConfig,
+    worker_manager: RunnerWorkerManager,
+) -> RunnerAgentRelayRuntime:
     """Load pinned key material for one fresh relay connection."""
     noise_keypair = load_or_create_runner_noise_keypair(config.noise_private_key_file)
     signing_key_text = _read_owner_only_text_file(
@@ -556,6 +553,7 @@ def _runner_relay_runtime(config: RunnerAgentConfig) -> RunnerAgentRelayRuntime:
         runner_static_private_key=noise_keypair.private_key,
         capability_signing_public_key=signing_key_bytes,
         replay_database_path=config.replay_database_file,
+        dispatcher_factory=worker_manager.dispatcher,
     )
 
 
@@ -570,7 +568,10 @@ async def _consume_runner_relay_messages(
                 runtime.handle_control(message)
                 continue
             try:
-                response = runtime.handle_binary(bytes(message), current_time=int(time.time()))
+                response = await runtime.handle_binary(
+                    bytes(message),
+                    current_time=int(time.time()),
+                )
             except RunnerRelaySessionError as error:
                 await websocket.send(
                     json.dumps(
@@ -589,9 +590,10 @@ async def _consume_runner_relay_messages(
 async def _serve_runner_relay_connection(
     config: RunnerAgentConfig,
     runner_token: str,
+    worker_manager: RunnerWorkerManager,
 ) -> None:
     """Serve one outbound relay connection until transport closure."""
-    runtime = _runner_relay_runtime(config)
+    runtime = _runner_relay_runtime(config, worker_manager)
     async with connect(
         _runner_relay_url(config.control_url),
         origin=Origin(config.control_url.rstrip("/")),
@@ -610,10 +612,17 @@ async def _serve_runner_relay_connection(
 
 async def _runner_relay_loop(config: RunnerAgentConfig, runner_token: str) -> None:
     """Reconnect the outbound relay with bounded backoff until cancelled."""
+    noise_keypair = load_or_create_runner_noise_keypair(config.noise_private_key_file)
+    worker_manager = RunnerWorkerManager(
+        data_directory=config.data_dir / "worker-runtime",
+        database_directory=config.sqlite_dir,
+        user_data_directory=config.shared_files_dir / "users",
+        runner_static_private_key=noise_keypair.private_key,
+    )
     reconnect_delay_seconds = 1.0
     while True:
         try:
-            await _serve_runner_relay_connection(config, runner_token)
+            await _serve_runner_relay_connection(config, runner_token, worker_manager)
             reconnect_delay_seconds = 1.0
         except InvalidStatus as error:
             status_code = error.response.status_code
@@ -665,7 +674,7 @@ async def run_agent(config: RunnerAgentConfig) -> None:
                 )
             _validate_capability_signing_public_key(pinned_key)
 
-        logger.info("Runner Noise fingerprint %s", _runner_noise_fingerprint(config))
+        logger.info("Runner Noise identity loaded")
         async with asyncio.TaskGroup() as task_group:
             task_group.create_task(
                 _heartbeat_loop(config, client, runner_token),

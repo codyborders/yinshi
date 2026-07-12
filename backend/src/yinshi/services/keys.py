@@ -120,13 +120,13 @@ def get_user_dek(user_id: str) -> bytes:
         dek = generate_dek()
         encrypted_dek = _wrap_user_dek(dek, normalized_user_id)
         _store_wrapped_dek(normalized_user_id, encrypted_dek)
-        logger.info("Generated DEK for user %s (legacy account)", normalized_user_id)
+        logger.info("Generated legacy account data-encryption key")
         return dek
 
     dek = _unwrap_user_dek(stored_dek, normalized_user_id)
     if _stored_dek_needs_rewrap(stored_dek):
         _store_wrapped_dek(normalized_user_id, _wrap_user_dek(dek, normalized_user_id))
-        logger.info("Rewrapped DEK for user %s with current key id", normalized_user_id)
+        logger.info("Rewrapped account data-encryption key")
     return dek
 
 

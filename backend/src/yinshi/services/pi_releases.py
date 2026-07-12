@@ -191,7 +191,7 @@ async def _read_runtime_version() -> tuple[PiRuntimeVersionPayload | None, str |
             try:
                 await sidecar.disconnect()
             except OSError:
-                logger.exception(_DISCONNECT_ERROR)
+                logger.error(_DISCONNECT_ERROR)
 
 
 async def get_pi_release_notes() -> dict[str, Any]:

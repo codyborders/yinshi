@@ -13,6 +13,7 @@ from yinshi.api.deps import (
     get_tenant,
     get_user_email,
 )
+from yinshi.config import get_settings
 from yinshi.exceptions import GitError, RepoNotFoundError, WorkspaceNotFoundError
 from yinshi.models import WorkspaceCreate, WorkspaceOut, WorkspaceUpdate
 from yinshi.services.run_coordinator import get_run_coordinator
@@ -123,15 +124,16 @@ async def remove_workspace(workspace_id: str, request: Request) -> None:
                 await coordinator.request_cancel(str(session_row["id"]))
             if tenant is not None:
                 container_manager = getattr(request.app.state, "container_manager", None)
-                if container_manager is None:
+                if container_manager is not None:
+                    await container_manager.destroy_container(
+                        tenant.user_id,
+                        runtime_id=workspace_id,
+                    )
+                elif get_settings().container_enabled:
                     raise RuntimeError("container manager is unavailable")
-                await container_manager.destroy_container(
-                    tenant.user_id,
-                    runtime_id=workspace_id,
-                )
             await delete_workspace(db, workspace_id, tenant=tenant)
         except (WorkspaceNotFoundError, RepoNotFoundError):
             raise HTTPException(status_code=404, detail="Workspace not found")
         except Exception:
-            logger.exception("Failed to delete workspace %s", workspace_id)
+            logger.error("Failed to delete workspace")
             raise HTTPException(status_code=500, detail="Failed to delete workspace")

@@ -9,6 +9,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error("[sidecar] Fatal error:", err.message);
+  console.error("[sidecar] Fatal runtime error");
   process.exit(1);
 });

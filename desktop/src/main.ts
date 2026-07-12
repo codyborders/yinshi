@@ -26,10 +26,8 @@ import {
 } from "./automaticUpdates.js";
 import { startAuthCallbackListener } from "./authCallbackListener.js";
 import { DesktopCredentialStore } from "./credentialStore.js";
-import {
-  DESKTOP_IPC_CHANNELS,
-  type HostedApiRequest,
-} from "./desktopApi.js";
+import { detectFileVaultStatus } from "./diskEncryption.js";
+import { DESKTOP_IPC_CHANNELS, type HostedApiRequest } from "./desktopApi.js";
 import { bootstrapHelperSession } from "./helperBootstrap.js";
 import { startManagedHelper, type ManagedHelper } from "./helperSupervisor.js";
 import { HostedAccessSession } from "./hostedAccessSession.js";
@@ -127,7 +125,6 @@ function developmentExecutablePath(executableName: string): string {
   throw new Error(`development ${executableName} executable is unavailable`);
 }
 
-
 function developmentLaunchConfig(
   packagedConfig: RuntimeLaunchConfig,
   profileDirectory: string,
@@ -170,7 +167,6 @@ function gitExecutablePath(): string {
   accessSync(gitCommand, constants.X_OK);
   return gitCommand;
 }
-
 
 function signInFilePath(): string {
   if (app.isPackaged) {
@@ -236,7 +232,10 @@ function requireWindow(): BrowserWindow {
   return mainWindow;
 }
 
-function requestFromAllowedPage(event: IpcMainInvokeEvent, channel: string): boolean {
+function requestFromAllowedPage(
+  event: IpcMainInvokeEvent,
+  channel: string,
+): boolean {
   const sourceUrl = event.senderFrame?.url;
   if (sourceUrl === undefined) {
     return false;
@@ -264,8 +263,10 @@ async function configureApplication(): Promise<DesktopAppController> {
     directoryPath: secureDirectory,
     safeStorage,
   });
-  const fetchAdapter = (input: string | URL, init?: RequestInit): Promise<Response> =>
-    net.fetch(input.toString(), init);
+  const fetchAdapter = (
+    input: string | URL,
+    init?: RequestInit,
+  ): Promise<Response> => net.fetch(input.toString(), init);
   const electronSessionFetch = (
     input: string | URL,
     init?: RequestInit,
@@ -298,7 +299,9 @@ async function configureApplication(): Promise<DesktopAppController> {
       return account;
     },
     signIn: async () => {
-      const listener = await startAuthCallbackListener({ timeoutMs: 5 * 60 * 1_000 });
+      const listener = await startAuthCallbackListener({
+        timeoutMs: 5 * 60 * 1_000,
+      });
       try {
         const account = await startHostedSignIn({
           apiBaseUrl: HOSTED_API_BASE_URL,
@@ -331,7 +334,10 @@ async function configureApplication(): Promise<DesktopAppController> {
         runtimeSecrets,
         shellEnvironment: shellEnvironment(),
       });
-      const launchConfig = developmentLaunchConfig(packagedConfig, profileDirectory);
+      const launchConfig = developmentLaunchConfig(
+        packagedConfig,
+        profileDirectory,
+      );
       const socketPath = launchConfig.helper.environment.SIDECAR_SOCKET_PATH;
       if (socketPath === undefined) {
         throw new Error("desktop sidecar socket path is unavailable");
@@ -345,7 +351,10 @@ async function configureApplication(): Promise<DesktopAppController> {
       });
     },
     bootstrapHelper: async (helper) =>
-      bootstrapHelperSession({ ready: helper.ready, fetch: electronSessionFetch }),
+      bootstrapHelperSession({
+        ready: helper.ready,
+        fetch: electronSessionFetch,
+      }),
     showSignIn: async () => {
       applicationOrigin = undefined;
       const window = requireWindow();
@@ -397,8 +406,74 @@ async function configureApplication(): Promise<DesktopAppController> {
       }
     },
   );
+  ipcMain.handle(DESKTOP_IPC_CHANNELS.fileVaultStatus, async (event) => {
+    if (!requestFromAllowedPage(event, DESKTOP_IPC_CHANNELS.fileVaultStatus)) {
+      throw new Error("Desktop IPC request denied");
+    }
+    return detectFileVaultStatus();
+  });
+  ipcMain.handle(DESKTOP_IPC_CHANNELS.listProfiles, async (event) => {
+    if (!requestFromAllowedPage(event, DESKTOP_IPC_CHANNELS.listProfiles)) {
+      throw new Error("Desktop IPC request denied");
+    }
+    return credentialStore.list();
+  });
+  ipcMain.handle(
+    DESKTOP_IPC_CHANNELS.switchProfile,
+    async (event, userId: string) => {
+      if (!requestFromAllowedPage(event, DESKTOP_IPC_CHANNELS.switchProfile)) {
+        throw new Error("Desktop IPC request denied");
+      }
+      if (typeof userId !== "string" || !userId || userId.length > 256) {
+        throw new Error("Desktop profile ID is invalid");
+      }
+      const previousProfile = await credentialStore.load();
+      const selectedProfile = await credentialStore.select(userId);
+      if (selectedProfile === null) {
+        throw new Error("Desktop profile requires sign-in");
+      }
+      try {
+        await appController.switchProfile();
+      } catch {
+        if (previousProfile === null) {
+          throw new Error("Desktop profile switch failed");
+        }
+        await credentialStore.select(previousProfile.user.id);
+        try {
+          await appController.switchProfile();
+        } catch {
+          throw new Error(
+            "Desktop profile switch failed and the previous profile could not restart",
+          );
+        }
+        throw new Error("Desktop profile switch failed");
+      }
+    },
+  );
+  ipcMain.handle(
+    DESKTOP_IPC_CHANNELS.removeProfile,
+    async (event, userId: string) => {
+      if (!requestFromAllowedPage(event, DESKTOP_IPC_CHANNELS.removeProfile)) {
+        throw new Error("Desktop IPC request denied");
+      }
+      if (typeof userId !== "string" || !userId || userId.length > 256) {
+        throw new Error("Desktop profile ID is invalid");
+      }
+      const profile = (await credentialStore.list()).find(
+        (candidate) => candidate.user.id === userId,
+      );
+      if (profile === undefined) return;
+      if (profile.active) {
+        await appController.signOut();
+      }
+      await rm(profileDirectoryPath(userId), { force: true, recursive: true });
+      await credentialStore.remove(userId);
+    },
+  );
   ipcMain.handle(DESKTOP_IPC_CHANNELS.importLocalRepository, async (event) => {
-    if (!requestFromAllowedPage(event, DESKTOP_IPC_CHANNELS.importLocalRepository)) {
+    if (
+      !requestFromAllowedPage(event, DESKTOP_IPC_CHANNELS.importLocalRepository)
+    ) {
       throw new Error("Desktop IPC request denied");
     }
     const profile = hostedAccessSession.profile;
@@ -484,7 +559,10 @@ async function configureApplication(): Promise<DesktopAppController> {
         throw new Error("Local repository registration response is invalid");
       }
       const repository = value as Record<string, unknown>;
-      if (typeof repository.id !== "string" || typeof repository.name !== "string") {
+      if (
+        typeof repository.id !== "string" ||
+        typeof repository.name !== "string"
+      ) {
         throw new Error("Local repository registration response is invalid");
       }
       return {
@@ -501,9 +579,11 @@ async function configureApplication(): Promise<DesktopAppController> {
 
 async function startApplication(): Promise<void> {
   session.defaultSession.setPermissionCheckHandler(() => false);
-  session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => {
-    callback(false);
-  });
+  session.defaultSession.setPermissionRequestHandler(
+    (_webContents, _permission, callback) => {
+      callback(false);
+    },
+  );
   session.defaultSession.on("will-download", (event) => {
     event.preventDefault();
   });

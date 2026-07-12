@@ -35,6 +35,19 @@ afterEach(async () => {
   );
 });
 
+function profile(userId: string, email: string): DesktopCredentialProfile {
+  return {
+    version: 1,
+    refreshToken: `refresh-${userId}`,
+    refreshTokenExpiresAt: 1_800_000_000,
+    accountLease: `lease-${userId}`,
+    accountLeaseExpiresAt: 1_700_000_000,
+    signingPublicKey: `key-${userId}`,
+    deviceId: `device-${userId}`,
+    user: { id: userId, email },
+  };
+}
+
 it("round-trips encrypted credentials through owner-only atomic storage", async () => {
   const directoryPath = await mkdtemp(path.join(os.tmpdir(), "yinshi-credentials-"));
   temporaryDirectories.push(directoryPath);
@@ -62,4 +75,36 @@ it("round-trips encrypted credentials through owner-only atomic storage", async 
   expect(directoryMode).toBe(0o700);
   expect(fileMode).toBe(0o600);
   await expect(store.load()).resolves.toEqual(profile);
+});
+
+it("switches profiles and keeps signed-out local profile metadata", async () => {
+  const directoryPath = await mkdtemp(path.join(os.tmpdir(), "yinshi-profiles-"));
+  temporaryDirectories.push(directoryPath);
+  const store = new DesktopCredentialStore({
+    directoryPath,
+    safeStorage: new TestSafeStorage(),
+  });
+  const first = profile("user-one", "one@example.com");
+  const second = profile("user-two", "two@example.com");
+
+  await store.save(first);
+  await store.save(second);
+  await expect(store.list()).resolves.toEqual([
+    { user: first.user, hasCredentials: true, active: false },
+    { user: second.user, hasCredentials: true, active: true },
+  ]);
+
+  await expect(store.select(first.user.id)).resolves.toEqual(first);
+  await expect(store.load()).resolves.toEqual(first);
+  await store.clear();
+
+  await expect(store.load()).resolves.toBeNull();
+  await expect(store.list()).resolves.toEqual([
+    { user: first.user, hasCredentials: false, active: false },
+    { user: second.user, hasCredentials: true, active: false },
+  ]);
+  await store.remove(first.user.id);
+  await expect(store.list()).resolves.toEqual([
+    { user: second.user, hasCredentials: true, active: false },
+  ]);
 });

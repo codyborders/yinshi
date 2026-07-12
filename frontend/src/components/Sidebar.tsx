@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import {
   ApiError,
   api,
+  type CloudRunner,
   type GitHubInstallation,
   type Repo,
   type SessionInfo,
@@ -11,12 +12,24 @@ import {
 import { useAuth } from "../hooks/useAuth";
 import { useTheme } from "../hooks/useTheme";
 import { DEFAULT_SESSION_MODEL } from "../models/sessionModels";
+import { listRunnerRepositories } from "../runner/repositories";
+import { runtimeResourceId } from "../runtime/runtimeRef";
+import {
+  createRuntimeTransport,
+  type RuntimeRef,
+  type RuntimeTransport,
+} from "../runtime/runtimeTransport";
 import {
   deriveRepoName,
   isGithubShorthand,
   isGitUrl,
   isLocalPath,
 } from "../utils/repo";
+
+interface LocatedRepo {
+  readonly repository: Repo;
+  readonly runtime: RuntimeRef;
+}
 
 const COLORS = [
   "bg-[#c23b22]",
@@ -28,6 +41,19 @@ const COLORS = [
   "bg-[#6b5040]",
   "bg-[#8a6848]",
 ];
+
+function runtimeIdentity(runtime: RuntimeRef): string {
+  if (runtime.location === "byoc") {
+    return `byoc:${runtime.runnerId}`;
+  }
+  return runtime.location;
+}
+
+function runtimeLabel(runtime: RuntimeRef): string {
+  if (runtime.location === "byoc") return "BYOC";
+  if (runtime.location === "local") return "Local";
+  return "Hosted";
+}
 
 function repoColor(name: string): string {
   let hash = 0;
@@ -42,8 +68,18 @@ function statusDotClass(hasRunning: boolean, workspaceState: string): string {
 }
 
 const PlusIcon = (
-  <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
-    <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+  <svg
+    className="h-4 w-4"
+    fill="none"
+    viewBox="0 0 24 24"
+    strokeWidth={2}
+    stroke="currentColor"
+  >
+    <path
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      d="M12 4.5v15m7.5-7.5h-15"
+    />
   </svg>
 );
 
@@ -95,14 +131,34 @@ function githubNoticeFromSearch(search: string): SidebarNotice | null {
 function ThemeIcon({ theme }: { theme: string }) {
   if (theme === "light") {
     return (
-      <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
-        <path strokeLinecap="round" strokeLinejoin="round" d="M21.752 15.002A9.72 9.72 0 0 1 18 15.75c-5.385 0-9.75-4.365-9.75-9.75 0-1.33.266-2.597.748-3.752A9.753 9.753 0 0 0 3 11.25C3 16.635 7.365 21 12.75 21a9.753 9.753 0 0 0 9.002-5.998Z" />
+      <svg
+        className="h-4 w-4"
+        fill="none"
+        viewBox="0 0 24 24"
+        strokeWidth={1.5}
+        stroke="currentColor"
+      >
+        <path
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          d="M21.752 15.002A9.72 9.72 0 0 1 18 15.75c-5.385 0-9.75-4.365-9.75-9.75 0-1.33.266-2.597.748-3.752A9.753 9.753 0 0 0 3 11.25C3 16.635 7.365 21 12.75 21a9.753 9.753 0 0 0 9.002-5.998Z"
+        />
       </svg>
     );
   }
   return (
-    <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
-      <path strokeLinecap="round" strokeLinejoin="round" d="M12 3v2.25m6.364.386-1.591 1.591M21 12h-2.25m-.386 6.364-1.591-1.591M12 18.75V21m-4.773-4.227-1.591 1.591M5.25 12H3m4.227-4.773L5.636 5.636M15.75 12a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0Z" />
+    <svg
+      className="h-4 w-4"
+      fill="none"
+      viewBox="0 0 24 24"
+      strokeWidth={1.5}
+      stroke="currentColor"
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M12 3v2.25m6.364.386-1.591 1.591M21 12h-2.25m-.386 6.364-1.591-1.591M12 18.75V21m-4.773-4.227-1.591 1.591M5.25 12H3m4.227-4.773L5.636 5.636M15.75 12a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0Z"
+      />
     </svg>
   );
 }
@@ -113,21 +169,85 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const navigate = useNavigate();
   const { status, email, logout } = useAuth();
   const { theme, toggle: toggleTheme } = useTheme();
-  const [repos, setRepos] = useState<Repo[]>([]);
-  const [githubInstallations, setGithubInstallations] = useState<GitHubInstallation[]>([]);
+  const defaultRuntime: RuntimeRef = window.yinshiDesktop
+    ? { location: "local" }
+    : { location: "hosted" };
+  const [repos, setRepos] = useState<LocatedRepo[]>([]);
+  const [availableRuntimes, setAvailableRuntimes] = useState<RuntimeRef[]>([
+    defaultRuntime,
+  ]);
+  const [githubInstallations, setGithubInstallations] = useState<
+    GitHubInstallation[]
+  >([]);
   const [githubNotice, setGithubNotice] = useState<SidebarNotice | null>(null);
   const [loading, setLoading] = useState(true);
   const [repoLoadError, setRepoLoadError] = useState<string | null>(null);
+  const [locationErrors, setLocationErrors] = useState<string[]>([]);
   const [showImport, setShowImport] = useState(false);
 
   async function loadRepos() {
     setLoading(true);
     setRepoLoadError(null);
+    setLocationErrors([]);
     try {
       const data = await api.get<Repo[]>("/api/repos");
-      setRepos(data);
-    } catch (error) {
-      console.error("Failed to load repositories", error);
+      const locatedRepositories: LocatedRepo[] = data.map((repository) => ({
+        repository,
+        runtime: defaultRuntime,
+      }));
+      const unavailableLocations: string[] = [];
+      const discoveredRuntimes: RuntimeRef[] = [defaultRuntime];
+      if (window.yinshiDesktop !== undefined) {
+        try {
+          const hostedTransport = createRuntimeTransport({
+            location: "hosted",
+          });
+          const hostedRepositories =
+            await hostedTransport.get<Repo[]>("/api/repos");
+          discoveredRuntimes.push({ location: "hosted" });
+          locatedRepositories.push(
+            ...hostedRepositories.map((repository) => ({
+              repository,
+              runtime: { location: "hosted" as const },
+            })),
+          );
+        } catch {
+          unavailableLocations.push("Hosted repositories are unavailable.");
+        }
+      }
+      try {
+        const runner = await api.get<CloudRunner | null>(
+          "/api/settings/runner",
+        );
+        if (runner?.noise_key_confirmed && runner.noise_public_key) {
+          const runnerTarget = {
+            runnerId: runner.id,
+            runnerPublicKey: runner.noise_public_key,
+          };
+          discoveredRuntimes.push({
+            location: "byoc",
+            runnerId: runner.id,
+            runnerPublicKey: runner.noise_public_key,
+          });
+          const runnerRepositories = await listRunnerRepositories(runnerTarget);
+          locatedRepositories.push(
+            ...runnerRepositories.map((repository) => ({
+              repository,
+              runtime: {
+                location: "byoc" as const,
+                runnerId: runner.id,
+                runnerPublicKey: runner.noise_public_key as string,
+              },
+            })),
+          );
+        }
+      } catch {
+        unavailableLocations.push("BYOC repositories are unavailable.");
+      }
+      setLocationErrors(unavailableLocations);
+      setAvailableRuntimes(discoveredRuntimes);
+      setRepos(locatedRepositories);
+    } catch {
       setRepoLoadError("Failed to load repositories.");
     } finally {
       setLoading(false);
@@ -145,10 +265,15 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
     }
 
     try {
-      const data = await api.get<GitHubInstallation[]>("/api/github/installations");
+      const installationTransport = createRuntimeTransport(
+        window.yinshiDesktop ? { location: "hosted" } : defaultRuntime,
+      );
+      const data = await installationTransport.get<GitHubInstallation[]>(
+        "/api/github/installations",
+      );
       setGithubInstallations(data);
-    } catch (error) {
-      console.error("Failed to load GitHub installations", error);
+    } catch {
+      setGithubInstallations([]);
     }
   }
 
@@ -180,17 +305,28 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
     );
   }, [location.pathname, location.search, navigate, status]);
 
-  function handleImported(repo: Repo | null) {
+  function handleImported(
+    repo: Repo | null,
+    runtime: RuntimeRef = defaultRuntime,
+  ) {
     if (repo) {
-      setRepos((prev) => [repo, ...prev]);
+      setRepos((prev) => [{ repository: repo, runtime }, ...prev]);
       setRepoLoadError(null);
     }
     setShowImport(false);
   }
 
-  function handleRepoUpdated(updatedRepo: Repo) {
-    setRepos((prev) =>
-      prev.map((repo) => (repo.id === updatedRepo.id ? updatedRepo : repo)),
+  function handleRepoUpdated(updatedRepo: Repo, runtime: RuntimeRef) {
+    setRepos((previousRepositories) =>
+      previousRepositories.map((locatedRepository) => {
+        const sameRuntime =
+          runtimeIdentity(locatedRepository.runtime) ===
+          runtimeIdentity(runtime);
+        if (sameRuntime && locatedRepository.repository.id === updatedRepo.id) {
+          return { repository: updatedRepo, runtime };
+        }
+        return locatedRepository;
+      }),
     );
   }
 
@@ -214,6 +350,7 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
           onDone={handleImported}
           canConnectGitHub={status === "authenticated"}
           githubInstallations={githubInstallations}
+          runtimes={availableRuntimes}
         />
       )}
 
@@ -249,18 +386,31 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
           </div>
         )}
 
+        {!loading &&
+          locationErrors.map((locationError) => (
+            <div
+              key={locationError}
+              className="mx-4 mt-3 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200"
+            >
+              {locationError}
+            </div>
+          ))}
+
         {!loading && !repoLoadError && repos.length === 0 && !showImport && (
           <div className="px-4 py-8 text-center text-sm text-gray-600">
             No repositories yet.
           </div>
         )}
 
-        {repos.map((repo) => (
+        {repos.map(({ repository, runtime }) => (
           <RepoSection
-            key={repo.id}
-            repo={repo}
+            key={`${runtimeIdentity(runtime)}:${repository.id}`}
+            repo={repository}
+            runtime={runtime}
             activeSessionId={activeSessionId}
-            onRepoUpdated={handleRepoUpdated}
+            onRepoUpdated={(updatedRepository) =>
+              handleRepoUpdated(updatedRepository, runtime)
+            }
             onNavigate={onNavigate}
           />
         ))}
@@ -282,19 +432,40 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
             </span>
             <div className="flex items-center gap-2">
               <button
-                onClick={() => { navigate("/app/settings"); onNavigate?.(); }}
+                onClick={() => {
+                  navigate("/app/settings");
+                  onNavigate?.();
+                }}
                 className="shrink-0 text-gray-600 hover:text-gray-400"
                 title="Settings"
               >
-                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.325.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 0 1 1.37.49l1.296 2.247a1.125 1.125 0 0 1-.26 1.431l-1.003.827c-.293.241-.438.613-.43.992a7.723 7.723 0 0 1 0 .255c-.008.378.137.75.43.991l1.004.827c.424.35.534.955.26 1.43l-1.298 2.247a1.125 1.125 0 0 1-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.47 6.47 0 0 1-.22.128c-.331.183-.581.495-.644.869l-.213 1.281c-.09.543-.56.94-1.11.94h-2.594c-.55 0-1.019-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 0 1-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 0 1-1.369-.49l-1.297-2.247a1.125 1.125 0 0 1 .26-1.431l1.004-.827c.292-.24.437-.613.43-.991a6.932 6.932 0 0 1 0-.255c.007-.38-.138-.751-.43-.992l-1.004-.827a1.125 1.125 0 0 1-.26-1.43l1.297-2.247a1.125 1.125 0 0 1 1.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.086.22-.128.332-.183.582-.495.644-.869l.214-1.28Z" />
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" />
+                <svg
+                  className="h-4 w-4"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  strokeWidth={1.5}
+                  stroke="currentColor"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.325.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 0 1 1.37.49l1.296 2.247a1.125 1.125 0 0 1-.26 1.431l-1.003.827c-.293.241-.438.613-.43.992a7.723 7.723 0 0 1 0 .255c-.008.378.137.75.43.991l1.004.827c.424.35.534.955.26 1.43l-1.298 2.247a1.125 1.125 0 0 1-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.47 6.47 0 0 1-.22.128c-.331.183-.581.495-.644.869l-.213 1.281c-.09.543-.56.94-1.11.94h-2.594c-.55 0-1.019-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 0 1-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 0 1-1.369-.49l-1.297-2.247a1.125 1.125 0 0 1 .26-1.431l1.004-.827c.292-.24.437-.613.43-.991a6.932 6.932 0 0 1 0-.255c.007-.38-.138-.751-.43-.992l-1.004-.827a1.125 1.125 0 0 1-.26-1.43l1.297-2.247a1.125 1.125 0 0 1 1.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.086.22-.128.332-.183.582-.495.644-.869l.214-1.28Z"
+                  />
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z"
+                  />
                 </svg>
               </button>
               <button
                 onClick={toggleTheme}
                 className="shrink-0 text-gray-600 hover:text-gray-400"
-                title={theme === "light" ? "Switch to dark mode" : "Switch to light mode"}
+                title={
+                  theme === "light"
+                    ? "Switch to dark mode"
+                    : "Switch to light mode"
+                }
               >
                 <ThemeIcon theme={theme} />
               </button>
@@ -310,7 +481,9 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
           <button
             onClick={toggleTheme}
             className="text-gray-600 hover:text-gray-400"
-            title={theme === "light" ? "Switch to dark mode" : "Switch to light mode"}
+            title={
+              theme === "light" ? "Switch to dark mode" : "Switch to light mode"
+            }
           >
             <ThemeIcon theme={theme} />
           </button>
@@ -322,18 +495,21 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
 
 function RepoSection({
   repo,
+  runtime,
   activeSessionId,
   onRepoUpdated,
   onNavigate,
 }: {
   repo: Repo;
+  runtime: RuntimeRef;
   activeSessionId: string | undefined;
   onRepoUpdated: (repo: Repo) => void;
   onNavigate?: () => void;
 }) {
   const navigate = useNavigate();
+  const transport = useMemo(() => createRuntimeTransport(runtime), [runtime]);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
-  const [expanded, setExpanded] = useState(true);
+  const [expanded, setExpanded] = useState(runtime.location !== "byoc");
   const [loaded, setLoaded] = useState(false);
   const [creating, setCreating] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
@@ -350,40 +526,42 @@ function RepoSection({
 
   useEffect(() => {
     if (expanded && !loaded) {
-      api
+      transport
         .get<Workspace[]>(`/api/repos/${repo.id}/workspaces`)
         .then((data) => {
           setWorkspaces(data);
           setWorkspaceError(null);
           setLoaded(true);
         })
-        .catch((error) => {
-          console.error(`Failed to load workspaces for repo ${repo.id}`, error);
+        .catch(() => {
           setWorkspaceError("Failed to load workspaces.");
         });
     }
-  }, [expanded, loaded, repo.id]);
+  }, [expanded, loaded, repo.id, transport]);
 
   async function createBranch(e: React.MouseEvent) {
     e.stopPropagation();
     setCreating(true);
     setWorkspaceError(null);
     try {
-      const ws = await api.post<Workspace>(
+      const ws = await transport.post<Workspace>(
         `/api/repos/${repo.id}/workspaces`,
         {},
       );
       setWorkspaces((prev) => [ws, ...prev]);
       setExpanded(true);
       // Auto-create a session and navigate to it
-      const session = await api.post<SessionInfo>(
+      const session = await transport.post<SessionInfo>(
         `/api/workspaces/${ws.id}/sessions`,
         { model: DEFAULT_SESSION_MODEL },
       );
-      navigate(`/app/session/${session.id}`);
+      navigate(
+        `/app/session/${runtimeResourceId(runtime, session.id, {
+          desktop: window.yinshiDesktop !== undefined,
+        })}`,
+      );
       onNavigate?.();
-    } catch (error) {
-      console.error(`Failed to create workspace for repo ${repo.id}`, error);
+    } catch {
       setWorkspaceError("Failed to create workspace.");
     } finally {
       setCreating(false);
@@ -392,18 +570,15 @@ function RepoSection({
 
   async function handleStateChange(workspaceId: string, newState: string) {
     try {
-      const updated = await api.patch<Workspace>(
+      const updated = await transport.patch<Workspace>(
         `/api/workspaces/${workspaceId}`,
         { state: newState },
       );
       setWorkspaces((prev) =>
         prev.map((ws) => (ws.id === workspaceId ? updated : ws)),
       );
-    } catch (error) {
-      console.error(
-        `Failed to update workspace ${workspaceId} to ${newState}`,
-        error,
-      );
+    } catch {
+      setWorkspaceError("Failed to update workspace state.");
     }
   }
 
@@ -412,17 +587,14 @@ function RepoSection({
     setSettingsError(null);
     setSettingsNotice(null);
     try {
-      const updatedRepo = await api.patch<Repo>(`/api/repos/${repo.id}`, {
+      const updatedRepo = await transport.patch<Repo>(`/api/repos/${repo.id}`, {
         agents_md: agentsMdDraft.trim() ? agentsMdDraft : null,
       });
       onRepoUpdated(updatedRepo);
       setAgentsMdDraft(updatedRepo.agents_md ?? "");
       setSettingsNotice("Repo instructions saved.");
-    } catch (error) {
-      console.error(`Failed to update repo ${repo.id} settings`, error);
-      setSettingsError(
-        error instanceof Error ? error.message : "Failed to save repo instructions.",
-      );
+    } catch {
+      setSettingsError("Failed to save repo instructions.");
     } finally {
       setSettingsSaving(false);
     }
@@ -467,6 +639,9 @@ function RepoSection({
           <span className="flex-1 truncate text-left text-sm font-medium text-gray-200">
             {repo.name}
           </span>
+          <span className="rounded border border-gray-700 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-gray-500">
+            {runtimeLabel(runtime)}
+          </span>
         </button>
         <button
           onClick={createBranch}
@@ -477,8 +652,18 @@ function RepoSection({
           {creating ? (
             <div className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-gray-500 border-t-transparent" />
           ) : (
-            <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+            <svg
+              className="h-3.5 w-3.5"
+              fill="none"
+              viewBox="0 0 24 24"
+              strokeWidth={2}
+              stroke="currentColor"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M12 4.5v15m7.5-7.5h-15"
+              />
             </svg>
           )}
         </button>
@@ -515,7 +700,8 @@ function RepoSection({
                   AGENTS.md override
                 </label>
                 <p className="mt-1 text-xs text-gray-400">
-                  Used as the repo-level runtime instructions for new sessions from this repo.
+                  Used as the repo-level runtime instructions for new sessions
+                  from this repo.
                 </p>
                 <textarea
                   id={`repo-agents-md-${repo.id}`}
@@ -566,6 +752,8 @@ function RepoSection({
             <WorkspaceItem
               key={ws.id}
               workspace={ws}
+              runtime={runtime}
+              transport={transport}
               activeSessionId={activeSessionId}
               onNavigate={onNavigate}
               onArchive={() => handleStateChange(ws.id, "archived")}
@@ -585,7 +773,11 @@ function RepoSection({
                   strokeWidth={2}
                   stroke="currentColor"
                 >
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M8.25 4.5l7.5 7.5-7.5 7.5"
+                  />
                 </svg>
                 Archived ({archivedWorkspaces.length})
               </button>
@@ -594,6 +786,8 @@ function RepoSection({
                   <WorkspaceItem
                     key={ws.id}
                     workspace={ws}
+                    runtime={runtime}
+                    transport={transport}
                     activeSessionId={activeSessionId}
                     onNavigate={onNavigate}
                     onRestore={() => handleStateChange(ws.id, "ready")}
@@ -609,12 +803,16 @@ function RepoSection({
 
 function WorkspaceItem({
   workspace,
+  runtime,
+  transport,
   activeSessionId,
   onNavigate,
   onArchive,
   onRestore,
 }: {
   workspace: Workspace;
+  runtime: RuntimeRef;
+  transport: RuntimeTransport;
   activeSessionId: string | undefined;
   onNavigate?: () => void;
   onArchive?: () => void;
@@ -623,48 +821,57 @@ function WorkspaceItem({
   const navigate = useNavigate();
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [loadedSessions, setLoadedSessions] = useState(false);
+  const [sessionError, setSessionError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!loadedSessions) {
-      api
+      transport
         .get<SessionInfo[]>(`/api/workspaces/${workspace.id}/sessions`)
         .then((data) => {
           setSessions(data);
+          setSessionError(null);
           setLoadedSessions(true);
         })
-        .catch((error) => {
-          console.error(
-            `Failed to load sessions for workspace ${workspace.id}`,
-            error,
-          );
+        .catch(() => {
+          setSessionError("Failed to load sessions.");
         });
     }
-  }, [workspace.id, loadedSessions]);
+  }, [workspace.id, loadedSessions, transport]);
 
   async function openOrCreateSession() {
     if (sessions.length > 0) {
-      navigate(`/app/session/${sessions[0].id}`);
+      navigate(
+        `/app/session/${runtimeResourceId(runtime, sessions[0].id, {
+          desktop: window.yinshiDesktop !== undefined,
+        })}`,
+      );
       onNavigate?.();
       return;
     }
 
     try {
-      const session = await api.post<SessionInfo>(
+      const session = await transport.post<SessionInfo>(
         `/api/workspaces/${workspace.id}/sessions`,
         { model: DEFAULT_SESSION_MODEL },
       );
       setSessions([session]);
-      navigate(`/app/session/${session.id}`);
-      onNavigate?.();
-    } catch (error) {
-      console.error(
-        `Failed to open or create a session for workspace ${workspace.id}`,
-        error,
+      navigate(
+        `/app/session/${runtimeResourceId(runtime, session.id, {
+          desktop: window.yinshiDesktop !== undefined,
+        })}`,
       );
+      onNavigate?.();
+    } catch {
+      setSessionError("Failed to create a session.");
     }
   }
 
-  const isActive = sessions.some((s) => s.id === activeSessionId);
+  const isActive = sessions.some(
+    (session) =>
+      runtimeResourceId(runtime, session.id, {
+        desktop: window.yinshiDesktop !== undefined,
+      }) === activeSessionId,
+  );
   const hasRunning = sessions.some((s) => s.status === "running");
 
   return (
@@ -681,30 +888,59 @@ function WorkspaceItem({
           className={`h-2 w-2 shrink-0 rounded-full ${statusDotClass(hasRunning, workspace.state)}`}
         />
         <div className="flex-1 min-w-0">
-          <div className="truncate text-sm text-gray-300">
-            {workspace.name}
-          </div>
+          <div className="truncate text-sm text-gray-300">{workspace.name}</div>
+          {sessionError ? (
+            <div className="truncate text-[10px] text-red-400">
+              {sessionError}
+            </div>
+          ) : null}
         </div>
       </button>
       {onArchive && (
         <button
-          onClick={(e) => { e.stopPropagation(); onArchive(); }}
+          onClick={(e) => {
+            e.stopPropagation();
+            onArchive();
+          }}
           className="shrink-0 ml-1 text-gray-600 opacity-0 group-hover:opacity-100 hover:text-gray-300 transition-opacity"
           title="Archive"
         >
-          <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" d="m20.25 7.5-.625 10.632a2.25 2.25 0 0 1-2.247 2.118H6.622a2.25 2.25 0 0 1-2.247-2.118L3.75 7.5M10 11.25h4M3.375 7.5h17.25c.621 0 1.125-.504 1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125H3.375c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125Z" />
+          <svg
+            className="h-3.5 w-3.5"
+            fill="none"
+            viewBox="0 0 24 24"
+            strokeWidth={1.5}
+            stroke="currentColor"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              d="m20.25 7.5-.625 10.632a2.25 2.25 0 0 1-2.247 2.118H6.622a2.25 2.25 0 0 1-2.247-2.118L3.75 7.5M10 11.25h4M3.375 7.5h17.25c.621 0 1.125-.504 1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125H3.375c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125Z"
+            />
           </svg>
         </button>
       )}
       {onRestore && (
         <button
-          onClick={(e) => { e.stopPropagation(); onRestore(); }}
+          onClick={(e) => {
+            e.stopPropagation();
+            onRestore();
+          }}
           className="shrink-0 ml-1 text-gray-600 opacity-0 group-hover:opacity-100 hover:text-gray-300 transition-opacity"
           title="Restore"
         >
-          <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" d="M9 15 3 9m0 0 6-6M3 9h12a6 6 0 0 1 0 12h-3" />
+          <svg
+            className="h-3.5 w-3.5"
+            fill="none"
+            viewBox="0 0 24 24"
+            strokeWidth={1.5}
+            stroke="currentColor"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              d="M9 15 3 9m0 0 6-6M3 9h12a6 6 0 0 1 0 12h-3"
+            />
           </svg>
         </button>
       )}
@@ -716,16 +952,35 @@ function ImportForm({
   onDone,
   canConnectGitHub,
   githubInstallations,
+  runtimes,
 }: {
-  onDone: (repo: Repo | null) => void;
+  onDone: (repo: Repo | null, runtime?: RuntimeRef) => void;
   canConnectGitHub: boolean;
   githubInstallations: GitHubInstallation[];
+  runtimes: RuntimeRef[];
 }) {
   const [input, setInput] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [errorAction, setErrorAction] = useState<ImportAction | null>(null);
+  const [selectedRuntimeIdentity, setSelectedRuntimeIdentity] = useState(
+    runtimeIdentity(runtimes[0]),
+  );
   const desktopBridge = window.yinshiDesktop;
+  const selectedRuntime =
+    runtimes.find(
+      (runtime) => runtimeIdentity(runtime) === selectedRuntimeIdentity,
+    ) ?? runtimes[0];
+
+  useEffect(() => {
+    if (
+      !runtimes.some(
+        (runtime) => runtimeIdentity(runtime) === selectedRuntimeIdentity,
+      )
+    ) {
+      setSelectedRuntimeIdentity(runtimeIdentity(runtimes[0]));
+    }
+  }, [runtimes, selectedRuntimeIdentity]);
 
   async function handleDesktopImport() {
     if (!desktopBridge) return;
@@ -736,9 +991,11 @@ function ImportForm({
       const result = await desktopBridge.importLocalRepository();
       if (result.status === "cancelled") return;
       const repo = await api.get<Repo>(`/api/repos/${result.repository.id}`);
-      onDone(repo);
+      onDone(repo, { location: "local" });
     } catch {
-      setError("Local repository import failed. Check the repository and try again.");
+      setError(
+        "Local repository import failed. Check the repository and try again.",
+      );
     } finally {
       setSubmitting(false);
     }
@@ -758,8 +1015,14 @@ function ImportForm({
       if (isGitUrl(value)) {
         body.remote_url = value;
       } else if (isLocalPath(value)) {
+        if (selectedRuntime.location !== "local") {
+          setError("Local paths can only be imported to This Mac.");
+          return;
+        }
         if (desktopBridge) {
-          setError("Use Choose local repository so Yinshi can keep the selected checkout untouched.");
+          setError(
+            "Use Choose local repository so Yinshi can keep the selected checkout untouched.",
+          );
           return;
         }
         body.local_path = value;
@@ -769,8 +1032,9 @@ function ImportForm({
         setError("Enter a GitHub URL, owner/repo, or local path.");
         return;
       }
-      const repo = await api.post<Repo>("/api/repos", body);
-      onDone(repo);
+      const importTransport = createRuntimeTransport(selectedRuntime);
+      const repo = await importTransport.post<Repo>("/api/repos", body);
+      onDone(repo, selectedRuntime);
     } catch (err) {
       if (err instanceof ApiError) {
         setError(err.message);
@@ -796,8 +1060,36 @@ function ImportForm({
   }
 
   return (
-    <form onSubmit={handleSubmit} className="border-b border-gray-800 px-4 py-3 space-y-2">
-      {canConnectGitHub && (
+    <form
+      onSubmit={handleSubmit}
+      className="border-b border-gray-800 px-4 py-3 space-y-2"
+    >
+      <div>
+        <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-gray-500">
+          Import to
+        </p>
+        <div className="flex flex-wrap gap-1.5">
+          {runtimes.map((runtime) => {
+            const identity = runtimeIdentity(runtime);
+            const selected = identity === runtimeIdentity(selectedRuntime);
+            return (
+              <button
+                key={identity}
+                type="button"
+                onClick={() => setSelectedRuntimeIdentity(identity)}
+                className={`rounded border px-2 py-1 text-xs ${
+                  selected
+                    ? "border-gray-500 bg-gray-800 text-gray-100"
+                    : "border-gray-800 text-gray-500 hover:text-gray-300"
+                }`}
+              >
+                {runtimeLabel(runtime)}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+      {canConnectGitHub && selectedRuntime.location === "hosted" && (
         <div className="rounded-md border border-gray-800 bg-gray-950/60 px-3 py-2">
           <div className="flex items-center justify-between gap-3">
             <div>
@@ -833,22 +1125,39 @@ function ImportForm({
           )}
         </div>
       )}
-      {desktopBridge && (
+      {desktopBridge && selectedRuntime.location === "local" && (
         <button
           type="button"
           onClick={handleDesktopImport}
           disabled={submitting}
           className="flex w-full items-center justify-center gap-2 rounded-md border border-gray-700 bg-gray-900 px-3 py-2 text-xs font-medium text-gray-200 hover:border-gray-500 hover:bg-gray-800 disabled:opacity-40"
         >
-          <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" aria-hidden="true">
-            <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 9.75h16.5m-15-4.5h4.129c.414 0 .81.171 1.094.472l1.054 1.117c.283.3.679.472 1.093.472h6.13c.828 0 1.5.672 1.5 1.5v8.939a1.5 1.5 0 0 1-1.5 1.5H5.25a1.5 1.5 0 0 1-1.5-1.5v-11a1.5 1.5 0 0 1 1.5-1.5Z" />
+          <svg
+            className="h-4 w-4"
+            fill="none"
+            viewBox="0 0 24 24"
+            strokeWidth={1.5}
+            stroke="currentColor"
+            aria-hidden="true"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              d="M3.75 9.75h16.5m-15-4.5h4.129c.414 0 .81.171 1.094.472l1.054 1.117c.283.3.679.472 1.093.472h6.13c.828 0 1.5.672 1.5 1.5v8.939a1.5 1.5 0 0 1-1.5 1.5H5.25a1.5 1.5 0 0 1-1.5-1.5v-11a1.5 1.5 0 0 1 1.5-1.5Z"
+            />
           </svg>
-          {submitting ? "Importing local repository..." : "Choose local repository"}
+          {submitting
+            ? "Importing local repository..."
+            : "Choose local repository"}
         </button>
       )}
       <input
         type="text"
-        placeholder={desktopBridge ? "GitHub URL or user/repo" : "GitHub URL, user/repo, or local path"}
+        placeholder={
+          selectedRuntime.location === "local" && !desktopBridge
+            ? "GitHub URL, user/repo, or local path"
+            : "HTTPS GitHub URL or user/repo"
+        }
         value={input}
         onChange={(e) => setInput(e.target.value)}
         className="w-full rounded-md bg-gray-800 px-3 py-2 text-sm text-gray-100 placeholder-gray-500 outline-none focus:ring-1 focus:ring-blue-500"

@@ -1,10 +1,11 @@
 import { ApiError, api, type PiConfigCommands } from "./client";
 import type { SlashCommand } from "../components/SlashCommandMenu";
+import type { RuntimeTransport } from "../runtime/runtimeTransport";
 
 // Module-level cache shared across every Session mount. Without this, every
 // session navigation triggers a new HTTP request which triggers the sidecar
 // to re-evaluate every extension module (moduleCache:false in pi-mono).
-let cachedPromise: Promise<SlashCommand[]> | null = null;
+const cachedPromises = new Map<string, Promise<SlashCommand[]>>();
 const subscribers = new Set<() => void>();
 
 function toSlashCommand(command: PiConfigCommands["commands"][number]): SlashCommand {
@@ -15,9 +16,16 @@ function toSlashCommand(command: PiConfigCommands["commands"][number]): SlashCom
   };
 }
 
-async function fetchCommands(): Promise<SlashCommand[]> {
+function transportKey(runtimeTransport?: RuntimeTransport): string {
+  const runtime = runtimeTransport?.runtime;
+  if (!runtime) return "default";
+  return runtime.location === "byoc" ? `byoc:${runtime.runnerId}` : runtime.location;
+}
+
+async function fetchCommands(runtimeTransport?: RuntimeTransport): Promise<SlashCommand[]> {
   try {
-    const payload = await api.get<PiConfigCommands>(
+    const commandClient = runtimeTransport ?? api;
+    const payload = await commandClient.get<PiConfigCommands>(
       "/api/settings/pi-config/commands",
     );
     return payload.commands.map(toSlashCommand);
@@ -32,23 +40,29 @@ async function fetchCommands(): Promise<SlashCommand[]> {
   }
 }
 
-export function getCachedPiCommands(): Promise<SlashCommand[]> {
-  if (cachedPromise === null) {
-    const promise = fetchCommands().catch((error) => {
-      // Clear the cached promise on failure so the next caller can retry.
-      // Guard against stale in-flight requests clearing a newer cache entry.
-      if (cachedPromise === promise) {
-        cachedPromise = null;
-      }
-      throw error;
-    });
-    cachedPromise = promise;
-  }
-  return cachedPromise;
+export function getCachedPiCommands(
+  runtimeTransport?: RuntimeTransport,
+): Promise<SlashCommand[]> {
+  const key = transportKey(runtimeTransport);
+  const cachedPromise = cachedPromises.get(key);
+  if (cachedPromise) return cachedPromise;
+  const promise = fetchCommands(runtimeTransport).catch((error) => {
+    // Clear only this location after failure so another runtime's cache survives.
+    if (cachedPromises.get(key) === promise) {
+      cachedPromises.delete(key);
+    }
+    throw error;
+  });
+  cachedPromises.set(key, promise);
+  return promise;
 }
 
-export function invalidatePiCommands(): void {
-  cachedPromise = null;
+export function invalidatePiCommands(runtimeTransport?: RuntimeTransport): void {
+  if (runtimeTransport) {
+    cachedPromises.delete(transportKey(runtimeTransport));
+  } else {
+    cachedPromises.clear();
+  }
   for (const notify of subscribers) {
     notify();
   }

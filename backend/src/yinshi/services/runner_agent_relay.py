@@ -10,7 +10,7 @@ from yinshi.services.runner_noise_session import (
     RunnerCapabilityReplayStore,
     RunnerNoiseSession,
 )
-from yinshi.services.runner_rpc import EncryptedRunnerRpcSession
+from yinshi.services.runner_rpc import DispatcherFactory, EncryptedRunnerRpcSession
 
 _UUID_BYTES_LENGTH = 16
 _RELAY_FRAME_BYTES_MAX = 65_535
@@ -49,6 +49,7 @@ class RunnerAgentRelayRuntime:
         runner_static_private_key: bytes,
         capability_signing_public_key: bytes,
         replay_database_path: Path,
+        dispatcher_factory: DispatcherFactory | None = None,
     ) -> None:
         if not isinstance(runner_static_private_key, bytes) or len(runner_static_private_key) != 32:
             raise ValueError("runner_static_private_key must contain exactly 32 bytes")
@@ -58,10 +59,13 @@ class RunnerAgentRelayRuntime:
             raise ValueError("capability_signing_public_key must contain exactly 32 bytes")
         if not isinstance(replay_database_path, Path):
             raise TypeError("replay_database_path must be a pathlib.Path")
+        if dispatcher_factory is not None and not callable(dispatcher_factory):
+            raise TypeError("dispatcher_factory must be callable or None")
 
         self._runner_static_private_key = bytes(runner_static_private_key)
         self._capability_signing_public_key = bytes(capability_signing_public_key)
         self._replay_store = RunnerCapabilityReplayStore(replay_database_path)
+        self._dispatcher_factory = dispatcher_factory
         self._runner_id: str | None = None
         self._sessions: dict[str, EncryptedRunnerRpcSession] = {}
 
@@ -89,7 +93,7 @@ class RunnerAgentRelayRuntime:
             return
         raise ValueError("Runner relay control message type is unsupported")
 
-    def handle_binary(self, frame: bytes, *, current_time: int) -> bytes:
+    async def handle_binary(self, frame: bytes, *, current_time: int) -> bytes:
         """Route one UUID-prefixed ciphertext frame through its encrypted RPC session."""
         if not isinstance(frame, bytes):
             raise TypeError("Runner relay frame must be bytes")
@@ -102,7 +106,7 @@ class RunnerAgentRelayRuntime:
         if session is None:
             raise ValueError("Runner relay transfer is not open")
         try:
-            response = session.handle_frame(
+            response = await session.handle_frame(
                 frame[_UUID_BYTES_LENGTH:],
                 current_time=current_time,
             )
@@ -151,4 +155,5 @@ class RunnerAgentRelayRuntime:
         self._sessions[transfer_id] = EncryptedRunnerRpcSession(
             transfer_id=transfer_id,
             noise_session=noise_session,
+            dispatcher_factory=self._dispatcher_factory,
         )

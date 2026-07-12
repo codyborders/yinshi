@@ -127,9 +127,11 @@ function mockCatalog({
   });
 }
 
+const TEST_SESSION_ID = "a".repeat(32);
+
 function sessionMetadata(overrides: Record<string, unknown> = {}) {
   return {
-    id: "session-123",
+    id: TEST_SESSION_ID,
     created_at: "2026-04-26T00:00:00Z",
     updated_at: "2026-04-26T00:00:00Z",
     workspace_id: "workspace-123",
@@ -149,10 +151,10 @@ function mockSessionApi(
       ? sessionMetadataValue
       : sessionMetadata(sessionMetadataValue);
   apiGetMock.mockImplementation((path: string) => {
-    if (path === "/api/sessions/session-123/messages") {
+    if (path === `/api/sessions/${TEST_SESSION_ID}/messages`) {
       return Promise.resolve(messages);
     }
-    if (path === "/api/sessions/session-123") {
+    if (path === `/api/sessions/${TEST_SESSION_ID}`) {
       return Promise.resolve(metadata);
     }
     throw new Error(`Unexpected GET path: ${path}`);
@@ -161,7 +163,7 @@ function mockSessionApi(
 
 function renderSession() {
   return render(
-    <MemoryRouter initialEntries={["/app/sessions/session-123"]}>
+    <MemoryRouter initialEntries={[`/app/sessions/${TEST_SESSION_ID}`]}>
       <Routes>
         <Route path="/app/sessions/:id" element={<Session />} />
       </Routes>
@@ -348,7 +350,7 @@ describe("Session", () => {
       {
         id: "message-1",
         created_at: "2026-04-26T00:00:00Z",
-        session_id: "session-123",
+        session_id: TEST_SESSION_ID,
         role: "assistant",
         content: "Done",
         full_message: JSON.stringify({

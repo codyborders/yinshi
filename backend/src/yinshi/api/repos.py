@@ -92,7 +92,7 @@ async def _resolve_clone_access(
     except GitHubAccessError as error:
         raise _github_http_exception(error)
     except GitHubAppError as error:
-        logger.exception("GitHub integration failed while resolving %s", remote_url)
+        logger.error("GitHub integration failed during repository credential resolution")
         raise HTTPException(status_code=502, detail=str(error))
 
 
@@ -293,6 +293,8 @@ def _delete_managed_repo_root(
     """Delete a Yinshi-owned checkout while preserving registered local sources."""
     root_path = Path(str(repo["root_path"]))
     if tenant is not None:
+        if not is_path_inside(str(root_path), tenant.data_dir):
+            return
         validate_user_path(tenant, str(root_path))
         managed_root = True
     else:
@@ -335,19 +337,16 @@ async def delete_repo(repo_id: str, request: Request) -> None:
                     await coordinator.request_cancel(str(session_row["id"]))
                 if tenant is not None:
                     container_manager = getattr(request.app.state, "container_manager", None)
-                    if container_manager is None:
+                    if container_manager is not None:
+                        await container_manager.destroy_container(
+                            tenant.user_id,
+                            runtime_id=workspace_id,
+                        )
+                    elif get_settings().container_enabled:
                         raise RuntimeError("container manager is unavailable")
-                    await container_manager.destroy_container(
-                        tenant.user_id,
-                        runtime_id=workspace_id,
-                    )
                 await delete_workspace(db, workspace_id, tenant=tenant)
             except (GitError, OSError, RuntimeError, ValueError):
-                logger.exception(
-                    "Failed to delete workspace %s while deleting repo %s",
-                    workspace_id,
-                    repo_id,
-                )
+                logger.error("Failed to delete workspace while deleting repository")
                 raise HTTPException(
                     status_code=500,
                     detail="Repository cleanup failed; deletion can be retried",
@@ -355,7 +354,7 @@ async def delete_repo(repo_id: str, request: Request) -> None:
         try:
             _delete_managed_repo_root(row, tenant)
         except (OSError, RuntimeError, ValueError):
-            logger.exception("Failed to delete repository checkout %s", repo_id)
+            logger.error("Failed to delete repository checkout")
             raise HTTPException(
                 status_code=500,
                 detail="Repository cleanup failed; deletion can be retried",

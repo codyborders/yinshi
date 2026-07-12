@@ -94,6 +94,43 @@ h1 {
   line-height: 1.6;
 }
 
+.profile-list {
+  max-width: 430px;
+  margin: -10px 0 22px;
+}
+
+.profile-label {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.profile-button {
+  width: 100%;
+  margin-top: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--card);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.profile-button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.profile-button:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
 .signin-button {
   min-width: 190px;
   height: 46px;

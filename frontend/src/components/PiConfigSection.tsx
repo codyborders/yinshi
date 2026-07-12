@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from "react";
 
 import { usePiConfig } from "../hooks/usePiConfig";
+import type { RuntimeTransport } from "../runtime/runtimeTransport";
 
 const CATEGORY_LABELS: Record<string, string> = {
   skills: "Skills",
@@ -25,7 +26,11 @@ function formatTimestamp(timestamp: string | null): string {
   return new Date(timestamp).toLocaleString();
 }
 
-export default function PiConfigSection() {
+export default function PiConfigSection({
+  transport,
+}: {
+  transport: RuntimeTransport;
+}) {
   const {
     config,
     loading,
@@ -38,7 +43,7 @@ export default function PiConfigSection() {
     syncConfig,
     removeConfig,
     toggleCategory,
-  } = usePiConfig();
+  } = usePiConfig(transport);
   const [mode, setMode] = useState<"upload" | "github">("upload");
   const [repoUrl, setRepoUrl] = useState("");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);

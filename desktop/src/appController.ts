@@ -113,6 +113,19 @@ export class DesktopAppController {
     });
   }
 
+  switchProfile(): Promise<void> {
+    return this.#enqueue(async () => {
+      if (!this.#started || this.#stopped) {
+        throw new Error("desktop app controller is not active");
+      }
+      const session = await this.#dependencies.resumeAccount();
+      if (session.mode === "signed-out") {
+        throw new DesktopSignInRequiredError();
+      }
+      await this.#loadProfile(session.profile);
+    });
+  }
+
   signOut(): Promise<void> {
     return this.#enqueue(async () => {
       if (!this.#started || this.#stopped) {

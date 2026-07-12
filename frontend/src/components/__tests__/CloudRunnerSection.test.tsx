@@ -1,15 +1,29 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { mockCheckHealth, mockDelete, mockGet, mockPost } = vi.hoisted(() => ({
+const {
+  mockCheckHealth,
+  mockDelete,
+  mockGet,
+  mockImportRunnerRepository,
+  mockListRunnerRepositories,
+  mockPost,
+} = vi.hoisted(() => ({
   mockCheckHealth: vi.fn(),
   mockDelete: vi.fn(),
   mockGet: vi.fn(),
+  mockImportRunnerRepository: vi.fn(),
+  mockListRunnerRepositories: vi.fn(),
   mockPost: vi.fn(),
 }));
 
 vi.mock("../../runner/encryptedRunnerClient", () => ({
   checkEncryptedRunnerHealth: mockCheckHealth,
+}));
+
+vi.mock("../../runner/repositories", () => ({
+  importRunnerRepository: mockImportRunnerRepository,
+  listRunnerRepositories: mockListRunnerRepositories,
 }));
 
 vi.mock("../../api/client", () => ({  api: {
@@ -50,6 +64,8 @@ describe("CloudRunnerSection pairing", () => {
     mockGet.mockReset();
     mockPost.mockReset();
     mockCheckHealth.mockReset();
+    mockImportRunnerRepository.mockReset();
+    mockListRunnerRepositories.mockReset();
     mockGet.mockResolvedValue(runner(false));
   });
 
@@ -70,6 +86,46 @@ describe("CloudRunnerSection pairing", () => {
       ),
     );
     expect(await screen.findByText("Runner identity paired")).toBeTruthy();
+  });
+
+  it("lists and imports BYOC repositories through encrypted worker RPC", async () => {
+    const repository = {
+      id: "repo-1",
+      created_at: "2026-07-10T00:00:00Z",
+      updated_at: "2026-07-10T00:00:00Z",
+      name: "project",
+      remote_url: "https://example.com/team/project.git",
+      root_path: "/runner/repos/project",
+      custom_prompt: null,
+      agents_md: null,
+    };
+    mockGet.mockResolvedValue(runner(true));
+    mockListRunnerRepositories.mockResolvedValue([repository]);
+    mockImportRunnerRepository.mockResolvedValue(repository);
+    render(<CloudRunnerSection />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Load BYOC repositories" }));
+    expect(await screen.findByText("project")).toBeTruthy();
+    expect(screen.getByText("BYOC")).toBeTruthy();
+
+    fireEvent.change(screen.getByLabelText("Repository name"), {
+      target: { value: "project" },
+    });
+    fireEvent.change(screen.getByLabelText("Repository HTTPS URL"), {
+      target: { value: "https://example.com/team/project.git" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Import to BYOC" }));
+
+    await waitFor(() =>
+      expect(mockImportRunnerRepository).toHaveBeenCalledWith(
+        {
+          runnerId: "runner-1",
+          runnerPublicKey: "MeAwP9ZBjS-MDni5HyLoyu0Pvkhlbc9HZ-SDT3Abj2I",
+        },
+        "project",
+        "https://example.com/team/project.git",
+      ),
+    );
   });
 
   it("checks worker health through the encrypted runner channel", async () => {

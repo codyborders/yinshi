@@ -237,7 +237,7 @@ def auth_disabled() -> bool:
     return settings.disable_auth
 
 
-def _resolve_tenant_from_desktop_token(token: str) -> TenantContext | None:
+def resolve_tenant_from_desktop_token(token: str) -> TenantContext | None:
     """Resolve an active desktop device and account from one access token."""
     if not isinstance(token, str) or not token:
         return None
@@ -274,6 +274,15 @@ class AuthMiddleware(BaseHTTPMiddleware):
     # `/rum/` is the Datadog browser-intake proxy; the SDK cannot send auth
     # cookies or the `X-Requested-With` CSRF header, so keep it public.
     OPEN_PREFIXES = ("/auth/", "/health", "/runner/", "/static/", "/rum/")
+    PROTECTED_AUTH_PREFIX = "/auth/providers/"
+
+    @classmethod
+    def _is_open_path(cls, path: str) -> bool:
+        if not isinstance(path, str) or not path.startswith("/"):
+            raise ValueError("authentication path must be absolute")
+        if path.startswith(cls.PROTECTED_AUTH_PREFIX):
+            return False
+        return any(path.startswith(prefix) for prefix in cls.OPEN_PREFIXES)
 
     async def dispatch(
         self,
@@ -291,7 +300,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         # Allow open paths
-        if any(path.startswith(p) for p in self.OPEN_PREFIXES):
+        if self._is_open_path(path):
             return await call_next(request)
 
         authorization = request.headers.get("Authorization")
@@ -300,7 +309,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
             scheme, separator, bearer_token = authorization.partition(" ")
             if scheme.lower() != "bearer" or separator != " " or not bearer_token:
                 return Response(status_code=401, content="Invalid bearer token")
-            tenant = _resolve_tenant_from_desktop_token(bearer_token)
+            tenant = resolve_tenant_from_desktop_token(bearer_token)
             if tenant is None:
                 return Response(status_code=401, content="Invalid bearer token")
         else:

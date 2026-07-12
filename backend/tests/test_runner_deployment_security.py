@@ -12,7 +12,8 @@ def test_runner_template_uses_pinned_non_root_release() -> None:
 
     assert "YinshiReleaseCommit:" in template_text
     assert "PackageInstallCommand:" not in template_text
-    assert "@${YinshiReleaseCommit}#subdirectory=backend" in template_text
+    assert 'checkout --detach "${YinshiReleaseCommit}"' in template_text
+    assert "PYTHONPATH=/opt/yinshi-runner/source/backend/src" in template_text
     assert "User=yinshi-runner" in template_text
     assert "User=root" not in template_text
 

@@ -38,6 +38,7 @@ RUNNER_SCOPES = frozenset(
         "repository.read",
         "repository.write",
         "session.read",
+        "session.stream",
         "session.write",
         "terminal",
         "transfer.read",

@@ -34,7 +34,8 @@ def get_db_for_request(request: Request) -> Iterator[sqlite3.Connection]:
     per-tenant database. Otherwise falls back to the shared legacy DB.
     """
     tenant = get_tenant(request)
-    if tenant:
+    application_mode = getattr(request.app.state, "mode", None)
+    if tenant and application_mode != "desktop":
         with get_user_db(tenant) as db:
             yield db
     else:

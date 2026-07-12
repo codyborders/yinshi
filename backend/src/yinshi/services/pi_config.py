@@ -807,7 +807,7 @@ async def _finalize_github_import(
             error_message=None,
         )
     except Exception:
-        logger.exception("Pi config GitHub import failed for user %s", user_id[:8])
+        logger.error("Pi config GitHub import failed")
         _remove_path(config_root)
         clear_pi_settings(user_id)
         _update_pi_config_row(
@@ -972,7 +972,7 @@ async def sync_pi_config(
         _set_last_synced_at_now(normalized_user_id)
         return cast(dict[str, Any], get_pi_config(normalized_user_id))
     except Exception:
-        logger.exception("Pi config sync failed for user %s", normalized_user_id[:8])
+        logger.error("Pi config sync failed")
         _update_pi_config_row(
             normalized_user_id,
             status="error",

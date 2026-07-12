@@ -6,8 +6,6 @@ const useCatalogMock = vi.fn();
 const apiGetMock = vi.fn();
 const apiPostMock = vi.fn();
 const apiDeleteMock = vi.fn();
-const pollAuthFlowMock = vi.fn();
-const submitAuthFlowInputMock = vi.fn();
 
 vi.mock("../../hooks/useAuth", () => ({
   useAuth: () => useAuthMock(),
@@ -31,8 +29,6 @@ vi.mock("../../api/client", () => ({
     post: (...args: unknown[]) => apiPostMock(...args),
     delete: (...args: unknown[]) => apiDeleteMock(...args),
   },
-  pollAuthFlow: (...args: unknown[]) => pollAuthFlowMock(...args),
-  submitAuthFlowInput: (...args: unknown[]) => submitAuthFlowInputMock(...args),
 }));
 
 import Settings from "../Settings";
@@ -67,6 +63,9 @@ describe("Settings", () => {
       if (path === "/api/settings/runner") {
         return Promise.resolve(null);
       }
+      if (path.startsWith("/auth/providers/openai-codex/callback?")) {
+        return new Promise(() => {});
+      }
       throw new Error(`Unexpected GET path: ${path}`);
     });
     apiDeleteMock.mockResolvedValue(undefined);
@@ -82,19 +81,20 @@ describe("Settings", () => {
           manual_input_submitted: false,
         });
       }
+      if (path === "/auth/providers/openai-codex/callback") {
+        return Promise.resolve({
+          status: "pending",
+          provider: "openai-codex",
+          flow_id: "flow-openai-codex",
+          instructions: "Open the browser and sign in.",
+          progress: ["Received manual OAuth callback input."],
+          manual_input_required: true,
+          manual_input_prompt: "Paste the final redirect URL or authorization code here.",
+          manual_input_submitted: true,
+          error: null,
+        });
+      }
       throw new Error(`Unexpected POST path: ${path}`);
-    });
-    pollAuthFlowMock.mockImplementation(() => new Promise(() => {}));
-    submitAuthFlowInputMock.mockResolvedValue({
-      status: "pending",
-      provider: "openai-codex",
-      flow_id: "flow-openai-codex",
-      instructions: "Open the browser and sign in.",
-      progress: ["Received manual OAuth callback input."],
-      manual_input_required: true,
-      manual_input_prompt: "Paste the final redirect URL or authorization code here.",
-      manual_input_submitted: true,
-      error: null,
     });
     vi.spyOn(window, "open").mockImplementation(() => null);
   });
@@ -127,10 +127,13 @@ describe("Settings", () => {
     fireEvent.click(screen.getByRole("button", { name: "Submit Callback URL" }));
 
     await waitFor(() => {
-      expect(submitAuthFlowInputMock).toHaveBeenCalledWith(
-        "openai-codex",
-        "flow-openai-codex",
-        "http://localhost:1455/auth/callback?code=test-code&state=test-state",
+      expect(apiPostMock).toHaveBeenCalledWith(
+        "/auth/providers/openai-codex/callback",
+        {
+          flow_id: "flow-openai-codex",
+          authorization_input:
+            "http://localhost:1455/auth/callback?code=test-code&state=test-state",
+        },
       );
     });
 

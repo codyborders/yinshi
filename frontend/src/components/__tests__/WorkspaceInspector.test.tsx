@@ -1,11 +1,17 @@
 import "@testing-library/jest-dom/vitest";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { RuntimeTransport } from "../../runtime/runtimeTransport";
 
 const WORKSPACE_ID = "workspace-1";
-const WORKSPACE_TERMINAL_URL = `ws://test.local/api/workspaces/${WORKSPACE_ID}/terminal`;
 const TERMINAL_RECONNECT_DELAY_MS = 2000;
-const TERMINAL_TEMPORARY_FAILURE_CLOSE_CODE = 1011;
 
 const LIGHT_TERMINAL_BACKGROUND = "rgb(240, 230, 211)";
 const LIGHT_TERMINAL_FOREGROUND = "rgb(45, 37, 32)";
@@ -16,14 +22,29 @@ const TERMINAL_CURSOR = "#c23b22";
 type TerminalMock = { options: { theme?: unknown } };
 
 const apiGetMock = vi.fn();
+const openRuntimeTerminalMock = vi.fn();
+const terminalRestartMock = vi.fn();
 const terminalResetMock = vi.fn();
 const terminalInstances: TerminalMock[] = [];
+const terminalEventFinishers: Array<() => void> = [];
+const runtimeTransport: RuntimeTransport = {
+  runtime: { location: "hosted" },
+  get: (...args) => apiGetMock(...args),
+  post: vi.fn(),
+  patch: vi.fn(),
+  put: vi.fn(),
+  delete: vi.fn(),
+  upload: vi.fn(),
+};
 
 vi.mock("../../api/client", () => ({
   api: {
     get: (...args: unknown[]) => apiGetMock(...args),
   },
-  workspaceTerminalUrl: (workspaceId: string) => `ws://test.local/api/workspaces/${workspaceId}/terminal`,
+}));
+
+vi.mock("../../runtime/terminalChannel", () => ({
+  openRuntimeTerminal: (...args: unknown[]) => openRuntimeTerminalMock(...args),
 }));
 
 vi.mock("@xterm/xterm", () => ({
@@ -73,39 +94,6 @@ vi.mock("@xterm/addon-fit", () => ({
 
 import WorkspaceInspector from "../WorkspaceInspector";
 
-class FakeWebSocket extends EventTarget {
-  static readonly CONNECTING = 0;
-  static readonly OPEN = 1;
-  static readonly CLOSING = 2;
-  static readonly CLOSED = 3;
-  static instances: FakeWebSocket[] = [];
-
-  readyState = FakeWebSocket.CONNECTING;
-  readonly sentMessages: string[] = [];
-  readonly url: string;
-
-  constructor(url: string | URL) {
-    super();
-    this.url = String(url);
-    FakeWebSocket.instances.push(this);
-  }
-
-  send(message: string): void {
-    this.sentMessages.push(message);
-  }
-
-  close(): void {
-    this.readyState = FakeWebSocket.CLOSED;
-  }
-
-  closeFromServer(code = 1006): void {
-    this.readyState = FakeWebSocket.CLOSED;
-    const event = new Event("close") as Event & { code: number };
-    Object.defineProperty(event, "code", { value: code });
-    this.dispatchEvent(event);
-  }
-}
-
 class FakeResizeObserver {
   observe(): void {
     return undefined;
@@ -116,13 +104,33 @@ class FakeResizeObserver {
   }
 }
 
-async function waitForWebSocketCount(count: number): Promise<void> {
+async function waitForTerminalChannelCount(count: number): Promise<void> {
   await waitFor(() => {
-    expect(FakeWebSocket.instances).toHaveLength(count);
+    expect(openRuntimeTerminalMock).toHaveBeenCalledTimes(count);
   });
 }
 
-function setTerminalThemeVariables(background: string, foreground: string): void {
+function runtimeTerminalChannel() {
+  let finishEvents: () => void = () => undefined;
+  const eventsFinished = new Promise<void>((resolve) => {
+    finishEvents = resolve;
+  });
+  terminalEventFinishers.push(finishEvents);
+  return {
+    close: vi.fn(async () => finishEvents()),
+    events: async function* () {
+      await eventsFinished;
+    },
+    resize: vi.fn().mockResolvedValue(undefined),
+    restart: terminalRestartMock.mockResolvedValue(undefined),
+    sendInput: vi.fn().mockResolvedValue(undefined),
+  };
+}
+
+function setTerminalThemeVariables(
+  background: string,
+  foreground: string,
+): void {
   const rootStyle = document.documentElement.style;
   rootStyle.setProperty("--gray-900", background);
   rootStyle.setProperty("--gray-200", foreground);
@@ -141,36 +149,49 @@ describe("WorkspaceInspector terminal", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    FakeWebSocket.instances = [];
+    terminalEventFinishers.length = 0;
     terminalInstances.length = 0;
     apiGetMock.mockResolvedValue({ files: [] });
+    openRuntimeTerminalMock.mockImplementation(async () =>
+      runtimeTerminalChannel(),
+    );
     setTerminalThemeVariables("240 230 211", "45 37 32");
-    vi.stubGlobal("WebSocket", FakeWebSocket);
     vi.stubGlobal("ResizeObserver", FakeResizeObserver);
   });
 
-  it("reconnects when Restart is clicked after the terminal socket closes", async () => {
-    render(<WorkspaceInspector workspaceId={WORKSPACE_ID} refreshKey={0} />);
+  it("restarts the location-aware terminal channel", async () => {
+    render(
+      <WorkspaceInspector
+        workspaceId={WORKSPACE_ID}
+        transport={runtimeTransport}
+        refreshKey={0}
+      />,
+    );
 
-    await waitForWebSocketCount(1);
+    await waitForTerminalChannelCount(1);
+    expect(openRuntimeTerminalMock).toHaveBeenCalledWith(
+      runtimeTransport,
+      WORKSPACE_ID,
+      expect.objectContaining({ cols: 80, rows: 24 }),
+    );
 
-    act(() => {
-      FakeWebSocket.instances[0].closeFromServer();
-    });
-
-    expect(screen.getByText("Disconnected. Retrying...")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Restart" }));
 
-    await waitForWebSocketCount(2);
     expect(terminalResetMock).toHaveBeenCalled();
-    expect(FakeWebSocket.instances[1].url).toBe(WORKSPACE_TERMINAL_URL);
-    expect(screen.getByText("Connecting...")).toBeInTheDocument();
+    expect(terminalRestartMock).toHaveBeenCalledOnce();
+    expect(openRuntimeTerminalMock).toHaveBeenCalledOnce();
   });
 
   it("updates terminal colors when the document theme changes", async () => {
-    render(<WorkspaceInspector workspaceId={WORKSPACE_ID} refreshKey={0} />);
+    render(
+      <WorkspaceInspector
+        workspaceId={WORKSPACE_ID}
+        transport={runtimeTransport}
+        refreshKey={0}
+      />,
+    );
 
-    await waitForWebSocketCount(1);
+    await waitForTerminalChannelCount(1);
     expect(terminalInstances[0].options.theme).toMatchObject({
       background: LIGHT_TERMINAL_BACKGROUND,
       foreground: LIGHT_TERMINAL_FOREGROUND,
@@ -189,24 +210,30 @@ describe("WorkspaceInspector terminal", () => {
     });
   });
 
-  it("automatically retries when the terminal runtime is temporarily unavailable", async () => {
-    render(<WorkspaceInspector workspaceId={WORKSPACE_ID} refreshKey={0} />);
+  it("automatically retries when the terminal event journal disconnects", async () => {
+    render(
+      <WorkspaceInspector
+        workspaceId={WORKSPACE_ID}
+        transport={runtimeTransport}
+        refreshKey={0}
+      />,
+    );
 
-    await waitForWebSocketCount(1);
+    await waitForTerminalChannelCount(1);
 
     vi.useFakeTimers();
     try {
-      act(() => {
-        FakeWebSocket.instances[0].closeFromServer(TERMINAL_TEMPORARY_FAILURE_CLOSE_CODE);
+      await act(async () => {
+        terminalEventFinishers[0]();
+        await Promise.resolve();
       });
 
-      expect(screen.getByText("Terminal unavailable. Retrying...")).toBeInTheDocument();
+      expect(screen.getByText("Disconnected. Retrying...")).toBeInTheDocument();
       await act(async () => {
         await vi.advanceTimersByTimeAsync(TERMINAL_RECONNECT_DELAY_MS);
       });
 
-      expect(FakeWebSocket.instances).toHaveLength(2);
-      expect(FakeWebSocket.instances[1].url).toBe(WORKSPACE_TERMINAL_URL);
+      expect(openRuntimeTerminalMock).toHaveBeenCalledTimes(2);
     } finally {
       vi.useRealTimers();
     }

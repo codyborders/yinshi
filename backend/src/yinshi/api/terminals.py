@@ -249,7 +249,7 @@ async def _run_desktop_terminal_proxy(
     except WebSocketDisconnect:
         logger.info("Desktop terminal detached")
     except (ConnectionError, OSError, ValueError, json.JSONDecodeError):
-        logger.exception("Desktop terminal proxy failed")
+        logger.error("Desktop terminal proxy failed")
         try:
             await websocket.send_json({"type": "error", "error": "Terminal proxy failed"})
         except RuntimeError:
@@ -304,7 +304,7 @@ async def workspace_terminal(websocket: WebSocket, workspace_id: str) -> None:
         await websocket.close(code=_TERMINAL_CLOSE_POLICY)
         return
     except (GitError, OSError):
-        logger.exception("Failed to prepare terminal workspace: workspace=%s", workspace_id)
+        logger.error("Failed to prepare terminal workspace")
         await websocket.close(code=_TERMINAL_CLOSE_UNAVAILABLE)
         return
 
@@ -321,7 +321,7 @@ async def workspace_terminal(websocket: WebSocket, workspace_id: str) -> None:
             workspace_id=workspace_id,
         )
     except (ContainerStartError, ContainerNotReadyError):
-        logger.exception("Failed to start terminal runtime: workspace=%s", workspace_id)
+        logger.error("Failed to start terminal runtime")
         await websocket.close(code=_TERMINAL_CLOSE_UNAVAILABLE)
         return
 
@@ -337,7 +337,7 @@ async def workspace_terminal(websocket: WebSocket, workspace_id: str) -> None:
 
     terminal_id = runtime.runtime_id or workspace_id
     await websocket.accept()
-    logger.info("Terminal attached: workspace=%s", workspace_id)
+    logger.info("Terminal attached")
 
     reader: asyncio.StreamReader | None = None
     writer: asyncio.StreamWriter | None = None
@@ -404,9 +404,9 @@ async def workspace_terminal(websocket: WebSocket, workspace_id: str) -> None:
             for task in done:
                 task.result()
     except WebSocketDisconnect:
-        logger.info("Terminal detached: workspace=%s", workspace_id)
+        logger.info("Terminal detached")
     except (ConnectionError, OSError, ValueError, json.JSONDecodeError):
-        logger.exception("Terminal proxy failed: workspace=%s", workspace_id)
+        logger.error("Terminal proxy failed")
         try:
             await websocket.send_json({"type": "error", "error": "Terminal proxy failed"})
         except RuntimeError:

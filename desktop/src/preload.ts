@@ -17,6 +17,14 @@ const desktopApi: YinshiDesktopApi = Object.freeze({
     ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.importLocalRepository),
   hostedRequest: async (request: HostedApiRequest) =>
     ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.hostedRequest, request),
+  fileVaultStatus: async () =>
+    ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.fileVaultStatus),
+  listProfiles: async () =>
+    ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.listProfiles),
+  switchProfile: async (userId: string) =>
+    ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.switchProfile, userId),
+  removeProfile: async (userId: string) =>
+    ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.removeProfile, userId),
 });
 
 contextBridge.exposeInMainWorld("yinshiDesktop", desktopApi);

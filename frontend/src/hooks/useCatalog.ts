@@ -1,18 +1,22 @@
 import { useEffect, useState } from "react";
 
 import { api, type ProviderCatalog } from "../api/client";
+import type { RuntimeTransport } from "../runtime/runtimeTransport";
 
-export function useCatalog() {
+export function useCatalog(runtimeTransport?: RuntimeTransport) {
   const [catalog, setCatalog] = useState<ProviderCatalog | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
+    setLoading(true);
+    setError(null);
+    const catalogClient = runtimeTransport ?? api;
 
     async function loadCatalog() {
       try {
-        const loadedCatalog = await api.get<ProviderCatalog>("/api/catalog");
+        const loadedCatalog = await catalogClient.get<ProviderCatalog>("/api/catalog");
         if (cancelled) {
           return;
         }
@@ -34,7 +38,7 @@ export function useCatalog() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [runtimeTransport]);
 
   return { catalog, loading, error, setCatalog };
 }

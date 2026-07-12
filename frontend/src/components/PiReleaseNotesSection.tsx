@@ -3,6 +3,7 @@ import remarkGfm from "remark-gfm";
 
 import { type PiPackageRelease, type PiReleaseNotes } from "../api/client";
 import { usePiReleaseNotes } from "../hooks/usePiReleaseNotes";
+import type { RuntimeTransport } from "../runtime/runtimeTransport";
 
 function formatDate(timestamp: string | null): string {
   if (!timestamp) {
@@ -107,8 +108,12 @@ function RuntimeSummary({ releaseNotes }: { releaseNotes: PiReleaseNotes }) {
   );
 }
 
-export default function PiReleaseNotesSection() {
-  const { releaseNotes, loading, error, refresh } = usePiReleaseNotes();
+export default function PiReleaseNotesSection({
+  transport,
+}: {
+  transport: RuntimeTransport;
+}) {
+  const { releaseNotes, loading, error, refresh } = usePiReleaseNotes(transport);
 
   return (
     <section className="space-y-4" aria-labelledby="pi-release-notes-heading">

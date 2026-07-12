@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
-import { ApiError, api, type PiConfig } from "../api/client";
+import { ApiError, type PiConfig } from "../api/client";
+import type { RuntimeTransport } from "../runtime/runtimeTransport";
 import { invalidatePiCommands } from "../api/piCommandsCache";
 
 export interface UsePiConfigReturn {
@@ -16,6 +17,15 @@ export interface UsePiConfigReturn {
   syncConfig: () => Promise<boolean>;
   removeConfig: () => Promise<boolean>;
   toggleCategory: (category: string, enabled: boolean) => Promise<boolean>;
+}
+
+function errorStatus(error: unknown): number | null {
+  if (error instanceof ApiError) return error.status;
+  if (error !== null && typeof error === "object" && "status" in error) {
+    const status = (error as { status?: unknown }).status;
+    return typeof status === "number" ? status : null;
+  }
+  return null;
 }
 
 function getErrorMessage(error: unknown, fallback: string): string {
@@ -39,7 +49,7 @@ function buildEnabledCategories(
   return Array.from(nextCategories);
 }
 
-export function usePiConfig(): UsePiConfigReturn {
+export function usePiConfig(transport: RuntimeTransport): UsePiConfigReturn {
   const [config, setConfig] = useState<PiConfig | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -53,7 +63,7 @@ export function usePiConfig(): UsePiConfigReturn {
       setLoading(true);
     }
     try {
-      const nextConfig = await api.get<PiConfig>("/api/settings/pi-config");
+      const nextConfig = await transport.get<PiConfig>("/api/settings/pi-config");
       if (!isMountedRef.current) {
         return;
       }
@@ -63,7 +73,7 @@ export function usePiConfig(): UsePiConfigReturn {
       if (!isMountedRef.current) {
         return;
       }
-      if (requestError instanceof ApiError && requestError.status === 404) {
+      if (errorStatus(requestError) === 404) {
         setConfig(null);
         setError(null);
       } else if (!polling) {
@@ -84,13 +94,13 @@ export function usePiConfig(): UsePiConfigReturn {
     setImporting(true);
     setError(null);
     try {
-      const nextConfig = await api.post<PiConfig>("/api/settings/pi-config/github", {
+      const nextConfig = await transport.post<PiConfig>("/api/settings/pi-config/github", {
         repo_url: repoUrl,
       });
       if (isMountedRef.current) {
         setConfig(nextConfig);
       }
-      invalidatePiCommands();
+      invalidatePiCommands(transport);
       return true;
     } catch (requestError) {
       if (isMountedRef.current) {
@@ -108,11 +118,14 @@ export function usePiConfig(): UsePiConfigReturn {
     setImporting(true);
     setError(null);
     try {
-      const nextConfig = await api.upload<PiConfig>("/api/settings/pi-config/upload", file);
+      const nextConfig = await transport.upload<PiConfig>(
+        "/api/settings/pi-config/upload",
+        file,
+      );
       if (isMountedRef.current) {
         setConfig(nextConfig);
       }
-      invalidatePiCommands();
+      invalidatePiCommands(transport);
       return true;
     } catch (requestError) {
       if (isMountedRef.current) {
@@ -130,11 +143,11 @@ export function usePiConfig(): UsePiConfigReturn {
     setSyncing(true);
     setError(null);
     try {
-      const nextConfig = await api.post<PiConfig>("/api/settings/pi-config/sync");
+      const nextConfig = await transport.post<PiConfig>("/api/settings/pi-config/sync");
       if (isMountedRef.current) {
         setConfig(nextConfig);
       }
-      invalidatePiCommands();
+      invalidatePiCommands(transport);
       return true;
     } catch (requestError) {
       if (isMountedRef.current) {
@@ -151,11 +164,11 @@ export function usePiConfig(): UsePiConfigReturn {
   async function removeConfig(): Promise<boolean> {
     setError(null);
     try {
-      await api.delete("/api/settings/pi-config");
+      await transport.delete("/api/settings/pi-config");
       if (isMountedRef.current) {
         setConfig(null);
       }
-      invalidatePiCommands();
+      invalidatePiCommands(transport);
       return true;
     } catch (requestError) {
       if (isMountedRef.current) {
@@ -188,13 +201,16 @@ export function usePiConfig(): UsePiConfigReturn {
       setConfig(optimisticConfig);
     }
     try {
-      const nextConfig = await api.patch<PiConfig>("/api/settings/pi-config/categories", {
-        enabled_categories: enabledCategories,
-      });
+      const nextConfig = await transport.patch<PiConfig>(
+        "/api/settings/pi-config/categories",
+        {
+          enabled_categories: enabledCategories,
+        },
+      );
       if (isMountedRef.current) {
         setConfig(nextConfig);
       }
-      invalidatePiCommands();
+      invalidatePiCommands(transport);
       return true;
     } catch (requestError) {
       if (isMountedRef.current) {
@@ -215,7 +231,7 @@ export function usePiConfig(): UsePiConfigReturn {
     return () => {
       isMountedRef.current = false;
     };
-  }, []);
+  }, [transport]);
 
   useEffect(() => {
     if (config?.status !== "cloning") {
@@ -227,7 +243,7 @@ export function usePiConfig(): UsePiConfigReturn {
     return () => {
       window.clearInterval(intervalId);
     };
-  }, [config?.status]);
+  }, [config?.status, transport]);
 
   return {
     config,

@@ -96,7 +96,7 @@ Data traveling between the relay and runner is binary:
 
 Data traveling between the relay and client omits the UUID because the WebSocket is already transfer-specific. The relay checks frame length, queue depth, per-runner connection count, and the shared session byte budget. It forwards bytes unchanged. A slow client fills at most 16 queued frames before that transfer is closed.
 
-Runner revocation deletes bearer authority and closes the active runner WebSocket and attached clients immediately on the process that owns the connection. Production currently requires a single relay process or load-balancer affinity that sends a runner and its clients to the same process. Distributed relay routing must be completed before deploying multiple hosted API workers.
+Runner revocation deletes bearer authority and closes the active runner WebSocket and attached clients immediately on the process that owns the connection. The hosted process acquires an owner-only, non-blocking relay lock beside the control database. A second API process on the same deployment host fails startup instead of silently splitting runner and client sockets. Multi-host deployment still requires load-balancer affinity or distributed relay coordination.
 
 ## Noise handshake
 
@@ -123,21 +123,22 @@ Python uses `noiseprotocol` 0.3.1. The browser uses `@richardhopton/noise-c.wasm
 
 ## Encrypted RPC
 
-After the handshake, the client sends ordered request objects:
+After the handshake, the client sends ordered request objects. Version 2 separates query values from the normalized path so file names never affect route authorization:
 
 ```json
 {
   "body": null,
   "method": "GET",
   "path": "/health",
+  "query": {},
   "request_id": "<uuid>",
   "sequence": 0,
   "type": "request",
-  "v": 1
+  "v": 2
 }
 ```
 
-The runner requires sequence zero for the first request and increments by one. Noise transport nonces independently enforce ciphertext ordering. A request must match an allowlisted method, normalized path, body shape, and capability scope before dispatch.
+The runner requires sequence zero for the first request and increments by one. Noise transport nonces independently enforce ciphertext ordering. A request must match an allowlisted method, normalized path, bounded scalar query, body shape, and capability scope before dispatch. Version 1 requests without `query` remain accepted for the original health contract; responses use the request's version.
 
 A response repeats the request ID and sequence:
 
@@ -148,17 +149,35 @@ A response repeats the request ID and sequence:
   "sequence": 0,
   "status": 200,
   "type": "response",
-  "v": 1
+  "v": 2
 }
 ```
 
-Version 1 currently exposes only `GET /health` under `worker.health`. Repository, workspace, session, stream, terminal, file, provider, Pi configuration, and transfer scopes remain blocked until their encrypted contract tests and restricted worker handlers are implemented.
+The worker dispatches only these reviewed route families:
+
+| Scope | Operations |
+| --- | --- |
+| `worker.health` | Worker health. |
+| `repository.read`, `repository.write` | Repository list, import, update, and deletion. Imports accept credential-free HTTPS remotes only. |
+| `workspace.read`, `workspace.write` | Workspace list, creation, state changes, and deletion. |
+| `session.read`, `session.write` | Session CRUD, messages, and file tree metadata. |
+| `session.stream` | Durable prompt start, ordered event polling, and idempotent cancellation. |
+| `files.read`, `files.write` | Bounded workspace tree, changed-file, preview, diff, and content operations. |
+| `terminal` | Account-scoped terminal attach, input, resize, restart, bounded output polling, and detach. |
+| `provider.configure` | Provider catalog, encrypted provider connection storage, and provider OAuth start/poll/manual-callback operations. Secret values are never returned. |
+| `pi.configure` | Pi configuration import, sync, category selection, commands, release notes, and deletion. |
+
+Provider OAuth authorization URLs, flow identifiers, manual callback input, and status responses remain inside the Noise channel. Only the browser opens the returned credential-free HTTPS authorization URL.
+
+Prompt events are written to the account's SQLCipher database with contiguous sequence numbers. A reconnect resumes from an exact cursor. A runner restart marks orphaned runs `interrupted`, appends a generic terminal event, and resets their sessions to idle. Terminal channels keep a bounded in-memory output journal. A worker or sidecar restart closes those channels; the client reports the interruption and opens a new shell instead of claiming that the old process survived.
+
+Pi archive uploads use a 24,000-byte chunk protocol over one long-lived Noise session. The runner reserves at most 50 MiB per upload and 100 MiB in aggregate, accepts exact chunk retries, verifies the declared byte count and SHA-256 digest, clears the assembly buffer, and expires abandoned uploads after 15 minutes.
 
 ## Failure behavior
 
 Authentication, JSON shape, scope, sequence, size, and decryption failures close only the affected transfer when its UUID is known. Unknown routing frames or malformed runner control messages close the shared runner connection because they indicate a relay protocol violation. A failed Noise or RPC session cannot be reused.
 
-Clients close health-check connections after one response. Longer operations must create a fresh handshake before the message threshold. Version 1 uses a new handshake rather than calling the Noise rekey operation because the browser wrapper does not expose rekey. Nonce exhaustion is therefore unreachable under the enforced threshold.
+Clients close one-shot connections after one response. Chunked uploads reuse one ordered Noise session and reconnect with an exact chunk retry when transport fails. Every connection closes before 1,048,576 messages in either direction. Yinshi starts a fresh handshake rather than calling the Noise rekey operation because the browser wrapper does not expose rekey. Nonce exhaustion is therefore unreachable under the enforced threshold.
 
 No error path logs capabilities, bearer values, frame bytes, decrypted requests, response bodies, paths, or user labels. Logs may contain random runner identifiers, HTTP status codes, and fixed operation names.
 

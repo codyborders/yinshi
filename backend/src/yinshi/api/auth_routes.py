@@ -20,6 +20,7 @@ from yinshi.auth import (
     create_session_token,
     get_session_identity,
     oauth,
+    resolve_tenant_from_desktop_token,
     revoke_auth_session,
     revoke_auth_sessions,
     verify_session_token,
@@ -82,6 +83,7 @@ from yinshi.tenant import TenantContext, get_user_db
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth", tags=["auth"])
+provider_router = APIRouter(prefix="/auth", tags=["provider-auth"])
 _GITHUB_INSTALL_STATE_MAX_AGE_S = 600
 _PROVIDER_OAUTH_CONTAINER_LEASE_TIMEOUT_S = 1800
 
@@ -224,11 +226,22 @@ def _current_session_identity(request: Request) -> tuple[str, str] | None:
 
 
 def _current_user_id(request: Request) -> str | None:
-    """Return the authenticated user id from the session cookie."""
+    """Return the authenticated cookie, bearer, worker, or desktop identity."""
     session_identity = _current_session_identity(request)
-    if session_identity is None:
-        return None
-    return session_identity[0]
+    if session_identity is not None:
+        return session_identity[0]
+    authorization = request.headers.get("Authorization")
+    if authorization is not None:
+        scheme, separator, token = authorization.partition(" ")
+        if scheme.lower() != "bearer" or separator != " " or not token:
+            return None
+        tenant = resolve_tenant_from_desktop_token(token)
+        if tenant is not None:
+            return tenant.user_id
+    tenant = getattr(request.state, "tenant", None)
+    if isinstance(tenant, TenantContext) and tenant.user_id:
+        return tenant.user_id
+    return None
 
 
 async def _refresh_connected_github_repos(
@@ -272,7 +285,12 @@ async def _resolve_provider_sidecar_socket(
     if not normalized_user_id:
         raise ValueError("user_id must not be empty")
 
-    tenant = _resolve_tenant_from_user_id(normalized_user_id)
+    request_tenant = getattr(request.state, "tenant", None)
+    tenant: TenantContext | None
+    if isinstance(request_tenant, TenantContext) and request_tenant.user_id == normalized_user_id:
+        tenant = request_tenant
+    else:
+        tenant = _resolve_tenant_from_user_id(normalized_user_id)
     try:
         tenant_sidecar_context = await resolve_tenant_sidecar_context(request, tenant)
     except (ContainerStartError, ContainerNotReadyError) as error:
@@ -627,7 +645,7 @@ async def callback_google(request: Request) -> RedirectResponse:
 
     response = RedirectResponse(url="/app")
     _set_session_cookie(response, tenant.user_id)
-    logger.info("Google login: user=%s email=%s", tenant.user_id, email)
+    logger.info("Google login completed")
     return response
 
 
@@ -703,7 +721,7 @@ async def callback_github(request: Request) -> RedirectResponse:
 
     response = RedirectResponse(url="/app")
     _set_session_cookie(response, tenant.user_id)
-    logger.info("GitHub login: user=%s email=%s", tenant.user_id, email)
+    logger.info("GitHub login completed")
     return response
 
 
@@ -930,7 +948,7 @@ async def github_install_verify(request: Request) -> RedirectResponse:
     return RedirectResponse(url="/app?github_connected=1")
 
 
-@router.post("/providers/{provider}/start", response_model=ProviderAuthStartOut)
+@provider_router.post("/providers/{provider}/start", response_model=ProviderAuthStartOut)
 async def start_provider_auth(provider: str, request: Request) -> dict[str, Any]:
     """Start a provider OAuth flow through the sidecar."""
     user_id = _current_user_id(request)
@@ -959,7 +977,7 @@ async def start_provider_auth(provider: str, request: Request) -> dict[str, Any]
     return payload
 
 
-@router.get("/providers/{provider}/callback")
+@provider_router.get("/providers/{provider}/callback")
 async def callback_provider_auth(provider: str, flow_id: str, request: Request) -> JSONResponse:
     """Poll an OAuth flow and persist its credential when complete."""
     user_id = _current_user_id(request)
@@ -1018,7 +1036,7 @@ async def callback_provider_auth(provider: str, flow_id: str, request: Request) 
             await sidecar.disconnect()
 
 
-@router.post("/providers/{provider}/callback", response_model=ProviderAuthStatusOut)
+@provider_router.post("/providers/{provider}/callback", response_model=ProviderAuthStatusOut)
 async def submit_provider_auth_callback(
     provider: str,
     payload: ProviderAuthInputIn,

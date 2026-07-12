@@ -284,7 +284,7 @@ async def ensure_repo_checkout_for_tenant(
         (target_repo_path, remote_url, installation_id, repo_id),
     )
     db.commit()
-    logger.info("Repaired repo %s into tenant storage at %s", repo_id, target_repo_path)
+    logger.info("Repaired repository into tenant storage")
 
     updated_repo = _fetch_repo(db, repo_id)
     return dict(updated_repo)

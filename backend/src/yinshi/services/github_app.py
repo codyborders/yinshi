@@ -220,7 +220,7 @@ async def _request_github_json(
                 request_arguments["json"] = json_payload
             response = await client.request(**request_arguments)
     except httpx.HTTPError as exc:
-        logger.error("GitHub API request failed for %s %s: %s", method, path, exc)
+        logger.error("GitHub API request failed for method %s", method)
         raise GitHubAppError("GitHub API request failed") from exc
     if response.status_code == 204:
         return response.status_code, {}

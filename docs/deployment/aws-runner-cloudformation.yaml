@@ -143,7 +143,7 @@ Resources:
           esac
 
           dnf update -y
-          dnf install -y git podman python3 python3-pip nfs-utils
+          dnf install -y git podman python3 python3-pip nfs-utils nodejs22 nodejs22-npm gcc-c++ make
           useradd --system --home-dir /var/lib/yinshi --shell /sbin/nologin yinshi-runner
 
           install -d -m 700 -o yinshi-runner -g yinshi-runner "$RUNNER_DATA_DIR"
@@ -171,8 +171,11 @@ Resources:
           runuser -u yinshi-runner -- /opt/yinshi-runner/venv/bin/python -m pip install --upgrade pip wheel
           runuser -u yinshi-runner -- /opt/yinshi-runner/venv/bin/python -m pip install \
             -r "https://raw.githubusercontent.com/codyborders/yinshi/${YinshiReleaseCommit}/backend/requirements/base.txt"
-          runuser -u yinshi-runner -- /opt/yinshi-runner/venv/bin/python -m pip install --no-deps \
-            "git+https://github.com/codyborders/yinshi.git@${YinshiReleaseCommit}#subdirectory=backend"
+          runuser -u yinshi-runner -- git clone --filter=blob:none \
+            https://github.com/codyborders/yinshi.git /opt/yinshi-runner/source
+          runuser -u yinshi-runner -- git -C /opt/yinshi-runner/source checkout --detach "${YinshiReleaseCommit}"
+          runuser -u yinshi-runner -- /usr/bin/npm-22 --prefix /opt/yinshi-runner/source/sidecar \
+            ci --omit=dev --no-audit --no-fund
 
           cat >/etc/yinshi-runner.env <<ENV
           YINSHI_CONTROL_URL=${YinshiControlUrl}
@@ -185,15 +188,41 @@ Resources:
           YINSHI_RUNNER_SHARED_FILES_DIR=$RUNNER_SHARED_FILES_DIR
           YINSHI_RUNNER_TOKEN_FILE=/var/lib/yinshi/runner-token
           YINSHI_RUNNER_ENV_FILE=/etc/yinshi-runner.env
+          PYTHONPATH=/opt/yinshi-runner/source/backend/src
+          SIDECAR_SOCKET_PATH=/var/lib/yinshi/sidecar.sock
           ENV
           chown yinshi-runner:yinshi-runner /etc/yinshi-runner.env
           chmod 600 /etc/yinshi-runner.env
 
+          cat >/etc/systemd/system/yinshi-sidecar.service <<'SIDECAR_SERVICE'
+          [Unit]
+          Description=Yinshi agent sidecar
+          After=network-online.target
+          Wants=network-online.target
+
+          [Service]
+          Type=simple
+          EnvironmentFile=/etc/yinshi-runner.env
+          ExecStart=/usr/bin/node-22 /opt/yinshi-runner/source/sidecar/src/index.js
+          Restart=always
+          RestartSec=5
+          StandardOutput=null
+          User=yinshi-runner
+          Group=yinshi-runner
+          NoNewPrivileges=true
+          PrivateTmp=true
+          WorkingDirectory=/var/lib/yinshi
+
+          [Install]
+          WantedBy=multi-user.target
+          SIDECAR_SERVICE
+
           cat >/etc/systemd/system/yinshi-runner.service <<'SERVICE'
           [Unit]
           Description=Yinshi cloud runner
-          After=network-online.target
+          After=network-online.target yinshi-sidecar.service
           Wants=network-online.target
+          Requires=yinshi-sidecar.service
 
           [Service]
           Type=simple
@@ -212,6 +241,7 @@ Resources:
           SERVICE
 
           systemctl daemon-reload
+          systemctl enable --now yinshi-sidecar.service
           systemctl enable --now yinshi-runner.service
 
 Outputs:

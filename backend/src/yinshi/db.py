@@ -77,6 +77,31 @@ CREATE TABLE IF NOT EXISTS messages (
     turn_status TEXT
 );
 
+CREATE TABLE IF NOT EXISTS prompt_runs (
+    id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    idempotency_key TEXT NOT NULL,
+    status TEXT DEFAULT 'starting' NOT NULL CHECK (
+        status IN ('starting', 'running', 'stopping', 'completed', 'failed', 'cancelled', 'interrupted')
+    ),
+    UNIQUE(session_id, idempotency_key)
+);
+
+CREATE TABLE IF NOT EXISTS prompt_events (
+    run_id TEXT NOT NULL REFERENCES prompt_runs(id) ON DELETE CASCADE,
+    sequence INTEGER NOT NULL CHECK (sequence >= 0),
+    event_json TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    PRIMARY KEY(run_id, sequence)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_prompt_runs_active_session
+    ON prompt_runs(session_id)
+    WHERE status IN ('starting', 'running', 'stopping');
+CREATE INDEX IF NOT EXISTS idx_prompt_events_run
+    ON prompt_events(run_id, sequence);
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_messages_turn_id ON messages(turn_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_workspace ON sessions(workspace_id);
@@ -360,14 +385,13 @@ def _migrate(conn: sqlite3.Connection) -> None:
 
 def init_db() -> None:
     """Initialize the database schema."""
-    settings = get_settings()
-    logger.info("Initializing database at %s", settings.db_path)
+    logger.info("Initializing application database")
     try:
         with get_db() as conn:
             conn.executescript(SCHEMA_SQL)
             _migrate(conn)
     except sqlite3.Error:
-        logger.exception("Failed to initialize database at %s", settings.db_path)
+        logger.error("Failed to initialize application database")
         raise
     logger.info("Database initialized")
 
@@ -841,12 +865,12 @@ def init_control_db() -> None:
     """Initialize the control plane database schema."""
     settings = get_settings()
     Path(settings.control_db_path).parent.mkdir(parents=True, exist_ok=True)
-    logger.info("Initializing control database at %s", settings.control_db_path)
+    logger.info("Initializing control database")
     try:
         with get_control_db() as conn:
             conn.executescript(CONTROL_SCHEMA_SQL)
             _migrate_control(conn)
     except sqlite3.Error:
-        logger.exception("Failed to initialize control database")
+        logger.error("Failed to initialize control database")
         raise
     logger.info("Control database initialized")

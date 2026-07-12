@@ -266,7 +266,7 @@ def _catalog_thinking_levels(
             )
         return thinking_levels
 
-    logger.warning("Catalog entry missing for model %s", normalized_model_ref)
+    logger.warning("Requested catalog entry is unavailable")
     return None
 
 
@@ -613,7 +613,7 @@ async def _resolve_execution_context(
             workspace_id=workspace_id,
         )
     except (ContainerStartError, ContainerNotReadyError):
-        logger.exception("Container start failed for user %s", tenant.user_id[:8])
+        logger.error("Container start failed")
         raise HTTPException(
             status_code=503,
             detail="Agent environment temporarily unavailable",
@@ -723,7 +723,8 @@ async def prompt_session(
 ) -> StreamingResponse:
     """Send a prompt and stream agent events as SSE."""
     tenant = get_tenant(request)
-    auth_session_token = request.cookies.get("yinshi_session") if tenant else None
+    requires_auth_session = tenant is not None and request.app.state.mode != "worker"
+    auth_session_token = request.cookies.get("yinshi_session") if requires_auth_session else None
     with get_db_for_request(request) as db:
         session = _lookup_session(db, session_id, request)
         if session and tenant:
@@ -794,6 +795,14 @@ async def prompt_session(
             installation_id=installation_id,
             agents_md=session["agents_md"] if "agents_md" in session.keys() else None,
         )
+    except asyncio.CancelledError:
+        with get_db_for_request(request) as db:
+            db.execute(
+                "UPDATE sessions SET status = 'idle' WHERE id = ?",
+                (session_id,),
+            )
+            db.commit()
+        raise
     except Exception:
         with get_db_for_request(request) as db:
             db.execute(
@@ -862,7 +871,7 @@ async def prompt_session(
                 pi_session_file=context.pi_session_file,
             )
 
-            logger.info("Streaming started: session=%s turn_id=%s", session_id, turn_id)
+            logger.info("Prompt stream started")
 
             sidecar_events = sidecar.query(
                 session_id,
@@ -876,7 +885,7 @@ async def prompt_session(
                 settings_payload=effective_settings,
                 pi_session_file=context.pi_session_file,
             )
-            if tenant:
+            if requires_auth_session:
                 if not auth_session_token:
                     raise _AuthSessionRevoked
                 event_source = _session_bound_events(
@@ -1002,20 +1011,14 @@ async def prompt_session(
 
         except _AuthSessionRevoked:
             turn_status = "cancelled"
-            logger.info("Prompt stream revoked: session=%s turn_id=%s", session_id, turn_id)
+            logger.info("Prompt stream revoked")
         except _StreamLifetimeReached:
             turn_status = "cancelled"
             logger.info(
                 "Prompt stream lifetime reached: session=%s turn_id=%s", session_id, turn_id
             )
-        except (ConnectionError, OSError, GitError, SidecarError, TypeError, ValueError) as e:
-            logger.error(
-                "Sidecar error: session=%s turn_id=%s error=%s",
-                session_id,
-                turn_id,
-                e,
-                exc_info=True,
-            )
+        except (ConnectionError, OSError, GitError, SidecarError, TypeError, ValueError):
+            logger.error("Sidecar prompt execution failed")
             error_event = {
                 "type": "error",
                 "error": "An internal error occurred",
@@ -1073,7 +1076,7 @@ async def prompt_session(
                         key_source=context.key_source,
                     )
                 except Exception:
-                    logger.exception("Failed to record usage: session=%s", session_id)
+                    logger.error("Failed to record prompt usage")
 
             # Keep container alive after activity
             end_tenant_container_activity(request, tenant, runtime_id=context.runtime_id)
@@ -1116,5 +1119,5 @@ async def cancel_session(session_id: str, request: Request) -> dict[str, str]:
     if not found:
         raise HTTPException(status_code=409, detail="No active stream for this session")
 
-    logger.info("Cancel requested: session=%s", session_id)
+    logger.info("Prompt cancellation requested")
     return {"status": "stopping"}

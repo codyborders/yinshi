@@ -1,5 +1,6 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
+import type { RuntimeTransport } from "../../runtime/runtimeTransport";
 
 const usePiConfigMock = vi.fn();
 
@@ -8,6 +9,8 @@ vi.mock("../../hooks/usePiConfig", () => ({
 }));
 
 import PiConfigSection from "../PiConfigSection";
+
+const transport = {} as RuntimeTransport;
 
 describe("PiConfigSection", () => {
   it("renders upload and github tabs when no config exists", () => {
@@ -26,7 +29,7 @@ describe("PiConfigSection", () => {
       toggleCategory: vi.fn(),
     });
 
-    render(<PiConfigSection />);
+    render(<PiConfigSection transport={transport} />);
 
     expect(screen.getByText("Pi Agent Configuration")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Upload" })).toBeTruthy();
@@ -61,7 +64,7 @@ describe("PiConfigSection", () => {
       toggleCategory,
     });
 
-    render(<PiConfigSection />);
+    render(<PiConfigSection transport={transport} />);
     const toggles = screen.getAllByRole("checkbox");
     expect(toggles).toHaveLength(2);
 
@@ -96,7 +99,7 @@ describe("PiConfigSection", () => {
       toggleCategory: vi.fn(),
     });
 
-    render(<PiConfigSection />);
+    render(<PiConfigSection transport={transport} />);
     expect(screen.getByRole("checkbox")).toBeDisabled();
   });
 });

@@ -90,7 +90,7 @@ class SidecarClient:
             if init_line:
                 init_msg = json.loads(init_line.decode())
                 if init_msg.get("type") == "init_status" and init_msg.get("success"):
-                    logger.info("Connected to sidecar at %s", socket_path)
+                    logger.info("Connected to sidecar runtime")
                 else:
                     raise SidecarError(f"Sidecar init failed: {init_msg}")
         except FileNotFoundError:

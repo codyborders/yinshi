@@ -158,7 +158,7 @@ async def _run_git(
     if not args:
         raise ValueError("args must not be empty")
     cmd = [_GIT_EXECUTABLE_PATH, *args]
-    logger.debug("Running git %s (cwd=%s)", args[0], cwd)
+    logger.debug("Running git operation %s", args[0])
     child_env = {
         "GCM_INTERACTIVE": "Never",
         "GIT_CONFIG_GLOBAL": os.devnull,
@@ -179,7 +179,7 @@ async def _run_git(
         stderr=asyncio.subprocess.PIPE,
     )
     try:
-        stdout, stderr = await asyncio.wait_for(
+        stdout, _stderr = await asyncio.wait_for(
             proc.communicate(),
             timeout=_GIT_COMMAND_TIMEOUT_S,
         )
@@ -188,7 +188,7 @@ async def _run_git(
         await proc.wait()
         raise GitError(f"git {args[0]} timed out") from exc
     if proc.returncode != 0:
-        logger.error("git %s failed (cwd=%s): %s", args[0], cwd, stderr.decode().strip())
+        logger.error("Git operation %s failed", args[0])
         raise GitError(f"git {args[0]} failed")
     return stdout.decode().strip()
 
@@ -333,7 +333,7 @@ async def clone_repo(
             if not _remote_urls_match(existing_remote, url):
                 raise GitError("Destination already contains a clone of a different repository")
             had_remote_refs_before_fetch = await _has_remote_refs(dest)
-            logger.info("Reusing existing clone at %s", dest)
+            logger.info("Reusing an existing repository clone")
             try:
                 with _git_askpass_env(access_token) as env:
                     await _run_git(["fetch", "--all"], cwd=dest, env=env)
@@ -342,10 +342,7 @@ async def clone_repo(
                     raise GitError(
                         "Existing clone is incomplete and could not be refreshed"
                     ) from error
-                logger.warning(
-                    "Fetch failed for existing clone at %s; reusing existing refs",
-                    dest,
-                )
+                logger.warning("Repository refresh failed; reusing existing refs")
                 return dest
             if not had_remote_refs_before_fetch and not await _has_remote_refs(dest):
                 raise GitError("Existing clone is incomplete and missing remote refs")
@@ -354,7 +351,7 @@ async def clone_repo(
     dest_path.parent.mkdir(parents=True, exist_ok=True)
     with _git_askpass_env(access_token) as env:
         await _run_git(["clone", url, dest], env=env)
-    logger.info("Cloned %s to %s", url, dest)
+    logger.info("Repository clone completed")
     return dest
 
 
@@ -382,7 +379,7 @@ async def clone_local_repo(
     if remote_url:
         await _run_git(["remote", "set-url", "origin", remote_url], cwd=dest)
 
-    logger.info("Cloned local repo %s to %s", source, dest)
+    logger.info("Local repository clone completed")
     return dest
 
 
@@ -443,7 +440,7 @@ async def create_worktree(
             raise ValueError("base_ref must not be empty when provided")
         worktree_add_args.append(normalized_base_ref)
     await _run_git(worktree_add_args, cwd=repo_path)
-    logger.info("Created worktree %s (branch: %s)", worktree_path, branch)
+    logger.info("Repository worktree created")
     return worktree_path
 
 
@@ -465,7 +462,7 @@ async def restore_worktree(repo_path: str, worktree_path: str, branch: str) -> s
     except GitError:
         await _run_git(["worktree", "add", "-b", branch, worktree_path], cwd=repo_path)
 
-    logger.info("Restored worktree %s (branch: %s)", worktree_path, branch)
+    logger.info("Repository worktree restored")
     return worktree_path
 
 
@@ -487,7 +484,7 @@ async def delete_worktree(repo_path: str, worktree_path: str) -> None:
         except GitError:
             pass
 
-    logger.info("Deleted worktree %s", worktree_path)
+    logger.info("Repository worktree deleted")
 
 
 async def validate_local_repo(path: str) -> bool:

@@ -35,7 +35,7 @@ def provision_user(user_id: str, email: str) -> TenantContext:
     os.makedirs(repos_dir, exist_ok=True)
     init_user_db(tenant.db_path, tenant=tenant)
 
-    logger.info("Provisioned user %s at %s", user_id, tenant.data_dir)
+    logger.info("Provisioned account storage")
     return tenant
 
 
@@ -62,7 +62,7 @@ def _migrate_legacy_data(tenant: TenantContext) -> None:
         source = sqlite3.connect(legacy_path)
         source.row_factory = sqlite3.Row
     except sqlite3.Error:
-        logger.warning("Could not open legacy DB at %s", legacy_path)
+        logger.warning("Could not open legacy account database")
         return
 
     try:
@@ -162,9 +162,9 @@ def _migrate_legacy_data(tenant: TenantContext) -> None:
                             )
 
             dest.commit()
-            logger.info("Migrated %d legacy repo(s) for %s", len(repos), tenant.email)
+            logger.info("Migrated %d legacy repository rows", len(repos))
     except sqlite3.Error:
-        logger.exception("Failed to migrate legacy data for %s", tenant.email)
+        logger.error("Failed to migrate legacy account data")
     finally:
         source.close()
 

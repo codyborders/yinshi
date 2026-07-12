@@ -109,7 +109,7 @@ def _http_file_error(exc: Exception, workspace_id: str) -> HTTPException:
     if isinstance(exc, HTTPException):
         return exc
     if not isinstance(exc, _EXPECTED_FILE_ERRORS):
-        logger.exception("Unexpected workspace file error: workspace=%s", workspace_id)
+        logger.error("Unexpected workspace file operation failure")
     return _map_file_error(exc)
 
 

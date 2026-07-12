@@ -238,11 +238,7 @@ async def list_pi_config_commands(request: Request) -> dict[str, Any]:
     try:
         tenant_sidecar_context = await resolve_tenant_sidecar_context(request, tenant)
     except (ContainerStartError, ContainerNotReadyError) as error:
-        logger.warning(
-            "pi-config/commands: container unavailable for user %s",
-            tenant.user_id[:8],
-            exc_info=True,
-        )
+        logger.warning("Pi config command runtime is unavailable")
         raise HTTPException(status_code=503, detail=_SIDECAR_UNAVAILABLE_DETAIL) from error
 
     # No imported config means no custom commands -- skip the sidecar round trip.
@@ -276,11 +272,7 @@ async def _fetch_imported_commands(
         resources = await sidecar.list_imported_commands(agent_dir=agent_dir)
         return {"commands": resources["commands"]}
     except (OSError, SidecarError, json.JSONDecodeError, asyncio.TimeoutError) as error:
-        logger.warning(
-            "pi-config/commands: sidecar call failed for user %s",
-            tenant.user_id[:8],
-            exc_info=True,
-        )
+        logger.warning("Pi config command runtime request failed")
         raise HTTPException(status_code=503, detail=_SIDECAR_UNAVAILABLE_DETAIL) from error
     finally:
         # Each cleanup call is independent. Guard individually so one failure
@@ -288,16 +280,16 @@ async def _fetch_imported_commands(
         try:
             end_tenant_container_activity(request, tenant)
         except Exception:
-            logger.exception("end_tenant_container_activity failed")
+            logger.error("end_tenant_container_activity failed")
         try:
             touch_tenant_container(request, tenant)
         except Exception:
-            logger.exception("touch_tenant_container failed")
+            logger.error("touch_tenant_container failed")
         if sidecar is not None:
             try:
                 await sidecar.disconnect()
             except Exception:
-                logger.exception("sidecar disconnect failed")
+                logger.error("sidecar disconnect failed")
 
 
 @router.post("/pi-config/github", response_model=PiConfigOut, status_code=201)
@@ -318,7 +310,7 @@ async def import_github_pi_config(
     except GitHubAccessError as error:
         raise _github_http_exception(error) from error
     except GitHubAppError as error:
-        logger.exception("GitHub Pi config import failed while resolving %s", body.repo_url)
+        logger.error("GitHub Pi config import failed during credential resolution")
         raise HTTPException(status_code=502, detail=str(error)) from error
     except PiConfigError as error:
         raise _pi_config_http_exception(error) from error
@@ -373,7 +365,7 @@ async def sync_pi_config_route(request: Request) -> dict[str, Any]:
     except GitHubAccessError as error:
         raise _github_http_exception(error) from error
     except GitHubAppError as error:
-        logger.exception("GitHub Pi config sync failed for user %s", tenant.user_id[:8])
+        logger.error("GitHub Pi config sync failed")
         raise HTTPException(status_code=502, detail=str(error)) from error
     except PiConfigError as error:
         raise _pi_config_http_exception(error) from error
