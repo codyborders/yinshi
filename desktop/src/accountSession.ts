@@ -5,6 +5,14 @@ import {
   type HostedAuthCredentialStore,
 } from "./hostedAuth.js";
 
+export class DesktopSignInRequiredError extends Error {
+  constructor() {
+    super("desktop sign-in is required");
+    this.name = "DesktopSignInRequiredError";
+  }
+}
+
+
 export interface ResumeDesktopAccountOptions {
   readonly apiBaseUrl: string;
   readonly fetch: (input: string | URL, init?: RequestInit) => Promise<Response>;
@@ -50,14 +58,14 @@ function assertOfflineLease(
       currentTimeSeconds,
     });
   } catch {
-    throw new Error("desktop sign-in is required");
+    throw new DesktopSignInRequiredError();
   }
   if (
     claims.userId !== profile.user.id ||
     claims.deviceId !== profile.deviceId ||
     claims.expiresAt !== profile.accountLeaseExpiresAt
   ) {
-    throw new Error("desktop sign-in is required");
+    throw new DesktopSignInRequiredError();
   }
 }
 
@@ -101,7 +109,7 @@ export async function resumeDesktopAccount(
       expectedDeviceId: profile.deviceId,
     });
   } catch {
-    throw new Error("desktop sign-in is required");
+    throw new DesktopSignInRequiredError();
   }
   await options.credentialStore.save(hostedSession.profile);
   return { mode: "online", ...hostedSession };
