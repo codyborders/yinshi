@@ -26,7 +26,10 @@ export default function (pi: ExtensionAPI) {
           { timeout: 10000, windowsHide: true, maxBuffer: 4 * 1024 * 1024 },
           (_err, stdout) => resolve(typeof stdout === "string" ? stdout : ""),
         );
-        child.stdin?.end(JSON.stringify(data));
+        if (child.stdin) {
+          child.stdin.on("error", () => resolve(""));
+          child.stdin.end(JSON.stringify(data));
+        }
       } catch {
         // best effort — never block the agent on a hook failure
         resolve("");
