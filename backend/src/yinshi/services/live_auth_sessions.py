@@ -59,6 +59,18 @@ def register_live_auth_session(
     return registration
 
 
+def register_live_desktop_device(
+    user_id: str,
+    device_id: str,
+) -> LiveAuthSessionRegistration:
+    """Register one connection bound to a desktop device."""
+    normalized_device_id = _normalize_identifier(device_id, "device_id")
+    return register_live_auth_session(
+        user_id=user_id,
+        auth_session_id=f"desktop-device:{normalized_device_id}",
+    )
+
+
 def _remove_registration(registration: LiveAuthSessionRegistration) -> None:
     """Remove one registration from both indexes without assuming it exists."""
     if not isinstance(registration, LiveAuthSessionRegistration):
@@ -94,6 +106,12 @@ def signal_auth_session_revoked(auth_session_id: str) -> None:
             _registrations_by_session.get(normalized_auth_session_id, {}).values()
         )
     _signal_registrations(registrations)
+
+
+def signal_desktop_device_revoked(device_id: str) -> None:
+    """Wake every local connection created by one desktop device."""
+    normalized_device_id = _normalize_identifier(device_id, "device_id")
+    signal_auth_session_revoked(f"desktop-device:{normalized_device_id}")
 
 
 def signal_user_sessions_revoked(user_id: str) -> None:

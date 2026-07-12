@@ -10,7 +10,7 @@ import json
 import logging
 import sqlite3
 import uuid
-from collections.abc import AsyncGenerator, AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from dataclasses import dataclass
 from typing import Any, Literal, cast
 
@@ -32,9 +32,14 @@ from yinshi.exceptions import (
 )
 from yinshi.model_catalog import get_provider_metadata, normalize_model_ref
 from yinshi.rate_limit import limiter
+from yinshi.services.desktop_devices import desktop_device_is_active
 from yinshi.services.git_runtime import resolve_git_runtime_auth
 from yinshi.services.keys import record_usage
-from yinshi.services.live_auth_sessions import register_live_auth_session
+from yinshi.services.live_auth_sessions import (
+    LiveAuthSessionRegistration,
+    register_live_auth_session,
+    register_live_desktop_device,
+)
 from yinshi.services.provider_connections import (
     resolve_provider_connection,
     update_provider_connection_secret,
@@ -102,27 +107,22 @@ class _StreamLifetimeReached(Exception):
     """Signal that a response reached its independent connection deadline."""
 
 
-async def _session_bound_events(
+async def _authority_bound_events(
+    *,
     events: AsyncIterator[dict[str, Any]],
-    session_token: str,
     sidecar: SidecarClient,
     session_id: str,
+    registration: LiveAuthSessionRegistration,
+    authority_is_active: Callable[[], bool],
 ) -> AsyncGenerator[dict[str, Any], None]:
-    """Yield sidecar events until local signaling or durable revocation occurs."""
-    if not session_token:
-        raise ValueError("session_token must not be empty")
+    """Yield sidecar events while one durable authority remains active."""
     if not session_id:
         raise ValueError("session_id must not be empty")
-    identity = get_session_identity(session_token)
-    if identity is None:
+    if not authority_is_active():
+        registration.close()
         await sidecar.cancel(session_id)
         raise _AuthSessionRevoked
 
-    user_id, auth_session_id = identity
-    registration = register_live_auth_session(
-        user_id=user_id,
-        auth_session_id=auth_session_id,
-    )
     loop = asyncio.get_running_loop()
     connection_deadline = loop.time() + _STREAM_LIFETIME_S_MAX
     event_iterator = aiter(events)
@@ -155,7 +155,7 @@ async def _session_bound_events(
                     next_event_task.cancel()
                     await sidecar.cancel(session_id)
                     raise _StreamLifetimeReached
-                if get_session_identity(session_token) is None:
+                if not authority_is_active():
                     next_event_task.cancel()
                     await sidecar.cancel(session_id)
                     raise _AuthSessionRevoked
@@ -165,7 +165,7 @@ async def _session_bound_events(
                 return
             finally:
                 next_event_task = None
-            if registration.event.is_set() or get_session_identity(session_token) is None:
+            if registration.event.is_set() or not authority_is_active():
                 await sidecar.cancel(session_id)
                 raise _AuthSessionRevoked
             if loop.time() >= connection_deadline:
@@ -177,6 +177,60 @@ async def _session_bound_events(
         revocation_task.cancel()
         if next_event_task is not None and not next_event_task.done():
             next_event_task.cancel()
+
+
+async def _session_bound_events(
+    events: AsyncIterator[dict[str, Any]],
+    session_token: str,
+    sidecar: SidecarClient,
+    session_id: str,
+) -> AsyncGenerator[dict[str, Any], None]:
+    """Yield sidecar events until browser-session revocation occurs."""
+    if not session_token:
+        raise ValueError("session_token must not be empty")
+    identity = get_session_identity(session_token)
+    if identity is None:
+        await sidecar.cancel(session_id)
+        raise _AuthSessionRevoked
+    user_id, auth_session_id = identity
+    registration = register_live_auth_session(
+        user_id=user_id,
+        auth_session_id=auth_session_id,
+    )
+    async for event in _authority_bound_events(
+        events=events,
+        sidecar=sidecar,
+        session_id=session_id,
+        registration=registration,
+        authority_is_active=lambda: get_session_identity(session_token) is not None,
+    ):
+        yield event
+
+
+async def _desktop_device_bound_events(
+    events: AsyncIterator[dict[str, Any]],
+    *,
+    user_id: str,
+    device_id: str,
+    sidecar: SidecarClient,
+    session_id: str,
+) -> AsyncGenerator[dict[str, Any], None]:
+    """Yield sidecar events until desktop-device revocation occurs."""
+    registration = register_live_desktop_device(
+        user_id=user_id,
+        device_id=device_id,
+    )
+    async for event in _authority_bound_events(
+        events=events,
+        sidecar=sidecar,
+        session_id=session_id,
+        registration=registration,
+        authority_is_active=lambda: desktop_device_is_active(
+            user_id=user_id,
+            device_id=device_id,
+        ),
+    ):
+        yield event
 
 
 class PromptRequest(BaseModel):
@@ -723,7 +777,14 @@ async def prompt_session(
 ) -> StreamingResponse:
     """Send a prompt and stream agent events as SSE."""
     tenant = get_tenant(request)
-    requires_auth_session = tenant is not None and request.app.state.mode != "worker"
+    desktop_device_id = getattr(request.state, "desktop_device_id", None)
+    if desktop_device_id is not None and (
+        not isinstance(desktop_device_id, str) or not desktop_device_id
+    ):
+        raise RuntimeError("desktop device authority is invalid")
+    requires_auth_session = (
+        tenant is not None and request.app.state.mode != "worker" and desktop_device_id is None
+    )
     auth_session_token = request.cookies.get("yinshi_session") if requires_auth_session else None
     with get_db_for_request(request) as db:
         session = _lookup_session(db, session_id, request)
@@ -885,7 +946,16 @@ async def prompt_session(
                 settings_payload=effective_settings,
                 pi_session_file=context.pi_session_file,
             )
-            if requires_auth_session:
+            if desktop_device_id is not None:
+                assert tenant is not None, "desktop authority requires a tenant"
+                event_source = _desktop_device_bound_events(
+                    sidecar_events,
+                    user_id=tenant.user_id,
+                    device_id=desktop_device_id,
+                    sidecar=sidecar,
+                    session_id=session_id,
+                )
+            elif requires_auth_session:
                 if not auth_session_token:
                     raise _AuthSessionRevoked
                 event_source = _session_bound_events(

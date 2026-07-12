@@ -15,6 +15,7 @@ from yinshi.services.desktop_tokens import (
     create_desktop_token,
     desktop_signing_public_key,
 )
+from yinshi.services.live_auth_sessions import signal_desktop_device_revoked
 
 _AUTHORIZATION_TTL = timedelta(minutes=10)
 
@@ -250,6 +251,7 @@ def rotate_desktop_refresh_token(*, refresh_token: str) -> DesktopTokenExchange:
                     (current_time, used_token["device_id"]),
                 )
                 database.commit()
+                signal_desktop_device_revoked(used_token["device_id"])
             raise DesktopRefreshInvalidError
         if device["user_status"] != "active" or device["revoked_at"] is not None:
             raise DesktopRefreshInvalidError

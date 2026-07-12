@@ -1333,6 +1333,81 @@ def test_prompt_streams_sidecar_events(client: TestClient, session_id: str) -> N
     assert mock_sidecar.warmup.call_args.kwargs["pi_session_file"].endswith(f"{session_id}.jsonl")
 
 
+def test_desktop_bearer_prompt_streams_without_browser_cookie(
+    auth_client: TestClient,
+    git_repo: str,
+) -> None:
+    """Desktop bearer authority should not require a browser session cookie."""
+    from yinshi.api.stream import ExecutionContext
+    from yinshi.main import app
+    from yinshi.services.desktop_tokens import VerifiedDesktopAccess
+
+    tenant = getattr(auth_client, "yinshi_tenant")
+    stack = create_full_stack(auth_client, git_repo, name="desktop-bearer-prompt")
+    session_id = stack["session"]["id"]
+
+    async def fake_query(*_args, **_kwargs):
+        yield {
+            "type": "message",
+            "data": {
+                "type": "assistant",
+                "message": {"content": [{"type": "text", "text": "desktop reply"}]},
+            },
+        }
+        yield {"type": "message", "data": {"type": "result", "usage": {}}}
+
+    mock_sidecar = make_mock_sidecar(fake_query)
+    with (
+        TestClient(app) as desktop_client,
+        patch(
+            "yinshi.auth.resolve_desktop_principal",
+            return_value=(
+                tenant,
+                VerifiedDesktopAccess(
+                    user_id=tenant.user_id,
+                    device_id="desktop-device",
+                ),
+            ),
+        ),
+        patch(
+            "yinshi.api.stream._resolve_execution_context",
+            new=AsyncMock(
+                return_value=ExecutionContext(
+                    sidecar_socket=None,
+                    effective_cwd=stack["workspace"]["path"],
+                    key_source="api_key",
+                    provider="test-provider",
+                    provider_auth=None,
+                    provider_config=None,
+                    model_ref="test/model",
+                )
+            ),
+        ),
+        patch(
+            "yinshi.api.stream.desktop_device_is_active",
+            return_value=True,
+            create=True,
+        ),
+        patch(
+            "yinshi.api.stream.create_sidecar_connection",
+            return_value=mock_sidecar,
+        ),
+    ):
+        desktop_client.headers.update(
+            {
+                "Authorization": "Bearer desktop-access-token",
+                "X-Requested-With": "XMLHttpRequest",
+            }
+        )
+        response = desktop_client.post(
+            f"/api/sessions/{session_id}/prompt",
+            json={"prompt": "reply from desktop"},
+        )
+
+    assert response.status_code == 200
+    assert "desktop reply" in response.text
+
+
 def test_prompt_stream_stops_after_auth_session_revocation(
     auth_client: TestClient,
     git_repo: str,
@@ -1425,6 +1500,44 @@ async def test_session_bound_events_enforces_connection_lifetime(monkeypatch) ->
 
     with pytest.raises(stream._StreamLifetimeReached):
         await anext(events)
+
+    assert sidecar.cancelled_session_ids == ["prompt-session"]
+
+
+@pytest.mark.asyncio
+async def test_desktop_device_bound_events_stop_on_immediate_revocation(
+    monkeypatch,
+) -> None:
+    """Revoking a desktop device should cancel its active prompt immediately."""
+    from yinshi.api import stream
+    from yinshi.services.live_auth_sessions import signal_desktop_device_revoked
+
+    class DesktopSidecar:
+        def __init__(self) -> None:
+            self.cancelled_session_ids: list[str] = []
+
+        async def cancel(self, session_id: str) -> None:
+            self.cancelled_session_ids.append(session_id)
+
+    async def idle_events():
+        await asyncio.Event().wait()
+        yield {"type": "unreachable"}
+
+    sidecar = DesktopSidecar()
+    monkeypatch.setattr(stream, "desktop_device_is_active", lambda **_kwargs: True)
+    events = stream._desktop_device_bound_events(
+        idle_events(),
+        user_id="user-id",
+        device_id="device-id",
+        sidecar=sidecar,
+        session_id="prompt-session",
+    )
+    next_event = asyncio.create_task(anext(events))
+    await asyncio.sleep(0)
+    signal_desktop_device_revoked("device-id")
+
+    with pytest.raises(stream._AuthSessionRevoked):
+        await asyncio.wait_for(next_event, timeout=0.2)
 
     assert sidecar.cancelled_session_ids == ["prompt-session"]
 

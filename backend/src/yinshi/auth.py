@@ -13,7 +13,7 @@ from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoin
 from yinshi.config import get_settings
 from yinshi.db import get_control_db
 from yinshi.services.accounts import make_tenant
-from yinshi.services.desktop_tokens import verify_desktop_access_token
+from yinshi.services.desktop_tokens import VerifiedDesktopAccess, verify_desktop_access_token
 from yinshi.services.live_auth_sessions import (
     signal_auth_session_revoked,
     signal_user_sessions_revoked,
@@ -237,8 +237,10 @@ def auth_disabled() -> bool:
     return settings.disable_auth
 
 
-def resolve_tenant_from_desktop_token(token: str) -> TenantContext | None:
-    """Resolve an active desktop device and account from one access token."""
+def resolve_desktop_principal(
+    token: str,
+) -> tuple[TenantContext, VerifiedDesktopAccess] | None:
+    """Resolve active account and device authority from one access token."""
     if not isinstance(token, str) or not token:
         return None
     identity = verify_desktop_access_token(token)
@@ -256,7 +258,13 @@ def resolve_tenant_from_desktop_token(token: str) -> TenantContext | None:
         ).fetchone()
     if row is None or row["status"] != "active" or row["revoked_at"] is not None:
         return None
-    return make_tenant(row["id"], row["email"])
+    return make_tenant(row["id"], row["email"]), identity
+
+
+def resolve_tenant_from_desktop_token(token: str) -> TenantContext | None:
+    """Resolve an active desktop device and account from one access token."""
+    principal = resolve_desktop_principal(token)
+    return None if principal is None else principal[0]
 
 
 def _resolve_tenant_from_user_id(user_id: str) -> TenantContext | None:
@@ -309,9 +317,11 @@ class AuthMiddleware(BaseHTTPMiddleware):
             scheme, separator, bearer_token = authorization.partition(" ")
             if scheme.lower() != "bearer" or separator != " " or not bearer_token:
                 return Response(status_code=401, content="Invalid bearer token")
-            tenant = resolve_tenant_from_desktop_token(bearer_token)
-            if tenant is None:
+            desktop_principal = resolve_desktop_principal(bearer_token)
+            if desktop_principal is None:
                 return Response(status_code=401, content="Invalid bearer token")
+            tenant, desktop_identity = desktop_principal
+            request.state.desktop_device_id = desktop_identity.device_id
         else:
             token = request.cookies.get("yinshi_session")
             if not token:

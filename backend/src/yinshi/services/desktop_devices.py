@@ -6,6 +6,7 @@ import time
 from dataclasses import dataclass
 
 from yinshi.db import get_control_db
+from yinshi.services.live_auth_sessions import signal_desktop_device_revoked
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,6 +48,26 @@ def list_desktop_devices(*, user_id: str) -> list[DesktopDevice]:
     ]
 
 
+def desktop_device_is_active(*, user_id: str, device_id: str) -> bool:
+    """Return whether one desktop device still grants account authority."""
+    for name, value in (("user_id", user_id), ("device_id", device_id)):
+        if not isinstance(value, str):
+            raise TypeError(f"{name} must be a string")
+        if not value:
+            raise ValueError(f"{name} must not be empty")
+    with get_control_db() as database:
+        row = database.execute(
+            """
+            SELECT d.revoked_at, u.status AS user_status
+            FROM desktop_devices d
+            JOIN users u ON u.id = d.user_id
+            WHERE d.id = ? AND d.user_id = ?
+            """,
+            (device_id, user_id),
+        ).fetchone()
+    return row is not None and row["revoked_at"] is None and row["user_status"] == "active"
+
+
 def revoke_desktop_device(*, user_id: str, device_id: str) -> bool:
     """Revoke one owned device and return false without exposing foreign devices."""
     for name, value in (("user_id", user_id), ("device_id", device_id)):
@@ -75,4 +96,5 @@ def revoke_desktop_device(*, user_id: str, device_id: str) -> bool:
             if result.rowcount != 1:
                 raise RuntimeError("desktop device revocation was not stored")
             database.commit()
+    signal_desktop_device_revoked(device_id)
     return True
