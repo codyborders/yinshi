@@ -1,0 +1,33 @@
+{
+  "cli_version": "0.7.7",
+  "checkpoint_id": "ff9847b2b30c",
+  "session_id": "019f4e6f-89f2-7f82-9bf9-a4790d571aa6",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-12T21:32:04.527741Z",
+  "branch": "main",
+  "checkpoints_count": 1,
+  "save_step_count": 1,
+  "files_touched": [],
+  "agent": "Pi",
+  "model": "gpt-5.6-sol",
+  "turn_id": "44ab212493b1",
+  "token_usage": {
+    "input_tokens": 11008047,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 604267520,
+    "output_tokens": 939654,
+    "api_call_count": 3109
+  },
+  "session_metrics": {
+    "turn_count": 13
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 814,
+      "agent_lines_removed": 0
+    }
+  ]
+}
