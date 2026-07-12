@@ -566,13 +566,29 @@ CREATE TABLE IF NOT EXISTS user_runners (
     runner_version TEXT,
     capabilities_json TEXT DEFAULT '{}' NOT NULL,
     data_dir TEXT,
-    revoked_at TEXT
+    revoked_at TEXT,
+    noise_public_key TEXT,
+    noise_public_key_confirmed_at TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_user_runners_user ON user_runners(user_id);
 CREATE INDEX IF NOT EXISTS idx_user_runners_registration_token
 ON user_runners(registration_token_hash);
 CREATE INDEX IF NOT EXISTS idx_user_runners_runner_token ON user_runners(runner_token_hash);
+
+CREATE TABLE IF NOT EXISTS runner_transfer_grants (
+    transfer_id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    runner_id TEXT NOT NULL REFERENCES user_runners(id) ON DELETE CASCADE,
+    capability_hash TEXT UNIQUE NOT NULL,
+    expires_at INTEGER NOT NULL,
+    max_session_bytes INTEGER NOT NULL,
+    claimed_at INTEGER,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_runner_transfer_grants_runner
+ON runner_transfer_grants(runner_id, expires_at);
 
 CREATE TRIGGER IF NOT EXISTS update_users_updated_at AFTER UPDATE ON users
 BEGIN UPDATE users SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id; END;
@@ -717,7 +733,9 @@ def _migrate_control(conn: sqlite3.Connection) -> None:
                 runner_version TEXT,
                 capabilities_json TEXT DEFAULT '{}' NOT NULL,
                 data_dir TEXT,
-                revoked_at TEXT
+                revoked_at TEXT,
+                noise_public_key TEXT,
+                noise_public_key_confirmed_at TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_user_runners_user ON user_runners(user_id);
             CREATE INDEX IF NOT EXISTS idx_user_runners_registration_token
@@ -731,6 +749,35 @@ def _migrate_control(conn: sqlite3.Connection) -> None:
             END;
             """)
         conn.commit()
+
+    runner_columns = [row[1] for row in conn.execute("PRAGMA table_info(user_runners)")]
+    if runner_columns and "noise_public_key" not in runner_columns:
+        logger.info("Control migration: adding Noise identity to user_runners")
+        conn.execute("ALTER TABLE user_runners ADD COLUMN noise_public_key TEXT")
+        conn.commit()
+        runner_columns.append("noise_public_key")
+    if runner_columns and "noise_public_key_confirmed_at" not in runner_columns:
+        logger.info("Control migration: adding Noise key confirmation to user_runners")
+        conn.execute("ALTER TABLE user_runners ADD COLUMN noise_public_key_confirmed_at TEXT")
+        conn.commit()
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS runner_transfer_grants (
+            transfer_id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            runner_id TEXT NOT NULL REFERENCES user_runners(id) ON DELETE CASCADE,
+            capability_hash TEXT UNIQUE NOT NULL,
+            expires_at INTEGER NOT NULL,
+            max_session_bytes INTEGER NOT NULL,
+            claimed_at INTEGER,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
+        )
+        """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_runner_transfer_grants_runner "
+        "ON runner_transfer_grants(runner_id, expires_at)"
+    )
+    conn.commit()
 
     _migrate_encrypted_control_fields(conn)
 

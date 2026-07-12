@@ -14,7 +14,7 @@
     "prepare:runtime": "node scripts/prepareRuntime.mjs",
     "bundle": "npm run build:frontend && npm run build:helper && npm run prepare:runtime && npm run build",
     "pack:mac": "npm run bundle && electron-builder --mac --dir --arm64",
-    "dist:mac": "npm run bundle && YINSHI_RELEASE_BUILD=1 electron-builder --mac dmg --arm64 --publish never",
+    "dist:mac": "npm run bundle && YINSHI_RELEASE_BUILD=1 electron-builder --mac dmg zip --arm64 --publish never",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
@@ -74,6 +74,10 @@
       {
         "from": "runtime/git/COPYING",
         "to": "licenses/Git-COPYING"
+      },
+      {
+        "from": "licenses/noise-c-wasm-NOTICE.txt",
+        "to": "licenses/noise-c-wasm-NOTICE.txt"
       },
       {
         "from": "runtime/sources",

@@ -100,6 +100,9 @@ export interface CloudRunner {
   runner_version: string | null;
   capabilities: Record<string, unknown>;
   data_dir: string | null;
+  noise_public_key: string | null;
+  noise_key_fingerprint: string | null;
+  noise_key_confirmed: boolean;
 }
 
 export interface CloudRunnerRegistration {
@@ -285,21 +288,29 @@ function _normalizeErrorPayload(
   return normalized;
 }
 
+function _apiErrorFromPayload(status: number, payload: unknown): ApiError {
+  const normalized = _normalizeErrorPayload(payload);
+  if (normalized?.message) {
+    return new ApiError(status, normalized.message, normalized);
+  }
+  if (
+    payload &&
+    typeof payload === "object" &&
+    "detail" in payload &&
+    typeof payload.detail === "string"
+  ) {
+    return new ApiError(status, payload.detail);
+  }
+  return new ApiError(status, `API request failed with status ${status}`);
+}
+
 async function _readApiError(response: Response): Promise<ApiError> {
   const contentType = response.headers.get("content-type") || "";
   if (contentType.includes("application/json")) {
     const payload = await response.json().catch(() => null);
-    const normalized = _normalizeErrorPayload(payload);
-    if (normalized?.message) {
-      return new ApiError(response.status, normalized.message, normalized);
-    }
-    if (
-      payload &&
-      typeof payload === "object" &&
-      "detail" in payload &&
-      typeof payload.detail === "string"
-    ) {
-      return new ApiError(response.status, payload.detail);
+    const error = _apiErrorFromPayload(response.status, payload);
+    if (payload !== null) {
+      return error;
     }
   }
 
@@ -307,11 +318,58 @@ async function _readApiError(response: Response): Promise<ApiError> {
   return new ApiError(response.status, text || response.statusText);
 }
 
+const DESKTOP_HOSTED_RUNNER_PATHS = new Set([
+  "/api/settings/runner",
+  "/api/settings/runner/capabilities",
+  "/api/settings/runner/noise-key/confirm",
+]);
+
+async function desktopHostedRequest<T>(
+  method: string,
+  path: string,
+  body: unknown,
+): Promise<T | undefined> {
+  const bridge = window.yinshiDesktop;
+  if (bridge === undefined || !DESKTOP_HOSTED_RUNNER_PATHS.has(path)) {
+    return undefined;
+  }
+  if (method !== "DELETE" && method !== "GET" && method !== "POST") {
+    throw new TypeError("Desktop hosted API method is not supported");
+  }
+  if (
+    body !== undefined &&
+    (body === null || typeof body !== "object" || Array.isArray(body))
+  ) {
+    throw new TypeError("Desktop hosted API body must be an object");
+  }
+  const hostedRequest: DesktopHostedApiRequest =
+    body === undefined
+      ? { method, path }
+      : { method, path, body: body as Readonly<Record<string, unknown>> };
+  const response = await bridge.hostedRequest(hostedRequest);
+  if (!Number.isInteger(response.status) || response.status < 100 || response.status > 599) {
+    throw new Error("Desktop hosted API returned an invalid status");
+  }
+  if (response.status < 200 || response.status > 299) {
+    throw _apiErrorFromPayload(response.status, response.body);
+  }
+  if (response.status === 204) {
+    return undefined as T;
+  }
+  return response.body as T;
+}
+
 async function request<T>(
   method: string,
   path: string,
   body?: unknown,
 ): Promise<T> {
+  const usesDesktopHostedApi =
+    window.yinshiDesktop !== undefined && DESKTOP_HOSTED_RUNNER_PATHS.has(path);
+  const hostedResponse = await desktopHostedRequest<T>(method, path, body);
+  if (usesDesktopHostedApi) {
+    return hostedResponse as T;
+  }
   const opts: RequestInit = {
     method,
     headers: {

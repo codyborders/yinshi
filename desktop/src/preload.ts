@@ -1,6 +1,10 @@
 import { contextBridge, ipcRenderer } from "electron";
 
-import { DESKTOP_IPC_CHANNELS, type YinshiDesktopApi } from "./desktopApi.js";
+import {
+  DESKTOP_IPC_CHANNELS,
+  type HostedApiRequest,
+  type YinshiDesktopApi,
+} from "./desktopApi.js";
 
 const desktopApi: YinshiDesktopApi = Object.freeze({
   signIn: async (): Promise<void> => {
@@ -11,6 +15,8 @@ const desktopApi: YinshiDesktopApi = Object.freeze({
   },
   importLocalRepository: async () =>
     ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.importLocalRepository),
+  hostedRequest: async (request: HostedApiRequest) =>
+    ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.hostedRequest, request),
 });
 
 contextBridge.exposeInMainWorld("yinshiDesktop", desktopApi);

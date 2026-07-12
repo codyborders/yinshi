@@ -26,6 +26,7 @@ from yinshi.api import (
     desktop_devices,
     github,
     repos,
+    runner_relay,
     runners,
     sessions,
     settings,
@@ -98,11 +99,11 @@ class _RequestBodyTooLarge(Exception):
 _API_CONTENT_SECURITY_POLICY = "default-src 'none'; frame-ancestors 'none'; base-uri 'none'"
 _DESKTOP_CONTENT_SECURITY_POLICY = (
     "default-src 'self'; "
-    "script-src 'self'; "
+    "script-src 'self' 'wasm-unsafe-eval'; "
     "style-src 'self' 'unsafe-inline'; "
     "img-src 'self' data:; "
     "font-src 'self' data:; "
-    "connect-src 'self'; "
+    "connect-src 'self' https://yinshi.io wss://yinshi.io; "
     "object-src 'none'; "
     "base-uri 'none'; "
     "frame-ancestors 'none'; "
@@ -320,6 +321,7 @@ def _include_routes(application: FastAPI, *, mode: AppMode) -> None:
         datadog_proxy.router,
         desktop_devices.router,
         github.router,
+        runner_relay.router,
         runners.router,
     )
     selected_routers = list(execution_routers)

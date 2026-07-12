@@ -11,6 +11,8 @@ itsdangerous==2.2.0
 python-multipart==0.0.32
 cryptography==49.0.0
 sqlcipher3==0.6.2
+noiseprotocol==0.3.1
+websockets==16.0
 slowapi==0.1.9
 
 # Security-sensitive transitive packages stay pinned until their direct parent advances.

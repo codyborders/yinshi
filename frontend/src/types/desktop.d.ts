@@ -1,4 +1,16 @@
+interface DesktopHostedApiRequest {
+  readonly method: "DELETE" | "GET" | "POST";
+  readonly path: string;
+  readonly body?: Readonly<Record<string, unknown>>;
+}
+
+interface DesktopHostedApiResponse {
+  readonly status: number;
+  readonly body: unknown;
+}
+
 interface YinshiDesktopBridge {
+  hostedRequest(request: DesktopHostedApiRequest): Promise<DesktopHostedApiResponse>;
   importLocalRepository(): Promise<
     | { readonly status: "cancelled" }
     | {

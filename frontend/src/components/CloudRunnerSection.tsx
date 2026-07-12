@@ -7,6 +7,7 @@ import {
   type CloudRunnerStatus,
   type RunnerStorageProfile,
 } from "../api/client";
+import { checkEncryptedRunnerHealth } from "../runner/encryptedRunnerClient";
 
 type RunnerOptionId = "hosted" | RunnerStorageProfile;
 
@@ -231,6 +232,9 @@ export default function CloudRunnerSection() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [revoking, setRevoking] = useState(false);
+  const [pairing, setPairing] = useState(false);
+  const [checkingRunner, setCheckingRunner] = useState(false);
+  const [runnerHealth, setRunnerHealth] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   async function loadRunner() {
@@ -281,6 +285,44 @@ export default function CloudRunnerSection() {
       setError(errorMessage(createError, "Failed to create cloud runner"));
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function confirmRunnerIdentity() {
+    if (!runner?.noise_public_key || !runner.noise_key_fingerprint) {
+      setError("Runner identity is not available yet.");
+      return;
+    }
+    setPairing(true);
+    setError(null);
+    try {
+      const confirmedRunner = await api.post<CloudRunner>(
+        "/api/settings/runner/noise-key/confirm",
+        { noise_public_key: runner.noise_public_key },
+      );
+      setRunner(confirmedRunner);
+    } catch (pairingError) {
+      setError(errorMessage(pairingError, "Failed to pair runner identity"));
+    } finally {
+      setPairing(false);
+    }
+  }
+
+  async function checkRunnerConnection() {
+    if (!runner?.noise_public_key || !runner.noise_key_confirmed) {
+      setError("Pair the runner identity before testing the encrypted connection.");
+      return;
+    }
+    setCheckingRunner(true);
+    setRunnerHealth(null);
+    setError(null);
+    try {
+      await checkEncryptedRunnerHealth(runner.noise_public_key);
+      setRunnerHealth("Encrypted runner connection is healthy.");
+    } catch (healthError) {
+      setError(errorMessage(healthError, "Encrypted runner connection failed"));
+    } finally {
+      setCheckingRunner(false);
     }
   }
 
@@ -369,6 +411,70 @@ export default function CloudRunnerSection() {
               {storageLabel(runnerCapability(runner, "shared_files_storage", "S3 Files ready"))}
             </div>
           </div>
+        </div>
+      ) : null}
+
+      {runner?.noise_key_fingerprint ? (
+        <div className="mt-5 rounded-lg border border-gray-700 bg-gray-950/70 p-4">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h3 className="text-sm font-semibold text-gray-100">Runner encryption identity</h3>
+              <p className="mt-1 max-w-2xl text-sm text-gray-400">
+                Compare this full fingerprint with the value printed by the runner service. Confirm
+                only when every character matches.
+              </p>
+            </div>
+            <span
+              className={`rounded-full border px-2.5 py-1 text-xs font-medium ${
+                runner.noise_key_confirmed
+                  ? "border-emerald-700/60 bg-emerald-100/80 text-emerald-950"
+                  : "border-amber-700/60 bg-amber-100/80 text-amber-950"
+              }`}
+            >
+              {runner.noise_key_confirmed ? "Runner identity paired" : "Pairing required"}
+            </span>
+          </div>
+          <code className="mt-3 block break-all rounded border border-gray-800 bg-gray-900 px-3 py-2 text-xs text-gray-200">
+            {runner.noise_key_fingerprint}
+          </code>
+          {runner.noise_key_confirmed ? (
+            <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <p className="text-xs text-emerald-300">
+                  New encrypted sessions are pinned to this runner identity.
+                </p>
+                {runnerHealth ? (
+                  <p className="mt-1 text-xs text-gray-300">{runnerHealth}</p>
+                ) : null}
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  void checkRunnerConnection();
+                }}
+                disabled={checkingRunner}
+                className="rounded border border-gray-700 px-3 py-2 text-sm text-gray-200 hover:border-gray-500 disabled:opacity-50"
+              >
+                {checkingRunner ? "Testing..." : "Test encrypted connection"}
+              </button>
+            </div>
+          ) : (
+            <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+              <p className="text-xs text-amber-200">
+                Encrypted sessions are blocked until pairing is complete.
+              </p>
+              <button
+                type="button"
+                onClick={() => {
+                  void confirmRunnerIdentity();
+                }}
+                disabled={pairing}
+                className="btn-primary px-3 py-2 text-sm disabled:opacity-50"
+              >
+                {pairing ? "Pairing..." : "I verified this fingerprint"}
+              </button>
+            </div>
+          )}
         </div>
       ) : null}
 

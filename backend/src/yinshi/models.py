@@ -306,6 +306,9 @@ class CloudRunnerOut(BaseModel):
     runner_version: str | None = None
     capabilities: dict[str, Any] = Field(default_factory=dict)
     data_dir: str | None = None
+    noise_public_key: str | None = None
+    noise_key_fingerprint: str | None = None
+    noise_key_confirmed: bool = False
 
 
 class CloudRunnerRegistrationOut(BaseModel):
@@ -328,6 +331,9 @@ class RunnerRegisterIn(BaseModel):
     sqlite_dir: str | None = Field(None, min_length=1, max_length=4096)
     shared_files_dir: str | None = Field(None, min_length=1, max_length=4096)
     storage_profile: RunnerStorageProfile = "aws_ebs_s3_files"
+    noise_public_key: str | None = Field(
+        None, min_length=43, max_length=43, pattern=r"^[A-Za-z0-9_-]+$"
+    )
 
     @field_validator("registration_token", "runner_version", "data_dir")
     @classmethod
@@ -347,7 +353,56 @@ class RunnerRegisterOut(BaseModel):
 
     runner_id: str
     runner_token: str
+    capability_signing_public_key: str
     status: Literal["online"] = "online"
+
+
+class RunnerNoiseKeyConfirmationIn(BaseModel):
+    """Exact runner Noise identity a user has visually confirmed."""
+
+    noise_public_key: str = Field(
+        min_length=43,
+        max_length=43,
+        pattern=r"^[A-Za-z0-9_-]+$",
+    )
+
+
+class RunnerCapabilityCreateIn(BaseModel):
+    """Requested least-privilege authority for one encrypted runner session."""
+
+    initiator_public_key: str = Field(
+        min_length=43,
+        max_length=43,
+        pattern=r"^[A-Za-z0-9_-]+$",
+    )
+    scopes: list[str] = Field(min_length=1, max_length=14)
+    max_session_bytes: int = Field(ge=65_536, le=1_073_741_824)
+
+    @field_validator("scopes")
+    @classmethod
+    def validate_scopes(cls, value: list[str]) -> list[str]:
+        """Reject blank or repeated capability scopes before service validation."""
+        normalized = [scope.strip() for scope in value]
+        if any(not scope for scope in normalized):
+            raise ValueError("scopes must not contain blank values")
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("scopes must not contain duplicates")
+        return normalized
+
+
+class RunnerCapabilityOut(BaseModel):
+    """Signed dispatch grant and pinned responder identity for one session."""
+
+    capability: str
+    transfer_id: str
+    runner_id: str
+    runner_public_key: str
+    protocol: str
+    issued_at: int
+    expires_at: int
+    max_frame_bytes: int
+    max_session_bytes: int
+    relay_url: str
 
 
 class RunnerHeartbeatIn(BaseModel):
@@ -377,6 +432,7 @@ class RunnerHeartbeatOut(BaseModel):
     """Heartbeat acknowledgement returned to the runner."""
 
     runner_id: str
+    capability_signing_public_key: str
     status: Literal["online"] = "online"
 
 

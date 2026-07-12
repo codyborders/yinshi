@@ -1,19 +1,32 @@
-"""Minimal cloud runner agent that registers and heartbeats to Yinshi.
-
-The runner process is intentionally small: it proves that user-owned compute
-and POSIX storage are reachable before higher-level job dispatch is enabled.
-"""
+"""Cloud runner agent for registration and encrypted restricted worker RPC."""
 
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
+import hashlib
+import json
 import logging
 import os
+import secrets
+import stat
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
+from websockets.asyncio.client import ClientConnection, connect
+from websockets.exceptions import ConnectionClosed, InvalidStatus
+from websockets.typing import Origin
+
+from yinshi.services.runner_agent_relay import (
+    RunnerAgentRelayRuntime,
+    RunnerRelaySessionError,
+)
+from yinshi.services.runner_noise import load_or_create_runner_noise_keypair
 
 logger = logging.getLogger(__name__)
 RUNNER_VERSION = "0.1.0"
@@ -115,6 +128,9 @@ class RunnerAgentConfig:
     control_url: str
     registration_token: str | None
     runner_token_file: Path
+    noise_private_key_file: Path
+    capability_signing_key_file: Path
+    replay_database_file: Path
     data_dir: Path
     sqlite_dir: Path
     shared_files_dir: Path
@@ -224,6 +240,18 @@ def load_config() -> RunnerAgentConfig:
     )
     runner_token_file = _env_path("YINSHI_RUNNER_TOKEN_FILE", _DEFAULT_TOKEN_FILE)
     data_dir = _env_path("YINSHI_RUNNER_DATA_DIR", _DEFAULT_DATA_DIR)
+    noise_private_key_file = _env_path(
+        "YINSHI_RUNNER_NOISE_KEY_FILE",
+        str(data_dir / "runner-noise.key"),
+    )
+    capability_signing_key_file = _env_path(
+        "YINSHI_RUNNER_CAPABILITY_SIGNING_KEY_FILE",
+        str(data_dir / "control-capability-signing.pub"),
+    )
+    replay_database_file = _env_path(
+        "YINSHI_RUNNER_REPLAY_DATABASE_FILE",
+        str(data_dir / "runner-capability-replay.sqlite3"),
+    )
     sqlite_dir = _env_path("YINSHI_RUNNER_SQLITE_DIR", profile.default_sqlite_dir)
     shared_files_dir = _env_path(
         "YINSHI_RUNNER_SHARED_FILES_DIR",
@@ -235,6 +263,9 @@ def load_config() -> RunnerAgentConfig:
         control_url=control_url.rstrip("/"),
         registration_token=_env_text("YINSHI_REGISTRATION_TOKEN"),
         runner_token_file=runner_token_file,
+        noise_private_key_file=noise_private_key_file,
+        capability_signing_key_file=capability_signing_key_file,
+        replay_database_file=replay_database_file,
         data_dir=data_dir,
         sqlite_dir=sqlite_dir,
         shared_files_dir=shared_files_dir,
@@ -312,23 +343,106 @@ def _capabilities(config: RunnerAgentConfig) -> dict[str, Any]:
     }
 
 
-def _read_runner_token(token_file: Path) -> str | None:
-    """Read a previously issued runner bearer token from disk."""
-    if not token_file.exists():
+def _read_owner_only_text_file(path: Path, label: str) -> str | None:
+    """Read a regular owner-only text file without following symlinks."""
+    if not path.exists() and not path.is_symlink():
         return None
-    token = token_file.read_text(encoding="utf-8").strip()
-    if not token:
-        raise RuntimeError(f"Runner token file is empty: {token_file}")
-    return token
+    no_follow = getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, os.O_RDONLY | no_follow)
+    except OSError as exc:
+        raise RuntimeError(f"{label} file could not be opened safely") from exc
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise RuntimeError(f"{label} file must be regular")
+        if metadata.st_uid != os.geteuid():
+            raise RuntimeError(f"{label} file must be owned by the runner user")
+        if stat.S_IMODE(metadata.st_mode) != 0o600:
+            raise RuntimeError(f"{label} file must have owner-only permissions")
+        encoded_value = os.read(descriptor, 8_193)
+    finally:
+        os.close(descriptor)
+    if len(encoded_value) > 8_192:
+        raise RuntimeError(f"{label} file is too large")
+    try:
+        value = encoded_value.decode("ascii").strip()
+    except UnicodeDecodeError as exc:
+        raise RuntimeError(f"{label} file must contain ASCII text") from exc
+    if not value:
+        raise RuntimeError(f"{label} file is empty")
+    return value
+
+
+def _write_owner_only_text_file(path: Path, value: str, label: str) -> None:
+    """Atomically persist one owner-only ASCII value."""
+    if not isinstance(value, str) or not value.strip():
+        raise RuntimeError(f"{label} must not be empty")
+    try:
+        encoded_value = f"{value.strip()}\n".encode("ascii")
+    except UnicodeEncodeError as exc:
+        raise RuntimeError(f"{label} must contain ASCII text") from exc
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    temporary_path = path.with_name(f".{path.name}.{secrets.token_hex(8)}.tmp")
+    no_follow = getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(
+        temporary_path,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | no_follow,
+        0o600,
+    )
+    try:
+        written = os.write(descriptor, encoded_value)
+        if written != len(encoded_value):
+            raise RuntimeError(f"{label} write was incomplete")
+        os.fsync(descriptor)
+    except BaseException:
+        temporary_path.unlink(missing_ok=True)
+        raise
+    finally:
+        os.close(descriptor)
+    os.replace(temporary_path, path)
+    directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    directory_descriptor = os.open(path.parent, directory_flags)
+    try:
+        os.fsync(directory_descriptor)
+    finally:
+        os.close(directory_descriptor)
+
+
+def _read_runner_token(token_file: Path) -> str | None:
+    """Read a previously issued runner bearer token from owner-only storage."""
+    return _read_owner_only_text_file(token_file, "Runner token")
 
 
 def _write_runner_token(token_file: Path, runner_token: str) -> None:
     """Persist the runner bearer token with owner-only permissions."""
-    if not runner_token.strip():
-        raise RuntimeError("Runner token must not be empty")
-    token_file.parent.mkdir(parents=True, exist_ok=True)
-    token_file.write_text(f"{runner_token}\n", encoding="utf-8")
-    token_file.chmod(0o600)
+    _write_owner_only_text_file(token_file, runner_token, "Runner token")
+
+
+def _validate_capability_signing_public_key(value: object) -> str:
+    """Return a canonical raw Ed25519 public key from a control response."""
+    if not isinstance(value, str) or not value:
+        raise RuntimeError("Control response did not include a capability signing key")
+    try:
+        key_bytes = base64.b64decode(value + "=", altchars=b"-_", validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise RuntimeError("Control capability signing key is not valid base64url") from exc
+    canonical_value = base64.urlsafe_b64encode(key_bytes).rstrip(b"=").decode("ascii")
+    if canonical_value != value or len(key_bytes) != 32:
+        raise RuntimeError("Control capability signing key is not a canonical 32-byte key")
+    return canonical_value
+
+
+def _pin_capability_signing_key(path: Path, value: object) -> str:
+    """Persist first control key and reject every later key change."""
+    validated_value = _validate_capability_signing_public_key(value)
+    existing_value = _read_owner_only_text_file(path, "Control capability signing key")
+    if existing_value is None:
+        _write_owner_only_text_file(path, validated_value, "Control capability signing key")
+        return validated_value
+    if not secrets.compare_digest(existing_value, validated_value):
+        raise RuntimeError("Control capability signing key changed; runner re-pairing is required")
+    return existing_value
 
 
 def _scrub_registration_token(env_file: Path | None) -> None:
@@ -357,20 +471,37 @@ def _runner_status_payload(config: RunnerAgentConfig) -> dict[str, Any]:
     }
 
 
-async def _register(config: RunnerAgentConfig, client: httpx.AsyncClient) -> str:
-    """Register this runner and return the issued bearer token."""
+def _runner_noise_fingerprint(config: RunnerAgentConfig) -> str:
+    """Return the full pairing fingerprint printed by the runner service."""
+    keypair = load_or_create_runner_noise_keypair(config.noise_private_key_file)
+    return f"SHA256:{hashlib.sha256(keypair.public_key).hexdigest()}"
+
+
+def _runner_registration_payload(config: RunnerAgentConfig) -> dict[str, Any]:
+    """Build registration fields including the persistent Noise responder identity."""
     if config.registration_token is None:
         raise RuntimeError("YINSHI_REGISTRATION_TOKEN is required until a runner token file exists")
-    payload = {
+    noise_keypair = load_or_create_runner_noise_keypair(config.noise_private_key_file)
+    return {
         "registration_token": config.registration_token,
+        "noise_public_key": noise_keypair.public_key_base64url,
         **_runner_status_payload(config),
     }
+
+
+async def _register(config: RunnerAgentConfig, client: httpx.AsyncClient) -> str:
+    """Register this runner and return the issued bearer token."""
+    payload = _runner_registration_payload(config)
     response = await client.post("/runner/register", json=payload)
     response.raise_for_status()
     body = response.json()
     runner_token = body.get("runner_token")
     if not isinstance(runner_token, str) or not runner_token.strip():
         raise RuntimeError("Runner registration response did not include a bearer token")
+    _pin_capability_signing_key(
+        config.capability_signing_key_file,
+        body.get("capability_signing_public_key"),
+    )
     _write_runner_token(config.runner_token_file, runner_token)
     _scrub_registration_token(config.env_file)
     logger.info("Registered Yinshi cloud runner %s", body.get("runner_id", "unknown"))
@@ -391,29 +522,159 @@ async def _heartbeat(
     )
     response.raise_for_status()
     body = response.json()
+    _pin_capability_signing_key(
+        config.capability_signing_key_file,
+        body.get("capability_signing_public_key"),
+    )
     logger.info("Heartbeat accepted for Yinshi cloud runner %s", body.get("runner_id"))
 
 
+def _runner_relay_url(control_url: str) -> str:
+    """Convert one validated HTTP control origin to its WebSocket relay URL."""
+    parsed_url = urlsplit(control_url)
+    if parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
+        raise ValueError("YINSHI_CONTROL_URL must be an HTTP or HTTPS origin")
+    if parsed_url.path not in {"", "/"} or parsed_url.query or parsed_url.fragment:
+        raise ValueError("YINSHI_CONTROL_URL must not include a path, query, or fragment")
+    websocket_scheme = "wss" if parsed_url.scheme == "https" else "ws"
+    return urlunsplit((websocket_scheme, parsed_url.netloc, "/runner/relay", "", ""))
+
+
+def _runner_relay_runtime(config: RunnerAgentConfig) -> RunnerAgentRelayRuntime:
+    """Load pinned key material for one fresh relay connection."""
+    noise_keypair = load_or_create_runner_noise_keypair(config.noise_private_key_file)
+    signing_key_text = _read_owner_only_text_file(
+        config.capability_signing_key_file,
+        "Control capability signing key",
+    )
+    if signing_key_text is None:
+        raise RuntimeError("Control capability signing key is missing")
+    validated_signing_key = _validate_capability_signing_public_key(signing_key_text)
+    signing_key_bytes = base64.urlsafe_b64decode(validated_signing_key + "=")
+    assert len(signing_key_bytes) == 32
+    return RunnerAgentRelayRuntime(
+        runner_static_private_key=noise_keypair.private_key,
+        capability_signing_public_key=signing_key_bytes,
+        replay_database_path=config.replay_database_file,
+    )
+
+
+async def _consume_runner_relay_messages(
+    runtime: RunnerAgentRelayRuntime,
+    websocket: ClientConnection,
+) -> None:
+    """Apply strict relay controls and return UUID-prefixed encrypted responses."""
+    try:
+        async for message in websocket:
+            if isinstance(message, str):
+                runtime.handle_control(message)
+                continue
+            try:
+                response = runtime.handle_binary(bytes(message), current_time=int(time.time()))
+            except RunnerRelaySessionError as error:
+                await websocket.send(
+                    json.dumps(
+                        {"transfer_id": error.transfer_id, "type": "close"},
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    )
+                )
+                continue
+            await websocket.send(response)
+    except (RuntimeError, TypeError, ValueError):
+        await websocket.close(code=1008, reason="Runner relay frame rejected")
+        raise RuntimeError("Runner relay protocol rejected a frame") from None
+
+
+async def _serve_runner_relay_connection(
+    config: RunnerAgentConfig,
+    runner_token: str,
+) -> None:
+    """Serve one outbound relay connection until transport closure."""
+    runtime = _runner_relay_runtime(config)
+    async with connect(
+        _runner_relay_url(config.control_url),
+        origin=Origin(config.control_url.rstrip("/")),
+        compression=None,
+        additional_headers={"Authorization": f"Bearer {runner_token}"},
+        proxy=True,
+        open_timeout=_REQUEST_TIMEOUT_S,
+        ping_interval=20.0,
+        ping_timeout=20.0,
+        close_timeout=5.0,
+        max_size=65_551,
+        max_queue=16,
+    ) as websocket:
+        await _consume_runner_relay_messages(runtime, websocket)
+
+
+async def _runner_relay_loop(config: RunnerAgentConfig, runner_token: str) -> None:
+    """Reconnect the outbound relay with bounded backoff until cancelled."""
+    reconnect_delay_seconds = 1.0
+    while True:
+        try:
+            await _serve_runner_relay_connection(config, runner_token)
+            reconnect_delay_seconds = 1.0
+        except InvalidStatus as error:
+            status_code = error.response.status_code
+            if status_code in {401, 403}:
+                raise RuntimeError("Runner relay authentication was rejected") from None
+            logger.warning("Runner relay unavailable with HTTP status %s", status_code)
+        except (ConnectionClosed, OSError, TimeoutError):
+            logger.warning("Runner relay connection unavailable; retrying")
+        await asyncio.sleep(reconnect_delay_seconds)
+        reconnect_delay_seconds = min(reconnect_delay_seconds * 2, 30.0)
+
+
+async def _heartbeat_loop(
+    config: RunnerAgentConfig,
+    client: httpx.AsyncClient,
+    runner_token: str,
+) -> None:
+    """Send recurring authenticated heartbeats until cancelled or revoked."""
+    while True:
+        try:
+            await _heartbeat(config, client, runner_token)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 401:
+                raise RuntimeError("Runner token was rejected by the control plane") from exc
+            raise
+        await asyncio.sleep(config.heartbeat_interval_s)
+
+
 async def run_agent(config: RunnerAgentConfig) -> None:
-    """Run the cloud runner registration and heartbeat loop forever."""
+    """Run heartbeats and outbound encrypted relay until either fails."""
     limits = httpx.Limits(max_connections=4, max_keepalive_connections=2)
     async with httpx.AsyncClient(
         base_url=config.control_url,
         timeout=_REQUEST_TIMEOUT_S,
         limits=limits,
+        follow_redirects=False,
     ) as client:
         runner_token = _read_runner_token(config.runner_token_file)
         if runner_token is None:
             runner_token = await _register(config, client)
+        else:
+            pinned_key = _read_owner_only_text_file(
+                config.capability_signing_key_file,
+                "Control capability signing key",
+            )
+            if pinned_key is None:
+                raise RuntimeError(
+                    "Control capability signing key is missing; runner re-registration is required"
+                )
+            _validate_capability_signing_public_key(pinned_key)
 
-        while True:
-            try:
-                await _heartbeat(config, client, runner_token)
-            except httpx.HTTPStatusError as exc:
-                if exc.response.status_code == 401:
-                    raise RuntimeError("Runner token was rejected by the control plane") from exc
-                raise
-            await asyncio.sleep(config.heartbeat_interval_s)
+        logger.info("Runner Noise fingerprint %s", _runner_noise_fingerprint(config))
+        async with asyncio.TaskGroup() as task_group:
+            task_group.create_task(
+                _heartbeat_loop(config, client, runner_token),
+                name="runner-heartbeat",
+            )
+            task_group.create_task(
+                _runner_relay_loop(config, runner_token),
+                name="runner-relay",
+            )
 
 
 def main() -> None:

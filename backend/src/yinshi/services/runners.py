@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import json
 import secrets
@@ -10,8 +12,14 @@ from datetime import datetime, timedelta, timezone
 from pathlib import PurePosixPath
 from typing import Any, Literal, cast
 
+from cryptography.hazmat.primitives.asymmetric.x25519 import (
+    X25519PrivateKey,
+    X25519PublicKey,
+)
+
 from yinshi.db import get_control_db
 from yinshi.exceptions import RunnerAuthenticationError, RunnerRegistrationError
+from yinshi.services.runner_capabilities import runner_capability_signing_public_key
 
 RunnerStorageProfile = Literal[
     "aws_ebs_s3_files",
@@ -37,6 +45,8 @@ _STORAGE_RUNNER_EBS = "runner_ebs"
 _STORAGE_S3_FILES_OR_LOCAL_POSIX = "s3_files_or_local_posix"
 _STORAGE_S3_FILES_MOUNT = "s3_files_mount"
 _STORAGE_LOCAL_POSIX = "local_posix"
+_RUNNER_NOISE_PUBLIC_KEY_LENGTH = 32
+_RUNNER_NOISE_VALIDATION_PRIVATE_KEY = X25519PrivateKey.from_private_bytes(b"\x01" * 32)
 _BASE_CAPABILITIES = {
     "posix_storage": True,
     "sqlite": True,
@@ -218,6 +228,32 @@ def _new_token() -> str:
     return secrets.token_urlsafe(32)
 
 
+def _validate_noise_public_key(value: str | None) -> str | None:
+    """Return one canonical usable X25519 public key from runner input."""
+    if value is None:
+        return None
+    normalized_value = _require_non_empty_text(value, "noise_public_key")
+    try:
+        public_key_bytes = base64.b64decode(
+            normalized_value + "=",
+            altchars=b"-_",
+            validate=True,
+        )
+    except (binascii.Error, ValueError) as exc:
+        raise ValueError("noise_public_key must be canonical base64url") from exc
+    canonical_value = base64.urlsafe_b64encode(public_key_bytes).rstrip(b"=").decode("ascii")
+    if canonical_value != normalized_value:
+        raise ValueError("noise_public_key must be canonical base64url")
+    if len(public_key_bytes) != _RUNNER_NOISE_PUBLIC_KEY_LENGTH:
+        raise ValueError("noise_public_key must contain exactly 32 bytes")
+    try:
+        public_key = X25519PublicKey.from_public_bytes(public_key_bytes)
+        _RUNNER_NOISE_VALIDATION_PRIVATE_KEY.exchange(public_key)
+    except ValueError as exc:
+        raise ValueError("noise_public_key is not a usable X25519 key") from exc
+    return canonical_value
+
+
 def _capabilities_json(capabilities: dict[str, Any]) -> str:
     """Serialize runner capabilities after rejecting non-object payloads."""
     if not isinstance(capabilities, dict):
@@ -372,9 +408,20 @@ def _display_status(row: Any, *, now: datetime | None = None) -> str:
     return "offline"
 
 
+def _noise_key_fingerprint(noise_public_key: str | None) -> str | None:
+    """Return a full SHA-256 fingerprint suitable for explicit user pairing."""
+    if noise_public_key is None:
+        return None
+    validated_key = _validate_noise_public_key(noise_public_key)
+    assert validated_key is not None
+    key_bytes = base64.urlsafe_b64decode(validated_key + "=")
+    return f"SHA256:{hashlib.sha256(key_bytes).hexdigest()}"
+
+
 def _serialize_runner(row: Any) -> dict[str, Any]:
     """Return the safe API representation for one runner row."""
     assert row is not None, "row must not be None"
+    noise_public_key = row["noise_public_key"]
     return {
         "id": row["id"],
         "created_at": row["created_at"],
@@ -388,6 +435,9 @@ def _serialize_runner(row: Any) -> dict[str, Any]:
         "runner_version": row["runner_version"],
         "capabilities": _serialized_capabilities(row["capabilities_json"]),
         "data_dir": row["data_dir"],
+        "noise_public_key": noise_public_key,
+        "noise_key_fingerprint": _noise_key_fingerprint(noise_public_key),
+        "noise_key_confirmed": bool(noise_public_key and row["noise_public_key_confirmed_at"]),
     }
 
 
@@ -402,6 +452,34 @@ def get_runner_for_user(user_id: str) -> dict[str, Any] | None:
     if row is None:
         return None
     return _serialize_runner(row)
+
+
+def confirm_runner_noise_key(user_id: str, noise_public_key: str) -> dict[str, Any]:
+    """Confirm the exact current runner identity after an out-of-band fingerprint check."""
+    normalized_user_id = _require_user_id(user_id)
+    normalized_public_key = _validate_noise_public_key(noise_public_key)
+    assert normalized_public_key is not None
+    confirmed_at = _datetime_to_storage(_utc_now())
+    with get_control_db() as db:
+        row = db.execute(
+            "SELECT * FROM user_runners WHERE user_id = ? AND revoked_at IS NULL",
+            (normalized_user_id,),
+        ).fetchone()
+        if row is None or row["noise_public_key"] is None:
+            raise RunnerRegistrationError("Runner Noise key is not available")
+        if not secrets.compare_digest(row["noise_public_key"], normalized_public_key):
+            raise RunnerRegistrationError("Runner Noise key does not match")
+        db.execute(
+            "UPDATE user_runners SET noise_public_key_confirmed_at = ? WHERE id = ?",
+            (confirmed_at, row["id"]),
+        )
+        db.commit()
+        confirmed_row = db.execute(
+            "SELECT * FROM user_runners WHERE id = ?",
+            (row["id"],),
+        ).fetchone()
+    assert confirmed_row is not None, "confirmed runner row must still exist"
+    return _serialize_runner(confirmed_row)
 
 
 def _runner_environment(
@@ -421,6 +499,13 @@ def _runner_environment(
         "YINSHI_RUNNER_SQLITE_DIR": profile.default_sqlite_dir,
         "YINSHI_RUNNER_SHARED_FILES_DIR": profile.default_shared_files_dir,
         "YINSHI_RUNNER_TOKEN_FILE": _DEFAULT_RUNNER_TOKEN_FILE,
+        "YINSHI_RUNNER_NOISE_KEY_FILE": f"{_DEFAULT_RUNNER_DATA_DIR}/runner-noise.key",
+        "YINSHI_RUNNER_CAPABILITY_SIGNING_KEY_FILE": (
+            f"{_DEFAULT_RUNNER_DATA_DIR}/control-capability-signing.pub"
+        ),
+        "YINSHI_RUNNER_REPLAY_DATABASE_FILE": (
+            f"{_DEFAULT_RUNNER_DATA_DIR}/runner-capability-replay.sqlite3"
+        ),
         "YINSHI_RUNNER_ENV_FILE": _DEFAULT_RUNNER_ENV_FILE,
     }
 
@@ -484,7 +569,9 @@ def create_runner_registration(
                 runner_version = NULL,
                 capabilities_json = excluded.capabilities_json,
                 data_dir = NULL,
-                revoked_at = NULL
+                revoked_at = NULL,
+                noise_public_key = NULL,
+                noise_public_key_confirmed_at = NULL
             """,
             (
                 normalized_user_id,
@@ -546,10 +633,12 @@ def register_runner(
     sqlite_dir: str | None,
     shared_files_dir: str | None,
     storage_profile: str,
+    noise_public_key: str | None,
 ) -> dict[str, Any]:
     """Consume a one-time registration token and issue a runner bearer token."""
     token_hash = _hash_token(registration_token)
     normalized_version = _require_non_empty_text(runner_version, "runner_version")
+    normalized_noise_public_key = _validate_noise_public_key(noise_public_key)
     now_text = _datetime_to_storage(_utc_now())
     runner_token = _new_token()
     runner_token_hash = _hash_token(runner_token)
@@ -597,7 +686,12 @@ def register_runner(
                 last_heartbeat_at = ?,
                 runner_version = ?,
                 capabilities_json = ?,
-                data_dir = ?
+                data_dir = ?,
+                noise_public_key = ?,
+                noise_public_key_confirmed_at = CASE
+                    WHEN noise_public_key = ? THEN noise_public_key_confirmed_at
+                    ELSE NULL
+                END
             WHERE id = ?
             """,
             (
@@ -607,6 +701,8 @@ def register_runner(
                 normalized_version,
                 capabilities_text,
                 normalized_data_dir,
+                normalized_noise_public_key,
+                normalized_noise_public_key,
                 row["id"],
             ),
         )
@@ -615,7 +711,32 @@ def register_runner(
     return {
         "runner_id": row["id"],
         "runner_token": runner_token,
+        "capability_signing_public_key": runner_capability_signing_public_key(),
         "status": "online",
+    }
+
+
+def authenticate_runner_token(runner_token: str) -> dict[str, str]:
+    """Return relay identity for one current non-revoked runner bearer token."""
+    token_hash = _hash_token(runner_token)
+    with get_control_db() as database:
+        row = database.execute(
+            """
+            SELECT id, user_id, noise_public_key
+            FROM user_runners
+            WHERE runner_token_hash = ? AND revoked_at IS NULL
+            """,
+            (token_hash,),
+        ).fetchone()
+    if row is None:
+        raise RunnerAuthenticationError("Runner token is invalid")
+    noise_public_key = row["noise_public_key"]
+    if not isinstance(noise_public_key, str) or not noise_public_key:
+        raise RunnerAuthenticationError("Runner Noise identity is unavailable")
+    return {
+        "runner_id": row["id"],
+        "user_id": row["user_id"],
+        "noise_public_key": noise_public_key,
     }
 
 
@@ -680,4 +801,8 @@ def record_runner_heartbeat(
         )
         db.commit()
 
-    return {"runner_id": row["id"], "status": "online"}
+    return {
+        "runner_id": row["id"],
+        "capability_signing_public_key": runner_capability_signing_public_key(),
+        "status": "online",
+    }

@@ -9,16 +9,20 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
 from yinshi import runner_agent
+
+_RUNNER_NOISE_PUBLIC_KEY = "MeAwP9ZBjS-MDni5HyLoyu0Pvkhlbc9HZ-SDT3Abj2I"
 
 
 def test_cloud_runner_registration_and_heartbeat(auth_client: TestClient) -> None:
     """A user can create a token, register a runner, and see it online."""
     create_response = auth_client.post(
         "/api/settings/runner",
+        headers={"X-Forwarded-Host": "attacker.example"},
         json={"name": "AWS prod runner", "cloud_provider": "aws", "region": "us-west-2"},
     )
     assert create_response.status_code == 201
@@ -49,6 +53,7 @@ def test_cloud_runner_registration_and_heartbeat(auth_client: TestClient) -> Non
             "sqlite_dir": "/var/lib/yinshi/sqlite",
             "shared_files_dir": "/mnt/yinshi-s3-files",
             "storage_profile": "aws_ebs_s3_files",
+            "noise_public_key": _RUNNER_NOISE_PUBLIC_KEY,
         },
     )
     assert register_response.status_code == 201
@@ -91,6 +96,7 @@ def test_cloud_runner_registration_and_heartbeat(auth_client: TestClient) -> Non
     status_payload = status_response.json()
     assert status_payload["status"] == "online"
     assert status_payload["runner_version"] == "0.1.1"
+    assert status_payload["noise_public_key"] == _RUNNER_NOISE_PUBLIC_KEY
     assert status_payload["capabilities"]["sqlite"] is True
     assert status_payload["capabilities"]["storage_profile"] == "aws_ebs_s3_files"
     assert status_payload["capabilities"]["storage_profile_experimental"] is False
@@ -476,6 +482,72 @@ def test_runner_agent_defaults_to_aws_storage(
     assert payload["capabilities"]["sqlite_storage"] == "runner_ebs"
     assert payload["capabilities"]["shared_files_storage"] == "local_posix"
     assert payload["capabilities"]["live_sqlite_on_shared_files"] is False
+
+
+def test_runner_agent_registration_persists_noise_identity(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Registration advertises one stable owner-only runner Noise identity."""
+    _set_runner_agent_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("YINSHI_REGISTRATION_TOKEN", "r" * 32)
+
+    config = runner_agent.load_config()
+    first_payload = runner_agent._runner_registration_payload(config)
+    second_payload = runner_agent._runner_registration_payload(config)
+
+    assert first_payload["registration_token"] == "r" * 32
+    assert first_payload["noise_public_key"] == second_payload["noise_public_key"]
+    assert len(first_payload["noise_public_key"]) == 43
+    assert config.noise_private_key_file == tmp_path / "data" / "runner-noise.key"
+    assert config.noise_private_key_file.stat().st_mode & 0o777 == 0o600
+
+
+@pytest.mark.asyncio
+async def test_runner_agent_pins_control_plane_capability_key(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Registration persists one control key and heartbeat rejects key changes."""
+    _set_runner_agent_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("YINSHI_REGISTRATION_TOKEN", "r" * 32)
+    signing_key = "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo"
+    heartbeat_key = {"value": signing_key}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/runner/register":
+            return httpx.Response(
+                201,
+                json={
+                    "runner_id": "runner-1",
+                    "runner_token": "runner-secret",
+                    "capability_signing_public_key": signing_key,
+                    "status": "online",
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "runner_id": "runner-1",
+                "capability_signing_public_key": heartbeat_key["value"],
+                "status": "online",
+            },
+        )
+
+    config = runner_agent.load_config()
+    async with httpx.AsyncClient(
+        base_url=config.control_url,
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        token = await runner_agent._register(config, client)
+        await runner_agent._heartbeat(config, client, token)
+        heartbeat_key["value"] = "a8OCKiqn9OaYHWU4aSs83z5t-e6m7SaetB2TwidXt1o"
+        with pytest.raises(RuntimeError, match="signing key changed"):
+            await runner_agent._heartbeat(config, client, token)
+
+    assert token == "runner-secret"
+    assert config.capability_signing_key_file.read_text(encoding="ascii").strip() == signing_key
+    assert config.capability_signing_key_file.stat().st_mode & 0o777 == 0o600
 
 
 def test_runner_agent_advertises_archil_shared_files(

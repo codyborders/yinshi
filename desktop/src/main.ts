@@ -25,13 +25,15 @@ import {
   type AutomaticUpdateController,
 } from "./automaticUpdates.js";
 import { startAuthCallbackListener } from "./authCallbackListener.js";
+import { DesktopCredentialStore } from "./credentialStore.js";
 import {
-  DesktopCredentialStore,
-  type DesktopCredentialProfile,
-} from "./credentialStore.js";
-import { DESKTOP_IPC_CHANNELS } from "./desktopApi.js";
+  DESKTOP_IPC_CHANNELS,
+  type HostedApiRequest,
+} from "./desktopApi.js";
 import { bootstrapHelperSession } from "./helperBootstrap.js";
 import { startManagedHelper, type ManagedHelper } from "./helperSupervisor.js";
+import { HostedAccessSession } from "./hostedAccessSession.js";
+import { HostedApiGateway } from "./hostedApiGateway.js";
 import { startHostedSignIn } from "./hostedAuth.js";
 import { startLocalRuntime } from "./localRuntime.js";
 import {
@@ -262,14 +264,28 @@ async function configureApplication(): Promise<DesktopAppController> {
     directoryPath: secureDirectory,
     safeStorage,
   });
-  let activeProfile: DesktopCredentialProfile | undefined;
-
   const fetchAdapter = (input: string | URL, init?: RequestInit): Promise<Response> =>
     net.fetch(input.toString(), init);
   const electronSessionFetch = (
     input: string | URL,
     init?: RequestInit,
   ): Promise<Response> => session.defaultSession.fetch(input.toString(), init);
+
+  const hostedAccessSession = new HostedAccessSession({
+    resume: (currentTimeSeconds) =>
+      resumeDesktopAccount({
+        apiBaseUrl: HOSTED_API_BASE_URL,
+        fetch: fetchAdapter,
+        credentialStore,
+        currentTimeSeconds,
+      }),
+  });
+  const hostedApiGateway = new HostedApiGateway({
+    apiBaseUrl: HOSTED_API_BASE_URL,
+    fetch: fetchAdapter,
+    getAccessToken: () =>
+      hostedAccessSession.getAccessToken(Math.floor(Date.now() / 1_000)),
+  });
 
   const appController = new DesktopAppController({
     resumeAccount: async () => {
@@ -278,7 +294,7 @@ async function configureApplication(): Promise<DesktopAppController> {
         fetch: fetchAdapter,
         credentialStore,
       });
-      activeProfile = account.mode === "signed-out" ? undefined : account.profile;
+      hostedAccessSession.setAccount(account);
       return account;
     },
     signIn: async () => {
@@ -295,14 +311,14 @@ async function configureApplication(): Promise<DesktopAppController> {
           waitForCallback: async () => listener.waitForCallback(),
           credentialStore,
         });
-        activeProfile = account.profile;
+        hostedAccessSession.setAccount({ mode: "online", ...account });
         return account;
       } finally {
         await listener.close();
       }
     },
     clearCredentials: async () => {
-      activeProfile = undefined;
+      hostedAccessSession.clear();
       await credentialStore.clear();
     },
     startHelper: async (profile): Promise<ManagedHelper> => {
@@ -368,11 +384,24 @@ async function configureApplication(): Promise<DesktopAppController> {
       throw new Error("Desktop sign-out failed");
     }
   });
+  ipcMain.handle(
+    DESKTOP_IPC_CHANNELS.hostedRequest,
+    async (event, request: HostedApiRequest) => {
+      if (!requestFromAllowedPage(event, DESKTOP_IPC_CHANNELS.hostedRequest)) {
+        throw new Error("Desktop IPC request denied");
+      }
+      try {
+        return await hostedApiGateway.request(request);
+      } catch {
+        throw new Error("Hosted API request failed");
+      }
+    },
+  );
   ipcMain.handle(DESKTOP_IPC_CHANNELS.importLocalRepository, async (event) => {
     if (!requestFromAllowedPage(event, DESKTOP_IPC_CHANNELS.importLocalRepository)) {
       throw new Error("Desktop IPC request denied");
     }
-    const profile = activeProfile;
+    const profile = hostedAccessSession.profile;
     const origin = applicationOrigin;
     if (profile === undefined || origin === undefined) {
       throw new Error("Desktop account session is unavailable");
