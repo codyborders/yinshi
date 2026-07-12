@@ -75,7 +75,7 @@ jobs:
       - run: npm ci --prefix frontend
       - run: npm ci --prefix sidecar
       - run: npm ci --prefix desktop
-      - run: npm test --prefix desktop
+      - run: YINSHI_TEST_PYTHON="$(command -v python)" npm test --prefix desktop
       - run: npm run typecheck --prefix desktop
       - run: npm run build:frontend --prefix desktop
       - run: npm run build:helper --prefix desktop

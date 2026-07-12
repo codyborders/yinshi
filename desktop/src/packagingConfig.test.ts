@@ -2,6 +2,7 @@
 
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import { build } from "esbuild";
 import { describe, expect, it } from "vitest";
 
 interface PackageManifest {
@@ -28,5 +29,28 @@ describe("desktop packaging configuration", () => {
       target: "dmg",
       arch: ["arm64"],
     });
+  });
+
+  it("bundles the sandbox preload as CommonJS and loads that artifact", async () => {
+    const result = await build({
+      bundle: true,
+      entryPoints: [path.resolve(process.cwd(), "src/preload.ts")],
+      external: ["electron"],
+      format: "cjs",
+      platform: "node",
+      write: false,
+    });
+    const output = result.outputFiles?.[0]?.text;
+    const mainSource = await readFile(
+      path.resolve(process.cwd(), "src/main.ts"),
+      {
+        encoding: "utf-8",
+      },
+    );
+
+    expect(output).toBeDefined();
+    expect(output).toContain('require("electron")');
+    expect(output).not.toMatch(/^import\s/mu);
+    expect(mainSource).toContain('path.join(moduleDirectory, "preload.cjs")');
   });
 });

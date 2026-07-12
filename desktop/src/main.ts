@@ -208,7 +208,7 @@ function installWindowSecurity(window: BrowserWindow): void {
 }
 
 function createMainWindow(): BrowserWindow {
-  const preloadPath = path.join(moduleDirectory, "preload.js");
+  const preloadPath = path.join(moduleDirectory, "preload.cjs");
   const window = new BrowserWindow({
     ...createBrowserWindowOptions(preloadPath),
     width: 1_080,

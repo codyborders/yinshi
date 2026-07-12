@@ -12,7 +12,9 @@ import { startManagedHelper, type ManagedHelper } from "./helperSupervisor.js";
 
 const repositoryRoot = fileURLToPath(new URL("../..", import.meta.url));
 const backendDirectory = path.join(repositoryRoot, "backend");
-const pythonExecutable = path.join(backendDirectory, ".venv", "bin", "python");
+const pythonExecutable =
+  process.env.YINSHI_TEST_PYTHON ??
+  path.join(backendDirectory, ".venv", "bin", "python");
 
 it("starts the real Python helper and reaches loopback health", async () => {
   await access(pythonExecutable, constants.X_OK);
