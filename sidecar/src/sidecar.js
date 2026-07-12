@@ -946,7 +946,6 @@ export class YinshiSidecar {
     if (process.env.SIDECAR_LOAD_DOTENV === "1") {
       this._loadDotEnv();
     }
-    console.log("[sidecar] Initialized with pi SDK");
   }
 
   _loadDotEnv() {
