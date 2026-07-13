@@ -19307,10 +19307,16 @@ export function subscribePiCommands(notify: () => void): () => void {
 
 ## hooks/useAuth.tsx
 
-Auth state is fetched once and distributed through React context. The root chunk below tangles back to `frontend/src/hooks/useAuth.tsx`.
+Auth state is fetched once and distributed through React context. In desktop mode, authentication uses the `window.yinshiDesktop` API to check for an active profile. In browser mode, it calls the `/auth/me` endpoint. The root chunk below tangles back to `frontend/src/hooks/useAuth.tsx`.
 
 ```tsx {chunk="frontend-src-hooks-useauth-tsx" file="frontend/src/hooks/useAuth.tsx"}
-import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useState,
+  type ReactNode,
+} from "react";
 
 type AuthStatus = "loading" | "authenticated" | "unauthenticated" | "disabled";
 
@@ -19340,6 +19346,21 @@ export function AuthProvider({ children }: AuthProviderProps) {
   useEffect(() => {
     async function checkAuth() {
       try {
+        const desktopApi = window.yinshiDesktop;
+        if (desktopApi !== undefined) {
+          const profiles = await desktopApi.listProfiles();
+          const activeProfile = profiles.find(
+            (profile) => profile.active && profile.hasCredentials,
+          );
+          if (activeProfile === undefined) {
+            setStatus("unauthenticated");
+            return;
+          }
+          setEmail(activeProfile.user.email);
+          setUserId(activeProfile.user.id);
+          setStatus("authenticated");
+          return;
+        }
         const res = await fetch("/auth/me", { credentials: "include" });
         if (!res.ok) {
           setStatus("unauthenticated");
@@ -19361,11 +19382,15 @@ export function AuthProvider({ children }: AuthProviderProps) {
   }, []);
 
   async function logout() {
-    await fetch("/auth/logout", {
-      method: "POST",
-      credentials: "include",
-      headers: { "X-Requested-With": "XMLHttpRequest" },
-    }).catch(() => {});
+    if (window.yinshiDesktop !== undefined) {
+      await window.yinshiDesktop.signOut();
+    } else {
+      await fetch("/auth/logout", {
+        method: "POST",
+        credentials: "include",
+        headers: { "X-Requested-With": "XMLHttpRequest" },
+      }).catch(() => {});
+    }
     setStatus("unauthenticated");
     setEmail(null);
     setUserId(null);
