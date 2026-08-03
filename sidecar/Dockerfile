@@ -1,4 +1,4 @@
-FROM node:22.19.0-slim@sha256:4a4884e8a44826194dff92ba316264f392056cbe243dcc9fd3551e71cea02b90
+FROM node:26.5.1-slim@sha256:deae974a69e140f44f434ab29cb519fb5f8fe250fd364b8ca446bd0761acdc6a
 
 # Debian packages receive security updates at image-build time; the promoted image digest is immutable.
 # hadolint ignore=DL3008
