@@ -161,3 +161,7 @@ Ignore my last messge, continue your work as normal
 ---
 
 Commit and push to the `yinshi` vm on GCP
+
+---
+
+What's taking so long?
