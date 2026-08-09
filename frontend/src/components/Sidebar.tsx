@@ -219,7 +219,11 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
         const runner = await api.get<CloudRunner | null>(
           "/api/settings/runner",
         );
-        if (runner?.noise_key_confirmed && runner.noise_public_key) {
+        if (
+          runner?.noise_key_confirmed &&
+          runner.noise_public_key &&
+          runner.status !== "revoked"
+        ) {
           const runnerTarget = {
             runnerId: runner.id,
             runnerPublicKey: runner.noise_public_key,

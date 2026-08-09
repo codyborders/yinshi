@@ -106,6 +106,31 @@ describe("Sidebar repo settings", () => {
     );
   });
 
+  it("ignores a revoked BYOC runner", async () => {
+    mockGet.mockImplementation(async (path: string) => {
+      if (path === "/api/repos") return [];
+      if (path === "/api/github/installations") return [];
+      if (path === "/api/settings/runner") {
+        return {
+          id: "runner-1",
+          status: "revoked",
+          noise_public_key: "MeAwP9ZBjS-MDni5HyLoyu0Pvkhlbc9HZ-SDT3Abj2I",
+          noise_key_confirmed: true,
+        };
+      }
+      throw new Error(`Unexpected GET ${path}`);
+    });
+    mockListRunnerRepositories.mockResolvedValue([]);
+
+    renderSidebar();
+
+    await waitFor(() =>
+      expect(mockGet).toHaveBeenCalledWith("/api/settings/runner"),
+    );
+    expect(mockListRunnerRepositories).not.toHaveBeenCalled();
+    expect(screen.queryByText("BYOC")).toBeNull();
+  });
+
   it("aggregates paired BYOC repositories with explicit location labels", async () => {
     mockGet.mockImplementation(async (path: string) => {
       if (path === "/api/repos") return [];
