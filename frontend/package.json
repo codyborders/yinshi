@@ -1,0 +1,42 @@
+{
+  "name": "yinshi-frontend",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "test:e2e": "playwright test --reporter=list"
+  },
+  "dependencies": {
+    "@datadog/browser-rum": "^6.31.0",
+    "@datadog/browser-rum-react": "^6.31.0",
+    "@richardhopton/noise-c.wasm": "^0.5.0",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-markdown": "^10.1.0",
+    "react-router-dom": "6.30.4",
+    "remark-gfm": "^4.0.1"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.54.2",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@types/node": "24.13.3",
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "6.0.3",
+    "autoprefixer": "^10.4.19",
+    "jsdom": "29.1.1",
+    "picomatch": "2.3.2",
+    "postcss": "8.5.10",
+    "tailwindcss": "^3.4.4",
+    "typescript": "^5.5.3",
+    "vite": "8.1.4",
+    "vitest": "4.1.0"
+  }
+}

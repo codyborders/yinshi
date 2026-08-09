@@ -1,0 +1,231 @@
+name: Desktop Release
+
+on:
+  push:
+    tags:
+      - "desktop-v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing desktop-vX.Y.Z tag to release
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: desktop-release
+  cancel-in-progress: false
+
+env:
+  PYTHON_VERSION: "3.11"
+  NODE_VERSION: "24"
+
+jobs:
+  release:
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/requirements/*.txt
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: |
+            desktop/package-lock.json
+            frontend/package-lock.json
+            sidecar/package-lock.json
+
+      - name: Validate release tag and required secrets
+        env:
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          APPLE_KEY: ${{ secrets.APPLE_API_KEY_P8_BASE64 }}
+          APPLE_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          UPDATE_SSH_KEY: ${{ secrets.DESKTOP_UPDATE_SSH_KEY }}
+          UPDATE_TARGET: ${{ secrets.DESKTOP_UPDATE_SSH_TARGET }}
+          UPDATE_PATH: ${{ secrets.DESKTOP_UPDATE_REMOTE_PATH }}
+          UPDATE_HOST_KEY: ${{ secrets.DESKTOP_UPDATE_HOST_KEY }}
+          TAILSCALE_CLIENT_ID: ${{ secrets.TAILSCALE_OAUTH_CLIENT_ID }}
+          TAILSCALE_CLIENT_SECRET: ${{ secrets.TAILSCALE_OAUTH_CLIENT_SECRET }}
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./desktop/package.json').version")
+          test "$RELEASE_TAG" = "desktop-v$version"
+          git rev-parse --verify "refs/tags/$RELEASE_TAG"
+          for value in CERTIFICATE CERTIFICATE_PASSWORD APPLE_KEY APPLE_KEY_ID APPLE_ISSUER UPDATE_SSH_KEY UPDATE_TARGET UPDATE_PATH UPDATE_HOST_KEY TAILSCALE_CLIENT_ID TAILSCALE_CLIENT_SECRET; do
+            test -n "${!value}"
+          done
+          echo "RELEASE_TAG=$RELEASE_TAG" >> "$GITHUB_ENV"
+
+      - name: Install locked dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip==26.1.2
+          python -m pip install -r backend/requirements/dev.txt
+          npm ci --prefix frontend
+          npm ci --prefix sidecar
+          npm ci --prefix desktop
+
+      - name: Run release test and audit gates
+        run: |
+          set -euo pipefail
+          (cd backend && pytest -q && black --check src tests && isort --check-only src tests && flake8 src tests && mypy src && pip-audit)
+          (cd frontend && npm exec vitest run)
+          npm run typecheck --prefix frontend
+          npm audit --prefix frontend
+          (cd sidecar && node --test tests/*.test.js && npm audit)
+          npm test --prefix desktop
+          npm run typecheck --prefix desktop
+          npm audit --prefix desktop
+
+      - name: Import Developer ID certificate
+        env:
+          CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          certificate_path="$RUNNER_TEMP/developer-id.p12"
+          keychain_path="$RUNNER_TEMP/yinshi-signing.keychain-db"
+          keychain_password=$(openssl rand -hex 24)
+          printf '%s' "$CERTIFICATE" | base64 --decode > "$certificate_path"
+          chmod 600 "$certificate_path"
+          security create-keychain -p "$keychain_password" "$keychain_path"
+          security set-keychain-settings -lut 21600 "$keychain_path"
+          security unlock-keychain -p "$keychain_password" "$keychain_path"
+          security import "$certificate_path" -k "$keychain_path" -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain_path"
+          security list-keychains -d user -s "$keychain_path" login.keychain-db
+          echo "CSC_LINK=$certificate_path" >> "$GITHUB_ENV"
+          echo "CSC_KEY_PASSWORD=$CERTIFICATE_PASSWORD" >> "$GITHUB_ENV"
+          echo "SIGNING_KEYCHAIN=$keychain_path" >> "$GITHUB_ENV"
+
+      - name: Prepare App Store Connect API key
+        env:
+          APPLE_KEY: ${{ secrets.APPLE_API_KEY_P8_BASE64 }}
+          APPLE_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          set -euo pipefail
+          api_key_path="$RUNNER_TEMP/AuthKey_${APPLE_KEY_ID}.p8"
+          printf '%s' "$APPLE_KEY" | base64 --decode > "$api_key_path"
+          chmod 600 "$api_key_path"
+          echo "APPLE_API_KEY=$api_key_path" >> "$GITHUB_ENV"
+          echo "APPLE_API_KEY_ID=$APPLE_KEY_ID" >> "$GITHUB_ENV"
+          echo "APPLE_API_ISSUER=$APPLE_ISSUER" >> "$GITHUB_ENV"
+
+      - name: Build release artifacts
+        run: |
+          set -euo pipefail
+          npm run dist:mac --prefix desktop
+
+      - name: Verify signatures, notarization, update files, and mounted DMG
+        run: |
+          set -euo pipefail
+          app="desktop/release/mac-arm64/Yinshi.app"
+          test -d "$app"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          codesign -dv --verbose=4 "$app" 2>&1 | grep -q "Authority=Developer ID Application"
+          xcrun stapler validate "$app"
+          spctl --assess --type execute --verbose=4 "$app"
+
+          dmg=$(find desktop/release -maxdepth 1 -name 'Yinshi-*-arm64.dmg' -print -quit)
+          zip=$(find desktop/release -maxdepth 1 -name 'Yinshi-*-arm64.zip' -print -quit)
+          test -n "$dmg"
+          test -n "$zip"
+          test -f desktop/release/latest-mac.yml
+          test -f "$zip.blockmap"
+
+          mount_dir="$RUNNER_TEMP/yinshi-dmg"
+          mkdir -p "$mount_dir"
+          hdiutil attach "$dmg" -readonly -nobrowse -mountpoint "$mount_dir"
+          trap 'hdiutil detach "$mount_dir"' EXIT
+          codesign --verify --deep --strict --verbose=2 "$mount_dir/Yinshi.app"
+          xcrun stapler validate "$mount_dir/Yinshi.app"
+          hdiutil detach "$mount_dir"
+          trap - EXIT
+
+      - name: Generate SBOMs and checksums
+        run: |
+          set -euo pipefail
+          mkdir -p desktop/release/sbom
+          npm sbom --prefix desktop --sbom-format cyclonedx > desktop/release/sbom/desktop.cdx.json
+          npm sbom --prefix frontend --sbom-format cyclonedx > desktop/release/sbom/frontend.cdx.json
+          npm sbom --prefix sidecar --sbom-format cyclonedx > desktop/release/sbom/sidecar.cdx.json
+          (cd backend && cyclonedx-py environment --output-format JSON --output-file ../desktop/release/sbom/backend.cdx.json)
+          (cd desktop/release && find . -maxdepth 1 -type f \( -name '*.dmg' -o -name '*.zip' -o -name '*.blockmap' -o -name 'latest-mac.yml' \) -print0 | sort -z | xargs -0 shasum -a 256 > SHA256SUMS)
+
+      - name: Publish GitHub release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" --verify-tag --draft --generate-notes --title "Yinshi Desktop ${RELEASE_TAG#desktop-v}"
+          fi
+          gh release upload "$RELEASE_TAG" --clobber \
+            desktop/release/*.dmg \
+            desktop/release/*.zip \
+            desktop/release/*.blockmap \
+            desktop/release/latest-mac.yml \
+            desktop/release/SHA256SUMS \
+            desktop/release/sbom/*.json \
+            desktop/licenses/noise-c-wasm-NOTICE.txt
+
+      - name: Join the deployment tailnet
+        uses: tailscale/github-action@6cae46e2d796f265265cfcf628b72a32b4d7cade # v3
+        with:
+          oauth-client-id: ${{ secrets.TAILSCALE_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TAILSCALE_OAUTH_CLIENT_SECRET }}
+          tags: tag:ci
+
+      - name: Publish staged automatic update feed to VM
+        env:
+          UPDATE_SSH_KEY: ${{ secrets.DESKTOP_UPDATE_SSH_KEY }}
+          UPDATE_TARGET: ${{ secrets.DESKTOP_UPDATE_SSH_TARGET }}
+          UPDATE_PATH: ${{ secrets.DESKTOP_UPDATE_REMOTE_PATH }}
+          UPDATE_HOST_KEY: ${{ secrets.DESKTOP_UPDATE_HOST_KEY }}
+        run: |
+          set -euo pipefail
+          install -m 700 -d "$HOME/.ssh"
+          printf '%s\n' "$UPDATE_SSH_KEY" > "$HOME/.ssh/id_ed25519"
+          chmod 600 "$HOME/.ssh/id_ed25519"
+          printf '%s\n' "$UPDATE_HOST_KEY" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/known_hosts"
+
+          remote_release="$UPDATE_PATH/releases/$RELEASE_TAG"
+          ssh "$UPDATE_TARGET" "install -d -m 0755 '$remote_release' '$UPDATE_PATH'"
+          rsync -av --checksum \
+            desktop/release/*.dmg \
+            desktop/release/*.zip \
+            desktop/release/*.blockmap \
+            desktop/release/SHA256SUMS \
+            "$UPDATE_TARGET:$remote_release/"
+          rsync -av --checksum \
+            desktop/release/*.dmg \
+            desktop/release/*.zip \
+            desktop/release/*.blockmap \
+            desktop/release/SHA256SUMS \
+            "$UPDATE_TARGET:$UPDATE_PATH/"
+          rsync -av --checksum desktop/release/sbom/ "$UPDATE_TARGET:$remote_release/sbom/"
+          scp desktop/release/latest-mac.yml "$UPDATE_TARGET:$UPDATE_PATH/latest-mac.yml.next"
+          ssh "$UPDATE_TARGET" "cp '$UPDATE_PATH/latest-mac.yml' '$UPDATE_PATH/latest-mac.previous.yml' 2>/dev/null || true; mv '$UPDATE_PATH/latest-mac.yml.next' '$UPDATE_PATH/latest-mac.yml'"
+
+      - name: Remove signing material
+        if: always()
+        run: |
+          rm -f "${CSC_LINK:-}" "${APPLE_API_KEY:-}" "$HOME/.ssh/id_ed25519"
+          if [ -n "${SIGNING_KEYCHAIN:-}" ]; then
+            security delete-keychain "$SIGNING_KEYCHAIN" || true
+          fi

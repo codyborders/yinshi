@@ -1,0 +1,14 @@
+{
+  "name": "yinshi-sidecar",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "@earendil-works/pi-ai": "0.80.6",
+    "@earendil-works/pi-coding-agent": "0.80.6",
+    "node-pty": "^1.1.0"
+  }
+}

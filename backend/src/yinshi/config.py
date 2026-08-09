@@ -1,0 +1,355 @@
+"""Application configuration via environment variables."""
+
+from __future__ import annotations
+
+import json
+import secrets
+from functools import lru_cache
+from urllib.parse import urlsplit
+
+from pydantic import SecretStr
+from pydantic_settings import BaseSettings
+
+_SECURITY_MODE_VALUES = {"auto", "disabled", "enabled", "required"}
+
+
+def _generate_secret() -> str:
+    return secrets.token_hex(32)
+
+
+def _decode_hex_secret(value: str, name: str) -> bytes:
+    """Decode a hex secret and reject values too weak for AES-256 use."""
+    if not isinstance(value, str):
+        raise TypeError(f"{name} must be a string")
+    normalized_value = value.strip()
+    if not normalized_value:
+        return b""
+    try:
+        decoded_value = bytes.fromhex(normalized_value)
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must be a valid hex string: {exc}") from exc
+    if len(decoded_value) < 32:
+        raise RuntimeError(f"{name} must be at least 32 bytes (64 hex characters)")
+    return decoded_value
+
+
+def _normalize_mode(value: str, name: str) -> str:
+    """Normalize a security mode value and reject ambiguous configuration."""
+    if not isinstance(value, str):
+        raise TypeError(f"{name} must be a string")
+    normalized_value = value.strip().lower()
+    if normalized_value not in _SECURITY_MODE_VALUES:
+        allowed_values = ", ".join(sorted(_SECURITY_MODE_VALUES))
+        raise RuntimeError(f"{name} must be one of: {allowed_values}")
+    return normalized_value
+
+
+class Settings(BaseSettings):
+    """Application settings loaded from .env."""
+
+    app_name: str = "Yinshi"
+    debug: bool = False
+
+    # Database (legacy single-DB mode)
+    db_path: str = "yinshi.db"
+
+    # Multi-tenant databases
+    control_db_path: str = "/var/lib/yinshi/control.db"
+    user_data_dir: str = "/var/lib/yinshi/users"
+
+    # Legacy pepper for wrapping per-user DEKs (hex string, 32+ bytes).
+    # New deployments should use KEY_ENCRYPTION_KEY so wrapped DEKs carry a key id.
+    encryption_pepper: str = ""
+    key_encryption_key: str = ""
+    key_encryption_key_id: str = "local-v1"
+    key_encryption_keys_previous: SecretStr | None = None
+
+    # Middle-ground data protection controls. "auto" enables the control in
+    # authenticated non-debug deployments while keeping local tests explicit.
+    tenant_db_encryption: str = "auto"
+    control_field_encryption: str = "auto"
+    user_data_encryption: str = "disabled"
+
+    # Google OAuth
+    google_client_id: str = ""
+    google_client_secret: str = ""
+    google_redirect_uri: str = "http://localhost:8000/auth/callback/google"
+
+    # GitHub OAuth
+    github_client_id: str = ""
+    github_client_secret: str = ""
+    github_redirect_uri: str = "http://localhost:8000/auth/callback/github"
+    github_app_id: str = ""
+    github_app_private_key_path: str = ""
+    github_app_slug: str = ""
+    github_app_client_id: str = ""
+    github_app_client_secret: SecretStr | None = None
+    github_app_user_callback_url: str = ""
+
+    # Session secret for cookies -- generated randomly if not set
+    secret_key: str = ""
+
+    # Explicit flag to disable auth (empty google_client_id alone is not enough)
+    disable_auth: bool = False
+
+    # Sidecar
+    sidecar_socket_path: str = "/tmp/yinshi-sidecar.sock"
+
+    # Pi package update and release-note metadata
+    pi_package_name: str = "@earendil-works/pi-coding-agent"
+    pi_release_repository: str = "earendil-works/pi"
+    # Encrypted database backups
+    backup_dir: str = "/var/lib/yinshi/backups"
+    backup_encryption_key: SecretStr | None = None
+
+    # CORS
+    frontend_url: str = "http://localhost:5173"
+
+    # Server
+    host: str = "127.0.0.1"
+    port: int = 8000
+
+    # Production transport controls. "auto" requires HTTPS in authenticated
+    # non-debug deployments and trusts the edge proxy to provide TLS.
+    require_https: str = "auto"
+    hsts_enabled: bool = True
+    trusted_proxy_ips: str = "127.0.0.1,::1"
+    trusted_hosts: str = "localhost,127.0.0.1,[::1]"
+    request_body_max_bytes: int = 10 * 1024 * 1024
+
+    # Allowed base directory for local repo imports (empty = reject all local imports)
+    allowed_repo_base: str = ""
+
+    # Per-user container isolation
+    container_enabled: bool = True
+    container_image: str = "yinshi-sidecar:latest"
+    container_idle_timeout_s: int = 300
+    container_memory_limit: str = "256m"
+    container_cpu_quota: int = 50000
+    container_pids_limit: int = 256
+    container_max_count: int = 10
+    container_socket_base: str = "/var/run/yinshi"
+    container_mount_mode: str = "narrow"
+
+    # Browser terminal runtime controls
+    terminal_keepalive_s: int = 7200
+    terminal_scrollback_lines: int = 1000
+
+    model_config = {
+        "env_file": ".env",
+        "env_file_encoding": "utf-8",
+        "case_sensitive": False,
+        # The shared dotenv also contains sidecar provider credentials. Ignoring
+        # unknown names prevents Pydantic from echoing their values on startup.
+        "extra": "ignore",
+    }
+
+    @property
+    def encryption_pepper_bytes(self) -> bytes:
+        """Return the legacy encryption pepper as bytes."""
+        return _decode_hex_secret(self.encryption_pepper, "ENCRYPTION_PEPPER")
+
+    @property
+    def key_encryption_key_bytes(self) -> bytes:
+        """Return the current server-managed KEK bytes."""
+        return _decode_hex_secret(self.key_encryption_key, "KEY_ENCRYPTION_KEY")
+
+    @property
+    def key_encryption_keyring_previous(self) -> dict[str, bytes]:
+        """Return explicitly configured previous KEKs keyed by their stable IDs."""
+        if self.key_encryption_keys_previous is None:
+            return {}
+        raw_keyring = self.key_encryption_keys_previous.get_secret_value().strip()
+        if not raw_keyring:
+            return {}
+        try:
+            payload = json.loads(raw_keyring)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("KEY_ENCRYPTION_KEYS_PREVIOUS must be a JSON object") from exc
+        if not isinstance(payload, dict):
+            raise RuntimeError("KEY_ENCRYPTION_KEYS_PREVIOUS must be a JSON object")
+        keyring: dict[str, bytes] = {}
+        for raw_key_id, raw_key in payload.items():
+            if not isinstance(raw_key_id, str) or not raw_key_id.strip():
+                raise RuntimeError("Previous key IDs must be non-empty strings")
+            if not isinstance(raw_key, str):
+                raise RuntimeError("Previous KEK values must be hexadecimal strings")
+            key_id = raw_key_id.strip()
+            if key_id == self.key_encryption_key_id.strip():
+                raise RuntimeError("Previous KEK IDs must differ from KEY_ENCRYPTION_KEY_ID")
+            keyring[key_id] = _decode_hex_secret(raw_key, "previous KEK")
+        return keyring
+
+    @property
+    def active_key_encryption_key_bytes(self) -> bytes:
+        """Return the strongest configured key source for envelope encryption."""
+        key_encryption_key_bytes = self.key_encryption_key_bytes
+        if key_encryption_key_bytes:
+            return key_encryption_key_bytes
+        return self.encryption_pepper_bytes
+
+    @property
+    def tenant_db_encryption_mode(self) -> str:
+        """Return the normalized tenant database encryption mode."""
+        return _normalize_mode(self.tenant_db_encryption, "TENANT_DB_ENCRYPTION")
+
+    @property
+    def control_field_encryption_mode(self) -> str:
+        """Return the normalized control-plane field encryption mode."""
+        return _normalize_mode(self.control_field_encryption, "CONTROL_FIELD_ENCRYPTION")
+
+    @property
+    def user_data_encryption_mode(self) -> str:
+        """Return the normalized filesystem encryption enforcement mode."""
+        return _normalize_mode(self.user_data_encryption, "USER_DATA_ENCRYPTION")
+
+    @property
+    def require_https_mode(self) -> str:
+        """Return the normalized HTTPS enforcement mode."""
+        return _normalize_mode(self.require_https, "REQUIRE_HTTPS")
+
+    @property
+    def trusted_host_list(self) -> list[str]:
+        """Return explicit hosts plus the configured frontend hostname."""
+        configured_hosts = [
+            host.strip().lower() for host in self.trusted_hosts.split(",") if host.strip()
+        ]
+        frontend_host = urlsplit(self.frontend_url).hostname
+        if frontend_host:
+            configured_hosts.append(frontend_host.lower())
+        return list(dict.fromkeys(configured_hosts))
+
+    @property
+    def trusted_proxy_ip_set(self) -> set[str]:
+        """Return normalized proxy addresses trusted to set forwarding headers."""
+        return {
+            address.strip().lower()
+            for address in self.trusted_proxy_ips.split(",")
+            if address.strip()
+        }
+
+
+def auth_is_enabled(settings: Settings) -> bool:
+    """Return whether the operator explicitly enabled authentication."""
+    if not isinstance(settings, Settings):
+        raise TypeError("settings must be a Settings instance")
+    return not settings.disable_auth
+
+
+def _auth_is_enabled(settings: Settings) -> bool:
+    """Backward-compatible wrapper for older internal tests and scripts."""
+    return auth_is_enabled(settings)
+
+
+def _mode_enabled(settings: Settings, mode: str) -> bool:
+    """Resolve auto/enabled/required security modes against runtime posture."""
+    if mode == "disabled":
+        return False
+    if mode == "enabled":
+        return True
+    if mode == "required":
+        return True
+    assert mode == "auto", "mode must be normalized before resolution"
+    return auth_is_enabled(settings) and not settings.debug
+
+
+def tenant_db_encryption_required(settings: Settings) -> bool:
+    """Return whether tenant SQLite databases must use SQLCipher."""
+    mode = settings.tenant_db_encryption_mode
+    if mode == "enabled":
+        return False
+    return _mode_enabled(settings, mode)
+
+
+def tenant_db_encryption_enabled(settings: Settings) -> bool:
+    """Return whether tenant SQLite databases should use SQLCipher when possible."""
+    return _mode_enabled(settings, settings.tenant_db_encryption_mode)
+
+
+def control_field_encryption_enabled(settings: Settings) -> bool:
+    """Return whether sensitive control-plane fields should be encrypted."""
+    return _mode_enabled(settings, settings.control_field_encryption_mode)
+
+
+def user_data_encryption_required(settings: Settings) -> bool:
+    """Return whether user data directories must live on encrypted storage."""
+    return _mode_enabled(settings, settings.user_data_encryption_mode)
+
+
+def https_required(settings: Settings) -> bool:
+    """Return whether HTTP requests must be upgraded or rejected in production."""
+    mode = settings.require_https_mode
+    if mode == "enabled":
+        return True
+    return _mode_enabled(settings, mode)
+
+
+def _validate_settings(settings: Settings) -> None:
+    """Reject invalid security-critical configuration."""
+    authentication_enabled = auth_is_enabled(settings)
+    if not authentication_enabled:
+        normalized_host = settings.host.strip().lower()
+        if normalized_host not in {"127.0.0.1", "::1", "localhost"}:
+            raise RuntimeError("No-auth mode must bind to a loopback host")
+        if settings.container_enabled:
+            raise RuntimeError("No-auth mode requires CONTAINER_ENABLED=false")
+    if authentication_enabled:
+        google_configured = bool(settings.google_client_id and settings.google_client_secret)
+        github_configured = bool(settings.github_client_id and settings.github_client_secret)
+        if not google_configured and not github_configured:
+            raise RuntimeError(
+                "At least one complete OAuth provider configuration is required when "
+                "authentication is enabled"
+            )
+    if authentication_enabled and not settings.secret_key:
+        raise RuntimeError("SECRET_KEY must be set when authentication is enabled")
+    if authentication_enabled and len(settings.secret_key.encode("utf-8")) < 32:
+        raise RuntimeError("SECRET_KEY must contain at least 32 bytes")
+    if authentication_enabled and len(set(settings.secret_key)) < 8:
+        raise RuntimeError("SECRET_KEY must contain at least 8 distinct characters")
+
+    settings.encryption_pepper_bytes
+    settings.key_encryption_key_bytes
+    settings.key_encryption_keyring_previous
+
+    if authentication_enabled:
+        if not settings.debug:
+            if not settings.active_key_encryption_key_bytes:
+                raise RuntimeError(
+                    "KEY_ENCRYPTION_KEY or ENCRYPTION_PEPPER must be set when "
+                    "authentication is enabled outside debug mode"
+                )
+
+    settings.tenant_db_encryption_mode
+    settings.control_field_encryption_mode
+    settings.user_data_encryption_mode
+    settings.require_https_mode
+
+    normalized_key_id = settings.key_encryption_key_id.strip()
+    if settings.key_encryption_key_bytes and not normalized_key_id:
+        raise RuntimeError("KEY_ENCRYPTION_KEY_ID must not be empty when KEY_ENCRYPTION_KEY is set")
+    settings.key_encryption_key_id = normalized_key_id or "local-v1"
+
+    if settings.container_mount_mode not in {"narrow", "tenant-data"}:
+        raise RuntimeError("CONTAINER_MOUNT_MODE must be either narrow or tenant-data")
+    if settings.terminal_keepalive_s < 300:
+        raise RuntimeError("TERMINAL_KEEPALIVE_S must be at least 300 seconds")
+    if settings.terminal_scrollback_lines < 100:
+        raise RuntimeError("TERMINAL_SCROLLBACK_LINES must be at least 100")
+    if settings.request_body_max_bytes < 1024:
+        raise RuntimeError("REQUEST_BODY_MAX_BYTES must be at least 1024")
+    if not settings.trusted_host_list:
+        raise RuntimeError("TRUSTED_HOSTS must configure at least one host")
+    if "*" in settings.trusted_host_list:
+        raise RuntimeError("TRUSTED_HOSTS must not trust every host")
+    settings.trusted_proxy_ip_set
+
+
+@lru_cache()
+def get_settings() -> Settings:
+    """Get cached settings instance."""
+    settings = Settings()
+    _validate_settings(settings)
+    if not settings.secret_key:
+        settings.secret_key = _generate_secret()
+    return settings

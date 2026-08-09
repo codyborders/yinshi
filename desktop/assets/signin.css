@@ -1,0 +1,222 @@
+:root {
+  color-scheme: light;
+  font-family:
+    -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
+  font-synthesis: none;
+  --ink: #171714;
+  --muted: #6a6861;
+  --line: #d8d4ca;
+  --paper: #f4f1e9;
+  --card: #fffdf7;
+  --accent: #245c46;
+  --accent-hover: #194a37;
+  --error: #9e352d;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  min-height: 100%;
+  margin: 0;
+}
+
+body {
+  background:
+    linear-gradient(90deg, rgb(36 92 70 / 5%) 1px, transparent 1px) 0 0 / 64px 64px,
+    linear-gradient(rgb(36 92 70 / 5%) 1px, transparent 1px) 0 0 / 64px 64px,
+    var(--paper);
+  color: var(--ink);
+  -webkit-app-region: drag;
+}
+
+button,
+a {
+  -webkit-app-region: no-drag;
+}
+
+.shell {
+  width: min(780px, calc(100vw - 64px));
+  min-height: 100vh;
+  margin: 0 auto;
+  padding: 92px 0 48px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 240px;
+  align-items: center;
+  gap: 48px;
+}
+
+.signin-card {
+  max-width: 460px;
+}
+
+.brand-mark {
+  width: 46px;
+  height: 46px;
+  display: grid;
+  place-items: center;
+  margin-bottom: 30px;
+  border: 1px solid var(--ink);
+  border-radius: 12px;
+  background: var(--card);
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 26px;
+  line-height: 1;
+  box-shadow: 4px 4px 0 var(--ink);
+}
+
+.eyebrow {
+  margin: 0 0 14px;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+}
+
+h1 {
+  max-width: 450px;
+  margin: 0;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: clamp(38px, 6vw, 56px);
+  font-weight: 500;
+  letter-spacing: -0.035em;
+  line-height: 0.99;
+}
+
+.lede {
+  max-width: 430px;
+  margin: 24px 0 30px;
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1.6;
+}
+
+.profile-list {
+  max-width: 430px;
+  margin: -10px 0 22px;
+}
+
+.profile-label {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.profile-button {
+  width: 100%;
+  margin-top: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--card);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.profile-button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.profile-button:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.signin-button {
+  min-width: 190px;
+  height: 46px;
+  padding: 0 22px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--accent);
+  color: #fff;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 650;
+  cursor: pointer;
+  transition:
+    background-color 140ms ease,
+    transform 140ms ease;
+}
+
+.signin-button:hover:not(:disabled) {
+  background: var(--accent-hover);
+  transform: translateY(-1px);
+}
+
+.signin-button:focus-visible {
+  outline: 3px solid rgb(36 92 70 / 28%);
+  outline-offset: 3px;
+}
+
+.signin-button:disabled {
+  cursor: wait;
+  opacity: 0.72;
+}
+
+.status {
+  min-height: 40px;
+  margin: 14px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.status[data-state="error"] {
+  color: var(--error);
+}
+
+.privacy-note {
+  align-self: end;
+  margin-bottom: 54px;
+  display: grid;
+  grid-template-columns: 2px 1fr;
+  gap: 16px;
+  color: var(--muted);
+}
+
+.privacy-rule {
+  background: var(--accent);
+}
+
+.privacy-note strong {
+  color: var(--ink);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+}
+
+.privacy-note p {
+  margin: 8px 0 0;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+@media (max-width: 700px) {
+  .shell {
+    width: min(460px, calc(100vw - 48px));
+    grid-template-columns: 1fr;
+    align-content: center;
+    gap: 42px;
+    padding-top: 84px;
+  }
+
+  .privacy-note {
+    align-self: auto;
+    margin: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .signin-button {
+    transition: none;
+  }
+}

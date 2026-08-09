@@ -1,0 +1,117 @@
+{
+  "runId": "e0fddb40",
+  "agent": "reviewer",
+  "task": "[Read from: /Users/user/projects/yinshi/plan.md, /Users/user/projects/yinshi/progress.md]\n\nPerform a SOFTWARE DESIGN review (A Philosophy of Software Design lens) of the FRONTEND at /Users/user/projects/yinshi/frontend/src/. Read the actual source files. IGNORE frontend/dist and node_modules.\n\nFocus on the red-flag checklist: shallow modules, information leakage, temporal decomposition, pass-through methods, overexposure, conjoined methods, repetition, vague names, comment problems, special-general mixture, nonobvious code, too many exceptions.\n\nPrioritise: components/Sidebar.tsx (1203 lines), pages/Settings.tsx (968), components/CloudRunnerSection.tsx (837), components/WorkspaceInspector.tsx (757), pages/Session.tsx (668), api/client.ts (579), runner/encryptedRunnerClient.ts (555), components/ChatView.tsx, runtime/*.ts, hooks/*.\n\nSpecifically check:\n1. God components: how much state and unrelated responsibility sits in Sidebar.tsx, Settings.tsx, CloudRunnerSection.tsx? List the distinct responsibilities each holds.\n2. Is api/client.ts a deep module or a shallow one-function-per-endpoint wrapper? Count methods vs. abstraction value.\n3. Does the runtime/ directory (resolveRuntime, runtimeRef, runtimeTransport, promptStream, terminalChannel, encryptedUpload) leak transport details into components/hooks? Is 'which runtime am I talking to' decided in one place or many?\n4. Duplication between runner/encryptedRunnerClient.ts, crypto/noiseIk.ts and runtime/runtimeTransport.ts.\n5. Data-shape leakage: are backend wire formats used raw in components, or mapped through models/sessionModels.ts?\n\nOutput a precise report with FILE:LINE citations for every finding, severity (high/med/low), and a concrete suggested restructuring. Do NOT modify any files. Be concrete and quantitative, not generic.\n\n---\n**Output:**\nWrite your findings to exactly this path: /tmp/yinshi-design/frontend.md\nThis path is authoritative for this run.\nIgnore any other output filename or output path mentioned elsewhere, including output destinations in the base agent prompt, system prompt, or task instructions.",
+  "exitCode": 0,
+  "usage": {
+    "input": 98,
+    "output": 55304,
+    "cacheRead": 5470762,
+    "cacheWrite": 192756,
+    "cost": 5.3231959999999985,
+    "turns": 49
+  },
+  "model": "anthropic/claude-opus-5:high",
+  "attemptedModels": [
+    "anthropic/claude-opus-5:high"
+  ],
+  "modelAttempts": [
+    {
+      "model": "anthropic/claude-opus-5:high",
+      "success": true,
+      "exitCode": 0,
+      "usage": {
+        "input": 98,
+        "output": 55304,
+        "cacheRead": 5470762,
+        "cacheWrite": 192756,
+        "cost": 5.3231959999999985,
+        "turns": 49
+      }
+    }
+  ],
+  "durationMs": 689300,
+  "toolCount": 66,
+  "launchContractDigest": "8ebc4680a83292888bb43786afea0ae9dcf12c693d674843ae120c29e8969f93",
+  "launchResolvedExtensions": {
+    "version": 1,
+    "source": "launch-resolved",
+    "disableAmbientExtensions": false,
+    "runtime": [
+      "sha256:f87486620c107f0f"
+    ],
+    "configured": [],
+    "effective": [
+      "sha256:f87486620c107f0f"
+    ],
+    "omitted": {
+      "runtime": 0,
+      "configured": 0,
+      "effective": 0
+    }
+  },
+  "acceptance": {
+    "status": "rejected",
+    "evidenceStatus": "rejected",
+    "explicit": false,
+    "effectiveAcceptance": {
+      "level": "attested",
+      "explicit": false,
+      "inferredReason": [
+        "read-only/reviewer-style agent"
+      ],
+      "criteria": [
+        {
+          "id": "criterion-1",
+          "must": "Return concrete findings with file paths and severity when applicable",
+          "evidence": [
+            "review-findings",
+            "residual-risks"
+          ],
+          "severity": "required"
+        }
+      ],
+      "evidence": [
+        "review-findings",
+        "residual-risks"
+      ],
+      "verify": [],
+      "stopRules": []
+    },
+    "inferredReason": [
+      "read-only/reviewer-style agent"
+    ],
+    "criteria": [
+      {
+        "id": "criterion-1",
+        "must": "Return concrete findings with file paths and severity when applicable",
+        "evidence": [
+          "review-findings",
+          "residual-risks"
+        ],
+        "severity": "required"
+      }
+    ],
+    "runtimeChecks": [
+      {
+        "id": "attestation",
+        "status": "failed",
+        "message": "Structured acceptance report not found."
+      }
+    ],
+    "verifyRuns": [],
+    "childReportParseError": "Structured acceptance report not found."
+  },
+  "effects": {
+    "fileMutation": {
+      "status": "not-applicable",
+      "expected": false,
+      "attempted": true
+    }
+  },
+  "transcriptPath": "/Users/user/projects/yinshi/.pi-subagents/artifacts/e0fddb40_reviewer_1_transcript.jsonl",
+  "skills": [
+    "software-design"
+  ],
+  "timestamp": 1786128057550
+}

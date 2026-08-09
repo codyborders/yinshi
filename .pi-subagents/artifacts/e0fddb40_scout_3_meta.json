@@ -1,0 +1,145 @@
+{
+  "runId": "e0fddb40",
+  "agent": "scout",
+  "task": "Map the CROSS-CUTTING architecture of /Users/user/projects/yinshi. Four components: backend/src/yinshi (Python FastAPI), frontend/src (React), desktop/src (Electron), sidecar/src (Node). IGNORE all of: backend/.venv, node_modules, dist, release, .git.\n\nAnswer these questions with FILE:LINE citations:\n\n1. CONCEPT DUPLICATION ACROSS LANGUAGE BOUNDARIES: The Noise IK / encryption protocol appears in backend (services/runner_noise.py, runner_noise_session.py, control_encryption.py, crypto.py) and frontend (crypto/noiseIk.ts, runner/encryptedRunnerClient.ts) and desktop (runtimeSecrets.ts, diskEncryption.ts). Is there ONE authoritative definition of the wire protocol/framing, or is it re-derived independently in each place? Where would a protocol change require coordinated edits? List every file that would need to change.\n\n2. TYPE/SCHEMA DUPLICATION: Are API request/response shapes defined once (e.g. generated from OpenAPI) or hand-written in both backend/src/yinshi/models.py and frontend TypeScript? List the duplicated shapes.\n\n3. RUNTIME ABSTRACTION: The system appears to support multiple execution 'runtimes' (hosted/cloud runner, local desktop, sidecar container). Where is the decision of 'which runtime' made? Enumerate every location that branches on runtime kind in ALL four components. This is the key finding I need.\n\n4. TERMINAL / STREAMING: trace the terminal and agent-stream data path end to end across all four components, naming each hop file. Note where the same framing/parsing logic is reimplemented.\n\n5. Build a compressed component-dependency map: what depends on what, and note any circular or surprising dependencies.\n\nOutput a dense factual report. Do NOT modify files. Cite FILE:LINE everywhere.\n\n---\n**Output:**\nWrite your findings to exactly this path: /tmp/yinshi-design/cross-cutting.md\nThis path is authoritative for this run.\nIgnore any other output filename or output path mentioned elsewhere, including output destinations in the base agent prompt, system prompt, or task instructions.",
+  "exitCode": 0,
+  "usage": {
+    "input": 112,
+    "output": 76035,
+    "cacheRead": 3980949,
+    "cacheWrite": 150389,
+    "cost": 4.831840749999999,
+    "turns": 56
+  },
+  "model": "anthropic/claude-opus-5:low",
+  "attemptedModels": [
+    "anthropic/claude-opus-5:low"
+  ],
+  "modelAttempts": [
+    {
+      "model": "anthropic/claude-opus-5:low",
+      "success": true,
+      "exitCode": 0,
+      "usage": {
+        "input": 112,
+        "output": 76035,
+        "cacheRead": 3980949,
+        "cacheWrite": 150389,
+        "cost": 4.831840749999999,
+        "turns": 56
+      }
+    }
+  ],
+  "durationMs": 821776,
+  "toolCount": 55,
+  "launchContractDigest": "b22296ad97667b4119bcbc808d28dd47350f823f058c8387593c501acb56a3b5",
+  "launchResolvedExtensions": {
+    "version": 1,
+    "source": "launch-resolved",
+    "disableAmbientExtensions": false,
+    "runtime": [
+      "sha256:f87486620c107f0f"
+    ],
+    "configured": [],
+    "effective": [
+      "sha256:f87486620c107f0f"
+    ],
+    "omitted": {
+      "runtime": 0,
+      "configured": 0,
+      "effective": 0
+    }
+  },
+  "acceptance": {
+    "status": "attested",
+    "evidenceStatus": "attested",
+    "explicit": false,
+    "effectiveAcceptance": {
+      "level": "attested",
+      "explicit": false,
+      "inferredReason": [
+        "read-only/reviewer-style agent"
+      ],
+      "criteria": [
+        {
+          "id": "criterion-1",
+          "must": "Return concrete findings with file paths and severity when applicable",
+          "evidence": [
+            "review-findings",
+            "residual-risks"
+          ],
+          "severity": "required"
+        }
+      ],
+      "evidence": [
+        "review-findings",
+        "residual-risks"
+      ],
+      "verify": [],
+      "stopRules": []
+    },
+    "inferredReason": [
+      "read-only/reviewer-style agent"
+    ],
+    "criteria": [
+      {
+        "id": "criterion-1",
+        "must": "Return concrete findings with file paths and severity when applicable",
+        "evidence": [
+          "review-findings",
+          "residual-risks"
+        ],
+        "severity": "required"
+      }
+    ],
+    "runtimeChecks": [],
+    "verifyRuns": [],
+    "childReport": {
+      "criteriaSatisfied": [
+        {
+          "id": "criterion-1",
+          "status": "satisfied",
+          "evidence": "Report at /tmp/yinshi-design/cross-cutting.md answers all 5 questions with FILE:LINE citations across all four components; 32 runtime branch sites enumerated; triplicated route table located at runner_rpc.py:132-215, runtimeTransport.ts:46-206, hostedApiGateway.ts:16-170"
+        }
+      ],
+      "changedFiles": [
+        "/tmp/yinshi-design/cross-cutting.md"
+      ],
+      "testsAddedOrUpdated": [],
+      "commandsRun": [
+        {
+          "command": "uvx --from slop-guard sg -j /tmp/yinshi-design/cross-cutting.md",
+          "result": "passed",
+          "summary": "score 92/100, above the 80 threshold"
+        }
+      ],
+      "validationOutput": [
+        "slop-guard score: 92"
+      ],
+      "residualRisks": [
+        "Line numbers cited from a read-only pass; no test run confirms runtime behavior of the v:2 versus _REQUEST_KEYS_V1 envelope mismatch",
+        "Whether api/terminals.py (WebSocket) and client.ts:streamPrompt (SSE) are dead paths is unresolved; both are still registered and reachable",
+        "hostedApiGateway.ts allowlist was read to line 170 only; entries past that point were not compared against runner_rpc.py"
+      ],
+      "noStagedFiles": true,
+      "diffSummary": "No repository files modified. One scouting report written to /tmp/yinshi-design/cross-cutting.md.",
+      "reviewFindings": [
+        "high: frontend/src/runtime/runtimeTransport.ts:46-206 - route-to-scope table triplicated with backend/src/yinshi/services/runner_rpc.py:132-215 and desktop/src/hostedApiGateway.ts:16-170; divergence is a privilege-escalation defect class",
+        "medium: frontend/src/runner/encryptedRunnerClient.ts:483 - sends v:2 while backend key set is _REQUEST_KEYS_V1 at runner_rpc.py:17, and the frontend query key is absent from that allowlist",
+        "medium: frontend/src/api/client.ts:321-325 - DESKTOP_HOSTED_RUNNER_PATHS hard-codes three bridge paths outside the RuntimeRef abstraction; a fourth control-plane path would silently take the wrong transport",
+        "low: backend/src/yinshi/runner_worker.py:264 - import cycle with yinshi.main broken only by a function-local import",
+        "low: default-runtime rule duplicated at runtimeRef.ts:62-67, Sidebar.tsx:172-174, Settings.tsx:604-606 and :697"
+      ],
+      "manualNotes": "No OpenAPI codegen exists anywhere; frontend/package.json has no generate script and /openapi.json is served only in debug mode (main.py:451). The sidecar is the only fully decoupled component and is a clean extraction boundary."
+    }
+  },
+  "effects": {
+    "fileMutation": {
+      "status": "not-applicable",
+      "expected": false,
+      "attempted": true
+    }
+  },
+  "transcriptPath": "/Users/user/projects/yinshi/.pi-subagents/artifacts/e0fddb40_scout_3_transcript.jsonl",
+  "timestamp": 1786128190030
+}
