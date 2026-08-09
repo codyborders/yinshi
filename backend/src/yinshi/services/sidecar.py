@@ -3,7 +3,7 @@
 import asyncio
 import json
 import logging
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Iterable
 from typing import Any, TypedDict
 
 from yinshi.config import get_settings
@@ -473,6 +473,15 @@ class SidecarClient:
         """Cancel an active session."""
         await self._send({"type": "cancel", "id": session_id})
 
+    async def release_session(self, session_id: str) -> None:
+        """Drop one pi session so the sidecar can free its context.
+
+        The sidecar also expires idle sessions on its own, so this is an
+        optimisation rather than a correctness requirement. Callers therefore
+        treat failure as harmless.
+        """
+        await self._send({"type": "session_release", "id": session_id})
+
     async def ping(self) -> bool:
         """Health check the sidecar."""
         try:
@@ -481,6 +490,28 @@ class SidecarClient:
             return msg is not None and msg.get("type") == "pong"
         except Exception:
             return False
+
+
+async def release_sessions(socket_path: str | None, session_ids: Iterable[str]) -> None:
+    """Ask the sidecar to drop pi sessions that can never be used again.
+
+    The sidecar expires idle sessions and caps how many it holds, so this only
+    returns the memory sooner. Any failure is logged and swallowed.
+    """
+    ids = [session_id for session_id in session_ids if session_id]
+    if not ids:
+        return
+
+    client = None
+    try:
+        client = await create_sidecar_connection(socket_path)
+        for session_id in ids:
+            await client.release_session(session_id)
+    except Exception:
+        logger.warning("Could not release pi sessions from the sidecar")
+    finally:
+        if client is not None:
+            await client.disconnect()
 
 
 async def create_sidecar_connection(

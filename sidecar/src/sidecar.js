@@ -33,6 +33,8 @@ const XHIGH_THINKING_LEVELS = [...STANDARD_THINKING_LEVELS, "xhigh"];
 const THINKING_LEVELS = new Set(XHIGH_THINKING_LEVELS);
 const OAUTH_FLOW_COUNT_MAX = 8;
 const OAUTH_FLOW_TTL_MS = 30 * 60 * 1000;
+const PI_SESSION_IDLE_TTL_MS = 30 * 60 * 1000;
+const PI_SESSION_COUNT_MAX = 16;
 const LEGACY_MODEL_ALIASES = new Map([
   ["haiku", "anthropic/claude-haiku-4-5-20251001"],
   ["minimax", DEFAULT_MODEL_REF],
@@ -1144,7 +1146,53 @@ export class YinshiSidecar {
     this.handleRequest(parsed, socket);
   }
 
-  handleRequest(request, socket) {
+  _pruneIdlePiSessions(currentTimeMs) {
+    if (!Number.isSafeInteger(currentTimeMs) || currentTimeMs < 0) {
+      throw new TypeError("Pi session clock must be a non-negative safe integer");
+    }
+    for (const [sessionId, entry] of this.activeSessions) {
+      const lastActivityMs = entry?.lastActivityMs;
+      if (!Number.isSafeInteger(lastActivityMs)) {
+        // A session from an older code path has no stamp yet. Adopt it rather
+        // than destroy work that is still in progress.
+        entry.lastActivityMs = currentTimeMs;
+        continue;
+      }
+      if (currentTimeMs - lastActivityMs < PI_SESSION_IDLE_TTL_MS) {
+        continue;
+      }
+      this.activeSessions.delete(sessionId);
+      this._disposePiSessionEntry(entry);
+    }
+  }
+
+  _evictLeastRecentPiSessions() {
+    if (this.activeSessions.size <= PI_SESSION_COUNT_MAX) {
+      return;
+    }
+    const byOldestFirst = [...this.activeSessions.entries()].sort(
+      (left, right) => left[1].lastActivityMs - right[1].lastActivityMs,
+    );
+    const excess = this.activeSessions.size - PI_SESSION_COUNT_MAX;
+    for (const [sessionId, entry] of byOldestFirst.slice(0, excess)) {
+      this.activeSessions.delete(sessionId);
+      this._disposePiSessionEntry(entry);
+    }
+  }
+
+  _touchPiSession(sessionId, currentTimeMs) {
+    const entry = this.activeSessions.get(sessionId);
+    if (entry) {
+      entry.lastActivityMs = currentTimeMs;
+    }
+  }
+
+  handleRequest(request, socket, currentTimeMs = Date.now()) {
+    this._pruneIdlePiSessions(currentTimeMs);
+    this._evictLeastRecentPiSessions();
+    if (request && typeof request === "object") {
+      this._touchPiSession(request.id, currentTimeMs);
+    }
     if (!request || typeof request !== "object") {
       sendToSocket(socket, { id: "unknown", type: "error", error: "Invalid request format" });
       return;
@@ -1202,6 +1250,13 @@ export class YinshiSidecar {
         break;
       case "query":
         void this.processQuery(id, socket, request.prompt, request.options || {});
+        break;
+      case "session_release":
+        sendToSocket(socket, {
+          id: id || "unknown",
+          type: "session_released",
+          released: this.releasePiSession(id),
+        });
         break;
       case "resolve":
         this.handleResolve(id, socket, request.model, request.options || {});
@@ -1618,6 +1673,31 @@ export class YinshiSidecar {
     }
     console.log("[sidecar] Pi session created");
     return { session, model, piSessionFile: openedPiSessionFile };
+  }
+
+  _disposePiSessionEntry(entry) {
+    try {
+      if (typeof entry?.unsubscribe === "function") {
+        entry.unsubscribe();
+      }
+    } catch {
+      // A failed unsubscribe must not block disposal of the pi session.
+    }
+    try {
+      entry?.piSession?.dispose();
+    } catch {
+      // Disposal races are expected when a prompt is still unwinding.
+    }
+  }
+
+  releasePiSession(sessionId) {
+    const entry = this.activeSessions.get(sessionId);
+    if (!entry) {
+      return false;
+    }
+    this.activeSessions.delete(sessionId);
+    this._disposePiSessionEntry(entry);
+    return true;
   }
 
   async warmupSession(sessionId, socket, options) {

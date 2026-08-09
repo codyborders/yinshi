@@ -17,6 +17,7 @@ from yinshi.config import get_settings
 from yinshi.exceptions import GitError, RepoNotFoundError, WorkspaceNotFoundError
 from yinshi.models import WorkspaceCreate, WorkspaceOut, WorkspaceUpdate
 from yinshi.services.run_coordinator import get_run_coordinator
+from yinshi.services.sidecar import release_sessions
 from yinshi.services.workspace import create_workspace_for_repo, delete_workspace
 
 logger = logging.getLogger(__name__)
@@ -122,7 +123,15 @@ async def remove_workspace(workspace_id: str, request: Request) -> None:
             coordinator = get_run_coordinator()
             for session_row in session_rows:
                 await coordinator.request_cancel(str(session_row["id"]))
-            if tenant is not None:
+            if request.app.state.mode == "desktop":
+                # Desktop shares one long-lived sidecar, so these pi sessions
+                # would otherwise stay resident until the app quits. Hosted
+                # mode destroys the whole container below instead.
+                await release_sessions(
+                    get_settings().sidecar_socket_path,
+                    [str(session_row["id"]) for session_row in session_rows],
+                )
+            elif tenant is not None:
                 container_manager = getattr(request.app.state, "container_manager", None)
                 if container_manager is not None:
                     await container_manager.destroy_container(

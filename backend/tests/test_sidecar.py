@@ -24,6 +24,56 @@ async def test_sidecar_client_send():
 
 
 @pytest.mark.asyncio
+async def test_sidecar_client_release_session():
+    """release_session should ask the sidecar to drop one pi session."""
+    from yinshi.services.sidecar import SidecarClient
+
+    client = SidecarClient()
+    client._connected = True
+    client._writer = MagicMock()
+    client._writer.drain = AsyncMock()
+
+    await client.release_session("sess-9")
+
+    written = client._writer.write.call_args[0][0].decode()
+    msg = json.loads(written.strip())
+    assert msg["type"] == "session_release"
+    assert msg["id"] == "sess-9"
+
+
+@pytest.mark.asyncio
+async def test_release_sessions_releases_each_session_then_disconnects(monkeypatch):
+    """release_sessions should free every named session over one connection."""
+    from yinshi.services import sidecar as sidecar_module
+
+    client = AsyncMock()
+    monkeypatch.setattr(
+        sidecar_module,
+        "create_sidecar_connection",
+        AsyncMock(return_value=client),
+    )
+
+    await sidecar_module.release_sessions("/tmp/sidecar.sock", ["a", "b"])
+
+    assert [call.args[0] for call in client.release_session.await_args_list] == ["a", "b"]
+    client.disconnect.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_release_sessions_survives_any_sidecar_failure(monkeypatch):
+    """Releasing is an optimisation, so a broken sidecar must not fail the caller."""
+    from yinshi.services import sidecar as sidecar_module
+
+    monkeypatch.setattr(
+        sidecar_module,
+        "create_sidecar_connection",
+        AsyncMock(side_effect=RuntimeError("sidecar exploded")),
+    )
+
+    await sidecar_module.release_sessions("/tmp/sidecar.sock", ["a"])
+
+
+@pytest.mark.asyncio
 async def test_sidecar_client_warmup():
     """warmup should send the correct message format."""
     from yinshi.services.sidecar import SidecarClient
