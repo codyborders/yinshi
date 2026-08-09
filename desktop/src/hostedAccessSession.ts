@@ -10,7 +10,7 @@ export class HostedAccessSession {
   #profile: DesktopCredentialProfile | undefined;
   #accessToken: string | undefined;
   #accessTokenExpiresAt: number | undefined;
-  #refresh: Promise<string> | undefined;
+  #refresh: Promise<DesktopAccountSession> | undefined;
   #epoch = 0;
 
   constructor(options: HostedAccessSessionOptions) {
@@ -57,8 +57,22 @@ export class HostedAccessSession {
     if (cachedToken !== undefined) {
       return cachedToken;
     }
-    if (this.#refresh !== undefined) {
-      return this.#refresh;
+    const account = await this.resumeAccount();
+    if (account.mode !== "online") {
+      throw new Error("Hosted account is offline");
+    }
+    return account.accessToken;
+  }
+
+  /**
+   * Single entry point for spending the stored refresh token. The control
+   * plane treats a replayed refresh token as device compromise and revokes the
+   * device, so every caller shares one in-flight attempt.
+   */
+  async resumeAccount(): Promise<DesktopAccountSession> {
+    const inFlight = this.#refresh;
+    if (inFlight !== undefined) {
+      return inFlight;
     }
 
     const refreshEpoch = this.#epoch;
@@ -68,10 +82,7 @@ export class HostedAccessSession {
         throw new Error("Hosted account changed while access was refreshing");
       }
       this.#applyAccount(account);
-      if (account.mode !== "online") {
-        throw new Error("Hosted account is offline");
-      }
-      return account.accessToken;
+      return account;
     })();
     this.#refresh = refreshPromise;
     try {

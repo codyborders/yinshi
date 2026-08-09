@@ -298,15 +298,7 @@ async function configureApplication(): Promise<DesktopAppController> {
   });
 
   const appController = new DesktopAppController({
-    resumeAccount: async () => {
-      const account = await resumeDesktopAccount({
-        apiBaseUrl: HOSTED_API_BASE_URL,
-        fetch: fetchAdapter,
-        credentialStore,
-      });
-      hostedAccessSession.setAccount(account);
-      return account;
-    },
+    resumeAccount: () => hostedAccessSession.resumeAccount(),
     signIn: async () => {
       let stage: HostedSignInStage | "starting-listener" = "starting-listener";
       let listener;

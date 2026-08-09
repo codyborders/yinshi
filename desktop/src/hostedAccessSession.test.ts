@@ -42,6 +42,20 @@ describe("HostedAccessSession", () => {
     expect(session.profile).toEqual(profile);
   });
 
+  it("spends the refresh token once when a profile switch races a token refresh", async () => {
+    const resume = vi.fn(async () => online("c".repeat(40)));
+    const session = new HostedAccessSession({ resume });
+
+    const [token, account] = await Promise.all([
+      session.getAccessToken(1_000),
+      session.resumeAccount(),
+    ]);
+
+    expect(token).toBe("c".repeat(40));
+    expect(account).toEqual(online("c".repeat(40)));
+    expect(resume).toHaveBeenCalledOnce();
+  });
+
   it("cannot restore credentials when logout wins an in-flight refresh", async () => {
     let resolveResume: ((account: DesktopAccountSession) => void) | undefined;
     const resume = vi.fn(
