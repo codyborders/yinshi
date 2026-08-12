@@ -1,0 +1,2361 @@
+{
+  "cli_version": "0.7.7",
+  "checkpoint_id": "e49d3c42a0d3",
+  "session_id": "session",
+  "strategy": "manual-commit",
+  "created_at": "2026-08-12T05:11:49.661077Z",
+  "branch": "main",
+  "checkpoints_count": 139,
+  "save_step_count": 138,
+  "files_touched": [
+    ".env.example",
+    "backend/pyproject.toml",
+    "backend/requirements/base.lock",
+    "backend/requirements/base.txt",
+    "backend/scripts/backup.sh",
+    "backend/src/yinshi/api/auth_routes.py",
+    "backend/src/yinshi/api/catalog.py",
+    "backend/src/yinshi/api/managed_runtime.py",
+    "backend/src/yinshi/api/repos.py",
+    "backend/src/yinshi/api/runners.py",
+    "backend/src/yinshi/api/settings.py",
+    "backend/src/yinshi/api/stream.py",
+    "backend/src/yinshi/api/terminal_channels.py",
+    "backend/src/yinshi/api/workspaces.py",
+    "backend/src/yinshi/backup.py",
+    "backend/src/yinshi/config.py",
+    "backend/src/yinshi/db.py",
+    "backend/src/yinshi/main.py",
+    "backend/src/yinshi/models.py",
+    "backend/src/yinshi/runner_agent.py",
+    "backend/src/yinshi/runner_worker.py",
+    "backend/src/yinshi/services/container.py",
+    "backend/src/yinshi/services/git.py",
+    "backend/src/yinshi/services/keys.py",
+    "backend/src/yinshi/services/managed_artifacts.py",
+    "backend/src/yinshi/services/managed_guest_installer.py",
+    "backend/src/yinshi/services/managed_runners.py",
+    "backend/src/yinshi/services/managed_runtime_manager.py",
+    "backend/src/yinshi/services/pi_releases.py",
+    "backend/src/yinshi/services/prompt_journal.py",
+    "backend/src/yinshi/services/provider_connections.py",
+    "backend/src/yinshi/services/repository_lifecycle.py",
+    "backend/src/yinshi/services/runner_agent_relay.py",
+    "backend/src/yinshi/services/runner_relay.py",
+    "backend/src/yinshi/services/runner_rpc.py",
+    "backend/src/yinshi/services/runners.py",
+    "backend/src/yinshi/services/sidecar.py",
+    "backend/src/yinshi/services/sidecar_runtime.py",
+    "backend/src/yinshi/services/sprite_task_lease.py",
+    "backend/src/yinshi/services/sprites.py",
+    "backend/src/yinshi/services/workspace.py",
+    "backend/src/yinshi/tenant.py",
+    "backend/tests/test_api.py",
+    "backend/tests/test_backup.py",
+    "backend/tests/test_byok_enforcement.py",
+    "backend/tests/test_catalog_api.py",
+    "backend/tests/test_config.py",
+    "backend/tests/test_container.py",
+    "backend/tests/test_container_destroy_contract.py",
+    "backend/tests/test_container_log_privacy.py",
+    "backend/tests/test_db.py",
+    "backend/tests/test_desktop_workspace_delete.py",
+    "backend/tests/test_git.py",
+    "backend/tests/test_log_privacy.py",
+    "backend/tests/test_main.py",
+    "backend/tests/test_managed_artifacts.py",
+    "backend/tests/test_managed_guest_installer.py",
+    "backend/tests/test_managed_runners.py",
+    "backend/tests/test_managed_runtime_api.py",
+    "backend/tests/test_managed_runtime_manager.py",
+    "backend/tests/test_pi_config.py",
+    "backend/tests/test_prompt_journal.py",
+    "backend/tests/test_prompt_log_privacy.py",
+    "backend/tests/test_provider_auth_routes.py",
+    "backend/tests/test_repository_lifecycle.py",
+    "backend/tests/test_repository_lifecycle_followup.py",
+    "backend/tests/test_runner_agent_encryption.py",
+    "backend/tests/test_runner_agent_managed.py",
+    "backend/tests/test_runner_agent_relay.py",
+    "backend/tests/test_runner_agent_relay_lease.py",
+    "backend/tests/test_runner_relay.py",
+    "backend/tests/test_runner_rpc.py",
+    "backend/tests/test_runner_worker.py",
+    "backend/tests/test_runners.py",
+    "backend/tests/test_security_fixes.py",
+    "backend/tests/test_sidecar.py",
+    "backend/tests/test_sidecar_cancellation.py",
+    "backend/tests/test_sidecar_runtime.py",
+    "backend/tests/test_sprite_deployment.py",
+    "backend/tests/test_sprite_task_lease.py",
+    "backend/tests/test_sprites.py",
+    "backend/tests/test_sprites_service.py",
+    "backend/tests/test_stream_cleanup.py",
+    "backend/tests/test_tenant.py",
+    "backend/tests/test_terminal_channels.py",
+    "deploy/sprites/bootstrap.sh",
+    "deploy/sprites/build-artifact.sh",
+    "desktop/package-lock.json",
+    "desktop/package.json",
+    "docs/deployment/backups.md",
+    "frontend/e2e/helpers/testApp.ts",
+    "frontend/e2e/mock-sidecar.mjs",
+    "frontend/e2e/navigation.spec.ts",
+    "frontend/package-lock.json",
+    "frontend/package.json",
+    "frontend/src/components/Sidebar.tsx",
+    "frontend/src/components/WorkspaceInspector.tsx",
+    "frontend/src/components/__tests__/Sidebar.test.tsx",
+    "frontend/src/components/__tests__/WorkspaceInspector.test.tsx",
+    "frontend/src/hooks/__tests__/useAgentStream.test.tsx",
+    "frontend/src/hooks/useAgentStream.ts",
+    "frontend/src/main.test.tsx",
+    "frontend/src/main.tsx",
+    "frontend/src/pages/Settings.tsx",
+    "frontend/src/pages/__tests__/Session.test.tsx",
+    "frontend/src/pages/__tests__/Settings.test.tsx",
+    "frontend/src/runner/encryptedRunnerClient.test.ts",
+    "frontend/src/runner/encryptedRunnerClient.ts",
+    "frontend/src/runner/repositories.ts",
+    "frontend/src/runtime/encryptedUpload.test.ts",
+    "frontend/src/runtime/encryptedUpload.ts",
+    "frontend/src/runtime/promptStream.test.ts",
+    "frontend/src/runtime/promptStream.ts",
+    "frontend/src/runtime/resolveRuntime.test.ts",
+    "frontend/src/runtime/resolveRuntime.ts",
+    "frontend/src/runtime/runtimeRef.test.ts",
+    "frontend/src/runtime/runtimeRef.ts",
+    "frontend/src/runtime/runtimeTransport.test.ts",
+    "frontend/src/runtime/runtimeTransport.ts",
+    "frontend/src/runtime/useRuntimeResource.test.ts",
+    "frontend/src/runtime/useRuntimeResource.ts",
+    "sidecar/package-lock.json",
+    "sidecar/package.json",
+    "sidecar/src/index.js",
+    "sidecar/src/sidecar.js",
+    "sidecar/tests/cancellation.test.js",
+    "sidecar/tests/oauth-flow-limits.test.js",
+    "sidecar/tests/pi-session-limits.test.js",
+    "sidecar/tests/prompt-session-lifecycle.test.js",
+    "sidecar/tests/readiness.test.js"
+  ],
+  "agent": "Pi",
+  "model": "gpt-5.6-sol",
+  "turn_id": "554c258e4630",
+  "token_usage": {
+    "input_tokens": 61215,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 212480,
+    "output_tokens": 2445,
+    "api_call_count": 7
+  },
+  "session_metrics": {
+    "turn_count": 139
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-08-12T05:11:49.580529Z",
+    "agent_lines": 13650,
+    "agent_removed": 323,
+    "human_added": 9326,
+    "human_modified": 1425,
+    "human_removed": 0,
+    "total_committed": 24401,
+    "total_lines_changed": 24724,
+    "agent_percentage": 56.51593593269697,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 4350,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/050e71f3_reviewer_0_input.md": 56,
+        ".pi-subagents/artifacts/050e71f3_reviewer_0_transcript.jsonl": 2,
+        ".pi-subagents/artifacts/65559f4e_reviewer_0_input.md": 56,
+        ".pi-subagents/artifacts/65559f4e_reviewer_0_transcript.jsonl": 3,
+        ".pi-subagents/artifacts/76e57a22_reviewer_0_input.md": 56,
+        ".pi-subagents/artifacts/76e57a22_reviewer_0_transcript.jsonl": 3,
+        ".pi-subagents/artifacts/815d31ae_reviewer_0_input.md": 56,
+        ".pi-subagents/artifacts/815d31ae_reviewer_0_transcript.jsonl": 3,
+        ".pi-subagents/artifacts/892ac81e_reviewer_0_input.md": 56,
+        ".pi-subagents/artifacts/892ac81e_reviewer_0_transcript.jsonl": 3,
+        ".pi-subagents/artifacts/e0fddb40_reviewer_0_input.md": 75,
+        ".pi-subagents/artifacts/e0fddb40_reviewer_0_meta.json": 117,
+        ".pi-subagents/artifacts/e0fddb40_reviewer_0_output.md": 286,
+        ".pi-subagents/artifacts/e0fddb40_reviewer_0_transcript.jsonl": 368,
+        ".pi-subagents/artifacts/e0fddb40_reviewer_1_input.md": 75,
+        ".pi-subagents/artifacts/e0fddb40_reviewer_1_meta.json": 117,
+        ".pi-subagents/artifacts/e0fddb40_reviewer_1_output.md": 260,
+        ".pi-subagents/artifacts/e0fddb40_reviewer_1_transcript.jsonl": 253,
+        ".pi-subagents/artifacts/e0fddb40_reviewer_2_input.md": 77,
+        ".pi-subagents/artifacts/e0fddb40_reviewer_2_meta.json": 117,
+        ".pi-subagents/artifacts/e0fddb40_reviewer_2_output.md": 602,
+        ".pi-subagents/artifacts/e0fddb40_reviewer_2_transcript.jsonl": 307,
+        ".pi-subagents/artifacts/e0fddb40_scout_3_input.md": 74,
+        ".pi-subagents/artifacts/e0fddb40_scout_3_meta.json": 145,
+        ".pi-subagents/artifacts/e0fddb40_scout_3_output.md": 106,
+        ".pi-subagents/artifacts/e0fddb40_scout_3_transcript.jsonl": 226,
+        ".pi-subagents/missions/106fe513-ba3b-4ab9-af3b-6bb06b7f5b75.json": 37,
+        "code_reviews/2026-04-25-1616-code-review.md": 289,
+        "code_reviews/2026-04-27-0901-code-review.md": 341,
+        "code_reviews/2026-04-27-2057-code-review.md": 184
+      }
+    },
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 3,
+      "user_lines_added": 277,
+      "user_lines_removed": 4,
+      "agent_lines_added": 6411,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/0c55dcb5_reviewer_input.md": 65,
+        ".pi-subagents/artifacts/0c55dcb5_reviewer_transcript.jsonl": 2,
+        ".pi-subagents/artifacts/892ac81e_reviewer_0_meta.json": 114,
+        ".pi-subagents/artifacts/892ac81e_reviewer_0_output.md": 1,
+        ".pi-subagents/artifacts/892ac81e_reviewer_0_transcript.jsonl": 2,
+        ".pi-subagents/artifacts/c78da5a0_reviewer_input.md": 65,
+        ".pi-subagents/artifacts/c78da5a0_reviewer_transcript.jsonl": 2,
+        ".pi-subagents/missions/106fe513-ba3b-4ab9-af3b-6bb06b7f5b75.json": 26
+      },
+      "user_removed_per_file": {
+        ".pi-subagents/missions/106fe513-ba3b-4ab9-af3b-6bb06b7f5b75.json": 4
+      }
+    },
+    {
+      "checkpoint_number": 4,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 5,
+      "user_lines_added": 125,
+      "user_lines_removed": 0,
+      "agent_lines_added": 814,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/3f68a5e9_researcher_0_input.md": 60,
+        ".pi-subagents/artifacts/3f68a5e9_researcher_0_transcript.jsonl": 2,
+        ".pi-subagents/artifacts/68a86bb4_scout_0_input.md": 60,
+        ".pi-subagents/artifacts/68a86bb4_scout_0_transcript.jsonl": 3
+      }
+    },
+    {
+      "checkpoint_number": 6,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 7,
+      "user_lines_added": 267,
+      "user_lines_removed": 1,
+      "agent_lines_added": 1738,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/55e2cc39_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/55e2cc39_worker_0_transcript.jsonl": 2,
+        ".pi-subagents/missions/c7f50c94-15c9-45cd-a216-e488710cb3d6.json": 33,
+        "backend/src/yinshi/services/sprites.py": 88,
+        "backend/tests/test_sprites.py": 88
+      },
+      "user_removed_per_file": {
+        "backend/tests/test_sprites.py": 1
+      }
+    },
+    {
+      "checkpoint_number": 8,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 9,
+      "user_lines_added": 282,
+      "user_lines_removed": 0,
+      "agent_lines_added": 3392,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/5b7bd990_worker_0_input.md": 64,
+        ".pi-subagents/artifacts/5b7bd990_worker_0_transcript.jsonl": 2,
+        ".pi-subagents/artifacts/be37747b_reviewer_0_input.md": 56,
+        ".pi-subagents/artifacts/be37747b_reviewer_0_transcript.jsonl": 42,
+        ".pi-subagents/artifacts/cf0bc63f_reviewer_0_input.md": 56,
+        ".pi-subagents/artifacts/cf0bc63f_reviewer_0_transcript.jsonl": 29,
+        ".pi-subagents/missions/f78d7e71-e5b2-4462-8576-8269511361fb.json": 33
+      }
+    },
+    {
+      "checkpoint_number": 10,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 11,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 12,
+      "user_lines_added": 208,
+      "user_lines_removed": 0,
+      "agent_lines_added": 5260,
+      "agent_lines_removed": 16,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/304d705d_reviewer_0_input.md": 56,
+        ".pi-subagents/artifacts/304d705d_reviewer_0_transcript.jsonl": 3,
+        ".pi-subagents/artifacts/837e9029_reviewer_0_input.md": 56,
+        ".pi-subagents/artifacts/837e9029_reviewer_0_transcript.jsonl": 2,
+        ".pi-subagents/artifacts/cb4661cb_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/cb4661cb_worker_0_transcript.jsonl": 2,
+        ".pi-subagents/missions/37776ff6-1826-463f-8bdf-cbda41b40680.json": 33
+      }
+    },
+    {
+      "checkpoint_number": 13,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 14,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 15,
+      "user_lines_added": 99,
+      "user_lines_removed": 0,
+      "agent_lines_added": 6991,
+      "agent_lines_removed": 16,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/29e8497c_worker_0_input.md": 64,
+        ".pi-subagents/artifacts/29e8497c_worker_0_transcript.jsonl": 2,
+        ".pi-subagents/missions/674c4ff6-d91e-4ecf-9ac3-3eac88d53233.json": 33
+      }
+    },
+    {
+      "checkpoint_number": 16,
+      "user_lines_added": 390,
+      "user_lines_removed": 5,
+      "agent_lines_added": 7857,
+      "agent_lines_removed": 16,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/29e8497c_worker_0_transcript.jsonl": 292,
+        ".pi-subagents/artifacts/5b27a443_reviewer_0_input.md": 56,
+        ".pi-subagents/artifacts/5b27a443_reviewer_0_transcript.jsonl": 2,
+        ".pi-subagents/missions/230bc82c-399b-4f72-9167-9bb89494a5d4.json": 33,
+        ".pi-subagents/missions/674c4ff6-d91e-4ecf-9ac3-3eac88d53233.json": 7
+      },
+      "user_removed_per_file": {
+        ".pi-subagents/missions/674c4ff6-d91e-4ecf-9ac3-3eac88d53233.json": 5
+      }
+    },
+    {
+      "checkpoint_number": 17,
+      "user_lines_added": 634,
+      "user_lines_removed": 5,
+      "agent_lines_added": 8022,
+      "agent_lines_removed": 16,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/29e8497c_worker_0_transcript.jsonl": 292,
+        ".pi-subagents/artifacts/5b27a443_reviewer_0_input.md": 56,
+        ".pi-subagents/artifacts/5b27a443_reviewer_0_transcript.jsonl": 90,
+        ".pi-subagents/artifacts/cbaf9eca_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/cbaf9eca_worker_0_transcript.jsonl": 2,
+        ".pi-subagents/artifacts/ea74cd16_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/ea74cd16_worker_0_transcript.jsonl": 3,
+        ".pi-subagents/missions/230bc82c-399b-4f72-9167-9bb89494a5d4.json": 39,
+        ".pi-subagents/missions/674c4ff6-d91e-4ecf-9ac3-3eac88d53233.json": 7,
+        ".pi-subagents/missions/a1d68528-3e0f-417c-933c-0054b8d28506.json": 33
+      },
+      "user_removed_per_file": {
+        ".pi-subagents/missions/674c4ff6-d91e-4ecf-9ac3-3eac88d53233.json": 5
+      }
+    },
+    {
+      "checkpoint_number": 18,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 19,
+      "user_lines_added": 150,
+      "user_lines_removed": 0,
+      "agent_lines_added": 10612,
+      "agent_lines_removed": 18,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/2f1e5e0d_reviewer_0_input.md": 56,
+        ".pi-subagents/artifacts/2f1e5e0d_reviewer_0_transcript.jsonl": 3,
+        ".pi-subagents/artifacts/e02e356a_reviewer_0_input.md": 56,
+        ".pi-subagents/artifacts/e02e356a_reviewer_0_transcript.jsonl": 2,
+        ".pi-subagents/missions/345664b6-3964-4a49-aab8-f71bf43be58f.json": 33
+      }
+    },
+    {
+      "checkpoint_number": 20,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 21,
+      "user_lines_added": 150,
+      "user_lines_removed": 0,
+      "agent_lines_added": 12090,
+      "agent_lines_removed": 18,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/6c4b25f5_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/6c4b25f5_worker_0_transcript.jsonl": 3,
+        ".pi-subagents/artifacts/c401fd6d_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/c401fd6d_worker_0_transcript.jsonl": 2,
+        ".pi-subagents/missions/81e35af0-7387-4c76-a2bf-01280de96f6b.json": 33
+      }
+    },
+    {
+      "checkpoint_number": 22,
+      "user_lines_added": 1343,
+      "user_lines_removed": 79,
+      "agent_lines_added": 12440,
+      "agent_lines_removed": 18,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/6c4b25f5_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/6c4b25f5_worker_0_meta.json": 117,
+        ".pi-subagents/artifacts/6c4b25f5_worker_0_output.md": 1,
+        ".pi-subagents/artifacts/6c4b25f5_worker_0_transcript.jsonl": 403,
+        ".pi-subagents/artifacts/a3448595_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/a3448595_worker_0_transcript.jsonl": 2,
+        ".pi-subagents/artifacts/c401fd6d_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/c401fd6d_worker_0_transcript.jsonl": 190,
+        ".pi-subagents/missions/81e35af0-7387-4c76-a2bf-01280de96f6b.json": 43,
+        ".pi-subagents/missions/fb708b5f-b822-43e3-86a8-9e1e0367bf83.json": 33,
+        "backend/src/yinshi/services/sprites.py": 130,
+        "backend/tests/test_sprites.py": 256
+      },
+      "user_removed_per_file": {
+        "backend/src/yinshi/services/sprites.py": 79
+      }
+    },
+    {
+      "checkpoint_number": 23,
+      "user_lines_added": 1783,
+      "user_lines_removed": 79,
+      "agent_lines_added": 12851,
+      "agent_lines_removed": 20,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/6c4b25f5_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/6c4b25f5_worker_0_meta.json": 117,
+        ".pi-subagents/artifacts/6c4b25f5_worker_0_output.md": 1,
+        ".pi-subagents/artifacts/6c4b25f5_worker_0_transcript.jsonl": 403,
+        ".pi-subagents/artifacts/8adb3984_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/8adb3984_worker_0_transcript.jsonl": 2,
+        ".pi-subagents/artifacts/a3448595_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/a3448595_worker_0_transcript.jsonl": 227,
+        ".pi-subagents/artifacts/c401fd6d_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/c401fd6d_worker_0_transcript.jsonl": 190,
+        ".pi-subagents/artifacts/dcd21b41_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/dcd21b41_worker_0_transcript.jsonl": 33,
+        ".pi-subagents/missions/2af0740c-6abe-4770-a703-0a6e7c8d3b5b.json": 33,
+        ".pi-subagents/missions/81e35af0-7387-4c76-a2bf-01280de96f6b.json": 43,
+        ".pi-subagents/missions/c964cf9d-f9a1-4ef2-bd29-d3b43ae818b8.json": 33,
+        ".pi-subagents/missions/fb708b5f-b822-43e3-86a8-9e1e0367bf83.json": 35,
+        "backend/src/yinshi/services/sprites.py": 130,
+        "backend/tests/test_sprites.py": 256
+      },
+      "user_removed_per_file": {
+        "backend/src/yinshi/services/sprites.py": 79
+      }
+    },
+    {
+      "checkpoint_number": 24,
+      "user_lines_added": 2142,
+      "user_lines_removed": 79,
+      "agent_lines_added": 13195,
+      "agent_lines_removed": 20,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/6c4b25f5_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/6c4b25f5_worker_0_meta.json": 117,
+        ".pi-subagents/artifacts/6c4b25f5_worker_0_output.md": 1,
+        ".pi-subagents/artifacts/6c4b25f5_worker_0_transcript.jsonl": 403,
+        ".pi-subagents/artifacts/8adb3984_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/8adb3984_worker_0_transcript.jsonl": 87,
+        ".pi-subagents/artifacts/a3448595_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/a3448595_worker_0_transcript.jsonl": 227,
+        ".pi-subagents/artifacts/c33f2330_worker_input.md": 73,
+        ".pi-subagents/artifacts/c33f2330_worker_transcript.jsonl": 2,
+        ".pi-subagents/artifacts/c401fd6d_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/c401fd6d_worker_0_transcript.jsonl": 190,
+        ".pi-subagents/artifacts/dcd21b41_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/dcd21b41_worker_0_transcript.jsonl": 225,
+        ".pi-subagents/missions/2af0740c-6abe-4770-a703-0a6e7c8d3b5b.json": 35,
+        ".pi-subagents/missions/81e35af0-7387-4c76-a2bf-01280de96f6b.json": 43,
+        ".pi-subagents/missions/c964cf9d-f9a1-4ef2-bd29-d3b43ae818b8.json": 35,
+        ".pi-subagents/missions/fb708b5f-b822-43e3-86a8-9e1e0367bf83.json": 35,
+        "backend/src/yinshi/config.py": 3,
+        "backend/src/yinshi/services/sprites.py": 130,
+        "backend/tests/test_sprites.py": 256
+      },
+      "user_removed_per_file": {
+        "backend/src/yinshi/services/sprites.py": 79
+      }
+    },
+    {
+      "checkpoint_number": 25,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 26,
+      "user_lines_added": 569,
+      "user_lines_removed": 0,
+      "agent_lines_added": 16226,
+      "agent_lines_removed": 22,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/0deefd76_worker_0_input.md": 64,
+        ".pi-subagents/artifacts/0deefd76_worker_0_transcript.jsonl": 73,
+        ".pi-subagents/artifacts/2da04407_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/2da04407_worker_0_meta.json": 91,
+        ".pi-subagents/artifacts/2da04407_worker_0_transcript.jsonl": 68,
+        ".pi-subagents/artifacts/6fd46443_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/6fd46443_worker_0_transcript.jsonl": 2,
+        ".pi-subagents/artifacts/d4294b36_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/d4294b36_worker_0_transcript.jsonl": 2,
+        ".pi-subagents/missions/0131219a-c990-4214-a49f-cca49e41c6a0.json": 33,
+        ".pi-subagents/missions/6ceb77a5-72e3-488d-9035-5d97fd8d46ea.json": 33,
+        ".pi-subagents/missions/b0782e9b-611c-4f0b-96cc-1524546c05b0.json": 35
+      }
+    },
+    {
+      "checkpoint_number": 27,
+      "user_lines_added": 2791,
+      "user_lines_removed": 66,
+      "agent_lines_added": 16796,
+      "agent_lines_removed": 32,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/0deefd76_worker_0_input.md": 64,
+        ".pi-subagents/artifacts/0deefd76_worker_0_transcript.jsonl": 325,
+        ".pi-subagents/artifacts/205f62ef_worker_input.md": 73,
+        ".pi-subagents/artifacts/205f62ef_worker_transcript.jsonl": 2,
+        ".pi-subagents/artifacts/2da04407_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/2da04407_worker_0_meta.json": 118,
+        ".pi-subagents/artifacts/2da04407_worker_0_output.md": 1,
+        ".pi-subagents/artifacts/2da04407_worker_0_transcript.jsonl": 197,
+        ".pi-subagents/artifacts/6fd46443_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/6fd46443_worker_0_transcript.jsonl": 283,
+        ".pi-subagents/artifacts/d4294b36_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/d4294b36_worker_0_transcript.jsonl": 230,
+        ".pi-subagents/missions/0131219a-c990-4214-a49f-cca49e41c6a0.json": 39,
+        ".pi-subagents/missions/6ceb77a5-72e3-488d-9035-5d97fd8d46ea.json": 35,
+        ".pi-subagents/missions/b0782e9b-611c-4f0b-96cc-1524546c05b0.json": 35,
+        "backend/src/yinshi/backup.py": 297,
+        "backend/src/yinshi/runner_agent.py": 34,
+        "backend/src/yinshi/services/managed_runners.py": 28,
+        "backend/src/yinshi/services/runner_agent_relay.py": 3,
+        "backend/src/yinshi/services/runners.py": 79,
+        "backend/src/yinshi/services/sprite_task_lease.py": 146,
+        "backend/tests/test_backup.py": 290,
+        "backend/tests/test_managed_runners.py": 66,
+        "backend/tests/test_runner_agent_managed.py": 103,
+        "backend/tests/test_runner_agent_relay.py": 20,
+        "backend/tests/test_runner_agent_relay_lease.py": 30,
+        "backend/tests/test_sprite_task_lease.py": 125
+      },
+      "user_removed_per_file": {
+        "backend/src/yinshi/backup.py": 1,
+        "backend/src/yinshi/runner_agent.py": 1,
+        "backend/src/yinshi/services/runner_agent_relay.py": 3,
+        "backend/src/yinshi/services/runners.py": 54,
+        "backend/tests/test_runner_agent_relay.py": 7
+      }
+    },
+    {
+      "checkpoint_number": 28,
+      "user_lines_added": 204,
+      "user_lines_removed": 2,
+      "agent_lines_added": 19631,
+      "agent_lines_removed": 82,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/205f62ef_worker_transcript.jsonl": 29,
+        ".pi-subagents/artifacts/6a133d91_worker_input.md": 73,
+        ".pi-subagents/artifacts/6a133d91_worker_transcript.jsonl": 3,
+        ".pi-subagents/artifacts/9748168e_worker_input.md": 73,
+        ".pi-subagents/artifacts/9748168e_worker_transcript.jsonl": 2,
+        "backend/src/yinshi/backup.py": 24
+      },
+      "user_removed_per_file": {
+        "backend/src/yinshi/backup.py": 2
+      }
+    },
+    {
+      "checkpoint_number": 29,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 30,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 31,
+      "user_lines_added": 223,
+      "user_lines_removed": 0,
+      "agent_lines_added": 21299,
+      "agent_lines_removed": 100,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/08ad329b_worker_0_input.md": 64,
+        ".pi-subagents/artifacts/08ad329b_worker_0_transcript.jsonl": 2,
+        ".pi-subagents/artifacts/4b52d104_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/4b52d104_worker_0_transcript.jsonl": 35,
+        ".pi-subagents/missions/c5534590-693e-4854-8a99-958ac806f174.json": 33,
+        ".pi-subagents/missions/e6b74b3b-d976-4f58-b0e3-6876f67a25a3.json": 33
+      }
+    },
+    {
+      "checkpoint_number": 32,
+      "user_lines_added": 1225,
+      "user_lines_removed": 1,
+      "agent_lines_added": 21700,
+      "agent_lines_removed": 112,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/08ad329b_worker_0_input.md": 64,
+        ".pi-subagents/artifacts/08ad329b_worker_0_transcript.jsonl": 182,
+        ".pi-subagents/artifacts/2382188b_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/2382188b_worker_0_transcript.jsonl": 42,
+        ".pi-subagents/artifacts/347d2870_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/347d2870_worker_0_transcript.jsonl": 2,
+        ".pi-subagents/artifacts/4b52d104_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/4b52d104_worker_0_meta.json": 117,
+        ".pi-subagents/artifacts/4b52d104_worker_0_output.md": 1,
+        ".pi-subagents/artifacts/4b52d104_worker_0_transcript.jsonl": 273,
+        ".pi-subagents/missions/4ada67ab-b5f0-4782-a5d9-58a5d51ad413.json": 33,
+        ".pi-subagents/missions/c5534590-693e-4854-8a99-958ac806f174.json": 39,
+        ".pi-subagents/missions/e6b74b3b-d976-4f58-b0e3-6876f67a25a3.json": 39,
+        ".pi-subagents/missions/ec25c961-4949-43f5-a993-44098421b8d4.json": 33,
+        "backend/src/yinshi/services/managed_runners.py": 90,
+        "backend/tests/test_managed_runners.py": 142
+      },
+      "user_removed_per_file": {
+        "backend/tests/test_managed_runners.py": 1
+      }
+    },
+    {
+      "checkpoint_number": 33,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 34,
+      "user_lines_added": 75,
+      "user_lines_removed": 0,
+      "agent_lines_added": 24012,
+      "agent_lines_removed": 115,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/f764ded3_worker_input.md": 73,
+        ".pi-subagents/artifacts/f764ded3_worker_transcript.jsonl": 2
+      }
+    },
+    {
+      "checkpoint_number": 35,
+      "user_lines_added": 355,
+      "user_lines_removed": 0,
+      "agent_lines_added": 24410,
+      "agent_lines_removed": 132,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/7835feca_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/7835feca_worker_0_transcript.jsonl": 26,
+        ".pi-subagents/artifacts/7c152d51_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/7c152d51_worker_0_transcript.jsonl": 2,
+        ".pi-subagents/artifacts/f764ded3_worker_input.md": 73,
+        ".pi-subagents/artifacts/f764ded3_worker_transcript.jsonl": 76,
+        ".pi-subagents/missions/c7a31213-8cfe-4b96-9a45-046e9b8a8053.json": 33,
+        ".pi-subagents/missions/f5013dbe-6be9-4803-887c-ee00a70fb1d8.json": 33
+      }
+    },
+    {
+      "checkpoint_number": 36,
+      "user_lines_added": 1444,
+      "user_lines_removed": 0,
+      "agent_lines_added": 24797,
+      "agent_lines_removed": 153,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/7835feca_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/7835feca_worker_0_meta.json": 117,
+        ".pi-subagents/artifacts/7835feca_worker_0_output.md": 1,
+        ".pi-subagents/artifacts/7835feca_worker_0_transcript.jsonl": 209,
+        ".pi-subagents/artifacts/7c152d51_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/7c152d51_worker_0_transcript.jsonl": 188,
+        ".pi-subagents/artifacts/7fefac77_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/7fefac77_worker_0_transcript.jsonl": 46,
+        ".pi-subagents/artifacts/d809cda7_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/d809cda7_worker_0_transcript.jsonl": 2,
+        ".pi-subagents/artifacts/f764ded3_worker_input.md": 73,
+        ".pi-subagents/artifacts/f764ded3_worker_transcript.jsonl": 76,
+        ".pi-subagents/artifacts/fdc6af2b_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/fdc6af2b_worker_0_transcript.jsonl": 3,
+        ".pi-subagents/missions/37a9f694-9c4c-4f47-9a30-5755424861f5.json": 33,
+        ".pi-subagents/missions/4c6555e1-2cea-4ec9-aed3-99252b1b12a2.json": 33,
+        ".pi-subagents/missions/b775fc77-584f-4284-bbfb-8aef6793d43c.json": 33,
+        ".pi-subagents/missions/c7a31213-8cfe-4b96-9a45-046e9b8a8053.json": 39,
+        ".pi-subagents/missions/f5013dbe-6be9-4803-887c-ee00a70fb1d8.json": 39,
+        "backend/src/yinshi/services/managed_runners.py": 121,
+        "backend/tests/test_managed_runners.py": 151
+      }
+    },
+    {
+      "checkpoint_number": 37,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 38,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 39,
+      "user_lines_added": 358,
+      "user_lines_removed": 2,
+      "agent_lines_added": 30918,
+      "agent_lines_removed": 166,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/68a68385_worker_transcript.jsonl": 16,
+        ".pi-subagents/artifacts/ccc6e1e1_worker_0_input.md": 64,
+        ".pi-subagents/artifacts/ccc6e1e1_worker_0_transcript.jsonl": 2,
+        ".pi-subagents/missions/5fb3b7e8-0bae-4be3-bb9a-dc421bc7d98e.json": 33,
+        "backend/src/yinshi/services/sprites.py": 7,
+        "backend/tests/test_sprites.py": 28,
+        "deploy/sprites/bootstrap.sh": 208
+      },
+      "user_removed_per_file": {
+        "deploy/sprites/bootstrap.sh": 2
+      }
+    },
+    {
+      "checkpoint_number": 40,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 41,
+      "user_lines_added": 178,
+      "user_lines_removed": 9,
+      "agent_lines_added": 32660,
+      "agent_lines_removed": 166,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/00ea0773_worker_input.md": 73,
+        ".pi-subagents/artifacts/00ea0773_worker_transcript.jsonl": 3,
+        ".pi-subagents/artifacts/784a9a5e_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/784a9a5e_worker_0_transcript.jsonl": 2,
+        ".pi-subagents/missions/43ba065a-da1f-4ffc-83b2-4bbaffd6aaa9.json": 33,
+        "backend/src/yinshi/services/managed_guest_installer.py": 1,
+        "backend/tests/test_managed_guest_installer.py": 1,
+        "backend/tests/test_sprite_deployment.py": 7,
+        "deploy/sprites/bootstrap.sh": 2
+      },
+      "user_removed_per_file": {
+        "backend/src/yinshi/services/managed_guest_installer.py": 1,
+        "backend/tests/test_managed_guest_installer.py": 1,
+        "backend/tests/test_sprite_deployment.py": 6,
+        "deploy/sprites/bootstrap.sh": 1
+      }
+    },
+    {
+      "checkpoint_number": 42,
+      "user_lines_added": 1254,
+      "user_lines_removed": 23,
+      "agent_lines_added": 33085,
+      "agent_lines_removed": 166,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/00ea0773_worker_input.md": 73,
+        ".pi-subagents/artifacts/00ea0773_worker_transcript.jsonl": 126,
+        ".pi-subagents/artifacts/025a0902_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/025a0902_worker_0_transcript.jsonl": 2,
+        ".pi-subagents/artifacts/5cb65caf_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/5cb65caf_worker_0_transcript.jsonl": 68,
+        ".pi-subagents/artifacts/784a9a5e_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/784a9a5e_worker_0_meta.json": 39,
+        ".pi-subagents/artifacts/784a9a5e_worker_0_output.md": 1,
+        ".pi-subagents/artifacts/784a9a5e_worker_0_transcript.jsonl": 272,
+        ".pi-subagents/missions/3306d17e-1574-4cc7-854c-687169ff0f12.json": 33,
+        ".pi-subagents/missions/43ba065a-da1f-4ffc-83b2-4bbaffd6aaa9.json": 35,
+        ".pi-subagents/missions/cbba602b-e71d-43b9-a39e-eba03fc8d701.json": 33,
+        "backend/src/yinshi/services/managed_runtime_manager.py": 115,
+        "backend/tests/test_managed_runtime_manager.py": 280,
+        "backend/tests/test_sprite_deployment.py": 7,
+        "deploy/sprites/bootstrap.sh": 2
+      },
+      "user_removed_per_file": {
+        ".pi-subagents/artifacts/784a9a5e_worker_0_meta.json": 13,
+        "backend/src/yinshi/services/managed_runtime_manager.py": 3,
+        "backend/tests/test_sprite_deployment.py": 6,
+        "deploy/sprites/bootstrap.sh": 1
+      }
+    },
+    {
+      "checkpoint_number": 43,
+      "user_lines_added": 1740,
+      "user_lines_removed": 45,
+      "agent_lines_added": 33632,
+      "agent_lines_removed": 166,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/00ea0773_worker_input.md": 73,
+        ".pi-subagents/artifacts/00ea0773_worker_transcript.jsonl": 126,
+        ".pi-subagents/artifacts/025a0902_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/025a0902_worker_0_transcript.jsonl": 216,
+        ".pi-subagents/artifacts/0db3aa2f_worker_input.md": 73,
+        ".pi-subagents/artifacts/0db3aa2f_worker_transcript.jsonl": 2,
+        ".pi-subagents/artifacts/5cb65caf_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/5cb65caf_worker_0_meta.json": 39,
+        ".pi-subagents/artifacts/5cb65caf_worker_0_output.md": 1,
+        ".pi-subagents/artifacts/5cb65caf_worker_0_transcript.jsonl": 217,
+        ".pi-subagents/artifacts/784a9a5e_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/784a9a5e_worker_0_meta.json": 39,
+        ".pi-subagents/artifacts/784a9a5e_worker_0_output.md": 1,
+        ".pi-subagents/artifacts/784a9a5e_worker_0_transcript.jsonl": 272,
+        ".pi-subagents/missions/3306d17e-1574-4cc7-854c-687169ff0f12.json": 35,
+        ".pi-subagents/missions/43ba065a-da1f-4ffc-83b2-4bbaffd6aaa9.json": 35,
+        ".pi-subagents/missions/cbba602b-e71d-43b9-a39e-eba03fc8d701.json": 39,
+        "backend/src/yinshi/services/managed_runtime_manager.py": 115,
+        "backend/tests/test_managed_runtime_manager.py": 280,
+        "backend/tests/test_sprite_deployment.py": 7,
+        "deploy/sprites/bootstrap.sh": 2
+      },
+      "user_removed_per_file": {
+        ".pi-subagents/artifacts/5cb65caf_worker_0_meta.json": 13,
+        ".pi-subagents/artifacts/784a9a5e_worker_0_meta.json": 13,
+        "backend/src/yinshi/services/managed_runtime_manager.py": 3,
+        "backend/tests/test_managed_runtime_api.py": 9,
+        "backend/tests/test_sprite_deployment.py": 6,
+        "deploy/sprites/bootstrap.sh": 1
+      }
+    },
+    {
+      "checkpoint_number": 44,
+      "user_lines_added": 1910,
+      "user_lines_removed": 36,
+      "agent_lines_added": 34001,
+      "agent_lines_removed": 166,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/00ea0773_worker_input.md": 73,
+        ".pi-subagents/artifacts/00ea0773_worker_transcript.jsonl": 126,
+        ".pi-subagents/artifacts/025a0902_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/025a0902_worker_0_transcript.jsonl": 216,
+        ".pi-subagents/artifacts/0db3aa2f_worker_input.md": 73,
+        ".pi-subagents/artifacts/0db3aa2f_worker_transcript.jsonl": 97,
+        ".pi-subagents/artifacts/25abbac3_worker_input.md": 73,
+        ".pi-subagents/artifacts/25abbac3_worker_transcript.jsonl": 2,
+        ".pi-subagents/artifacts/5cb65caf_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/5cb65caf_worker_0_meta.json": 39,
+        ".pi-subagents/artifacts/5cb65caf_worker_0_output.md": 1,
+        ".pi-subagents/artifacts/5cb65caf_worker_0_transcript.jsonl": 217,
+        ".pi-subagents/artifacts/784a9a5e_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/784a9a5e_worker_0_meta.json": 39,
+        ".pi-subagents/artifacts/784a9a5e_worker_0_output.md": 1,
+        ".pi-subagents/artifacts/784a9a5e_worker_0_transcript.jsonl": 272,
+        ".pi-subagents/missions/3306d17e-1574-4cc7-854c-687169ff0f12.json": 35,
+        ".pi-subagents/missions/43ba065a-da1f-4ffc-83b2-4bbaffd6aaa9.json": 35,
+        ".pi-subagents/missions/cbba602b-e71d-43b9-a39e-eba03fc8d701.json": 39,
+        "backend/src/yinshi/services/managed_runtime_manager.py": 115,
+        "backend/tests/test_managed_runtime_manager.py": 280,
+        "backend/tests/test_sprite_deployment.py": 7,
+        "deploy/sprites/bootstrap.sh": 2
+      },
+      "user_removed_per_file": {
+        ".pi-subagents/artifacts/5cb65caf_worker_0_meta.json": 13,
+        ".pi-subagents/artifacts/784a9a5e_worker_0_meta.json": 13,
+        "backend/src/yinshi/services/managed_runtime_manager.py": 3,
+        "backend/tests/test_sprite_deployment.py": 6,
+        "deploy/sprites/bootstrap.sh": 1
+      }
+    },
+    {
+      "checkpoint_number": 45,
+      "user_lines_added": 2079,
+      "user_lines_removed": 36,
+      "agent_lines_added": 34402,
+      "agent_lines_removed": 166,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/00ea0773_worker_input.md": 73,
+        ".pi-subagents/artifacts/00ea0773_worker_transcript.jsonl": 126,
+        ".pi-subagents/artifacts/025a0902_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/025a0902_worker_0_transcript.jsonl": 216,
+        ".pi-subagents/artifacts/0db3aa2f_worker_input.md": 73,
+        ".pi-subagents/artifacts/0db3aa2f_worker_transcript.jsonl": 97,
+        ".pi-subagents/artifacts/25abbac3_worker_input.md": 73,
+        ".pi-subagents/artifacts/25abbac3_worker_transcript.jsonl": 96,
+        ".pi-subagents/artifacts/5cb65caf_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/5cb65caf_worker_0_meta.json": 39,
+        ".pi-subagents/artifacts/5cb65caf_worker_0_output.md": 1,
+        ".pi-subagents/artifacts/5cb65caf_worker_0_transcript.jsonl": 217,
+        ".pi-subagents/artifacts/784a9a5e_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/784a9a5e_worker_0_meta.json": 39,
+        ".pi-subagents/artifacts/784a9a5e_worker_0_output.md": 1,
+        ".pi-subagents/artifacts/784a9a5e_worker_0_transcript.jsonl": 272,
+        ".pi-subagents/artifacts/e784d33a_worker_input.md": 73,
+        ".pi-subagents/artifacts/e784d33a_worker_transcript.jsonl": 2,
+        ".pi-subagents/missions/3306d17e-1574-4cc7-854c-687169ff0f12.json": 35,
+        ".pi-subagents/missions/43ba065a-da1f-4ffc-83b2-4bbaffd6aaa9.json": 35,
+        ".pi-subagents/missions/cbba602b-e71d-43b9-a39e-eba03fc8d701.json": 39,
+        "backend/src/yinshi/services/managed_runtime_manager.py": 115,
+        "backend/tests/test_managed_runtime_manager.py": 280,
+        "backend/tests/test_sprite_deployment.py": 7,
+        "deploy/sprites/bootstrap.sh": 2
+      },
+      "user_removed_per_file": {
+        ".pi-subagents/artifacts/5cb65caf_worker_0_meta.json": 13,
+        ".pi-subagents/artifacts/784a9a5e_worker_0_meta.json": 13,
+        "backend/src/yinshi/services/managed_runtime_manager.py": 3,
+        "backend/tests/test_sprite_deployment.py": 6,
+        "deploy/sprites/bootstrap.sh": 1
+      }
+    },
+    {
+      "checkpoint_number": 46,
+      "user_lines_added": 2579,
+      "user_lines_removed": 41,
+      "agent_lines_added": 34711,
+      "agent_lines_removed": 166,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/00ea0773_worker_input.md": 73,
+        ".pi-subagents/artifacts/00ea0773_worker_transcript.jsonl": 126,
+        ".pi-subagents/artifacts/025a0902_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/025a0902_worker_0_transcript.jsonl": 216,
+        ".pi-subagents/artifacts/0db3aa2f_worker_input.md": 73,
+        ".pi-subagents/artifacts/0db3aa2f_worker_transcript.jsonl": 97,
+        ".pi-subagents/artifacts/25abbac3_worker_input.md": 73,
+        ".pi-subagents/artifacts/25abbac3_worker_transcript.jsonl": 96,
+        ".pi-subagents/artifacts/5cb65caf_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/5cb65caf_worker_0_meta.json": 39,
+        ".pi-subagents/artifacts/5cb65caf_worker_0_output.md": 1,
+        ".pi-subagents/artifacts/5cb65caf_worker_0_transcript.jsonl": 217,
+        ".pi-subagents/artifacts/6ad6f043_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/6ad6f043_worker_0_transcript.jsonl": 2,
+        ".pi-subagents/artifacts/784a9a5e_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/784a9a5e_worker_0_meta.json": 39,
+        ".pi-subagents/artifacts/784a9a5e_worker_0_output.md": 1,
+        ".pi-subagents/artifacts/784a9a5e_worker_0_transcript.jsonl": 272,
+        ".pi-subagents/artifacts/97e27589_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/97e27589_worker_0_transcript.jsonl": 121,
+        ".pi-subagents/artifacts/e784d33a_worker_input.md": 73,
+        ".pi-subagents/artifacts/e784d33a_worker_transcript.jsonl": 61,
+        ".pi-subagents/missions/0421fb68-c4ef-4ac6-be72-dadccad5d1f2.json": 33,
+        ".pi-subagents/missions/3306d17e-1574-4cc7-854c-687169ff0f12.json": 35,
+        ".pi-subagents/missions/43ba065a-da1f-4ffc-83b2-4bbaffd6aaa9.json": 35,
+        ".pi-subagents/missions/5f2e9af1-f424-41a7-9f39-caf32f265092.json": 33,
+        ".pi-subagents/missions/cbba602b-e71d-43b9-a39e-eba03fc8d701.json": 39,
+        "backend/src/yinshi/api/managed_runtime.py": 79,
+        "backend/src/yinshi/main.py": 20,
+        "backend/src/yinshi/services/managed_runtime_manager.py": 129,
+        "backend/tests/test_main.py": 26,
+        "backend/tests/test_managed_runtime_manager.py": 281,
+        "backend/tests/test_sprite_deployment.py": 7,
+        "deploy/sprites/bootstrap.sh": 2
+      },
+      "user_removed_per_file": {
+        ".pi-subagents/artifacts/5cb65caf_worker_0_meta.json": 13,
+        ".pi-subagents/artifacts/784a9a5e_worker_0_meta.json": 13,
+        "backend/src/yinshi/main.py": 5,
+        "backend/src/yinshi/services/managed_runtime_manager.py": 3,
+        "backend/tests/test_sprite_deployment.py": 6,
+        "deploy/sprites/bootstrap.sh": 1
+      }
+    },
+    {
+      "checkpoint_number": 47,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 48,
+      "user_lines_added": 1347,
+      "user_lines_removed": 17,
+      "agent_lines_added": 38543,
+      "agent_lines_removed": 218,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/ba4d68f9_worker_0_transcript.jsonl": 261,
+        ".pi-subagents/artifacts/c78c90a6_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/c78c90a6_worker_0_transcript.jsonl": 2,
+        ".pi-subagents/artifacts/cbcbada6_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/cbcbada6_worker_0_transcript.jsonl": 119,
+        ".pi-subagents/artifacts/d507ae72_reviewer_0_input.md": 56,
+        ".pi-subagents/artifacts/d507ae72_reviewer_0_transcript.jsonl": 142,
+        ".pi-subagents/artifacts/d79f918d_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/d79f918d_worker_0_transcript.jsonl": 29,
+        ".pi-subagents/missions/475e5878-5bf4-4b97-bbd6-b4478294390f.json": 33,
+        ".pi-subagents/missions/78657809-fc3b-46b3-968d-58985fef0fcc.json": 33,
+        ".pi-subagents/missions/bc5f8aed-55c4-473c-a46d-ea286290266e.json": 33,
+        ".pi-subagents/missions/d758d548-344a-463b-96c7-a2e5e485b02a.json": 33,
+        "backend/src/yinshi/api/managed_runtime.py": 5,
+        "backend/src/yinshi/main.py": 1,
+        "backend/src/yinshi/services/managed_guest_installer.py": 43,
+        "backend/tests/test_managed_guest_installer.py": 69,
+        "backend/tests/test_managed_runtime_api.py": 1,
+        "backend/tests/test_managed_runtime_manager.py": 7,
+        "frontend/src/runtime/resolveRuntime.test.ts": 176,
+        "frontend/src/runtime/resolveRuntime.ts": 93,
+        "frontend/src/runtime/runtimeRef.test.ts": 12,
+        "frontend/src/runtime/runtimeRef.ts": 3,
+        "frontend/src/runtime/runtimeTransport.ts": 28
+      },
+      "user_removed_per_file": {
+        "backend/src/yinshi/api/managed_runtime.py": 5,
+        "backend/src/yinshi/main.py": 4,
+        "backend/tests/test_managed_runtime_api.py": 3,
+        "backend/tests/test_managed_runtime_manager.py": 1,
+        "frontend/src/runtime/resolveRuntime.ts": 4
+      }
+    },
+    {
+      "checkpoint_number": 49,
+      "user_lines_added": 2032,
+      "user_lines_removed": 109,
+      "agent_lines_added": 39152,
+      "agent_lines_removed": 223,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/ba4d68f9_worker_0_transcript.jsonl": 277,
+        ".pi-subagents/artifacts/c78c90a6_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/c78c90a6_worker_0_transcript.jsonl": 54,
+        ".pi-subagents/artifacts/cbcbada6_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/cbcbada6_worker_0_transcript.jsonl": 196,
+        ".pi-subagents/artifacts/d507ae72_reviewer_0_input.md": 56,
+        ".pi-subagents/artifacts/d507ae72_reviewer_0_transcript.jsonl": 195,
+        ".pi-subagents/artifacts/d79f918d_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/d79f918d_worker_0_transcript.jsonl": 120,
+        ".pi-subagents/artifacts/dd836ca1_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/dd836ca1_worker_0_transcript.jsonl": 2,
+        ".pi-subagents/artifacts/f25d10d5_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/f25d10d5_worker_0_transcript.jsonl": 102,
+        ".pi-subagents/missions/3446aade-9eeb-455a-a20a-6d8e594a5e2d.json": 11,
+        ".pi-subagents/missions/4513870e-b93b-404c-bc73-c12ed54f3cd8.json": 33,
+        ".pi-subagents/missions/475e5878-5bf4-4b97-bbd6-b4478294390f.json": 33,
+        ".pi-subagents/missions/613e299c-871b-4fbe-b7d0-e1148d4fcb2f.json": 33,
+        ".pi-subagents/missions/78657809-fc3b-46b3-968d-58985fef0fcc.json": 33,
+        ".pi-subagents/missions/bc5f8aed-55c4-473c-a46d-ea286290266e.json": 33,
+        ".pi-subagents/missions/d758d548-344a-463b-96c7-a2e5e485b02a.json": 33,
+        "backend/src/yinshi/api/managed_runtime.py": 5,
+        "backend/src/yinshi/services/container.py": 88,
+        "backend/src/yinshi/services/managed_guest_installer.py": 123,
+        "backend/tests/test_container.py": 77,
+        "backend/tests/test_managed_guest_installer.py": 185,
+        "backend/tests/test_managed_runtime_api.py": 1,
+        "backend/tests/test_managed_runtime_manager.py": 7,
+        "backend/tests/test_prompt_journal.py": 55
+      },
+      "user_removed_per_file": {
+        ".pi-subagents/missions/3446aade-9eeb-455a-a20a-6d8e594a5e2d.json": 5,
+        "backend/src/yinshi/api/managed_runtime.py": 5,
+        "backend/src/yinshi/services/container.py": 28,
+        "backend/src/yinshi/services/managed_guest_installer.py": 57,
+        "backend/tests/test_managed_guest_installer.py": 2,
+        "backend/tests/test_managed_runtime_api.py": 3,
+        "backend/tests/test_managed_runtime_manager.py": 1,
+        "backend/tests/test_prompt_journal.py": 8
+      }
+    },
+    {
+      "checkpoint_number": 50,
+      "user_lines_added": 1955,
+      "user_lines_removed": 73,
+      "agent_lines_added": 39598,
+      "agent_lines_removed": 251,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/0c15cc63_oracle_0_input.md": 54,
+        ".pi-subagents/artifacts/0c15cc63_oracle_0_transcript.jsonl": 2,
+        ".pi-subagents/artifacts/ba4d68f9_worker_0_transcript.jsonl": 277,
+        ".pi-subagents/artifacts/c78c90a6_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/c78c90a6_worker_0_transcript.jsonl": 54,
+        ".pi-subagents/artifacts/cbcbada6_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/cbcbada6_worker_0_transcript.jsonl": 206,
+        ".pi-subagents/artifacts/d507ae72_reviewer_0_input.md": 56,
+        ".pi-subagents/artifacts/d507ae72_reviewer_0_transcript.jsonl": 195,
+        ".pi-subagents/artifacts/d79f918d_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/d79f918d_worker_0_transcript.jsonl": 121,
+        ".pi-subagents/artifacts/dd836ca1_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/dd836ca1_worker_0_transcript.jsonl": 35,
+        ".pi-subagents/artifacts/f25d10d5_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/f25d10d5_worker_0_transcript.jsonl": 106,
+        ".pi-subagents/missions/2bda34a6-3e57-4d73-aceb-e176f824a650.json": 33,
+        ".pi-subagents/missions/3446aade-9eeb-455a-a20a-6d8e594a5e2d.json": 11,
+        ".pi-subagents/missions/4513870e-b93b-404c-bc73-c12ed54f3cd8.json": 33,
+        ".pi-subagents/missions/475e5878-5bf4-4b97-bbd6-b4478294390f.json": 39,
+        ".pi-subagents/missions/613e299c-871b-4fbe-b7d0-e1148d4fcb2f.json": 33,
+        ".pi-subagents/missions/78657809-fc3b-46b3-968d-58985fef0fcc.json": 33,
+        ".pi-subagents/missions/bc5f8aed-55c4-473c-a46d-ea286290266e.json": 33,
+        ".pi-subagents/missions/d758d548-344a-463b-96c7-a2e5e485b02a.json": 33,
+        "backend/src/yinshi/api/managed_runtime.py": 5,
+        "backend/src/yinshi/services/managed_guest_installer.py": 123,
+        "backend/tests/test_managed_guest_installer.py": 185,
+        "backend/tests/test_managed_runtime_api.py": 1,
+        "backend/tests/test_managed_runtime_manager.py": 7
+      },
+      "user_removed_per_file": {
+        ".pi-subagents/missions/3446aade-9eeb-455a-a20a-6d8e594a5e2d.json": 5,
+        "backend/src/yinshi/api/managed_runtime.py": 5,
+        "backend/src/yinshi/services/managed_guest_installer.py": 57,
+        "backend/tests/test_managed_guest_installer.py": 2,
+        "backend/tests/test_managed_runtime_api.py": 3,
+        "backend/tests/test_managed_runtime_manager.py": 1
+      }
+    },
+    {
+      "checkpoint_number": 51,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 52,
+      "user_lines_added": 953,
+      "user_lines_removed": 43,
+      "agent_lines_added": 42143,
+      "agent_lines_removed": 294,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/022b108d_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/022b108d_worker_0_transcript.jsonl": 53,
+        ".pi-subagents/artifacts/0c15cc63_oracle_0_transcript.jsonl": 126,
+        ".pi-subagents/artifacts/8dc40a94_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/8dc40a94_worker_0_transcript.jsonl": 2,
+        ".pi-subagents/artifacts/8f9cab4f_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/8f9cab4f_worker_0_transcript.jsonl": 58,
+        ".pi-subagents/artifacts/c78c90a6_worker_0_transcript.jsonl": 24,
+        ".pi-subagents/artifacts/dd836ca1_worker_0_transcript.jsonl": 56,
+        ".pi-subagents/artifacts/f25d10d5_worker_0_transcript.jsonl": 46,
+        ".pi-subagents/missions/65d97f06-3e65-44a1-a8c2-29c30b7c93a9.json": 33,
+        ".pi-subagents/missions/a720070d-c5b9-49dc-b9ec-2b5a4fd3d879.json": 33,
+        ".pi-subagents/missions/b74364d6-a56c-445c-820a-70a091e09edb.json": 33,
+        "backend/src/yinshi/backup.py": 3,
+        "backend/src/yinshi/services/container.py": 46,
+        "backend/tests/test_backup.py": 29,
+        "backend/tests/test_container.py": 31,
+        "frontend/src/runtime/encryptedUpload.test.ts": 37,
+        "frontend/src/runtime/encryptedUpload.ts": 9,
+        "frontend/src/runtime/runtimeTransport.test.ts": 4,
+        "frontend/src/runtime/runtimeTransport.ts": 15,
+        "sidecar/src/sidecar.js": 18,
+        "sidecar/tests/prompt-session-lifecycle.test.js": 129
+      },
+      "user_removed_per_file": {
+        "backend/src/yinshi/services/container.py": 22,
+        "frontend/src/runtime/encryptedUpload.ts": 3,
+        "frontend/src/runtime/runtimeTransport.test.ts": 4,
+        "frontend/src/runtime/runtimeTransport.ts": 12,
+        "sidecar/src/sidecar.js": 2
+      }
+    },
+    {
+      "checkpoint_number": 53,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 54,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 55,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 56,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 57,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 58,
+      "user_lines_added": 281,
+      "user_lines_removed": 9,
+      "agent_lines_added": 46964,
+      "agent_lines_removed": 347,
+      "user_added_per_file": {
+        ".env.example": 2,
+        ".pi-subagents/artifacts/6423261b_reviewer_0_input.md": 56,
+        ".pi-subagents/artifacts/6423261b_reviewer_0_transcript.jsonl": 2,
+        ".pi-subagents/artifacts/98dc2d9b_reviewer_0_input.md": 56,
+        ".pi-subagents/artifacts/98dc2d9b_reviewer_0_transcript.jsonl": 3,
+        ".pi-subagents/artifacts/99fbfd2f_reviewer_0_input.md": 56,
+        ".pi-subagents/artifacts/99fbfd2f_reviewer_0_transcript.jsonl": 2,
+        ".pi-subagents/missions/c888d1a0-5691-4891-8e83-83ee5387f987.json": 33,
+        "backend/scripts/backup.sh": 11,
+        "backend/src/yinshi/config.py": 6,
+        "backend/src/yinshi/tenant.py": 1,
+        "backend/tests/test_backup.py": 42,
+        "backend/tests/test_config.py": 7,
+        "backend/tests/test_tenant.py": 3,
+        "docs/deployment/backups.md": 1
+      },
+      "user_removed_per_file": {
+        "backend/scripts/backup.sh": 1,
+        "backend/src/yinshi/config.py": 4,
+        "backend/src/yinshi/tenant.py": 1,
+        "backend/tests/test_config.py": 1,
+        "backend/tests/test_tenant.py": 1,
+        "docs/deployment/backups.md": 1
+      }
+    },
+    {
+      "checkpoint_number": 59,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 60,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 61,
+      "user_lines_added": 402,
+      "user_lines_removed": 11,
+      "agent_lines_added": 48513,
+      "agent_lines_removed": 350,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/2aa228f6_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/2aa228f6_worker_0_transcript.jsonl": 2,
+        ".pi-subagents/artifacts/37d66172_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/37d66172_worker_0_transcript.jsonl": 58,
+        ".pi-subagents/artifacts/f64a4c99_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/f64a4c99_worker_0_transcript.jsonl": 42,
+        ".pi-subagents/missions/1fead373-2216-405a-8b61-053caf69176e.json": 33,
+        ".pi-subagents/missions/b16473f7-d8fc-4a50-9d41-10d11584edc6.json": 33,
+        ".pi-subagents/missions/b1f9c637-bf22-46d3-942c-ee49aa6a3442.json": 33,
+        "frontend/src/runner/repositories.ts": 33
+      },
+      "user_removed_per_file": {
+        "frontend/src/runner/repositories.ts": 11
+      }
+    },
+    {
+      "checkpoint_number": 62,
+      "user_lines_added": 2518,
+      "user_lines_removed": 85,
+      "agent_lines_added": 48776,
+      "agent_lines_removed": 361,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/03ce35c3_worker_0_input.md": 64,
+        ".pi-subagents/artifacts/03ce35c3_worker_0_transcript.jsonl": 143,
+        ".pi-subagents/artifacts/1cfc51d7_worker_0_input.md": 64,
+        ".pi-subagents/artifacts/1cfc51d7_worker_0_transcript.jsonl": 126,
+        ".pi-subagents/artifacts/2aa228f6_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/2aa228f6_worker_0_transcript.jsonl": 147,
+        ".pi-subagents/artifacts/37d66172_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/37d66172_worker_0_transcript.jsonl": 81,
+        ".pi-subagents/artifacts/3ba9b590_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/3ba9b590_worker_0_transcript.jsonl": 139,
+        ".pi-subagents/artifacts/5debf9ff_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/5debf9ff_worker_0_transcript.jsonl": 2,
+        ".pi-subagents/artifacts/74df6b09_worker_0_input.md": 64,
+        ".pi-subagents/artifacts/74df6b09_worker_0_transcript.jsonl": 75,
+        ".pi-subagents/artifacts/bb2d01a9_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/bb2d01a9_worker_0_transcript.jsonl": 69,
+        ".pi-subagents/artifacts/f64a4c99_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/f64a4c99_worker_0_transcript.jsonl": 156,
+        ".pi-subagents/missions/0f6dd582-897d-47f1-b20f-e402f687117a.json": 33,
+        ".pi-subagents/missions/1fead373-2216-405a-8b61-053caf69176e.json": 39,
+        ".pi-subagents/missions/5fcfbcfa-50e7-435c-955d-42f04d492310.json": 33,
+        ".pi-subagents/missions/6d3f952d-57d8-4d84-9163-31df7572607e.json": 33,
+        ".pi-subagents/missions/8863b662-dc46-4fee-886e-c933fe9af072.json": 33,
+        ".pi-subagents/missions/b16473f7-d8fc-4a50-9d41-10d11584edc6.json": 33,
+        ".pi-subagents/missions/b1f9c637-bf22-46d3-942c-ee49aa6a3442.json": 33,
+        ".pi-subagents/missions/dcff84f5-ae23-423f-a01b-c5db700529d9.json": 33,
+        ".pi-subagents/missions/f5d9329a-9cfb-4b95-b210-625d2c7e4491.json": 33,
+        "backend/src/yinshi/services/container.py": 4,
+        "backend/src/yinshi/services/prompt_journal.py": 22,
+        "backend/tests/test_api.py": 44,
+        "backend/tests/test_container.py": 21,
+        "backend/tests/test_prompt_journal.py": 81,
+        "frontend/src/components/Sidebar.tsx": 30,
+        "frontend/src/pages/Settings.tsx": 60,
+        "frontend/src/pages/__tests__/Settings.test.tsx": 21,
+        "frontend/src/runtime/promptStream.test.ts": 202,
+        "frontend/src/runtime/promptStream.ts": 20,
+        "frontend/src/runtime/resolveRuntime.test.ts": 125,
+        "frontend/src/runtime/resolveRuntime.ts": 40,
+        "sidecar/src/sidecar.js": 15,
+        "sidecar/tests/pi-session-limits.test.js": 38,
+        "sidecar/tests/prompt-session-lifecycle.test.js": 26
+      },
+      "user_removed_per_file": {
+        "backend/src/yinshi/services/container.py": 10,
+        "backend/src/yinshi/services/prompt_journal.py": 21,
+        "backend/tests/test_prompt_journal.py": 1,
+        "frontend/src/components/Sidebar.tsx": 24,
+        "frontend/src/pages/Settings.tsx": 16,
+        "frontend/src/pages/__tests__/Settings.test.tsx": 3,
+        "frontend/src/runtime/promptStream.ts": 3,
+        "frontend/src/runtime/resolveRuntime.test.ts": 3,
+        "frontend/src/runtime/resolveRuntime.ts": 1,
+        "sidecar/src/sidecar.js": 3
+      }
+    },
+    {
+      "checkpoint_number": 63,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 64,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 65,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 66,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 67,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 68,
+      "user_lines_added": 479,
+      "user_lines_removed": 3,
+      "agent_lines_added": 54313,
+      "agent_lines_removed": 570,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/03ce35c3_worker_0_transcript.jsonl": 18,
+        ".pi-subagents/artifacts/1cfc51d7_worker_0_transcript.jsonl": 30,
+        ".pi-subagents/artifacts/5debf9ff_worker_0_transcript.jsonl": 24,
+        ".pi-subagents/artifacts/9d661138_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/9d661138_worker_0_transcript.jsonl": 2,
+        ".pi-subagents/artifacts/f846fc36_worker_0_input.md": 64,
+        ".pi-subagents/artifacts/f846fc36_worker_0_meta.json": 119,
+        ".pi-subagents/artifacts/f846fc36_worker_0_transcript.jsonl": 59,
+        ".pi-subagents/missions/d3bfbbca-c047-4142-b123-ef0593ca681e.json": 35,
+        ".pi-subagents/missions/d77770d3-486f-42a1-ac9a-8c78e095bf65.json": 33,
+        "backend/src/yinshi/backup.py": 4,
+        "backend/src/yinshi/services/container.py": 2,
+        "backend/tests/test_backup.py": 22,
+        "sidecar/tests/prompt-session-lifecycle.test.js": 11
+      },
+      "user_removed_per_file": {
+        "sidecar/tests/prompt-session-lifecycle.test.js": 3
+      }
+    },
+    {
+      "checkpoint_number": 69,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 70,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 71,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 72,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 73,
+      "user_lines_added": 805,
+      "user_lines_removed": 33,
+      "agent_lines_added": 57202,
+      "agent_lines_removed": 580,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/7b0f9c7b_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/7b0f9c7b_worker_0_transcript.jsonl": 139,
+        ".pi-subagents/artifacts/859a602d_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/859a602d_worker_0_transcript.jsonl": 2,
+        ".pi-subagents/artifacts/dd9ad80c_worker_0_input.md": 64,
+        ".pi-subagents/artifacts/dd9ad80c_worker_0_transcript.jsonl": 96,
+        ".pi-subagents/missions/1d60ccff-7d2e-4254-affb-fddcedf49e9a.json": 33,
+        ".pi-subagents/missions/3a40fe3e-52e0-442b-abb1-a3cdf9dfe32c.json": 33,
+        ".pi-subagents/missions/a4f7cda3-4c2f-406f-ad86-658e1ad547c3.json": 33,
+        "backend/src/yinshi/backup.py": 26,
+        "backend/src/yinshi/services/managed_runtime_manager.py": 33,
+        "backend/tests/test_backup.py": 85,
+        "backend/tests/test_managed_runtime_manager.py": 149
+      },
+      "user_removed_per_file": {
+        "backend/src/yinshi/backup.py": 17,
+        "backend/src/yinshi/services/managed_runtime_manager.py": 12,
+        "backend/tests/test_managed_runtime_manager.py": 4
+      }
+    },
+    {
+      "checkpoint_number": 74,
+      "user_lines_added": 1306,
+      "user_lines_removed": 40,
+      "agent_lines_added": 57724,
+      "agent_lines_removed": 597,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/70995b90_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/70995b90_worker_0_transcript.jsonl": 2,
+        ".pi-subagents/artifacts/7b0f9c7b_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/7b0f9c7b_worker_0_transcript.jsonl": 140,
+        ".pi-subagents/artifacts/859a602d_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/859a602d_worker_0_transcript.jsonl": 103,
+        ".pi-subagents/artifacts/cf979a89_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/cf979a89_worker_0_transcript.jsonl": 89,
+        ".pi-subagents/artifacts/dd9ad80c_worker_0_input.md": 64,
+        ".pi-subagents/artifacts/dd9ad80c_worker_0_transcript.jsonl": 140,
+        ".pi-subagents/missions/1d60ccff-7d2e-4254-affb-fddcedf49e9a.json": 39,
+        ".pi-subagents/missions/3a40fe3e-52e0-442b-abb1-a3cdf9dfe32c.json": 33,
+        ".pi-subagents/missions/979dd734-3515-4100-8cd5-fe5bdb9eb301.json": 33,
+        ".pi-subagents/missions/a4f7cda3-4c2f-406f-ad86-658e1ad547c3.json": 33,
+        ".pi-subagents/missions/f1c5ea27-1162-4576-a77c-92598e9d1207.json": 33,
+        "backend/src/yinshi/backup.py": 53,
+        "backend/src/yinshi/services/container.py": 14,
+        "backend/tests/test_backup.py": 192,
+        "backend/tests/test_container.py": 39,
+        "frontend/src/hooks/__tests__/useAgentStream.test.tsx": 47,
+        "frontend/src/hooks/useAgentStream.ts": 28
+      },
+      "user_removed_per_file": {
+        "backend/src/yinshi/backup.py": 2,
+        "backend/src/yinshi/services/container.py": 5,
+        "backend/tests/test_container.py": 28,
+        "frontend/src/hooks/useAgentStream.ts": 5
+      }
+    },
+    {
+      "checkpoint_number": 75,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 76,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 77,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 78,
+      "user_lines_added": 984,
+      "user_lines_removed": 2,
+      "agent_lines_added": 61794,
+      "agent_lines_removed": 609,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/12501f6a_reviewer_0_input.md": 56,
+        ".pi-subagents/artifacts/12501f6a_reviewer_0_transcript.jsonl": 197,
+        ".pi-subagents/artifacts/13bf9611_reviewer_0_input.md": 56,
+        ".pi-subagents/artifacts/13bf9611_reviewer_0_transcript.jsonl": 182,
+        ".pi-subagents/artifacts/6bcee176_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/6bcee176_worker_0_transcript.jsonl": 2,
+        ".pi-subagents/artifacts/c33a57ee_reviewer_0_input.md": 56,
+        ".pi-subagents/artifacts/c33a57ee_reviewer_0_transcript.jsonl": 312,
+        ".pi-subagents/missions/1c70cd46-2e72-4248-8140-87c3e68177b3.json": 33,
+        ".pi-subagents/missions/fc627d44-1db9-4d3f-aacc-dd8fec7efa06.json": 33,
+        "backend/tests/test_sprite_deployment.py": 1
+      },
+      "user_removed_per_file": {
+        "backend/tests/test_sprite_deployment.py": 2
+      }
+    },
+    {
+      "checkpoint_number": 79,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 80,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 81,
+      "user_lines_added": 236,
+      "user_lines_removed": 5,
+      "agent_lines_added": 63690,
+      "agent_lines_removed": 611,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/12501f6a_reviewer_0_meta.json": 114,
+        ".pi-subagents/artifacts/12501f6a_reviewer_0_output.md": 3,
+        ".pi-subagents/artifacts/12501f6a_reviewer_0_transcript.jsonl": 2,
+        ".pi-subagents/artifacts/8a0524fe_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/8a0524fe_worker_0_transcript.jsonl": 2,
+        ".pi-subagents/missions/13d0e02d-8950-4be9-9334-44727e273c25.json": 33,
+        ".pi-subagents/missions/fc627d44-1db9-4d3f-aacc-dd8fec7efa06.json": 19,
+        "frontend/e2e/mock-sidecar.mjs": 7
+      },
+      "user_removed_per_file": {
+        ".pi-subagents/missions/fc627d44-1db9-4d3f-aacc-dd8fec7efa06.json": 5
+      }
+    },
+    {
+      "checkpoint_number": 82,
+      "user_lines_added": 852,
+      "user_lines_removed": 5,
+      "agent_lines_added": 63946,
+      "agent_lines_removed": 616,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/12501f6a_reviewer_0_meta.json": 114,
+        ".pi-subagents/artifacts/12501f6a_reviewer_0_output.md": 3,
+        ".pi-subagents/artifacts/12501f6a_reviewer_0_transcript.jsonl": 2,
+        ".pi-subagents/artifacts/22100fdc_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/22100fdc_worker_0_transcript.jsonl": 62,
+        ".pi-subagents/artifacts/37a0422f_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/37a0422f_worker_0_transcript.jsonl": 65,
+        ".pi-subagents/artifacts/50e69510_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/50e69510_worker_0_transcript.jsonl": 35,
+        ".pi-subagents/artifacts/8a0524fe_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/8a0524fe_worker_0_transcript.jsonl": 98,
+        ".pi-subagents/artifacts/9570ea09_reviewer_input.md": 65,
+        ".pi-subagents/artifacts/9570ea09_reviewer_transcript.jsonl": 2,
+        ".pi-subagents/artifacts/a02d5991_reviewer_input.md": 65,
+        ".pi-subagents/artifacts/a02d5991_reviewer_transcript.jsonl": 2,
+        ".pi-subagents/missions/13d0e02d-8950-4be9-9334-44727e273c25.json": 39,
+        ".pi-subagents/missions/ade7ed56-6b6c-44e0-a839-0c91d1a9074b.json": 33,
+        ".pi-subagents/missions/df86ff29-0d18-4518-9533-6050f6229cec.json": 24,
+        ".pi-subagents/missions/fc627d44-1db9-4d3f-aacc-dd8fec7efa06.json": 19
+      },
+      "user_removed_per_file": {
+        ".pi-subagents/missions/fc627d44-1db9-4d3f-aacc-dd8fec7efa06.json": 5
+      }
+    },
+    {
+      "checkpoint_number": 83,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 84,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 85,
+      "user_lines_added": 790,
+      "user_lines_removed": 8,
+      "agent_lines_added": 65858,
+      "agent_lines_removed": 637,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/00d2e116_worker_0_input.md": 64,
+        ".pi-subagents/artifacts/00d2e116_worker_0_transcript.jsonl": 41,
+        ".pi-subagents/artifacts/22100fdc_worker_0_transcript.jsonl": 30,
+        ".pi-subagents/artifacts/22823f21_worker_0_input.md": 64,
+        ".pi-subagents/artifacts/22823f21_worker_0_transcript.jsonl": 3,
+        ".pi-subagents/artifacts/50e69510_worker_0_transcript.jsonl": 32,
+        ".pi-subagents/artifacts/85990bbd_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/85990bbd_worker_0_transcript.jsonl": 22,
+        ".pi-subagents/artifacts/b67f66d3_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/b67f66d3_worker_0_transcript.jsonl": 22,
+        ".pi-subagents/artifacts/e1b3f123_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/e1b3f123_worker_0_transcript.jsonl": 16,
+        ".pi-subagents/artifacts/efdcfbe0_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/efdcfbe0_worker_0_transcript.jsonl": 2,
+        ".pi-subagents/artifacts/f97bca09_worker_0_input.md": 64,
+        ".pi-subagents/artifacts/f97bca09_worker_0_transcript.jsonl": 3,
+        ".pi-subagents/missions/b6284227-5fe1-4159-aacd-0e996f55c444.json": 33,
+        "backend/src/yinshi/services/managed_runners.py": 56,
+        "backend/tests/test_runner_rpc.py": 114
+      },
+      "user_removed_per_file": {
+        "backend/tests/test_runner_rpc.py": 8
+      }
+    },
+    {
+      "checkpoint_number": 86,
+      "user_lines_added": 2440,
+      "user_lines_removed": 278,
+      "agent_lines_added": 66427,
+      "agent_lines_removed": 657,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/00d2e116_worker_0_input.md": 64,
+        ".pi-subagents/artifacts/00d2e116_worker_0_transcript.jsonl": 177,
+        ".pi-subagents/artifacts/22100fdc_worker_0_transcript.jsonl": 82,
+        ".pi-subagents/artifacts/22823f21_worker_0_input.md": 64,
+        ".pi-subagents/artifacts/22823f21_worker_0_transcript.jsonl": 81,
+        ".pi-subagents/artifacts/22e78d57_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/22e78d57_worker_0_transcript.jsonl": 2,
+        ".pi-subagents/artifacts/50e69510_worker_0_transcript.jsonl": 161,
+        ".pi-subagents/artifacts/85990bbd_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/85990bbd_worker_0_transcript.jsonl": 111,
+        ".pi-subagents/artifacts/b67f66d3_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/b67f66d3_worker_0_transcript.jsonl": 123,
+        ".pi-subagents/artifacts/e1b3f123_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/e1b3f123_worker_0_transcript.jsonl": 104,
+        ".pi-subagents/artifacts/efdcfbe0_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/efdcfbe0_worker_0_transcript.jsonl": 114,
+        ".pi-subagents/artifacts/f97bca09_worker_0_input.md": 64,
+        ".pi-subagents/artifacts/f97bca09_worker_0_transcript.jsonl": 78,
+        ".pi-subagents/missions/ab04d011-4aeb-425f-a745-2cc20b1214c3.json": 33,
+        ".pi-subagents/missions/b6284227-5fe1-4159-aacd-0e996f55c444.json": 33,
+        "backend/requirements/base.txt": 6,
+        "backend/src/yinshi/backup.py": 4,
+        "backend/src/yinshi/services/container.py": 46,
+        "backend/src/yinshi/services/managed_runners.py": 54,
+        "backend/src/yinshi/services/managed_runtime_manager.py": 6,
+        "backend/src/yinshi/tenant.py": 97,
+        "backend/tests/test_backup.py": 80,
+        "backend/tests/test_container.py": 92,
+        "backend/tests/test_managed_runtime_manager.py": 44,
+        "backend/tests/test_prompt_journal.py": 59,
+        "backend/tests/test_sprite_deployment.py": 15,
+        "backend/tests/test_stream_cleanup.py": 55,
+        "backend/tests/test_tenant.py": 3,
+        "frontend/src/runner/encryptedRunnerClient.test.ts": 97,
+        "sidecar/package-lock.json": 211
+      },
+      "user_removed_per_file": {
+        "backend/requirements/base.txt": 5,
+        "backend/src/yinshi/tenant.py": 32,
+        "backend/tests/test_tenant.py": 6,
+        "frontend/src/runner/encryptedRunnerClient.test.ts": 24,
+        "sidecar/package-lock.json": 211
+      }
+    },
+    {
+      "checkpoint_number": 87,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 88,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 89,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 90,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 91,
+      "user_lines_added": 207,
+      "user_lines_removed": 8,
+      "agent_lines_added": 71684,
+      "agent_lines_removed": 782,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/00d2e116_worker_0_transcript.jsonl": 19,
+        ".pi-subagents/artifacts/22823f21_worker_0_transcript.jsonl": 12,
+        ".pi-subagents/artifacts/376acb81_worker_input.md": 73,
+        ".pi-subagents/artifacts/376acb81_worker_transcript.jsonl": 2,
+        ".pi-subagents/artifacts/85990bbd_worker_0_transcript.jsonl": 14,
+        ".pi-subagents/artifacts/b67f66d3_worker_0_transcript.jsonl": 4,
+        ".pi-subagents/artifacts/efdcfbe0_worker_0_transcript.jsonl": 8,
+        ".pi-subagents/missions/6e35cf59-2e49-4c83-8948-8a4185f1ffdb.json": 24,
+        "backend/src/yinshi/services/sidecar.py": 13,
+        "backend/tests/test_backup.py": 37,
+        "backend/tests/test_sprite_deployment.py": 1
+      },
+      "user_removed_per_file": {
+        "backend/src/yinshi/services/sidecar.py": 8
+      }
+    },
+    {
+      "checkpoint_number": 92,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 93,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 94,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 95,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 96,
+      "user_lines_added": 673,
+      "user_lines_removed": 16,
+      "agent_lines_added": 74044,
+      "agent_lines_removed": 799,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/22823f21_worker_0_transcript.jsonl": 83,
+        ".pi-subagents/artifacts/721a8812_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/721a8812_worker_0_transcript.jsonl": 29,
+        ".pi-subagents/artifacts/a42f56f5_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/a42f56f5_worker_0_transcript.jsonl": 88,
+        ".pi-subagents/artifacts/aa7d0cc8_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/aa7d0cc8_worker_0_transcript.jsonl": 2,
+        ".pi-subagents/artifacts/b686b896_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/b686b896_worker_0_transcript.jsonl": 22,
+        ".pi-subagents/artifacts/efdcfbe0_worker_0_transcript.jsonl": 40,
+        ".pi-subagents/missions/218a1a3e-4971-417a-b76c-f4581296e47e.json": 33,
+        ".pi-subagents/missions/a6ac586e-c038-4b88-88e5-548687bef603.json": 33,
+        ".pi-subagents/missions/cc816a2c-c0d3-45e9-bda9-dedce8519e17.json": 33,
+        "backend/src/yinshi/api/repos.py": 17,
+        "backend/src/yinshi/services/workspace.py": 14,
+        "backend/tests/test_api.py": 28,
+        "backend/tests/test_backup.py": 1,
+        "backend/tests/test_desktop_workspace_delete.py": 13,
+        "docs/deployment/backups.md": 6,
+        "frontend/src/runtime/runtimeTransport.test.ts": 5,
+        "frontend/src/runtime/runtimeTransport.ts": 2
+      },
+      "user_removed_per_file": {
+        "backend/src/yinshi/api/repos.py": 2,
+        "backend/src/yinshi/services/workspace.py": 1,
+        "backend/tests/test_backup.py": 1,
+        "backend/tests/test_desktop_workspace_delete.py": 3,
+        "docs/deployment/backups.md": 2,
+        "frontend/src/runtime/runtimeTransport.test.ts": 5,
+        "frontend/src/runtime/runtimeTransport.ts": 2
+      }
+    },
+    {
+      "checkpoint_number": 97,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 98,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 99,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 100,
+      "user_lines_added": 106,
+      "user_lines_removed": 23,
+      "agent_lines_added": 76350,
+      "agent_lines_removed": 839,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/721a8812_worker_0_transcript.jsonl": 6,
+        ".pi-subagents/artifacts/efdcfbe0_worker_0_transcript.jsonl": 2,
+        ".pi-subagents/artifacts/ffed6bec_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/ffed6bec_worker_0_transcript.jsonl": 2,
+        ".pi-subagents/missions/cd80828f-59b8-4b75-970d-8c329d198c82.json": 33,
+        "backend/tests/test_sidecar_cancellation.py": 7
+      },
+      "user_removed_per_file": {
+        "backend/tests/test_sidecar_cancellation.py": 23
+      }
+    },
+    {
+      "checkpoint_number": 101,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 102,
+      "user_lines_added": 1609,
+      "user_lines_removed": 250,
+      "agent_lines_added": 77305,
+      "agent_lines_removed": 882,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/1ee46c51_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/1ee46c51_worker_0_transcript.jsonl": 121,
+        ".pi-subagents/artifacts/2af2d96e_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/2af2d96e_worker_0_transcript.jsonl": 222,
+        ".pi-subagents/artifacts/a375ff91_worker_0_input.md": 64,
+        ".pi-subagents/artifacts/a375ff91_worker_0_meta.json": 146,
+        ".pi-subagents/artifacts/a375ff91_worker_0_output.md": 7,
+        ".pi-subagents/artifacts/a375ff91_worker_0_transcript.jsonl": 106,
+        ".pi-subagents/artifacts/e4debcbc_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/e4debcbc_worker_0_transcript.jsonl": 2,
+        ".pi-subagents/artifacts/efdcfbe0_worker_0_meta.json": 39,
+        ".pi-subagents/artifacts/efdcfbe0_worker_0_output.md": 4,
+        ".pi-subagents/artifacts/efdcfbe0_worker_0_transcript.jsonl": 39,
+        ".pi-subagents/missions/0f12a8ef-7fee-47ea-99af-0157da0fe172.json": 35,
+        ".pi-subagents/missions/4e04fd42-9992-4ab9-a3f6-f16cbdfd9cf5.json": 33,
+        ".pi-subagents/missions/a41393ad-d956-4f09-bb17-98ea496ca1c4.json": 33,
+        ".pi-subagents/missions/f96f2241-30a6-45d3-8b57-31f3defb429c.json": 33,
+        "backend/src/yinshi/api/auth_routes.py": 90,
+        "backend/src/yinshi/api/catalog.py": 12,
+        "backend/src/yinshi/api/repos.py": 67,
+        "backend/src/yinshi/api/settings.py": 14,
+        "backend/src/yinshi/services/sidecar_runtime.py": 33,
+        "backend/tests/test_api.py": 59,
+        "backend/tests/test_catalog_api.py": 68,
+        "backend/tests/test_pi_config.py": 26,
+        "backend/tests/test_sidecar_runtime.py": 79,
+        "package-lock.json": 6,
+        "sidecar/package-lock.json": 101,
+        "sidecar/package.json": 2
+      },
+      "user_removed_per_file": {
+        ".pi-subagents/artifacts/efdcfbe0_worker_0_meta.json": 12,
+        "backend/src/yinshi/api/auth_routes.py": 94,
+        "backend/src/yinshi/api/catalog.py": 9,
+        "backend/src/yinshi/api/repos.py": 34,
+        "backend/src/yinshi/api/settings.py": 12,
+        "backend/src/yinshi/services/sidecar_runtime.py": 14,
+        "backend/tests/test_api.py": 10,
+        "backend/tests/test_pi_config.py": 4,
+        "backend/tests/test_sidecar_runtime.py": 1,
+        "sidecar/package-lock.json": 58,
+        "sidecar/package.json": 2
+      }
+    },
+    {
+      "checkpoint_number": 103,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 104,
+      "user_lines_added": 327,
+      "user_lines_removed": 16,
+      "agent_lines_added": 80109,
+      "agent_lines_removed": 1037,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/de48a454_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/de48a454_worker_0_transcript.jsonl": 2,
+        ".pi-subagents/artifacts/e4debcbc_worker_0_meta.json": 39,
+        ".pi-subagents/artifacts/e4debcbc_worker_0_output.md": 1,
+        ".pi-subagents/artifacts/e4debcbc_worker_0_transcript.jsonl": 54,
+        ".pi-subagents/artifacts/feb5321d_worker_0_input.md": 64,
+        ".pi-subagents/artifacts/feb5321d_worker_0_transcript.jsonl": 35,
+        ".pi-subagents/missions/330a207d-e6ed-45ba-bf54-491af363c25c.json": 33,
+        ".pi-subagents/missions/e9a3c98b-113f-4ece-a90b-1e3a207301ff.json": 33,
+        "sidecar/package.json": 7,
+        "sidecar/tests/readiness.test.js": 3
+      },
+      "user_removed_per_file": {
+        ".pi-subagents/artifacts/e4debcbc_worker_0_meta.json": 13,
+        "sidecar/package.json": 2,
+        "sidecar/tests/readiness.test.js": 1
+      }
+    },
+    {
+      "checkpoint_number": 105,
+      "user_lines_added": 749,
+      "user_lines_removed": 13,
+      "agent_lines_added": 80374,
+      "agent_lines_removed": 1035,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/3ec19513_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/3ec19513_worker_0_transcript.jsonl": 74,
+        ".pi-subagents/artifacts/de48a454_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/de48a454_worker_0_transcript.jsonl": 149,
+        ".pi-subagents/artifacts/e4debcbc_worker_0_meta.json": 39,
+        ".pi-subagents/artifacts/e4debcbc_worker_0_output.md": 1,
+        ".pi-subagents/artifacts/e4debcbc_worker_0_transcript.jsonl": 54,
+        ".pi-subagents/artifacts/eb93de13_worker_0_input.md": 64,
+        ".pi-subagents/artifacts/eb93de13_worker_0_transcript.jsonl": 2,
+        ".pi-subagents/artifacts/feb5321d_worker_0_input.md": 64,
+        ".pi-subagents/artifacts/feb5321d_worker_0_transcript.jsonl": 52,
+        ".pi-subagents/missions/330a207d-e6ed-45ba-bf54-491af363c25c.json": 39,
+        ".pi-subagents/missions/4d666997-8c00-47cd-9715-5ac73978dd86.json": 33,
+        ".pi-subagents/missions/97401bee-be5c-41fa-8212-b2ff49e00738.json": 33,
+        ".pi-subagents/missions/e9a3c98b-113f-4ece-a90b-1e3a207301ff.json": 33
+      },
+      "user_removed_per_file": {
+        ".pi-subagents/artifacts/e4debcbc_worker_0_meta.json": 13
+      }
+    },
+    {
+      "checkpoint_number": 106,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 107,
+      "user_lines_added": 225,
+      "user_lines_removed": 0,
+      "agent_lines_added": 82643,
+      "agent_lines_removed": 1173,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/3ec19513_worker_0_transcript.jsonl": 17,
+        ".pi-subagents/artifacts/72e18381_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/72e18381_worker_0_transcript.jsonl": 2,
+        ".pi-subagents/artifacts/db690990_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/db690990_worker_0_transcript.jsonl": 3,
+        ".pi-subagents/artifacts/e51c5a44_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/e51c5a44_worker_0_transcript.jsonl": 2,
+        ".pi-subagents/missions/a5dbf483-cbf3-404c-9ae2-778b0132ba33.json": 33
+      }
+    },
+    {
+      "checkpoint_number": 108,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 109,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 110,
+      "user_lines_added": 159,
+      "user_lines_removed": 19,
+      "agent_lines_added": 84560,
+      "agent_lines_removed": 1217,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/b212e261_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/b212e261_worker_0_transcript.jsonl": 2,
+        ".pi-subagents/artifacts/db690990_worker_0_transcript.jsonl": 35,
+        ".pi-subagents/missions/f14d7597-5cb5-4b52-8bef-1f41d7ea682e.json": 33,
+        "backend/tests/test_log_privacy.py": 25,
+        "backend/tests/test_prompt_log_privacy.py": 8
+      },
+      "user_removed_per_file": {
+        "backend/tests/test_log_privacy.py": 11,
+        "backend/tests/test_prompt_log_privacy.py": 8
+      }
+    },
+    {
+      "checkpoint_number": 111,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 112,
+      "user_lines_added": 225,
+      "user_lines_removed": 21,
+      "agent_lines_added": 85226,
+      "agent_lines_removed": 1217,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/4303592a_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/4303592a_worker_0_transcript.jsonl": 2,
+        ".pi-subagents/artifacts/bbe8847a_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/bbe8847a_worker_0_transcript.jsonl": 2,
+        ".pi-subagents/missions/093dfd8c-31d4-4a25-aacb-b89675580343.json": 33,
+        "backend/src/yinshi/services/prompt_journal.py": 4,
+        "backend/src/yinshi/services/workspace.py": 1,
+        "backend/tests/test_log_privacy.py": 57,
+        "backend/tests/test_security_fixes.py": 14
+      },
+      "user_removed_per_file": {
+        "backend/src/yinshi/services/prompt_journal.py": 8,
+        "backend/src/yinshi/services/workspace.py": 4,
+        "backend/tests/test_security_fixes.py": 9
+      }
+    },
+    {
+      "checkpoint_number": 113,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 114,
+      "user_lines_added": 208,
+      "user_lines_removed": 0,
+      "agent_lines_added": 86708,
+      "agent_lines_removed": 1641,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/11aa1c2a_reviewer_0_input.md": 56,
+        ".pi-subagents/artifacts/11aa1c2a_reviewer_0_transcript.jsonl": 2,
+        ".pi-subagents/artifacts/676d93b7_reviewer_0_input.md": 56,
+        ".pi-subagents/artifacts/676d93b7_reviewer_0_transcript.jsonl": 3,
+        ".pi-subagents/artifacts/e762ac3b_reviewer_0_input.md": 56,
+        ".pi-subagents/artifacts/e762ac3b_reviewer_0_transcript.jsonl": 2,
+        ".pi-subagents/missions/76dac9ea-5048-46b0-9cfb-619bf452bf0e.json": 33
+      }
+    },
+    {
+      "checkpoint_number": 115,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 116,
+      "user_lines_added": 643,
+      "user_lines_removed": 5,
+      "agent_lines_added": 88204,
+      "agent_lines_removed": 1641,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/103a76ab_worker_0_input.md": 64,
+        ".pi-subagents/artifacts/103a76ab_worker_0_transcript.jsonl": 19,
+        ".pi-subagents/artifacts/11aa1c2a_reviewer_0_meta.json": 114,
+        ".pi-subagents/artifacts/11aa1c2a_reviewer_0_output.md": 3,
+        ".pi-subagents/artifacts/11aa1c2a_reviewer_0_transcript.jsonl": 2,
+        ".pi-subagents/artifacts/13db1961_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/13db1961_worker_0_transcript.jsonl": 3,
+        ".pi-subagents/artifacts/5cbfe4c9_worker_0_input.md": 64,
+        ".pi-subagents/artifacts/5cbfe4c9_worker_0_transcript.jsonl": 38,
+        ".pi-subagents/artifacts/67561d2e_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/67561d2e_worker_0_transcript.jsonl": 22,
+        ".pi-subagents/artifacts/a5ea0b5b_reviewer_input.md": 65,
+        ".pi-subagents/artifacts/a5ea0b5b_reviewer_transcript.jsonl": 2,
+        ".pi-subagents/artifacts/f95e4325_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/f95e4325_worker_0_transcript.jsonl": 3,
+        ".pi-subagents/missions/5a40b2bc-997e-4e0d-84a0-c9a1ea2d3106.json": 24,
+        ".pi-subagents/missions/76dac9ea-5048-46b0-9cfb-619bf452bf0e.json": 19,
+        ".pi-subagents/missions/9eafb130-35c2-48df-b093-544dbb150ea3.json": 33
+      },
+      "user_removed_per_file": {
+        ".pi-subagents/missions/76dac9ea-5048-46b0-9cfb-619bf452bf0e.json": 5
+      }
+    },
+    {
+      "checkpoint_number": 117,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 118,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 119,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 120,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 121,
+      "user_lines_added": 229,
+      "user_lines_removed": 0,
+      "agent_lines_added": 92490,
+      "agent_lines_removed": 1738,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/13db1961_worker_0_transcript.jsonl": 4,
+        ".pi-subagents/artifacts/76500ed8_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/76500ed8_worker_0_transcript.jsonl": 45,
+        ".pi-subagents/artifacts/8a046771_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/8a046771_worker_0_transcript.jsonl": 2,
+        ".pi-subagents/missions/200862b7-3cce-43ba-bc6a-3c1877ef1ae7.json": 33,
+        ".pi-subagents/missions/84386be4-a610-45d8-9806-6433d5809ce7.json": 33
+      }
+    },
+    {
+      "checkpoint_number": 122,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 123,
+      "user_lines_added": 302,
+      "user_lines_removed": 5,
+      "agent_lines_added": 93803,
+      "agent_lines_removed": 1739,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/5d0a8653_worker_0_input.md": 64,
+        ".pi-subagents/artifacts/5d0a8653_worker_0_transcript.jsonl": 2,
+        ".pi-subagents/artifacts/76500ed8_worker_0_transcript.jsonl": 50,
+        ".pi-subagents/missions/5ab4a03c-9793-4740-b7e8-975ad14a5c84.json": 33,
+        "backend/src/yinshi/services/sprites.py": 71,
+        "backend/tests/test_sprites.py": 82
+      },
+      "user_removed_per_file": {
+        "backend/src/yinshi/services/sprites.py": 4,
+        "backend/tests/test_sprites.py": 1
+      }
+    },
+    {
+      "checkpoint_number": 124,
+      "user_lines_added": 363,
+      "user_lines_removed": 5,
+      "agent_lines_added": 94200,
+      "agent_lines_removed": 1739,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/5d0a8653_worker_0_input.md": 64,
+        ".pi-subagents/artifacts/5d0a8653_worker_0_transcript.jsonl": 61,
+        ".pi-subagents/artifacts/76500ed8_worker_0_transcript.jsonl": 80,
+        ".pi-subagents/artifacts/8e619405_worker_input.md": 73,
+        ".pi-subagents/artifacts/8e619405_worker_transcript.jsonl": 2,
+        ".pi-subagents/missions/01a85e19-b26b-44e5-86e8-3c114ac00607.json": 39,
+        ".pi-subagents/missions/200862b7-3cce-43ba-bc6a-3c1877ef1ae7.json": 11,
+        ".pi-subagents/missions/5ab4a03c-9793-4740-b7e8-975ad14a5c84.json": 33
+      },
+      "user_removed_per_file": {
+        ".pi-subagents/missions/200862b7-3cce-43ba-bc6a-3c1877ef1ae7.json": 5
+      }
+    },
+    {
+      "checkpoint_number": 125,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 126,
+      "user_lines_added": 212,
+      "user_lines_removed": 9,
+      "agent_lines_added": 95848,
+      "agent_lines_removed": 1740,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/0d2349f8_reviewer_0_input.md": 56,
+        ".pi-subagents/artifacts/0d2349f8_reviewer_0_transcript.jsonl": 2,
+        ".pi-subagents/artifacts/b303a88d_reviewer_0_input.md": 56,
+        ".pi-subagents/artifacts/b303a88d_reviewer_0_transcript.jsonl": 2,
+        ".pi-subagents/artifacts/ef627dc6_reviewer_0_input.md": 56,
+        ".pi-subagents/artifacts/ef627dc6_reviewer_0_transcript.jsonl": 2,
+        ".pi-subagents/missions/794e9cf3-347b-49e3-8e29-8915c6cb9fc7.json": 33,
+        "backend/src/yinshi/services/prompt_journal.py": 4,
+        "docs/deployment/backups.md": 1
+      },
+      "user_removed_per_file": {
+        "backend/src/yinshi/services/prompt_journal.py": 8,
+        "docs/deployment/backups.md": 1
+      }
+    },
+    {
+      "checkpoint_number": 127,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 128,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 129,
+      "user_lines_added": 503,
+      "user_lines_removed": 0,
+      "agent_lines_added": 96899,
+      "agent_lines_removed": 1736,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/303f69f1_worker_input.md": 73,
+        ".pi-subagents/artifacts/303f69f1_worker_transcript.jsonl": 30,
+        ".pi-subagents/artifacts/5c2c55b4_worker_input.md": 73,
+        ".pi-subagents/artifacts/5c2c55b4_worker_transcript.jsonl": 36,
+        ".pi-subagents/artifacts/b33b6fa0_worker_0_input.md": 56,
+        ".pi-subagents/artifacts/b33b6fa0_worker_0_transcript.jsonl": 2,
+        ".pi-subagents/artifacts/c7af8868_worker_input.md": 73,
+        ".pi-subagents/artifacts/c7af8868_worker_transcript.jsonl": 29,
+        ".pi-subagents/missions/343511a1-6f99-4e33-bb28-0bae0788a8f3.json": 33,
+        ".pi-subagents/missions/ab1130f1-6310-48aa-9967-8b344d715732.json": 47,
+        "backend/tests/test_managed_guest_installer.py": 51
+      }
+    },
+    {
+      "checkpoint_number": 130,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 131,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 132,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 133,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 134,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 135,
+      "user_lines_added": 209,
+      "user_lines_removed": 0,
+      "agent_lines_added": 100188,
+      "agent_lines_removed": 1748,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/1bec5d6f_reviewer_0_input.md": 56,
+        ".pi-subagents/artifacts/1bec5d6f_reviewer_0_transcript.jsonl": 3,
+        ".pi-subagents/artifacts/ac96c17c_reviewer_0_input.md": 56,
+        ".pi-subagents/artifacts/ac96c17c_reviewer_0_transcript.jsonl": 3,
+        ".pi-subagents/artifacts/bdb690a5_reviewer_0_input.md": 56,
+        ".pi-subagents/artifacts/bdb690a5_reviewer_0_transcript.jsonl": 2,
+        ".pi-subagents/missions/731bca16-eef6-4cd8-a3d2-535b59239658.json": 33
+      }
+    },
+    {
+      "checkpoint_number": 136,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 137,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 138,
+      "user_lines_added": 73,
+      "user_lines_removed": 0,
+      "agent_lines_added": 101107,
+      "agent_lines_removed": 1748,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/b63d5839_reviewer_0_input.md": 56,
+        ".pi-subagents/artifacts/b63d5839_reviewer_0_transcript.jsonl": 2,
+        ".pi-subagents/missions/c36c8c73-bd23-4363-8160-be08de4f4a05.json": 15
+      }
+    }
+  ]
+}

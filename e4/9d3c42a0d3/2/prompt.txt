@@ -1,0 +1,2680 @@
+Task: [Read from: /Users/user/projects/yinshi/plan.md, /Users/user/projects/yinshi/progress.md]
+
+Final read-only review of recovery and deployment changes in /Users/user/projects/yinshi after fixes. Inspect current diff for backup snapshot consistency, archive authentication and bounds, SQLCipher migration/export completeness, restore rollback durability, removal of tenants absent from archive, custom uploader trust and environment, Sprite bootstrap immutable artifact use, package lock integrity, Python hashed lock, and dependency upgrades. Check power-loss ordering, links and path races, rollback retention, provider-token privacy, managed Fly fail-closed behavior, and audit commands. Run focused tests only when needed. Report only confirmed blocker, high, or medium defects with exact file and line plus concrete failure. State no findings if clean. Do not edit files.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```mand": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+Fix two final-review frontend findings in /Users/user/projects/yinshi using strict TDD. Own only frontend/src/components/WorkspaceInspector.tsx, frontend/src/runtime/promptStream.ts, their existing unit test files, and a new focused test file if necessary. Managed runtimes must not render direct control-plane file-download links because hosted Fly omits execution routes. Local and desktop-hosted download behavior must remain. Poll delay must remove its AbortSignal listener when timer resolves, while abort still clears timer and rejects once. Add behavior tests first and observe clean failures. Run focused Vitest, full Vitest, typecheck, production build, and diff checks. Do not edit other files. Do not commit or push.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/plan.md, /Users/user/projects/yinshi/progress.md]
+
+You are reviving a previous subagent conversation.
+
+Original run: 13bf9611
+Original agent: reviewer
+Original session file: /Users/user/.pi/agent/sessions/--Users-user-projects-yinshi--/2026-08-11T08-53-10-387Z_019ff006-9273-7e80-9303-0b30d84e3102/13bf9611/run-0/session.jsonl
+
+Use the stored session context as background. Answer the orchestrator's follow-up below. Do not assume the original child process is still alive.
+
+Follow-up:
+Finish now. State only confirmed actionable findings from recovery, deployment, dependency, and settings review. Include severity, exact file and lines, concrete failure, and shortest safe fix. Keep under 500 words. Do not run more tools.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+Fix confirmed active-container destruction blocker in /Users/user/projects/yinshi using strict TDD. Own only backend/src/yinshi/services/container.py, backend/src/yinshi/api/stream.py, backend/tests/test_container.py, and focused stream tests. Current begin_activity can race after destroy busy check and before removal. Redesign acquisition so runtime lookup and activity reservation occur under the runtime lock before a caller may use the container. Keep provider I/O outside global lock-map mutex. Stream finalization must release exactly the acquired reservation. Preserve max-count reservations, generation fencing, reaper behavior, and public errors. Add deterministic race tests first and observe clean failures. Run focused pytest, Black, isort, Flake8, strict mypy, and diff checks. Do not edit other files. Do not commit or push.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+- criterion-2: Return evidence sufficient for an independent acceptance review
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Review gate: required by reviewer.
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    },
+    {
+      "id": "criterion-2",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+Fix confirmed cancellation-integrity blocker in /Users/user/projects/yinshi using strict TDD. Own only backend/src/yinshi/services/sidecar.py, sidecar/src/sidecar.js, backend tests focused on SidecarClient cancellation, and sidecar tests focused on cancellation. Node must await abort completion, send exactly one fixed cancellation status, handle abort rejection without unhandled rejection, and keep active run state correct. Python must wait with a bounded timeout for matching acknowledgement and propagate a fixed failure. Disconnect cleanup must remain exact-once. Write behavior tests first and observe clean failures. Run focused and full sidecar tests, focused backend tests, Black, isort, Flake8, strict mypy, and diff checks. Do not edit other files. Do not commit or push.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+Fix two confirmed PromptJournal lifecycle bugs in /Users/user/projects/yinshi using strict TDD. Own only backend/src/yinshi/services/prompt_journal.py and backend/tests/test_prompt_journal.py. A terminal database persistence failure must not skip task-registry removal or leave an active run forever. start and close must be serialized so no run starts after close completes. Recheck closing state under shared synchronization after recovery. Preserve original executor errors where possible, cancellation behavior, iterator closure, bounded row reads, idempotency, and public status shapes. Add deterministic tests first and observe clean failures. Run focused pytest, Black, isort, Flake8, strict mypy, and diff checks. Do not edit other files. Do not commit or push.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+Fix confirmed deployment integrity findings in /Users/user/projects/yinshi using strict TDD. Own only deploy/sprites/bootstrap.sh, backend/tests/test_sprite_deployment.py, sidecar/package-lock.json, sidecar/package.json, and a focused lock-integrity test or CI check if needed. Bootstrap must not hash one artifact path then reopen that mutable path. Securely copy or open the artifact into an owner-only private staged file, hash those exact bytes, and extract those same immutable staged bytes with cleanup on every exit. Preserve archive path validation, digest attestation, atomic activation, hashed Python installs, and no secret logs. Regenerate sidecar lock from trusted registry metadata so every non-link downloaded runtime package has an integrity value. Add a test that rejects missing integrity fields. Write behavior tests first and observe clean failures. Run deployment tests, sidecar npm ci and full tests, shell syntax, ShellCheck, npm audit, and diff checks. Do not edit other files. Do not commit or push.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+Fix confirmed SQLCipher migration data-loss blocker in /Users/user/projects/yinshi using strict TDD. Own only backend/src/yinshi/tenant.py and backend/tests/test_tenant.py. Plaintext-to-SQLCipher migration must preserve the complete current tenant schema, including prompt_runs and prompt_events, indexes, triggers, ordering, and row counts. Prefer SQLCipher-supported full database export if available, with explicit validation before replacement. Migration must remain concurrent-safe, owner-only, rollback-safe, and compatible with legacy existing databases. Never log user identifiers or tenant paths. Add tests with prompt journal rows first and observe clean failure. Run focused pytest, Black, isort, Flake8, strict mypy, and diff checks. Do not edit other files. Do not commit or push.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+- criterion-2: Return evidence sufficient for an independent acceptance review
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Review gate: required by reviewer.
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    },
+    {
+      "id": "criterion-2",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+Fix confirmed backup and restore findings in /Users/user/projects/yinshi using strict TDD. Own only backend/src/yinshi/backup.py, backend/scripts/backup.sh, backend/tests/test_backup.py, and docs/deployment/backups.md if behavior docs change. Before destructive restore changes, fsync each rollback directory plus its parent. Restore must quarantine tenant databases absent from archive within the same rollback operation, restore them after any failure, then remove them only after durable success. Preserve SQLCipher validation, symlink rejection, authentication-before-mutation, retained recovery copies when rollback is incomplete, and managed Fly fail-closed behavior. BACKUP_UPLOAD_COMMAND must reject symlinks, non-regular files, unsafe ownership or writable modes. Execute uploader with a minimal allowlisted environment that excludes backup and application secrets. Keep archive path as the only argument. Add tests first and observe clean failures. Run focused pytest and shell tests, Black, isort, Flake8, strict mypy, ShellCheck, and diff checks. Do not edit other files. Do not commit or push.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+- criterion-2: Return evidence sufficient for an independent acceptance review
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Review gate: required by reviewer.
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    },
+    {
+      "id": "criterion-2",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+Fix confirmed repository-deletion partial-loss bug in /Users/user/projects/yinshi using strict TDD. Own only backend/src/yinshi/api/repos.py, backend/src/yinshi/services/workspace.py, backend tests for repository and workspace deletion, plus one small service helper file if essential. One later workspace failure must never leave earlier workspace data or rows deleted while repository remains. Serialize repository lifecycle, preflight every runtime, quarantine every managed path reversibly, commit database deletion atomically, restore quarantined paths after every pre-commit failure, and durably clean only after success. Preserve retryable 409 behavior, path safety, ownership checks, no tenant-path logging, and local Podman semantics. Add deterministic multi-workspace failure tests first and observe clean failures. Run focused pytest, Black, isort, Flake8, strict mypy, and diff checks. Do not edit other files. Do not commit or push.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+Harden runner log privacy in /Users/user/projects/yinshi using strict TDD. Own only backend/src/yinshi/runner_agent.py, backend/src/yinshi/api/runners.py, backend/tests/test_runner_agent_managed.py, backend/tests/test_runner_agent_encryption.py, and backend/tests/test_runners.py. No log record may include runner IDs, user IDs, registration tokens, bearer tokens, provider bodies, SQLite paths, shared-file paths, or tenant paths. Keep fixed event text, safe profile names, status codes, and control origins only where useful. Add caplog tests first and observe failures. Preserve registration, heartbeat, relay, and startup behavior. Run focused pytest, Black, isort, Flake8, strict mypy, and diff checks. Do not edit other files. Do not commit or push.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+You are reviving a previous subagent conversation.
+
+Original run: 22100fdc
+Original agent: worker
+Original session file: /Users/user/.pi/agent/sessions/--Users-user-projects-yinshi--/2026-08-11T08-53-10-387Z_019ff006-9273-7e80-9303-0b30d84e3102/22100fdc/run-0/session.jsonl
+
+Use the stored session context as background. Answer the orchestrator's follow-up below. Do not assume the original child process is still alive.
+
+Follow-up:
+Follow-up after parent review. Preserve existing yinshi-runner-v1 compatibility for all requests and responses that fit one Noise frame. Client must send legacy unframed plaintext for a request that fits. Server must accept it and return legacy unframed plaintext when response fits. New server may return framed output only when a legacy request produces an oversized response. New client must accept either legacy or framed output. Use framed requests only when payload exceeds one Noise plaintext. Add tests covering new-client to legacy-runner behavior, legacy-client to new-runner behavior, and oversized response transition. Keep current limits and malformed-order rejection. Also document in code that capability budgets count ciphertext plus request, acknowledgement, pull, and response overhead. Run focused backend/frontend tests and quality checks. Do not edit outside previously owned files. Do not commit or push.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+- criterion-2: Return evidence sufficient for an independent acceptance review
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Review gate: required by reviewer.
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    },
+    {
+      "id": "criterion-2",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+Fix encrypted RPC capability accounting in /Users/user/projects/yinshi using strict TDD. Own only frontend/src/runtime/runtimeTransport.ts and frontend/src/runtime/runtimeTransport.test.ts. Generic remote HTTP JSON response parsing remains capped at 8 MiB. Capability max_session_bytes must cover the bounded two MiB RPC request, ten MiB RPC envelope, Noise ciphertext tags, acknowledgements, pull frames, and margin. Use a fixed 16 MiB session authority for generic runtime transport. Keep repository helper and encrypted-upload authorities unchanged. Add expectation tests first and observe clean failure. Run focused and full Vitest, typecheck, production build, and diff checks. Do not edit other files. Do not commit or push.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+Complete one remaining Node cancellation behavior in /Users/user/projects/yinshi using strict TDD. Own only sidecar/src/sidecar.js and sidecar/tests/cancellation.test.js. Start with one behavior test where piSession.abort rejects. Assert handleCancelRequest emits exactly one `{id,type:"cancel_status",success:false,error:"Failed to cancel session"}`, produces no unhandled rejection, and resets cancelRequested so later cancellation can retry. Success still emits exactly one success status. Catch synchronous abortCompaction or abortRetry failures too. Do not expose IDs in logs. Run focused and full Node tests, lint if configured, npm audit, and diff checks. Do not stage, commit, or push.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```   "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+Complete remaining PromptJournal lifecycle behavior in /Users/user/projects/yinshi using strict TDD. Own only backend/src/yinshi/services/prompt_journal.py and backend/tests/test_prompt_journal.py. Start with one deterministic race test: pause start after its initial closing check but before recovery or task registration, let close finish, then resume start. start must fail with fixed closing behavior and must not create a task or running database row after close returns. Serialize start and close with shared synchronization and recheck closing state within it. Preserve concurrent idempotent start behavior, cancellation, existing terminal-registry cleanup, and no SQLite await transaction. Run focused PromptJournal tests, Black, isort, Flake8, strict mypy, and diff checks. Do not stage, commit, or push.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+Complete one remaining PromptJournal recovery behavior in /Users/user/projects/yinshi using strict TDD. Own only backend/src/yinshi/services/prompt_journal.py and backend/tests/test_prompt_journal.py. Start with one behavior test: terminal status persistence fails, task registry still clears, then status persistence is restored and a new start against the same database must rerun orphan recovery before insertion. Old active row becomes interrupted with its fixed event, and new run starts. Rearm database recovery safely under existing synchronization when terminal persistence fails. Preserve start-close serialization, exact cleanup ordering, original errors, and no SQLite transaction across await. Run focused PromptJournal tests, Black, isort, Flake8, strict mypy, and diff checks. Do not stage, commit, or push.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+Extend race-safe container activity to every sidecar execution path in /Users/user/projects/yinshi using strict TDD. Own only backend/src/yinshi/services/sidecar_runtime.py, backend/src/yinshi/api/auth_routes.py, backend/src/yinshi/api/catalog.py, backend/src/yinshi/api/settings.py, backend/src/yinshi/api/stream.py, and focused tests for these modules. Start with a deterministic behavior test for `tenant_container_activity`: pause container destruction after its busy check, enter activity concurrently, and confirm work never uses a container already selected for removal. Change the async context manager to acquire and release exact `ContainerActivityReservation` values through `ContainerManager.acquire_activity` and `release_activity`. Then migrate every production begin/end pair in owned files to that context manager or equivalent exact reservation. Missing or retiring local containers must map to existing fixed 503 responses. Preserve protection leases, touch behavior, cleanup independence, managed worker behavior, and no provider I/O under global mutex. Do not modify container.py. Run focused pytest, Black, isort, Flake8, strict mypy, and diff checks. Do not stage, commit, or push.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+Clear current sidecar dependency audit failures in /Users/user/projects/yinshi. Own only sidecar/package.json, sidecar/package-lock.json, sidecar/src files if API compatibility requires changes, and sidecar tests needed for compatibility. Baseline tests already pass. Upgrade `@earendil-works/pi-coding-agent` from 0.80.6 to fixed 0.84.1 and use its compatible exact `@earendil-works/pi-ai` release. Regenerate lock only through npm registry metadata. Every non-link downloaded package must retain integrity. Do not use audit ignore rules or force an older vulnerable transitive package. Run clean npm ci, all Node tests, syntax checks, the lock-integrity deployment test, and `npm audit`; audit must report zero vulnerabilities. Preserve sidecar behavior. Do not stage, commit, or push.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+- criterion-2: Return evidence sufficient for an independent acceptance review
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Review gate: required by reviewer.
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    },
+    {
+      "id": "criterion-2",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+Finish repository deletion regression in /Users/user/projects/yinshi using strict TDD. Own only backend/src/yinshi/api/repos.py, backend/src/yinshi/services/git.py, backend/src/yinshi/services/repository_lifecycle.py, backend/tests/test_api.py, and focused Git tests. Existing partial quarantine code replaced `delete_workspace` and now leaves stale Git linked-worktree metadata plus random workspace branches in registered local repositories. Start with a behavior test that creates multiple worktrees, deletes the repository, then verifies `git worktree list --porcelain` has no deleted worktree entries and each workspace branch is absent. Perform metadata and branch cleanup only after database commit so rollback cannot restore broken worktrees. For a managed repository moved into quarantine, run cleanup against its quarantined repository root before durable discard. For registered local repositories, run against unchanged root. Use fixed errors and do not log paths or IDs. Ensure cleanup failure does not skip safe quarantine disposal. Run focused pytest, Black, isort, Flake8, strict mypy, and diff checks. Do not stage, commit, or push.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+Finish sidecar 0.84.1 upgrade in /Users/user/projects/yinshi using strict TDD. Own only sidecar/src/index.js, sidecar/src/sidecar.js, sidecar/tests/readiness.test.js, sidecar/package.json, and sidecar/package-lock.json. Current clean failure: `node --test tests/*.test.js` hangs in readiness.test.js after child receives SIGTERM because upgraded dependencies retain a process handle while YinshiSidecar replaced default signal exit with cleanup-only listeners. Reproduce readiness alone with a 15-second shell timeout. Move executable signal ownership into index.js or make shutdown cleanup exit deterministically. Library instances must remove their own listeners during cleanup and avoid process-listener warnings. Do not hide open handles in tests. Preserve graceful socket, prompt, terminal, and Pi-session cleanup. Retain exact 0.84.1 package pins and registry integrity entries. Run readiness alone, full Node suite with bounded timeout, clean npm ci, lock-integrity deployment test, syntax checks, and npm audit. Audit must be zero. Do not stage, commit, or push.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+Resolve sidecar dependency audit without incompatible SDK migration in /Users/user/projects/yinshi. Own only sidecar/package.json and sidecar/package-lock.json. Keep current signal ownership edits in source unchanged. Restore exact `@earendil-works/pi-ai` and `@earendil-works/pi-coding-agent` pins to 0.80.6 because 0.84.1 removes required public APIs. Add exact npm overrides for only audited compatible transitive fixes: `undici==8.9.0`, `brace-expansion==5.0.9`, and `protobufjs==7.6.5`. Regenerate package-lock from registry metadata. Do not hand-copy unverified hashes. Every downloaded non-link entry must have registry integrity, including nested shrinkwrap entries. Run clean npm ci, `npm ls`, full Node tests with a 180-second timeout, readiness alone, backend lock-integrity deployment test, and npm audit. Audit must report zero vulnerabilities. If root overrides cannot govern nested shrinkwrap packages, stop and report instead of weakening audit. Do not stage, commit, or push.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+- criterion-2: Return evidence sufficient for an independent acceptance review
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Review gate: required by reviewer.
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    },
+    {
+      "id": "criterion-2",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+Enforce backend log privacy in /Users/user/projects/yinshi using strict TDD. Own only backend/src/yinshi/services/container.py, backend/src/yinshi/api/stream.py, backend/src/yinshi/api/settings.py, backend/src/yinshi/api/auth_routes.py, backend/src/yinshi/services/workspace.py, backend/src/yinshi/services/provider_connections.py, backend/src/yinshi/services/pi_releases.py, plus focused tests for logging behavior. No log record may contain user IDs, account names, runner IDs, session IDs, turn IDs, container keys, container IDs, tenant paths, GitHub owner names, provider response text, exception text from external services, prompt text, event content, or auth objects. Keep fixed event messages plus safe aggregate counts, HTTP status codes, model IDs, provider names, and storage profile names where useful. Remove `exc_info` when an external exception can carry a body or path. Start with parameterized caplog behavior using unmistakable sentinel values and observe failures. Preserve all control flow and public errors. Run focused tests, Black, isort, Flake8, strict mypy, and diff checks. Do not edit other files. Do not stage, commit, or push.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+Close cancellation acknowledgement race in /Users/user/projects/yinshi using strict TDD. Own only backend/src/yinshi/services/sidecar.py and backend/tests/test_sidecar_cancellation.py. Current bug: cancel called after coordinator registration but during warmup sees no active query, sends one cancel frame, returns success without acknowledgement, then the later query can still start. Start with a deterministic behavior test that runs warmup and cancel concurrently. Warmup reader must route matching cancel_status to cancel, then continue to its warmup_status. cancel must always await a bounded exact acknowledgement, even before query starts. A successful pre-query cancellation must cause the next query for that session to yield one local cancelled event without sending a query frame. Active-query cancellation still relies on the sidecar cancelled stream event and must not poison a later query. Negative, malformed, mismatched, disconnected, and timed-out acknowledgements raise `SidecarError("Sidecar cancellation failed")`. Preserve exact one-reader socket rule and concurrent duplicate cancel determinism. Run focused and full backend sidecar tests, Black, isort, Flake8, strict mypy, and diff checks. Do not stage, commit, or push.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+Complete sidecar SDK 0.84.1 migration in /Users/user/projects/yinshi using strict TDD. Own only sidecar/package.json, sidecar/package-lock.json, sidecar/src/sidecar.js, sidecar/src/index.js, and sidecar tests. Set exact `@earendil-works/pi-ai` plus `@earendil-works/pi-coding-agent` pins to 0.84.1 and remove failed 0.80.6 overrides. Start by running a focused import test and observe the current missing-export failure. Use only public 0.84.1 exports: `InMemoryCredentialStore` from pi-ai, plus `ModelRuntime` and `ModelRegistry` from coding-agent. Replace synchronous AuthStorage use with bounded async credential-store writes. Create ModelRuntime with explicit in-memory credentials, explicit `modelsPath` including null when no agent directory, network model refresh disabled, and no host auth fallback. Make catalog and model resolution async where needed. Replace createAgentSession authStorage/modelRegistry options with its canonical `modelRuntime` option. Resolve runtime API keys through ModelRuntime auth and read OAuth credentials through the injected store. Preserve custom models, provider config, auth strategy behavior, session creation, and no host credential leakage. Keep executable signal shutdown deterministic. Regenerate lock from registry metadata, then add only registry-confirmed integrity values for nested shrinkwrap entries missing them. Run focused tests after each red-green change, then clean npm ci, full Node tests under 180 seconds, readiness alone, syntax checks, deployment lock-integrity test, and npm audit. Audit must report zero. Do not stage, commit, or push.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+- criterion-2: Return evidence sufficient for an independent acceptance review
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Review gate: required by reviewer.
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    },
+    {
+      "id": "criterion-2",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+Finish remaining service log privacy in /Users/user/projects/yinshi using strict TDD. Own only backend/src/yinshi/api/auth_routes.py, backend/src/yinshi/services/workspace.py, backend/src/yinshi/services/provider_connections.py, backend/src/yinshi/services/pi_releases.py, and focused logging tests. Start with parameterized caplog behavior using sentinel user IDs, account names, repository paths, connection IDs, provider response text, and exception text. Logs must not contain any sentinel. Use fixed messages or safe aggregate counts. Do not use exc_info for external provider or filesystem failures. Preserve behavior and public errors. Run focused tests, Black, isort, Flake8, strict mypy, and diff checks. Do not stage, commit, or push.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```t should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+Finish one remaining workspace log privacy case in /Users/user/projects/yinshi using strict TDD. Own only backend/src/yinshi/services/workspace.py and a focused workspace logging test. Start with caplog behavior that forces local Pi session-file deletion failure using a sentinel session ID and path. Assert neither appears in logs. Replace that warning with fixed text while preserving cleanup and deletion control flow. Run focused workspace tests, Black, isort, Flake8, strict mypy, and diff checks. Do not stage, commit, or push.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+Clear all frontend npm audit findings in /Users/user/projects/yinshi. Own only frontend/package.json, frontend/package-lock.json, and frontend source/tests only if React Router compatibility requires changes. Baseline: 200 Vitest tests, typecheck, and build pass. Audit reports react-router 6.30.4, postcss 8.5.10, nanoid 3.3.15, and undici 7.28.0. Upgrade react-router-dom to fixed 7.18.2, postcss to fixed 8.5.26, and let registry-compatible ranges resolve nanoid 3.3.18 plus undici 7.29.0. Use exact direct pins for changed direct packages. Do not add audit ignores. Regenerate lock from registry metadata. Run clean npm ci, full Vitest, typecheck, build, focused router tests, and npm audit. Audit must report zero. Preserve current routing behavior. Do not stage, commit, or push.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+``````
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/plan.md, /Users/user/projects/yinshi/progress.md]
+
+Final read-only review of runtime integrity changes in /Users/user/projects/yinshi after fixes. Inspect current diff for container activity reservations across every sidecar route, destroy/reaper races, repository and workspace deletion atomicity, post-commit Git cleanup, PromptJournal recovery/start-close/task cleanup, Sidecar warmup and cancellation acknowledgements, Node session admission/disconnect handling, SDK 0.84.1 migration, and privacy-safe logs. Check crash and cancellation paths, cleanup ordering, exact state transitions, and local plus desktop behavior. Run focused tests only when needed. Report only confirmed blocker, high, or medium defects with exact file and line plus concrete failure. State no findings if clean. Do not edit files.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+Fix workspace deletion partial loss in /Users/user/projects/yinshi using strict TDD. Own only backend/src/yinshi/services/workspace.py and focused workspace/API tests. Start with a test where Git worktree deletion fails. Durable runtime home plus local Pi session files must remain untouched, and database rows must remain. Move irreversible runtime-context deletion after successful Git worktree removal. Preserve repository lifecycle locking, tenant path checks, fixed API errors, and successful cleanup. Add a second assertion that successful deletion still removes runtime context. Run focused tests, Black, isort, Flake8, strict mypy, and diff checks. Do not stage, commit, or push.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+Fix custom backup uploader execution race in /Users/user/projects/yinshi using strict TDD. Own only backend/scripts/backup.sh, backend/tests/test_backup.py, and docs/deployment/backups.md if contract text changes. Start with shell-facing tests that replace the configured uploader after validation and inject hostile PATH, HOME, TMPDIR, backup keys, application secrets, and provider tokens. Open uploader once with no symlink following, validate regular file, trusted owner, and safe mode from that descriptor, copy those exact bytes into an owner-only private temporary directory, then execute only that private copy. Use a fixed minimal PATH and no inherited HOME, TMPDIR, backup key, application secret, or provider token. Archive path remains the only argument. Clean temporary copy after success or failure. Preserve explicit GCS upload mode and managed Fly rejection. Run focused tests, shell syntax, ShellCheck, docs STE/slop checks, and diff checks. Do not stage, commit, or push.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+Fix shutdown cleanup isolation in /Users/user/projects/yinshi using strict TDD. Own only backend/src/yinshi/services/prompt_journal.py, backend/src/yinshi/main.py, and focused PromptJournal/main tests. Start with tests where a cancelled prompt task raises during finalization. PromptJournal.close must retrieve all task outcomes, clear registry, and not propagate task failures. Then test lifespan shutdown where each journal, reaper, container manager, managed manager, provider client, and relay lock cleanup runs even if an earlier cleanup fails. Preserve the first non-cancellation cleanup error only after every cleanup attempt, or suppress task-local errors where shutdown already owns cancellation. Never skip later cleanup. Run focused tests, Black, isort, Flake8, strict mypy, and diff checks. Do not stage, commit, or push.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```ionOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+Fix SQLCipher migration power-loss ordering in /Users/user/projects/yinshi using strict TDD. Own only backend/src/yinshi/tenant.py, backend/src/yinshi/db.py, backend/tests/test_tenant.py, and backend/tests/test_db.py. Start with tests that record fsync, link or copy, replace, unlink, and parent-directory sync ordering for tenant plus application migrations. Keep original database name present until one prevalidated, chmodded, fsynced encrypted temp atomically replaces it. Create and durably sync a private rollback copy without renaming away the original. Fsync new database plus parent before removing rollback. Fsync parent after rollback removal. On failure, restore and durably sync original. Checkpoint and safely handle WAL/SHM before replacement. On restart, never delete the only valid database; recover a durable rollback if primary is absent. Preserve locks, full SQLCipher export validation, permissions, and fixed logs. Run focused tests with real sqlcipher3 where available, Black, isort, Flake8, strict mypy, and diff checks. Do not stage, commit, or push.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+- criterion-2: Return evidence sufficient for an independent acceptance review
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Review gate: required by reviewer.
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    },
+    {
+      "id": "criterion-2",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/plan.md, /Users/user/projects/yinshi/progress.md]
+
+You are reviving a previous subagent conversation.
+
+Original run: 11aa1c2a
+Original agent: reviewer
+Original session file: /Users/user/.pi/agent/sessions/--Users-user-projects-yinshi--/2026-08-11T08-53-10-387Z_019ff006-9273-7e80-9303-0b30d84e3102/11aa1c2a/run-0/session.jsonl
+
+Use the stored session context as background. Answer the orchestrator's follow-up below. Do not assume the original child process is still alive.
+
+Follow-up:
+Restate only confirmed blocker, high, and medium findings from your completed managed execution review. Include file, line, concrete failure, and shortest safe fix. If none, state none. Use under 400 words. Do not run tools.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+Fix two confirmed managed provider defects in /Users/user/projects/yinshi using strict TDD. Own only backend/src/yinshi/services/sprites.py, backend/tests/test_sprites.py, and a focused main or installer test only if needed. First add failing tests. (1) configure_service and restart_service must use a provider stream deadline derived from a validated monitor_duration, so valid durations through 86400 seconds are not cut off by the fixed 120-second long-operation timeout. Include a bounded transport margin and preserve 120 seconds as the minimum. Reject bool, NaN, infinity, zero, negative, or values above 86400. (2) configure_service must validate every field before network I/O: bounded nonblank command with no NUL; exact tuple/list item counts and bounded string args; environment as bounded string keys and values with valid POSIX variable names and no NUL; safe bounded absolute directory; bounded valid service-name dependencies; exact integer port 1..65535 excluding bool. Reject wrong container types and duplicates where ambiguous. Keep fixed safe provider errors and current valid payload format. Run focused tests, Black, isort, Flake8, strict mypy, and diff checks. Do not stage, commit, or push.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+Fix repository deletion post-commit response semantics in /Users/user/projects/yinshi using strict TDD. Own only backend/src/yinshi/api/repos.py and focused repository API tests. Add a failing test where atomic database deletion commits and then Git metadata, branch, or quarantine disposal cleanup fails. The API must not return a retryable error after the repository row and dependent rows are already gone. Return the normal successful delete response, retain privacy-safe fixed logging for operator repair, and ensure every post-commit cleanup attempt runs independently. Pre-commit failures must still restore quarantined paths and return a fixed failure. Do not weaken runtime preflight, busy 409, repository lifecycle locking, tenant path validation, or transaction atomicity. Run focused tests, Black, isort, Flake8, strict mypy, and diff checks. Do not stage, commit, or push.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+Replace the process-only repository lifecycle lock in /Users/user/projects/yinshi with cross-process serialization using strict TDD. Own backend/src/yinshi/services/repository_lifecycle.py, the three source call sites in backend/src/yinshi/services/workspace.py and backend/src/yinshi/api/repos.py, and focused tests. Preserve all current uncommitted behavior in those files. First add a deterministic multiprocess or independent-file-descriptor test showing the second lifecycle operation cannot enter until the first exits, plus cancellation and different-repository concurrency tests. Keep the asyncio keyed lock, then acquire an owner-only advisory file lock under a trusted tenant data directory (or configured application data directory for local calls). Hash the repo ID for filenames. Validate root, lock directory, and lock file as non-link owner-controlled regular paths; use O_NOFOLLOW and CLOEXEC where available; never unlink stable lock files. Use nonblocking flock with bounded async polling so cancellation closes the descriptor without a stranded thread. Crashes must release through kernel descriptor close. Update all create workspace, delete workspace, and delete repository call sites so operations across worker processes use the same tenant-specific lock root. Do not expose IDs or paths in logs. Run focused tests, relevant API/workspace tests, Black, isort, Flake8, strict mypy, and diff checks. Do not stage, commit, or push.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+- criterion-2: Return evidence sufficient for an independent acceptance review
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Review gate: required by reviewer.
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    },
+    {
+      "id": "criterion-2",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+You are reviving a previous subagent conversation.
+
+Original run: 103a76ab
+Original agent: worker
+Original session file: /Users/user/.pi/agent/sessions/--Users-user-projects-yinshi--/2026-08-11T08-53-10-387Z_019ff006-9273-7e80-9303-0b30d84e3102/103a76ab/run-0/session.jsonl
+
+Use the stored session context as background. Answer the orchestrator's follow-up below. Do not assume the original child process is still alive.
+
+Follow-up:
+Follow-up after parent review. Two confirmed defects remain in your owned terminal lease code. Add failing tests first: (1) two terminals in the same workspace receive distinct leases, and closing one does not remove the other lease; (2) journal.start failure does not install any lease. Then key leases by workspace plus terminal ID. During start, hold an exact activity reservation, await journal.start, explicitly protect the newly returned terminal ID before releasing the reservation, and never protect on failed start. Input/resize/restart/events refresh that terminal-specific key. Closed events and explicit close release only that key. Preserve fixed errors and no-container behavior. Run the same focused and static checks. Do not edit unrelated files.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+- criterion-2: Return evidence sufficient for an independent acceptance review
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Review gate: required by reviewer.
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    },
+    {
+      "id": "criterion-2",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/plan.md, /Users/user/projects/yinshi/progress.md]
+
+Read-only rereview in /Users/user/projects/yinshi of only these latest fixes: backend/src/yinshi/api/terminal_channels.py, services/repository_lifecycle.py, services/workspace.py, api/repos.py, services/prompt_journal.py, main.py, and their focused tests. Verify terminal-specific leases across concurrent terminals and failed start; exact activity reservations; cross-process file-lock security, cancellation, and call-site lock-root consistency; workspace Git-failure retention; repository post-commit success semantics; and shutdown cleanup isolation. Check current source, not prior review text. Report only confirmed blocker/high/medium defects with file/line and concrete failure. State none if clean. Do not edit. Use under 500 words.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/plan.md, /Users/user/projects/yinshi/progress.md]
+
+Read-only rereview in /Users/user/projects/yinshi of only backend/src/yinshi/db.py, tenant.py, scripts/backup.sh, tests/test_db.py, test_tenant.py, test_backup.py, and docs/deployment/backups.md. Verify SQLCipher atomic replacement and fsync ordering under power loss, WAL handling, missing-primary recovery, rollback safety, exact uploader-byte execution, path race resistance, fixed clean environment, cleanup, and local plus managed fail-closed behavior. Report only confirmed blocker/high/medium defects with file/line and concrete failure. State none if clean. Do not edit. Use under 500 words.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/plan.md, /Users/user/projects/yinshi/progress.md]
+
+Read-only rereview in /Users/user/projects/yinshi of only backend/src/yinshi/services/sprites.py, managed_guest_installer.py, managed_runtime_manager.py, main.py wiring, and focused tests. Verify every provider request field is validated before network I/O, monitor-duration deadlines support 600..86400 without fixed timeout, bounded bodies/events, provider errors remain fixed, valid installer calls pass, and provisioning ownership/readiness behavior is unchanged. Report only confirmed blocker/high/medium defects with file/line and concrete failure. State none if clean. Do not edit. Use under 500 words.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+You are reviving a previous subagent conversation.
+
+Original run: 5d0a8653
+Original agent: worker
+Original session file: /Users/user/.pi/agent/sessions/--Users-user-projects-yinshi--/2026-08-11T08-53-10-387Z_019ff006-9273-7e80-9303-0b30d84e3102/5d0a8653/run-0/session.jsonl
+
+Use the stored session context as background. Answer the orchestrator's follow-up below. Do not assume the original child process is still alive.
+
+Follow-up:
+Follow-up from independent review. Add failing tests first and fix two confirmed medium defects in your owned repository lifecycle files. (1) After repository DB deletion commits, cleanup_repository_worktrees may raise GitError, OSError, or ValueError; every such cleanup failure must be fixed-log-only, quarantine disposal must still run, and API response stays successful. (2) delete_repo and workspace create/delete must derive the exact same lock root from the same DB connection plus tenant context in every mode, including a desktop database nested below tenant.data_dir. Centralize one helper instead of duplicating mode logic. Preserve prior cross-process lock behavior and all existing changes. Run focused tests and static checks. Do not touch unrelated files.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+- criterion-2: Return evidence sufficient for an independent acceptance review
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Review gate: required by reviewer.
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    },
+    {
+      "id": "criterion-2",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+Add an honest fail-closed public managed launch gate in /Users/user/projects/yinshi using strict TDD. Own only backend/src/yinshi/config.py, backend/src/yinshi/main.py, backend/src/yinshi/api/managed_runtime.py, backend/tests/test_config.py, test_main.py, test_managed_runtime_api.py, and .env.example. Current code has no off-provider managed guest backup/restore and no trustworthy Sprite storage-encryption attestation; the filesystem marker is only a guest configuration check. First add tests. Add boolean SPRITES_PUBLIC_LAUNCH_ENABLED default false. Fly settings with true must fail validation with a fixed message until both launch requirements are implemented. Main must expose an explicit app-state false gate. POST /api/runtime/provision must return fixed 503 and never call manager.provision when the gate is absent or false. Existing route behavior tests may set the app-state gate true directly to test manager mappings, but no validated deployment configuration can enable it. Status and capability routes remain usable for controlled internal Fly drills and already provisioned test runtimes. Add concise .env.example comments that the gate cannot be enabled yet and name both prerequisites. Do not claim the marker attests provider storage encryption. Preserve hosted route isolation and all existing config validation. Run focused tests, full config/main/managed API tests, Black, isort, Flake8, strict mypy, diff checks, and prose checks where relevant. Do not stage, commit, or push.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/plan.md, /Users/user/projects/yinshi/progress.md]
+
+Final read-only check in /Users/user/projects/yinshi limited to db.py and tenant.py migration/recovery helpers plus focused tests. Confirm prior findings are fixed: busy/incomplete WAL aborts before sidecar deletion, rollback recovery occurs before optional SQLCipher fallback, rollback symlinks/nonregular/unsafe files are rejected by descriptor, and durable ordering still holds. Flag only confirmed blocker/high/medium defects. Under 300 words. No edits.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/plan.md, /Users/user/projects/yinshi/progress.md]
+
+Read-only final review in /Users/user/projects/yinshi of the new managed public launch gate across config.py, main.py, api/managed_runtime.py, .env.example, and focused tests. Confirm no validated deployment configuration can enable public POST provisioning while off-provider guest backup/restore and trustworthy Sprite storage-encryption verification remain absent; missing app state fails closed; tests can only bypass via direct app-state injection; status/capability behavior does not itself create a runtime. Report only confirmed blocker/high/medium defect or state none. Under 250 words. No edits.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
