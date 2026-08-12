@@ -11,6 +11,7 @@ import sqlite3
 import stat
 from collections.abc import Callable
 from pathlib import Path
+from typing import Literal
 
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
@@ -20,8 +21,22 @@ from yinshi.worker_auth import WorkerPrincipal, prepare_worker_principal_storage
 from yinshi.worker_runtime import WorkerHttpDispatcher
 
 EnvironmentSetter = Callable[[str, str], None]
+RunnerUserDataEncryptionMode = Literal["disabled", "required"]
 _X25519_PRIVATE_KEY_LENGTH = 32
 _PROMPT_EVENT_COUNT_MAX = 100_000
+
+
+def validate_user_data_encryption_mode(
+    value: object,
+) -> RunnerUserDataEncryptionMode:
+    """Return one supported runner user-data encryption mode."""
+    if not isinstance(value, str):
+        raise TypeError("user_data_encryption must be a string")
+    if value == "disabled":
+        return "disabled"
+    if value == "required":
+        return "required"
+    raise ValueError("user_data_encryption must be disabled or required")
 
 
 def _derive_worker_secrets(runner_static_private_key: bytes) -> tuple[str, str]:
@@ -153,12 +168,14 @@ class RunnerWorkerManager:
         runner_static_private_key: bytes,
         database_directory: Path | None = None,
         user_data_directory: Path | None = None,
+        user_data_encryption: RunnerUserDataEncryptionMode = "disabled",
         environment_setter: EnvironmentSetter | None = None,
     ) -> None:
         if not isinstance(data_directory, Path):
             raise TypeError("data_directory must be a pathlib.Path")
         if not data_directory.is_absolute():
             raise ValueError("runner worker data directory must be absolute")
+        validated_user_data_encryption = validate_user_data_encryption_mode(user_data_encryption)
         static_private_key = bytes(runner_static_private_key)
         secret_key, encryption_pepper = _derive_worker_secrets(static_private_key)
         set_environment = environment_setter or os.environ.__setitem__
@@ -192,7 +209,7 @@ class RunnerWorkerManager:
             "TENANT_DB_ENCRYPTION": "required",
             "TRUSTED_HOSTS": "localhost,127.0.0.1,[::1]",
             "USER_DATA_DIR": str(selected_user_data_directory),
-            "USER_DATA_ENCRYPTION": "disabled",
+            "USER_DATA_ENCRYPTION": validated_user_data_encryption,
         }
         for name, value in environment.items():
             set_environment(name, value)
@@ -206,6 +223,8 @@ class RunnerWorkerManager:
             raise RuntimeError("runner worker control database configuration did not apply")
         if settings.user_data_dir != environment["USER_DATA_DIR"]:
             raise RuntimeError("runner worker user data configuration did not apply")
+        if settings.user_data_encryption_mode != validated_user_data_encryption:
+            raise RuntimeError("runner worker user data encryption configuration did not apply")
         init_control_db()
         init_db()
 

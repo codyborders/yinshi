@@ -57,6 +57,9 @@ describe("Settings", () => {
       error: null,
     });
     apiGetMock.mockImplementation((path: string) => {
+      if (path === "/api/runtime") {
+        return Promise.resolve({ provider: "local", status: "ready" });
+      }
       if (path === "/api/settings/connections") {
         return Promise.resolve([]);
       }
@@ -103,6 +106,21 @@ describe("Settings", () => {
     vi.restoreAllMocks();
   });
 
+  it("waits for browser primary runtime resolution before loading execution settings", async () => {
+    apiGetMock.mockImplementation((path: string) => {
+      if (path === "/api/runtime") return new Promise(() => {});
+      if (path === "/api/settings/runner") return Promise.resolve(null);
+      if (path === "/api/settings/connections") return Promise.resolve([]);
+      throw new Error(`Unexpected GET path: ${path}`);
+    });
+
+    render(<Settings />);
+
+    expect(screen.getByText("Loading provider catalog...")).toBeInTheDocument();
+    expect(useCatalogMock).not.toHaveBeenCalled();
+    expect(apiGetMock).not.toHaveBeenCalledWith("/api/settings/connections");
+  });
+
   it("shows and submits manual OAuth callback input for localhost redirect providers", async () => {
     render(<Settings />);
 
@@ -142,17 +160,17 @@ describe("Settings", () => {
     ).toBeInTheDocument();
   });
 
-  it("switches between settings tabs", () => {
+  it("switches between settings tabs", async () => {
     render(<Settings />);
 
     fireEvent.click(screen.getByRole("tab", { name: "Cloud runner" }));
     expect(screen.getByRole("heading", { name: "Cloud Runner" })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("tab", { name: "Pi config" }));
-    expect(screen.getByTestId("pi-config-section")).toBeInTheDocument();
+    expect(await screen.findByTestId("pi-config-section")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("tab", { name: "Pi release notes" }));
-    expect(screen.getByTestId("pi-release-notes-section")).toBeInTheDocument();
+    expect(await screen.findByTestId("pi-release-notes-section")).toBeInTheDocument();
     expect(screen.queryByTestId("pi-config-section")).not.toBeInTheDocument();
   });
 

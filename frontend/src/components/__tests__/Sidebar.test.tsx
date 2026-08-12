@@ -9,6 +9,8 @@ const {
   mockListRunnerRepositories,
   mockLogout,
   mockToggleTheme,
+  mockResolveRuntimeRef,
+  mockCreateRuntimeTransport,
 } = vi.hoisted(() => ({
   mockGet: vi.fn(),
   mockPost: vi.fn(),
@@ -16,6 +18,8 @@ const {
   mockListRunnerRepositories: vi.fn(),
   mockLogout: vi.fn(),
   mockToggleTheme: vi.fn(),
+  mockResolveRuntimeRef: vi.fn(),
+  mockCreateRuntimeTransport: vi.fn(),
 }));
 
 vi.mock("../../hooks/useAuth", () => ({
@@ -35,6 +39,14 @@ vi.mock("../../hooks/useTheme", () => ({
 
 vi.mock("../../runner/repositories", () => ({
   listRunnerRepositories: mockListRunnerRepositories,
+}));
+
+vi.mock("../../runtime/resolveRuntime", () => ({
+  resolveRuntimeRef: mockResolveRuntimeRef,
+}));
+
+vi.mock("../../runtime/runtimeTransport", () => ({
+  createRuntimeTransport: mockCreateRuntimeTransport,
 }));
 
 vi.mock("../../api/client", () => ({
@@ -66,8 +78,20 @@ describe("Sidebar repo settings", () => {
     mockListRunnerRepositories.mockReset();
     mockLogout.mockReset();
     mockToggleTheme.mockReset();
+    mockResolveRuntimeRef.mockReset();
+    mockCreateRuntimeTransport.mockReset();
     delete (window as { yinshiDesktop?: YinshiDesktopBridge }).yinshiDesktop;
 
+    mockResolveRuntimeRef.mockImplementation(async (runtime) => runtime);
+    mockCreateRuntimeTransport.mockImplementation((runtime) => ({
+      runtime,
+      get: mockGet,
+      post: mockPost,
+      patch: mockPatch,
+      put: vi.fn(),
+      delete: vi.fn(),
+      upload: vi.fn(),
+    }));
     mockGet.mockImplementation(async (path: string) => {
       if (path === "/api/repos") {
         return [
@@ -91,6 +115,48 @@ describe("Sidebar repo settings", () => {
       }
       throw new Error(`Unexpected GET ${path}`);
     });
+  });
+
+  it("resolves the browser primary runtime before loading repositories through its transport", async () => {
+    let finishResolution:
+      | ((runtime: { location: "managed"; runnerPublicKey: string }) => void)
+      | undefined;
+    const transportGet = vi.fn().mockImplementation(async (path: string) => {
+      if (path === "/api/repos") return [];
+      throw new Error(`Unexpected transport GET ${path}`);
+    });
+    mockCreateRuntimeTransport.mockImplementation((runtime) => ({
+      runtime,
+      get: transportGet,
+      post: mockPost,
+      patch: mockPatch,
+      put: vi.fn(),
+      delete: vi.fn(),
+      upload: vi.fn(),
+    }));
+    mockResolveRuntimeRef.mockReturnValue(
+      new Promise((resolve) => {
+        finishResolution = resolve;
+      }),
+    );
+
+    renderSidebar();
+
+    expect(mockGet).not.toHaveBeenCalledWith("/api/repos");
+    expect(mockCreateRuntimeTransport).not.toHaveBeenCalled();
+
+    const resolvedPrimary = {
+      location: "managed" as const,
+      runnerPublicKey: "MeAwP9ZBjS-MDni5HyLoyu0Pvkhlbc9HZ-SDT3Abj2I",
+    };
+    finishResolution?.(resolvedPrimary);
+
+    await waitFor(() => {
+      expect(mockCreateRuntimeTransport).toHaveBeenCalledWith(resolvedPrimary);
+      expect(transportGet).toHaveBeenCalledWith("/api/repos");
+    });
+    expect(mockGet).not.toHaveBeenCalledWith("/api/repos");
+    expect(mockResolveRuntimeRef).toHaveBeenCalledWith({ location: "hosted" });
   });
 
   it("keeps the desktop title clear of macOS window controls", () => {
@@ -197,6 +263,39 @@ describe("Sidebar repo settings", () => {
       }),
     );
     expect(await screen.findByText("Repo instructions saved.")).toBeTruthy();
+  });
+
+  it("imports a local path through the hosted development backend", async () => {
+    mockGet.mockImplementation(async (path: string) => {
+      if (path === "/api/repos") return [];
+      if (path === "/api/github/installations") return [];
+      throw new Error(`Unexpected GET ${path}`);
+    });
+    mockPost.mockResolvedValue({
+      id: "repo-2",
+      created_at: "2026-07-10T00:00:00Z",
+      updated_at: "2026-07-10T00:00:00Z",
+      name: "local-repo",
+      remote_url: null,
+      root_path: "/tmp/local-repo",
+      custom_prompt: null,
+      agents_md: null,
+    });
+
+    renderSidebar();
+    fireEvent.click(await screen.findByTitle("Add repository"));
+    fireEvent.change(
+      screen.getByPlaceholderText("GitHub URL, user/repo, or local path"),
+      { target: { value: "/tmp/local-repo" } },
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Import" }));
+
+    await waitFor(() =>
+      expect(mockPost).toHaveBeenCalledWith("/api/repos", {
+        name: "local-repo",
+        local_path: "/tmp/local-repo",
+      }),
+    );
   });
 
   it("imports a desktop-selected repository without exposing a local path", async () => {

@@ -2,15 +2,22 @@
 
 from __future__ import annotations
 
+import ipaddress
 import json
+import re
 import secrets
 from functools import lru_cache
+from pathlib import Path
 from urllib.parse import urlsplit
 
 from pydantic import SecretStr
 from pydantic_settings import BaseSettings
 
 _SECURITY_MODE_VALUES = {"auto", "disabled", "enabled", "required"}
+_MANAGED_RUNTIME_PROVIDER_VALUES = {"disabled", "fly_sprites"}
+_DNS_LABEL_PATTERN = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\Z")
+_SPRITE_PREFIX_PATTERN = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,28}[a-z0-9])?\Z")
+_SHA256_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
 
 
 def _generate_secret() -> str:
@@ -31,6 +38,72 @@ def _decode_hex_secret(value: str, name: str) -> bytes:
     if len(decoded_value) < 32:
         raise RuntimeError(f"{name} must be at least 32 bytes (64 hex characters)")
     return decoded_value
+
+
+def _require_https_url(
+    value: str,
+    name: str,
+    *,
+    reject_routing_metadata: bool = False,
+) -> None:
+    """Require a safe absolute HTTPS URL."""
+    parsed_url = urlsplit(value)
+    try:
+        port = parsed_url.port
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must be a complete HTTPS URL") from exc
+    invalid_routing_metadata = reject_routing_metadata and (
+        "?" in value or "#" in value or port not in {None, 443}
+    )
+    if (
+        parsed_url.scheme != "https"
+        or not parsed_url.hostname
+        or parsed_url.username is not None
+        or parsed_url.password is not None
+        or any(character.isspace() for character in value)
+        or invalid_routing_metadata
+    ):
+        raise RuntimeError(f"{name} must be a complete HTTPS URL")
+
+
+def _validate_allowed_domains(value: str) -> None:
+    """Require unique lowercase public DNS names with optional leading wildcards."""
+    if not value:
+        return
+    if any(character.isspace() for character in value):
+        raise RuntimeError("SPRITES_ALLOWED_DOMAINS must not contain whitespace")
+    entries = value.split(",")
+    if len(entries) != len(set(entries)):
+        raise RuntimeError("SPRITES_ALLOWED_DOMAINS must not contain duplicates")
+    for entry in entries:
+        if entry == "*":
+            raise RuntimeError("SPRITES_ALLOWED_DOMAINS must not contain a global wildcard")
+        domain = entry[2:] if entry.startswith("*.") else entry
+        if "*" in domain:
+            raise RuntimeError("SPRITES_ALLOWED_DOMAINS contains an invalid wildcard")
+        labels = domain.split(".")
+        if (
+            len(domain) > 253
+            or len(labels) < 2
+            or any(_DNS_LABEL_PATTERN.fullmatch(label) is None for label in labels)
+            or labels[-1].isdigit()
+        ):
+            raise RuntimeError("SPRITES_ALLOWED_DOMAINS must contain public DNS names")
+        try:
+            ipaddress.ip_address(domain)
+        except ValueError:
+            continue
+        raise RuntimeError("SPRITES_ALLOWED_DOMAINS must not contain IP literals")
+
+
+def _control_domain_is_allowed(control_hostname: str, allowed_domains: str) -> bool:
+    """Return whether an allowed-domain entry covers the public control host."""
+    for entry in allowed_domains.split(","):
+        if entry == control_hostname:
+            return True
+        if entry.startswith("*.") and control_hostname.endswith(f".{entry[2:]}"):
+            return True
+    return False
 
 
 def _normalize_mode(value: str, name: str) -> str:
@@ -134,6 +207,21 @@ class Settings(BaseSettings):
     # Browser terminal runtime controls
     terminal_keepalive_s: int = 7200
     terminal_scrollback_lines: int = 1000
+
+    # Managed Fly Sprites runtime
+    managed_runtime_provider: str = "disabled"
+    sprites_public_launch_enabled: bool = False
+    sprites_api_token: SecretStr | None = None
+    sprites_api_url: str = "https://api.sprites.dev/v1"
+    sprites_name_prefix: str = "yinshi"
+    sprites_name_key: SecretStr | None = None
+    sprites_artifact_url: str = ""
+    sprites_artifact_sha256: str = ""
+    sprites_allowed_domains: str = ""
+    sprites_public_control_url: str = ""
+    sprites_bootstrap_script_path: str = ""
+    sprites_wake_timeout_seconds: int = 30
+    sprites_operation_stale_seconds: int = 1800
 
     model_config = {
         "env_file": ".env",
@@ -286,6 +374,86 @@ def https_required(settings: Settings) -> bool:
 
 def _validate_settings(settings: Settings) -> None:
     """Reject invalid security-critical configuration."""
+    if settings.sprites_public_launch_enabled:
+        raise RuntimeError(
+            "SPRITES_PUBLIC_LAUNCH_ENABLED cannot be true until off-provider managed guest "
+            "backup/restore and trustworthy Sprite storage-encryption verification are "
+            "implemented"
+        )
+    if settings.managed_runtime_provider not in _MANAGED_RUNTIME_PROVIDER_VALUES:
+        allowed_values = ", ".join(sorted(_MANAGED_RUNTIME_PROVIDER_VALUES))
+        raise RuntimeError(f"MANAGED_RUNTIME_PROVIDER must be one of: {allowed_values}")
+    if settings.managed_runtime_provider == "fly_sprites":
+        _require_https_url(
+            settings.sprites_api_url,
+            "SPRITES_API_URL",
+            reject_routing_metadata=True,
+        )
+        _require_https_url(settings.sprites_artifact_url, "SPRITES_ARTIFACT_URL")
+        _require_https_url(
+            settings.sprites_public_control_url,
+            "SPRITES_PUBLIC_CONTROL_URL",
+            reject_routing_metadata=True,
+        )
+        _validate_allowed_domains(settings.sprites_allowed_domains)
+        if _SPRITE_PREFIX_PATTERN.fullmatch(settings.sprites_name_prefix) is None:
+            raise RuntimeError(
+                "SPRITES_NAME_PREFIX must be a lowercase DNS label of 1 to 30 characters"
+            )
+        if _SHA256_PATTERN.fullmatch(settings.sprites_artifact_sha256) is None:
+            raise RuntimeError(
+                "SPRITES_ARTIFACT_SHA256 must be 64 lowercase hexadecimal characters"
+            )
+        if not 5 <= settings.sprites_wake_timeout_seconds <= 120:
+            raise RuntimeError("SPRITES_WAKE_TIMEOUT_SECONDS must be between 5 and 120")
+        if not 600 <= settings.sprites_operation_stale_seconds <= 86400:
+            raise RuntimeError("SPRITES_OPERATION_STALE_SECONDS must be between 600 and 86400")
+        if (
+            not isinstance(settings.sprites_api_token, SecretStr)
+            or not settings.sprites_api_token.get_secret_value().strip()
+        ):
+            raise RuntimeError("SPRITES_API_TOKEN is required for Fly Sprites")
+        if not isinstance(settings.sprites_name_key, SecretStr):
+            raise RuntimeError("SPRITES_NAME_KEY is required for Fly Sprites")
+        sprites_name_key = settings.sprites_name_key.get_secret_value()
+        if not sprites_name_key.strip():
+            raise RuntimeError("SPRITES_NAME_KEY is required for Fly Sprites")
+        if not settings.sprites_artifact_url:
+            raise RuntimeError("SPRITES_ARTIFACT_URL is required for Fly Sprites")
+        if not settings.sprites_artifact_sha256:
+            raise RuntimeError("SPRITES_ARTIFACT_SHA256 is required for Fly Sprites")
+        if not settings.sprites_public_control_url:
+            raise RuntimeError("SPRITES_PUBLIC_CONTROL_URL is required for Fly Sprites")
+        if settings.container_enabled:
+            raise RuntimeError("Fly Sprites mode requires CONTAINER_ENABLED=false")
+        if not auth_is_enabled(settings):
+            raise RuntimeError("Fly Sprites mode requires AUTH_ENABLED=true")
+        if not https_required(settings):
+            raise RuntimeError("Fly Sprites mode requires HTTPS enforcement through REQUIRE_HTTPS")
+        if settings.control_field_encryption_mode != "required":
+            raise RuntimeError("Fly Sprites mode requires CONTROL_FIELD_ENCRYPTION=required")
+        if not isinstance(settings.backup_encryption_key, SecretStr):
+            raise RuntimeError("BACKUP_ENCRYPTION_KEY is required for Fly Sprites")
+        backup_encryption_key = settings.backup_encryption_key.get_secret_value()
+        if _SHA256_PATTERN.fullmatch(backup_encryption_key) is None:
+            raise RuntimeError("BACKUP_ENCRYPTION_KEY must be 64 lowercase hexadecimal characters")
+        control_hostname = urlsplit(settings.sprites_public_control_url).hostname
+        if not control_hostname or not _control_domain_is_allowed(
+            control_hostname.lower(), settings.sprites_allowed_domains
+        ):
+            raise RuntimeError("SPRITES_ALLOWED_DOMAINS must cover SPRITES_PUBLIC_CONTROL_URL")
+        if len(sprites_name_key.encode("utf-8")) < 32:
+            raise RuntimeError("SPRITES_NAME_KEY must contain at least 32 UTF-8 bytes")
+        bootstrap_script_path = Path(settings.sprites_bootstrap_script_path)
+        if (
+            not settings.sprites_bootstrap_script_path.strip()
+            or not bootstrap_script_path.is_absolute()
+            or not bootstrap_script_path.is_file()
+        ):
+            raise RuntimeError(
+                "SPRITES_BOOTSTRAP_SCRIPT_PATH must be an absolute regular-file path"
+            )
+
     authentication_enabled = auth_is_enabled(settings)
     if not authentication_enabled:
         normalized_host = settings.host.strip().lower()

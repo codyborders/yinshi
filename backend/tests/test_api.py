@@ -2,11 +2,12 @@
 
 import asyncio
 import json
+import logging
 import sqlite3
 import subprocess
 from collections import namedtuple
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, call, patch
 
 import pytest
 from fastapi import HTTPException
@@ -14,6 +15,7 @@ from fastapi.testclient import TestClient
 
 from tests.conftest import reset_rate_limiter
 from tests.factories import create_full_stack, make_mock_sidecar, parse_sse_events
+from yinshi.config import get_settings
 
 Entities = namedtuple("Entities", ["repo_id", "workspace_id", "session_id"])
 
@@ -310,18 +312,68 @@ def test_update_repo_filters_to_updatable_columns(client: TestClient, git_repo: 
     assert data["root_path"] == original["root_path"]
 
 
-def test_delete_workspace_removes_persistent_runtime_home(
+def test_worktree_failure_preserves_tenant_runtime_and_database_rows(
     auth_client: TestClient,
     git_repo: str,
 ) -> None:
-    """Workspace deletion should remove the whole tenant runtime home."""
+    """Failed Git cleanup must leave runtime data and records retryable."""
+    from yinshi.exceptions import GitError
+    from yinshi.main import app
+    from yinshi.services.sidecar_runtime import _workspace_home_source
+    from yinshi.tenant import get_user_db
+
+    stack = create_full_stack(auth_client, git_repo, name="failed-worktree-delete")
+    workspace_id = str(stack["workspace"]["id"])
+    session_id = str(stack["session"]["id"])
+    tenant = getattr(auth_client, "yinshi_tenant")
+    home_path = Path(_workspace_home_source(tenant, workspace_id))
+    marker_path = home_path / "private-runtime-state"
+    marker_path.write_text("keep", encoding="utf-8")
+    container_manager = AsyncMock()
+    container_manager.destroy_container.return_value = True
+    app.state.container_manager = container_manager
+
+    with patch(
+        "yinshi.services.workspace.delete_worktree",
+        new=AsyncMock(side_effect=GitError("forced worktree failure")),
+    ):
+        response = auth_client.delete(f"/api/workspaces/{workspace_id}")
+
+    assert response.status_code == 500
+    assert response.json() == {"detail": "Failed to delete workspace"}
+    assert marker_path.read_text(encoding="utf-8") == "keep"
+    with get_user_db(tenant) as database:
+        workspace_row = database.execute(
+            "SELECT id FROM workspaces WHERE id = ?",
+            (workspace_id,),
+        ).fetchone()
+        session_row = database.execute(
+            "SELECT id FROM sessions WHERE id = ?",
+            (session_id,),
+        ).fetchone()
+    assert workspace_row is not None
+    assert session_row is not None
+
+    retry_response = auth_client.delete(f"/api/workspaces/{workspace_id}")
+
+    assert retry_response.status_code == 204
+    assert not home_path.exists()
+
+
+def test_delete_workspace_returns_retryable_conflict_while_container_is_busy(
+    auth_client: TestClient,
+    git_repo: str,
+) -> None:
+    """Requested cancellation should preserve workspace state until runtime stops."""
     from yinshi.auth import get_session_identity
     from yinshi.db import get_control_db
+    from yinshi.main import app
     from yinshi.services.accounts import make_tenant
     from yinshi.services.sidecar_runtime import _workspace_home_source
 
-    stack = create_full_stack(auth_client, git_repo, name="workspace-home-delete")
+    stack = create_full_stack(auth_client, git_repo, name="busy-workspace-delete")
     workspace_id = stack["workspace"]["id"]
+    workspace_path = Path(stack["workspace"]["path"])
     session_token = auth_client.cookies.get("yinshi_session")
     assert session_token is not None
     identity = get_session_identity(session_token)
@@ -331,22 +383,23 @@ def test_delete_workspace_removes_persistent_runtime_home(
     assert user is not None
     tenant = make_tenant(identity[0], user["email"])
     home_path = Path(_workspace_home_source(tenant, workspace_id))
-    private_cache = home_path / ".cache" / "agent" / "private.txt"
-    private_cache.parent.mkdir(parents=True)
-    private_cache.write_text("private runtime state", encoding="utf-8")
-
-    from yinshi.main import app
+    marker_path = home_path / "private.txt"
+    marker_path.write_text("private", encoding="utf-8")
 
     container_manager = AsyncMock()
+    container_manager.destroy_container.return_value = False
+    coordinator = AsyncMock()
+    coordinator.request_cancel.return_value = True
     app.state.container_manager = container_manager
-    response = auth_client.delete(f"/api/workspaces/{workspace_id}")
 
-    assert response.status_code == 204
-    assert not home_path.exists()
-    container_manager.destroy_container.assert_awaited_once_with(
-        tenant.user_id,
-        runtime_id=workspace_id,
-    )
+    with patch("yinshi.api.workspaces.get_run_coordinator", return_value=coordinator):
+        response = auth_client.delete(f"/api/workspaces/{workspace_id}")
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "Workspace is still stopping; deletion can be retried"}
+    assert workspace_path.exists()
+    assert marker_path.read_text(encoding="utf-8") == "private"
+    assert auth_client.get(f"/api/workspaces/{workspace_id}/sessions").status_code == 200
 
 
 def test_delete_repo_removes_tenant_checkout_and_runtime(
@@ -379,17 +432,97 @@ def test_delete_repo_removes_tenant_checkout_and_runtime(
     home_path = Path(_workspace_home_source(tenant, workspace_id))
     (home_path / "private.txt").write_text("private", encoding="utf-8")
 
+    from yinshi.services import repository_lifecycle
+
+    moved_sources: list[Path] = []
+    original_rename = repository_lifecycle.os.rename
+
+    def record_move(source: str | Path, target: str | Path) -> None:
+        moved_sources.append(Path(source))
+        original_rename(source, target)
+
     container_manager = AsyncMock()
     app.state.container_manager = container_manager
-    response = auth_client.delete(f"/api/repos/{repo_id}")
+    with patch(
+        "yinshi.services.repository_lifecycle.os.rename",
+        side_effect=record_move,
+    ):
+        response = auth_client.delete(f"/api/repos/{repo_id}")
 
     assert response.status_code == 204
+    assert repo_root in moved_sources
     assert not home_path.exists()
     assert not repo_root.exists()
     container_manager.destroy_container.assert_awaited_once_with(
         tenant.user_id,
         runtime_id=workspace_id,
     )
+
+
+def test_delete_repo_preflights_all_runtimes_before_workspace_cleanup(
+    auth_client: TestClient,
+    git_repo: str,
+) -> None:
+    """One busy runtime should preserve every workspace and managed path."""
+    from yinshi.auth import get_session_identity
+    from yinshi.db import get_control_db
+    from yinshi.main import app
+    from yinshi.services.accounts import make_tenant
+    from yinshi.services.sidecar_runtime import _workspace_home_source
+
+    stack = create_full_stack(auth_client, git_repo, name="busy-repo-delete")
+    repo_id = stack["repo"]["id"]
+    workspaces = [stack["workspace"]]
+    for _ in range(2):
+        workspace = auth_client.post(f"/api/repos/{repo_id}/workspaces", json={}).json()
+        session_response = auth_client.post(
+            f"/api/workspaces/{workspace['id']}/sessions",
+            json={},
+        )
+        assert session_response.status_code == 201
+        workspaces.append(workspace)
+
+    session_token = auth_client.cookies.get("yinshi_session")
+    assert session_token is not None
+    identity = get_session_identity(session_token)
+    assert identity is not None
+    with get_control_db() as db:
+        user = db.execute("SELECT email FROM users WHERE id = ?", (identity[0],)).fetchone()
+    assert user is not None
+    tenant = make_tenant(identity[0], user["email"])
+    workspace_ids = [str(workspace["id"]) for workspace in workspaces]
+    workspace_paths = [Path(str(workspace["path"])) for workspace in workspaces]
+    home_paths = [
+        Path(_workspace_home_source(tenant, workspace_id)) for workspace_id in workspace_ids
+    ]
+    for index, home_path in enumerate(home_paths):
+        (home_path / "private.txt").write_text(str(index), encoding="utf-8")
+    repo_root = Path(stack["repo"]["root_path"])
+    busy_workspace_id = workspace_ids[1]
+
+    async def destroy_container(_user_id: str, *, runtime_id: str) -> bool:
+        return runtime_id != busy_workspace_id
+
+    container_manager = AsyncMock()
+    container_manager.destroy_container.side_effect = destroy_container
+    coordinator = AsyncMock()
+    coordinator.request_cancel.return_value = True
+    app.state.container_manager = container_manager
+
+    with patch("yinshi.api.repos.get_run_coordinator", return_value=coordinator):
+        response = auth_client.delete(f"/api/repos/{repo_id}")
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "Workspace is still stopping; deletion can be retried"}
+    assert container_manager.destroy_container.await_args_list == [
+        call(tenant.user_id, runtime_id=workspace_id) for workspace_id in workspace_ids
+    ]
+    assert repo_root.exists()
+    assert all(path.exists() for path in workspace_paths)
+    assert all((path / "private.txt").exists() for path in home_paths)
+    assert auth_client.get(f"/api/repos/{repo_id}").status_code == 200
+    for workspace_id in workspace_ids:
+        assert auth_client.get(f"/api/workspaces/{workspace_id}/sessions").status_code == 200
 
 
 def test_delete_repo_without_container_runtime(
@@ -424,11 +557,219 @@ def test_delete_repo(client: TestClient, git_repo: str) -> None:
     assert resp.status_code == 404
 
 
-def test_delete_repo_retains_record_on_workspace_failure(
+def test_delete_registered_repo_prunes_worktrees_and_workspace_branches(
     client: TestClient,
     git_repo: str,
 ) -> None:
-    """Repo deletion should remain retryable when workspace cleanup fails."""
+    """Repository deletion should remove linked metadata and generated branches."""
+    repo = client.post(
+        "/api/repos",
+        json={"name": "registered-repo", "local_path": git_repo},
+    ).json()
+    workspaces = [
+        client.post(f"/api/repos/{repo['id']}/workspaces", json={}).json() for _ in range(3)
+    ]
+    worktree_entries = {
+        f"worktree {Path(str(workspace['path'])).resolve()}" for workspace in workspaces
+    }
+    before_delete = subprocess.run(
+        ["/usr/bin/git", "worktree", "list", "--porcelain"],
+        cwd=git_repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert all(entry in before_delete for entry in worktree_entries)
+    for workspace in workspaces:
+        branch = str(workspace["branch"])
+        branch_check = subprocess.run(
+            ["/usr/bin/git", "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"],
+            cwd=git_repo,
+            check=False,
+        )
+        assert branch_check.returncode == 0
+
+    response = client.delete(f"/api/repos/{repo['id']}")
+
+    assert response.status_code == 204
+    after_delete = subprocess.run(
+        ["/usr/bin/git", "worktree", "list", "--porcelain"],
+        cwd=git_repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert all(entry not in after_delete for entry in worktree_entries)
+    for workspace in workspaces:
+        branch = str(workspace["branch"])
+        branch_check = subprocess.run(
+            ["/usr/bin/git", "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"],
+            cwd=git_repo,
+            check=False,
+        )
+        assert branch_check.returncode == 1
+
+
+def test_delete_repo_succeeds_when_git_cleanup_fails_after_commit(
+    client: TestClient,
+    git_repo: str,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A committed deletion stays successful while later cleanup continues."""
+    from yinshi.db import get_db
+
+    stack = create_full_stack(client, git_repo, name="post-commit-cleanup")
+    repo_id = str(stack["repo"]["id"])
+    workspace_id = str(stack["workspace"]["id"])
+    session_id = str(stack["session"]["id"])
+    workspace_path = Path(str(stack["workspace"]["path"]))
+    repository_path = Path(git_repo)
+    git_metadata_path = repository_path / ".git"
+    unavailable_git_metadata_path = repository_path / ".git-unavailable"
+    git_metadata_path.rename(unavailable_git_metadata_path)
+    private_values = (
+        repo_id,
+        workspace_id,
+        session_id,
+        str(repository_path),
+        str(workspace_path),
+        str(stack["workspace"]["branch"]),
+    )
+    caplog.clear()
+    caplog.set_level(logging.ERROR, logger="yinshi.api.repos")
+
+    response = client.delete(f"/api/repos/{repo_id}")
+
+    assert response.status_code == 204
+    with get_db() as db:
+        assert db.execute("SELECT id FROM repos WHERE id = ?", (repo_id,)).fetchone() is None
+        assert (
+            db.execute("SELECT id FROM workspaces WHERE id = ?", (workspace_id,)).fetchone() is None
+        )
+        assert db.execute("SELECT id FROM sessions WHERE id = ?", (session_id,)).fetchone() is None
+    assert not workspace_path.exists()
+    assert not (repository_path / ".yinshi-delete-quarantine").exists()
+    cleanup_records = [
+        record
+        for record in caplog.records
+        if record.name == "yinshi.api.repos" and record.levelno == logging.ERROR
+    ]
+    assert [record.getMessage() for record in cleanup_records] == ["Repository Git cleanup failed"]
+    for record in cleanup_records:
+        rendered_record = f"{record.getMessage()} {record.args!r}"
+        assert all(private_value not in rendered_record for private_value in private_values)
+
+
+def test_delete_repo_uses_repository_lifecycle_lock(
+    client: TestClient,
+    git_repo: str,
+    tmp_path: Path,
+) -> None:
+    """Repository deletion should hold the keyed lifecycle lock."""
+    from collections.abc import AsyncIterator
+    from contextlib import asynccontextmanager
+
+    repo = client.post(
+        "/api/repos",
+        json={"name": "test-repo", "local_path": git_repo},
+    ).json()
+    entered_repo_ids: list[str] = []
+    entered_lock_roots: list[Path] = []
+
+    @asynccontextmanager
+    async def record_lock(repo_id: str, lock_root: Path) -> AsyncIterator[None]:
+        entered_repo_ids.append(repo_id)
+        entered_lock_roots.append(lock_root)
+        yield
+
+    with (
+        patch(
+            "yinshi.api.repos.repository_lifecycle_root",
+            return_value=tmp_path,
+            create=True,
+        ) as root_resolver,
+        patch("yinshi.api.repos.repository_lifecycle", side_effect=record_lock, create=True),
+    ):
+        response = client.delete(f"/api/repos/{repo['id']}")
+
+    assert response.status_code == 204
+    assert entered_repo_ids == [repo["id"]]
+    assert entered_lock_roots == [tmp_path]
+    root_resolver.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_repository_delete_lock_blocks_workspace_creation(
+    db: sqlite3.Connection,
+    git_repo: str,
+) -> None:
+    """Workspace creation should wait while repository deletion owns lifecycle."""
+    from yinshi.services.repository_lifecycle import repository_lifecycle
+    from yinshi.services.workspace import create_workspace_for_repo
+
+    lock_root = Path(get_settings().db_path).expanduser().absolute().parent
+    repo_id = "repository-delete-lock"
+    db.execute(
+        "INSERT INTO repos (id, name, root_path) VALUES (?, ?, ?)",
+        (repo_id, "locked-repo", git_repo),
+    )
+    db.commit()
+
+    with (
+        patch("yinshi.services.workspace.generate_branch_name", return_value="locked-branch"),
+        patch("yinshi.services.workspace.create_worktree", new_callable=AsyncMock),
+        patch("yinshi.services.workspace.ensure_secret_guardrails"),
+    ):
+        async with repository_lifecycle(repo_id, lock_root):
+            creation = asyncio.create_task(create_workspace_for_repo(db, repo_id))
+            await asyncio.sleep(0)
+            assert not creation.done()
+
+        workspace = await asyncio.wait_for(creation, timeout=1)
+
+    assert workspace["repo_id"] == repo_id
+
+
+@pytest.mark.asyncio
+async def test_repository_delete_lock_blocks_workspace_deletion(
+    db: sqlite3.Connection,
+    git_repo: str,
+) -> None:
+    """Workspace deletion should wait while repository deletion owns lifecycle."""
+    from yinshi.services.repository_lifecycle import repository_lifecycle
+    from yinshi.services.workspace import delete_workspace
+
+    lock_root = Path(get_settings().db_path).expanduser().absolute().parent
+    repo_id = "repository-workspace-delete-lock"
+    workspace_id = "workspace-delete-lock"
+    workspace_path = str(Path(git_repo) / ".worktrees" / "locked-branch")
+    db.execute(
+        "INSERT INTO repos (id, name, root_path) VALUES (?, ?, ?)",
+        (repo_id, "locked-repo", git_repo),
+    )
+    db.execute(
+        """INSERT INTO workspaces (id, repo_id, name, branch, path)
+           VALUES (?, ?, ?, ?, ?)""",
+        (workspace_id, repo_id, "locked", "locked-branch", workspace_path),
+    )
+    db.commit()
+
+    with patch("yinshi.services.workspace.delete_worktree", new_callable=AsyncMock):
+        async with repository_lifecycle(repo_id, lock_root):
+            deletion = asyncio.create_task(delete_workspace(db, workspace_id))
+            await asyncio.sleep(0)
+            assert not deletion.done()
+
+        await asyncio.wait_for(deletion, timeout=1)
+
+    assert db.execute("SELECT id FROM workspaces WHERE id = ?", (workspace_id,)).fetchone() is None
+
+
+def test_delete_repo_restores_all_workspaces_when_later_quarantine_move_fails(
+    client: TestClient,
+    git_repo: str,
+) -> None:
+    """A later move failure should preserve every workspace path and row."""
     repo = client.post(
         "/api/repos",
         json={"name": "test-repo", "local_path": git_repo},
@@ -436,29 +777,116 @@ def test_delete_repo_retains_record_on_workspace_failure(
     workspaces = [
         client.post(f"/api/repos/{repo['id']}/workspaces", json={}).json() for _ in range(3)
     ]
-    attempted_workspace_ids: list[str] = []
-    failure_workspace_id = workspaces[1]["id"]
+    workspace_paths = [Path(str(workspace["path"])) for workspace in workspaces]
+    for index, workspace_path in enumerate(workspace_paths):
+        (workspace_path / "private.txt").write_text(str(index), encoding="utf-8")
+        session_response = client.post(
+            f"/api/workspaces/{workspaces[index]['id']}/sessions",
+            json={},
+        )
+        assert session_response.status_code == 201
 
-    from yinshi.api import repos as repos_api
+    attempted_sources: list[Path] = []
+    failure_source = workspace_paths[1]
 
-    original_delete_workspace = repos_api.delete_workspace
+    from yinshi.services import repository_lifecycle
 
-    async def flaky_delete_workspace(db, workspace_id: str, **kwargs) -> None:
-        attempted_workspace_ids.append(workspace_id)
-        if workspace_id == failure_workspace_id:
-            raise RuntimeError("delete failed")
-        await original_delete_workspace(db, workspace_id, **kwargs)
+    original_rename = repository_lifecycle.os.rename
+
+    def fail_later_move(source: str | Path, target: str | Path) -> None:
+        source_path = Path(source)
+        attempted_sources.append(source_path)
+        if source_path == failure_source:
+            raise OSError("later move failed")
+        original_rename(source, target)
 
     with patch(
-        "yinshi.api.repos.delete_workspace",
-        side_effect=flaky_delete_workspace,
+        "yinshi.services.repository_lifecycle.os.rename",
+        side_effect=fail_later_move,
     ):
-        resp = client.delete(f"/api/repos/{repo['id']}")
+        response = client.delete(f"/api/repos/{repo['id']}")
 
-    assert resp.status_code == 500
-    assert failure_workspace_id in attempted_workspace_ids
+    assert response.status_code == 500
+    assert response.json() == {"detail": "Repository cleanup failed; deletion can be retried"}
+    assert attempted_sources[:2] == workspace_paths[:2]
     assert client.get(f"/api/repos/{repo['id']}").status_code == 200
-    assert client.get(f"/api/workspaces/{failure_workspace_id}/sessions").status_code == 200
+    listed_workspace_ids = {
+        workspace["id"] for workspace in client.get(f"/api/repos/{repo['id']}/workspaces").json()
+    }
+    assert listed_workspace_ids == {workspace["id"] for workspace in workspaces}
+    for index, workspace in enumerate(workspaces):
+        workspace_path = workspace_paths[index]
+        assert workspace_path.exists()
+        assert (workspace_path / "private.txt").read_text(encoding="utf-8") == str(index)
+        assert client.get(f"/api/workspaces/{workspace['id']}/sessions").status_code == 200
+
+
+def test_delete_repo_removes_local_pi_session_files(
+    client: TestClient,
+    git_repo: str,
+) -> None:
+    """Repository deletion should remove durable local Pi session files."""
+    from yinshi.services.sidecar_runtime import local_pi_session_file
+
+    repo = client.post(
+        "/api/repos",
+        json={"name": "test-repo", "local_path": git_repo},
+    ).json()
+    session_paths: list[Path] = []
+    for _ in range(2):
+        workspace = client.post(f"/api/repos/{repo['id']}/workspaces", json={}).json()
+        session = client.post(
+            f"/api/workspaces/{workspace['id']}/sessions",
+            json={},
+        ).json()
+        session_path = Path(local_pi_session_file(str(session["id"])))
+        session_path.write_text("private", encoding="utf-8")
+        session_paths.append(session_path)
+
+    response = client.delete(f"/api/repos/{repo['id']}")
+
+    assert response.status_code == 204
+    assert all(not session_path.exists() for session_path in session_paths)
+
+
+def test_delete_repo_restores_all_paths_when_database_delete_fails(
+    client: TestClient,
+    git_repo: str,
+) -> None:
+    """A database failure after all moves should restore every managed path."""
+    from yinshi.db import get_db
+
+    repo = client.post(
+        "/api/repos",
+        json={"name": "test-repo", "local_path": git_repo},
+    ).json()
+    workspaces = [
+        client.post(f"/api/repos/{repo['id']}/workspaces", json={}).json() for _ in range(3)
+    ]
+    workspace_paths = [Path(str(workspace["path"])) for workspace in workspaces]
+    for index, workspace_path in enumerate(workspace_paths):
+        (workspace_path / "private.txt").write_text(str(index), encoding="utf-8")
+
+    with get_db() as db:
+        db.execute("""CREATE TRIGGER fail_repo_delete
+               BEFORE DELETE ON repos
+               BEGIN
+                   SELECT RAISE(ABORT, 'forced repository delete failure');
+               END""")
+        db.commit()
+
+    response = client.delete(f"/api/repos/{repo['id']}")
+
+    assert response.status_code == 500
+    assert response.json() == {"detail": "Repository cleanup failed; deletion can be retried"}
+    assert client.get(f"/api/repos/{repo['id']}").status_code == 200
+    listed_workspace_ids = {
+        workspace["id"] for workspace in client.get(f"/api/repos/{repo['id']}/workspaces").json()
+    }
+    assert listed_workspace_ids == {workspace["id"] for workspace in workspaces}
+    for index, workspace_path in enumerate(workspace_paths):
+        assert workspace_path.exists()
+        assert (workspace_path / "private.txt").read_text(encoding="utf-8") == str(index)
 
 
 def test_import_repo_rate_limit_returns_429(

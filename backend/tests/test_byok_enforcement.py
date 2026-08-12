@@ -1,6 +1,12 @@
 """Tests for BYOK key enforcement and usage logging."""
 
 import json
+import logging
+import sqlite3
+import threading
+from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -113,11 +119,12 @@ def test_resolve_user_api_key_round_trip(test_user):
     assert resolve_user_api_key(user_id, "minimax") is None
 
 
-def test_record_usage_writes_usage_log_without_mutating_credit(test_user):
-    """Usage logging should not consume shared credit for authenticated prompts."""
+def test_record_usage_writes_usage_log_without_mutating_credit(test_user, caplog):
+    """Usage logging should persist identifiers without exposing them in logs."""
     from yinshi.db import get_control_db
     from yinshi.services.keys import record_usage
 
+    caplog.set_level(logging.INFO, logger="yinshi.services.keys")
     record_usage(
         user_id=test_user.user_id,
         session_id="test-session-1",
@@ -133,7 +140,8 @@ def test_record_usage_writes_usage_log_without_mutating_credit(test_user):
     )
     with get_control_db() as db:
         usage_row = db.execute(
-            "SELECT provider, model, key_source, cost_cents FROM usage_log WHERE session_id = ?",
+            "SELECT user_id, session_id, provider, model, key_source, cost_cents "
+            "FROM usage_log WHERE session_id = ?",
             ("test-session-1",),
         ).fetchone()
         user_row = db.execute(
@@ -141,11 +149,20 @@ def test_record_usage_writes_usage_log_without_mutating_credit(test_user):
             (test_user.user_id,),
         ).fetchone()
 
+    assert usage_row["user_id"] == test_user.user_id
+    assert usage_row["session_id"] == "test-session-1"
     assert usage_row["provider"] == "minimax"
     assert usage_row["model"] == "MiniMax-M2.7"
     assert usage_row["key_source"] == "byok"
     assert usage_row["cost_cents"] == pytest.approx(30.0)
     assert user_row["credit_used_cents"] == 0
+
+    usage_messages = [record.getMessage() for record in caplog.records]
+    assert usage_messages == [
+        "Usage recorded: provider=minimax model=MiniMax-M2.7 cost=30.00c source=byok"
+    ]
+    assert test_user.user_id not in caplog.text
+    assert "test-session-1" not in caplog.text
 
 
 def test_get_user_dek_lazy_generates_for_null_dek(control_env):
@@ -175,6 +192,99 @@ def test_get_user_dek_lazy_generates_for_null_dek(control_env):
     # Second call should return the same DEK
     dek2 = get_user_dek(user_id)
     assert dek == dek2
+
+
+def test_get_user_dek_concurrently_creates_one_stable_key(
+    control_env: object,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Concurrent independent connections should create one stable user DEK."""
+    import yinshi.services.keys as keys_module
+    from yinshi.db import get_control_db
+    from yinshi.services.keys import get_user_dek
+
+    user_id = "concurrent-legacy-user"
+    with get_control_db() as database:
+        database.execute(
+            "INSERT INTO users (id, email, encrypted_dek) VALUES (?, ?, NULL)",
+            (user_id, "concurrent-legacy@example.com"),
+        )
+        database.commit()
+
+    original_get_control_db = get_control_db
+    generation_can_continue = threading.Event()
+    coordination_lock = threading.Lock()
+    select_count = 0
+    begin_count = 0
+    generated_keys: list[bytes] = []
+
+    class CoordinatedConnection:
+        def __init__(self, connection: sqlite3.Connection) -> None:
+            self._connection = connection
+            self._write_transaction_started = False
+
+        def execute(
+            self,
+            statement: str,
+            parameters: tuple[object, ...] = (),
+        ) -> sqlite3.Cursor:
+            nonlocal begin_count, select_count
+            if statement == "BEGIN IMMEDIATE":
+                self._write_transaction_started = True
+                with coordination_lock:
+                    begin_count += 1
+                    if begin_count == 2:
+                        generation_can_continue.set()
+                return self._connection.execute(statement, parameters)
+
+            cursor = self._connection.execute(statement, parameters)
+            if (
+                statement.startswith("SELECT encrypted_dek FROM users")
+                and not self._write_transaction_started
+            ):
+                with coordination_lock:
+                    select_count += 1
+                    if select_count == 2:
+                        generation_can_continue.set()
+            return cursor
+
+        def commit(self) -> None:
+            self._connection.commit()
+
+    @contextmanager
+    def coordinated_control_db() -> Iterator[CoordinatedConnection]:
+        with original_get_control_db() as connection:
+            yield CoordinatedConnection(connection)
+
+    def generate_coordinated_dek() -> bytes:
+        with coordination_lock:
+            generated_dek = bytes([len(generated_keys) + 1]) * 32
+            generated_keys.append(generated_dek)
+        assert generation_can_continue.wait(timeout=5)
+        return generated_dek
+
+    monkeypatch.setattr(keys_module, "get_control_db", coordinated_control_db)
+    monkeypatch.setattr(keys_module, "generate_dek", generate_coordinated_dek)
+
+    start = threading.Barrier(2)
+
+    def load_dek() -> bytes:
+        start.wait()
+        return get_user_dek(user_id)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(load_dek) for _ in range(2)]
+        returned_keys = [future.result(timeout=10) for future in futures]
+
+    assert returned_keys[0] == returned_keys[1]
+    assert generated_keys == [returned_keys[0]]
+    with original_get_control_db() as database:
+        row = database.execute(
+            "SELECT encrypted_dek FROM users WHERE id = ?",
+            (user_id,),
+        ).fetchone()
+    assert row is not None
+    assert row["encrypted_dek"] != returned_keys[0]
 
 
 def test_user_dek_rewraps_during_key_rotation(control_env, monkeypatch) -> None:

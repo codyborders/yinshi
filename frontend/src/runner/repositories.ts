@@ -1,5 +1,5 @@
 import type { Repo } from "../api/client";
-import { createRuntimeTransport } from "../runtime/runtimeTransport";
+import { requestEncryptedRunner } from "./encryptedRunnerClient";
 
 export interface RunnerRepositoryTarget {
   readonly runnerId: string;
@@ -53,21 +53,38 @@ function validateRepositoryUrl(value: string): string {
   return url.toString();
 }
 
-function runnerTransport(target: RunnerRepositoryTarget) {
+function requestRunnerRepository<T>(
+  target: RunnerRepositoryTarget,
+  scope: "repository.read" | "repository.write",
+  method: "GET" | "POST",
+  body: unknown,
+): Promise<T> {
   if (!target.runnerId || !target.runnerPublicKey) {
     throw new Error("Runner repository target is incomplete");
   }
-  return createRuntimeTransport({
-    location: "byoc",
-    runnerId: target.runnerId,
-    runnerPublicKey: target.runnerPublicKey,
+  if (target.runnerId.length > 256) {
+    throw new Error("BYOC runner ID is invalid");
+  }
+  return requestEncryptedRunner<T>({
+    expectedRunnerPublicKey: target.runnerPublicKey,
+    scopes: [scope],
+    method,
+    path: "/api/repos",
+    query: {},
+    body,
+    maxSessionBytes: 262_144,
   });
 }
 
 export async function listRunnerRepositories(
   target: RunnerRepositoryTarget,
 ): Promise<Repo[]> {
-  const response = await runnerTransport(target).get<unknown>("/api/repos");
+  const response = await requestRunnerRepository<unknown>(
+    target,
+    "repository.read",
+    "GET",
+    null,
+  );
   if (!Array.isArray(response)) {
     throw new Error("Runner repository list response is invalid");
   }
@@ -81,9 +98,14 @@ export async function importRunnerRepository(
 ): Promise<Repo> {
   const name = validateRepositoryName(nameValue);
   const remoteUrl = validateRepositoryUrl(remoteUrlValue);
-  const response = await runnerTransport(target).post<unknown>("/api/repos", {
-    name,
-    remote_url: remoteUrl,
-  });
+  const response = await requestRunnerRepository<unknown>(
+    target,
+    "repository.write",
+    "POST",
+    {
+      name,
+      remote_url: remoteUrl,
+    },
+  );
   return validateRepository(response);
 }

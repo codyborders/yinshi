@@ -487,6 +487,53 @@ async def delete_worktree(repo_path: str, worktree_path: str) -> None:
     logger.info("Repository worktree deleted")
 
 
+async def cleanup_repository_worktrees(
+    repo_path: str,
+    worktrees: list[tuple[str, str]],
+) -> None:
+    """Remove selected linked-worktree metadata and local branches after commit."""
+    if not repo_path:
+        raise ValueError("repo_path must not be empty")
+    for worktree_path, branch in worktrees:
+        if not worktree_path or not branch:
+            raise ValueError("worktree cleanup values must not be empty")
+
+    first_error: GitError | None = None
+    for worktree_path, _branch in worktrees:
+        try:
+            await _run_git(
+                ["worktree", "remove", "--force", worktree_path],
+                cwd=repo_path,
+            )
+        except GitError as exc:
+            if first_error is None:
+                first_error = exc
+
+    existing_refs: set[str] = set()
+    try:
+        refs_output = await _run_git(
+            ["for-each-ref", "--format=%(refname)", "refs/heads"],
+            cwd=repo_path,
+        )
+        existing_refs = set(refs_output.splitlines())
+    except GitError as exc:
+        if first_error is None:
+            first_error = exc
+
+    for _worktree_path, branch in worktrees:
+        if f"refs/heads/{branch}" not in existing_refs:
+            continue
+        try:
+            await _run_git(["branch", "-D", "--", branch], cwd=repo_path)
+        except GitError as exc:
+            if first_error is None:
+                first_error = exc
+
+    if first_error is not None:
+        raise GitError("Repository worktree cleanup failed") from first_error
+    logger.info("Repository worktrees cleaned up")
+
+
 async def validate_local_repo(path: str) -> bool:
     """Check if a path is a valid git repository."""
     if not Path(path).exists():

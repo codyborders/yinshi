@@ -10,6 +10,25 @@ const RUNNER_PROTOCOL = "yinshi-runner-v1";
 const RUNNER_HEALTH_SESSION_BYTES = 65_536;
 const SOCKET_TIMEOUT_MS = 15_000;
 const RUNNER_PUBLIC_KEY_BYTES = 32;
+const DEFAULT_CAPABILITY_ENDPOINT = "/api/settings/runner/capabilities";
+const RPC_REQUEST_BYTES_MAX = 2 * 1_024 * 1_024;
+const RPC_RESPONSE_BYTES_MAX = 10 * 1_024 * 1_024;
+const NOISE_CIPHERTEXT_BYTES_MAX = 65_535;
+const NOISE_TAG_BYTES = 16;
+const NOISE_PLAINTEXT_BYTES_MAX = NOISE_CIPHERTEXT_BYTES_MAX - NOISE_TAG_BYTES;
+const TRANSPORT_HEADER_BYTES = 17;
+const TRANSPORT_PAYLOAD_BYTES_MAX =
+  NOISE_CIPHERTEXT_BYTES_MAX - NOISE_TAG_BYTES - TRANSPORT_HEADER_BYTES;
+const TRANSPORT_REQUEST = 1;
+const TRANSPORT_ACK = 2;
+const TRANSPORT_RESPONSE = 3;
+const TRANSPORT_PULL = 4;
+const TRANSPORT_MAGIC = Uint8Array.of(89, 82, 80, 49);
+// Capability budgets count ciphertext for requests, acknowledgements, pulls, and responses.
+// Callers must include Noise tags and transport headers in maxSessionBytes.
+
+export type RunnerCapabilityEndpoint =
+  typeof DEFAULT_CAPABILITY_ENDPOINT | "/api/runtime/capabilities";
 
 export interface RunnerCapabilityResponse {
   readonly capability: string;
@@ -39,6 +58,7 @@ export interface EncryptedRunnerConnectionOptions {
   readonly expectedRunnerPublicKey: string;
   readonly scopes: readonly string[];
   readonly maxSessionBytes?: number;
+  readonly capabilityEndpoint?: RunnerCapabilityEndpoint;
 }
 
 export interface EncryptedRunnerOperation {
@@ -77,6 +97,7 @@ export interface RunnerClientDependencies {
   }): Promise<NoiseIkInitiator>;
   issueCapability(
     request: RunnerCapabilityRequest,
+    capabilityEndpoint?: RunnerCapabilityEndpoint,
   ): Promise<RunnerCapabilityResponse>;
   openWebSocket(url: string): WebSocket;
   createRequestId(): string;
@@ -275,6 +296,209 @@ function parseHandshakeResponse(
   }
 }
 
+interface TransportFragment {
+  readonly kind: number;
+  readonly index: number;
+  readonly count: number;
+  readonly total: number;
+  readonly payload: Uint8Array;
+}
+
+function fragmentCount(total: number): number {
+  return Math.max(1, Math.ceil(total / TRANSPORT_PAYLOAD_BYTES_MAX));
+}
+
+function packTransportFragment(
+  kind: number,
+  index: number,
+  count: number,
+  total: number,
+  payload?: Uint8Array,
+): Uint8Array {
+  const payloadLength = payload?.length ?? 0;
+  const frame = new Uint8Array(TRANSPORT_HEADER_BYTES + payloadLength);
+  frame.set(TRANSPORT_MAGIC, 0);
+  const view = new DataView(frame.buffer);
+  view.setUint8(4, kind);
+  view.setUint32(5, index);
+  view.setUint32(9, count);
+  view.setUint32(13, total);
+  if (payload !== undefined) frame.set(payload, TRANSPORT_HEADER_BYTES);
+  return frame;
+}
+
+function parseTransportFragment(
+  frame: Uint8Array,
+  totalLimit: number,
+): TransportFragment {
+  if (frame.length < TRANSPORT_HEADER_BYTES) {
+    throw new Error("Runner RPC transport fragment is invalid");
+  }
+  for (let index = 0; index < TRANSPORT_MAGIC.length; index += 1) {
+    if (frame[index] !== TRANSPORT_MAGIC[index]) {
+      throw new Error("Runner RPC transport fragment is invalid");
+    }
+  }
+  const view = new DataView(frame.buffer, frame.byteOffset, frame.byteLength);
+  const kind = view.getUint8(4);
+  const index = view.getUint32(5);
+  const count = view.getUint32(9);
+  const total = view.getUint32(13);
+  if (
+    total < 1 ||
+    total > totalLimit ||
+    count !== fragmentCount(total) ||
+    index >= count
+  ) {
+    throw new Error("Runner RPC transport fragment is invalid");
+  }
+  const expectedPayloadLength = Math.min(
+    TRANSPORT_PAYLOAD_BYTES_MAX,
+    total - index * TRANSPORT_PAYLOAD_BYTES_MAX,
+  );
+  if (frame.length !== TRANSPORT_HEADER_BYTES + expectedPayloadLength) {
+    throw new Error("Runner RPC transport fragment is invalid");
+  }
+  return {
+    kind,
+    index,
+    count,
+    total,
+    payload: frame.subarray(TRANSPORT_HEADER_BYTES),
+  };
+}
+
+function parseTransportAck(
+  frame: Uint8Array,
+  expectedIndex: number,
+  expectedCount: number,
+  expectedTotal: number,
+): void {
+  if (frame.length !== TRANSPORT_HEADER_BYTES) {
+    throw new Error("Runner RPC transport fragment is invalid");
+  }
+  const view = new DataView(frame.buffer, frame.byteOffset, frame.byteLength);
+  for (let index = 0; index < TRANSPORT_MAGIC.length; index += 1) {
+    if (frame[index] !== TRANSPORT_MAGIC[index]) {
+      throw new Error("Runner RPC transport fragment is invalid");
+    }
+  }
+  if (
+    view.getUint8(4) !== TRANSPORT_ACK ||
+    view.getUint32(5) !== expectedIndex ||
+    view.getUint32(9) !== expectedCount ||
+    view.getUint32(13) !== expectedTotal
+  ) {
+    throw new Error("Runner RPC transport fragment is invalid");
+  }
+}
+
+async function exchangeEncryptedFrame(
+  socket: WebSocket,
+  initiator: NoiseIkInitiator,
+  plaintext: Uint8Array,
+): Promise<Uint8Array> {
+  const ciphertext = initiator.encrypt(plaintext);
+  if (ciphertext.length > NOISE_CIPHERTEXT_BYTES_MAX) {
+    throw new Error("Runner RPC encrypted fragment is too large");
+  }
+  const encryptedResponse = await sendAndReceive(socket, ciphertext);
+  if (!(encryptedResponse instanceof ArrayBuffer)) {
+    throw new Error("Runner RPC response must be binary");
+  }
+  return initiator.decrypt(new Uint8Array(encryptedResponse));
+}
+
+function hasTransportMagic(value: Uint8Array): boolean {
+  return (
+    value.length >= TRANSPORT_MAGIC.length &&
+    TRANSPORT_MAGIC.every((byte, index) => value[index] === byte)
+  );
+}
+
+async function collectFramedResponse(
+  socket: WebSocket,
+  initiator: NoiseIkInitiator,
+  firstResponse: Uint8Array,
+): Promise<Uint8Array> {
+  let fragment = parseTransportFragment(firstResponse, RPC_RESPONSE_BYTES_MAX);
+  if (fragment.kind !== TRANSPORT_RESPONSE || fragment.index !== 0) {
+    throw new Error("Runner RPC transport fragment is invalid");
+  }
+  const response = new Uint8Array(fragment.total);
+  response.set(fragment.payload, 0);
+  for (let index = 1; index < fragment.count; index += 1) {
+    const plaintext = await exchangeEncryptedFrame(
+      socket,
+      initiator,
+      packTransportFragment(
+        TRANSPORT_PULL,
+        index,
+        fragment.count,
+        fragment.total,
+      ),
+    );
+    const nextFragment = parseTransportFragment(
+      plaintext,
+      RPC_RESPONSE_BYTES_MAX,
+    );
+    if (
+      nextFragment.kind !== TRANSPORT_RESPONSE ||
+      nextFragment.index !== index ||
+      nextFragment.count !== fragment.count ||
+      nextFragment.total !== fragment.total
+    ) {
+      throw new Error("Runner RPC transport fragment is invalid");
+    }
+    response.set(nextFragment.payload, index * TRANSPORT_PAYLOAD_BYTES_MAX);
+    fragment = nextFragment;
+  }
+  return response;
+}
+
+async function exchangeRpcPayload(
+  socket: WebSocket,
+  initiator: NoiseIkInitiator,
+  request: Uint8Array,
+): Promise<Uint8Array> {
+  if (request.length < 1 || request.length > RPC_REQUEST_BYTES_MAX) {
+    throw new Error("Runner RPC request is too large");
+  }
+  if (request.length <= NOISE_PLAINTEXT_BYTES_MAX) {
+    const response = await exchangeEncryptedFrame(socket, initiator, request);
+    return hasTransportMagic(response)
+      ? collectFramedResponse(socket, initiator, response)
+      : response;
+  }
+
+  const requestCount = fragmentCount(request.length);
+  let firstResponse: Uint8Array | undefined;
+  for (let index = 0; index < requestCount; index += 1) {
+    const start = index * TRANSPORT_PAYLOAD_BYTES_MAX;
+    const end = Math.min(request.length, start + TRANSPORT_PAYLOAD_BYTES_MAX);
+    const response = await exchangeEncryptedFrame(
+      socket,
+      initiator,
+      packTransportFragment(
+        TRANSPORT_REQUEST,
+        index,
+        requestCount,
+        request.length,
+        request.subarray(start, end),
+      ),
+    );
+    if (index + 1 < requestCount) {
+      parseTransportAck(response, index, requestCount, request.length);
+    } else {
+      firstResponse = response;
+    }
+  }
+  if (firstResponse === undefined) {
+    throw new Error("Runner RPC transport fragment is invalid");
+  }
+  return collectFramedResponse(socket, initiator, firstResponse);
+}
+
 function parseRpcResponse(
   value: Uint8Array,
   requestId: string,
@@ -325,11 +549,10 @@ function validateHealth(value: unknown): RunnerHealth {
 const defaultDependencies: RunnerClientDependencies = {
   createKeypair: createNoiseIkKeypair,
   createInitiator: createNoiseIkInitiator,
-  issueCapability: (request) =>
-    api.post<RunnerCapabilityResponse>(
-      "/api/settings/runner/capabilities",
-      request,
-    ),
+  issueCapability: (
+    request,
+    capabilityEndpoint = DEFAULT_CAPABILITY_ENDPOINT,
+  ) => api.post<RunnerCapabilityResponse>(capabilityEndpoint, request),
   openWebSocket: (url) => new WebSocket(url),
   createRequestId: () => crypto.randomUUID(),
 };
@@ -370,7 +593,14 @@ export async function connectEncryptedRunner(
     expectedRunnerPublicKey,
     scopes,
     maxSessionBytes = RUNNER_HEALTH_SESSION_BYTES,
+    capabilityEndpoint = DEFAULT_CAPABILITY_ENDPOINT,
   } = options;
+  if (
+    capabilityEndpoint !== DEFAULT_CAPABILITY_ENDPOINT &&
+    capabilityEndpoint !== "/api/runtime/capabilities"
+  ) {
+    throw new TypeError("Runner capability endpoint is invalid");
+  }
   decodePublicKey(expectedRunnerPublicKey);
   if (
     !Array.isArray(scopes) ||
@@ -397,11 +627,14 @@ export async function connectEncryptedRunner(
   let initiator: NoiseIkInitiator;
   try {
     capability = validateCapability(
-      await dependencies.issueCapability({
-        initiator_public_key: clientPublicKey,
-        scopes,
-        max_session_bytes: maxSessionBytes,
-      }),
+      await dependencies.issueCapability(
+        {
+          initiator_public_key: clientPublicKey,
+          scopes,
+          max_session_bytes: maxSessionBytes,
+        },
+        capabilityEndpoint,
+      ),
       expectedRunnerPublicKey,
       maxSessionBytes,
     );
@@ -484,17 +717,8 @@ export async function connectEncryptedRunner(
             v: 2,
           }),
         );
-        if (request.length > 49_152)
-          throw new Error("Runner RPC request is too large");
-        const encryptedResponse = await sendAndReceive(
-          socket,
-          initiator.encrypt(request),
-        );
-        if (!(encryptedResponse instanceof ArrayBuffer)) {
-          throw new Error("Runner RPC response must be binary");
-        }
         const response = parseRpcResponse(
-          initiator.decrypt(new Uint8Array(encryptedResponse)),
+          await exchangeRpcPayload(socket, initiator, request),
           requestId,
           sequence,
         );
@@ -522,13 +746,19 @@ export async function requestEncryptedRunner<T>(
     expectedRunnerPublicKey,
     scopes,
     maxSessionBytes,
+    capabilityEndpoint,
     method,
     path,
     query,
     body,
   } = requestOptions;
   const connection = await connectEncryptedRunner(
-    { expectedRunnerPublicKey, scopes, maxSessionBytes },
+    {
+      expectedRunnerPublicKey,
+      scopes,
+      maxSessionBytes,
+      capabilityEndpoint,
+    },
     dependencies,
   );
   try {

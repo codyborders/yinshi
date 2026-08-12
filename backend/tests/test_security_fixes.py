@@ -111,8 +111,8 @@ def test_terminal_websocket_attaches_authenticated_workspace(
 
         def __init__(self) -> None:
             self.ensure_calls: list[dict[str, object]] = []
-            self.begin_calls: list[str | None] = []
-            self.end_calls: list[str | None] = []
+            self.acquire_calls: list[str | None] = []
+            self.release_calls: list[object] = []
             self.protect_calls: list[tuple[str, int, str | None]] = []
 
         async def ensure_container(
@@ -135,13 +135,18 @@ def test_terminal_websocket_attaches_authenticated_workspace(
             )
             return SimpleNamespace(socket_path="/tmp/fake-yinshi-sidecar.sock")
 
-        def begin_activity(self, user_id: str, *, runtime_id: str | None = None) -> None:
+        async def acquire_activity(
+            self,
+            user_id: str,
+            *,
+            runtime_id: str | None = None,
+        ) -> object:
             del user_id
-            self.begin_calls.append(runtime_id)
+            self.acquire_calls.append(runtime_id)
+            return object()
 
-        def end_activity(self, user_id: str, *, runtime_id: str | None = None) -> None:
-            del user_id
-            self.end_calls.append(runtime_id)
+        async def release_activity(self, reservation: object) -> None:
+            self.release_calls.append(reservation)
 
         def protect(
             self,
@@ -190,8 +195,8 @@ def test_terminal_websocket_attaches_authenticated_workspace(
     assert "terminal_input" in sent_types
     assert "terminal_detach" in sent_types
     assert container_manager.ensure_calls[0]["runtime_id"] == workspace["id"]
-    assert container_manager.begin_calls == [workspace["id"]]
-    assert container_manager.end_calls == [workspace["id"]]
+    assert container_manager.acquire_calls == [workspace["id"]]
+    assert len(container_manager.release_calls) == 1
     assert container_manager.protect_calls == [
         (f"terminal:{workspace['id']}", settings.terminal_keepalive_s, workspace["id"])
     ]

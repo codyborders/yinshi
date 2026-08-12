@@ -31,6 +31,9 @@ function nextId(): string {
 
 export type RunState = "idle" | "running" | "stopping";
 
+const CANCELLATION_ERROR_MESSAGE =
+  "Could not stop the current response. Try again.";
+
 export function useAgentStream(
   sessionId: string | undefined,
   runtimeTransport?: RuntimeTransport,
@@ -40,6 +43,7 @@ export function useAgentStream(
   const abortRef = useRef<AbortController | null>(null);
   const promptHandleRef = useRef<RuntimePromptHandle | null>(null);
   const promptStartRef = useRef<Promise<RuntimePromptHandle> | null>(null);
+  const cancelInFlightRef = useRef(false);
   const queuedPromptRef = useRef<{
     prompt: string;
     model?: string;
@@ -179,10 +183,12 @@ export function useAgentStream(
   );
 
   const cancel = useCallback(async () => {
-    if (runState !== "running") return;
+    if (runState !== "running" || cancelInFlightRef.current) return;
+    cancelInFlightRef.current = true;
+    const activeController = abortRef.current;
     setRunState("stopping");
-    if (sessionId) {
-      try {
+    try {
+      if (sessionId) {
         if (runtimeTransport) {
           const promptHandle =
             promptHandleRef.current ?? (await promptStartRef.current);
@@ -192,9 +198,26 @@ export function useAgentStream(
         } else {
           await cancelSession(sessionId);
         }
-      } catch {
-        /* best-effort */
       }
+    } catch {
+      if (
+        activeController !== null &&
+        abortRef.current === activeController
+      ) {
+        setRunState("running");
+      }
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: nextId(),
+          role: "error",
+          content: CANCELLATION_ERROR_MESSAGE,
+          blocks: [],
+          timestamp: Date.now(),
+        },
+      ]);
+    } finally {
+      cancelInFlightRef.current = false;
     }
   }, [runtimeTransport, sessionId, runState]);
 

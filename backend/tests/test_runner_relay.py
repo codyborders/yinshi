@@ -48,6 +48,19 @@ def _grant(*, byte_limit: int = 65_536) -> RunnerTransferGrant:
 
 
 @pytest.mark.asyncio
+async def test_relay_reports_current_runner_connection() -> None:
+    """Wake coordination must observe only a current relay socket."""
+    broker = RunnerRelayBroker()
+    runner = FakeWebSocket()
+
+    assert broker.is_runner_connected("runner-1") is False
+    await broker.register_runner("runner-1", runner)
+    assert broker.is_runner_connected("runner-1") is True
+    await broker.unregister_runner("runner-1", runner)
+    assert broker.is_runner_connected("runner-1") is False
+
+
+@pytest.mark.asyncio
 async def test_relay_routes_only_bounded_ciphertext() -> None:
     """Broker adds only routing UUID and never transforms ciphertext bytes."""
     broker = RunnerRelayBroker()

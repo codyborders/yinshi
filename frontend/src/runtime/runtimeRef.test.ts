@@ -20,6 +20,18 @@ describe("location-qualified runtime resource IDs", () => {
     });
   });
 
+  it("keeps managed IDs account-local without runtime qualifiers", () => {
+    expect(
+      runtimeResourceId(
+        {
+          location: "managed",
+          runnerPublicKey: "MeAwP9ZBjS-MDni5HyLoyu0Pvkhlbc9HZ-SDT3Abj2I",
+        },
+        resourceId,
+      ),
+    ).toBe(resourceId);
+  });
+
   it("qualifies local desktop IDs", () => {
     const encoded = runtimeResourceId({ location: "local" }, resourceId);
 

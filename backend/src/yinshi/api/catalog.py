@@ -14,9 +14,8 @@ from yinshi.services.pi_config import resolve_effective_pi_runtime
 from yinshi.services.provider_connections import list_provider_connections
 from yinshi.services.sidecar import create_sidecar_connection
 from yinshi.services.sidecar_runtime import (
-    begin_tenant_container_activity,
-    end_tenant_container_activity,
     resolve_tenant_sidecar_context,
+    tenant_container_activity,
     touch_tenant_container,
 )
 from yinshi.tenant import TenantContext
@@ -76,19 +75,23 @@ async def _load_catalog_with_tenant_container(
             detail="Agent environment temporarily unavailable",
         ) from error
 
-    begin_tenant_container_activity(request, tenant)
     try:
-        return await _load_catalog_from_sidecar(
-            socket_path=tenant_sidecar_context.socket_path,
-            agent_dir=tenant_sidecar_context.agent_dir,
-        )
-    except (OSError, SidecarError) as error:
+        async with tenant_container_activity(request, tenant):
+            return await _load_catalog_from_sidecar(
+                socket_path=tenant_sidecar_context.socket_path,
+                agent_dir=tenant_sidecar_context.agent_dir,
+            )
+    except (
+        ContainerNotReadyError,
+        ContainerStartError,
+        OSError,
+        SidecarError,
+    ) as error:
         raise HTTPException(
             status_code=503,
             detail="Agent environment temporarily unavailable",
         ) from error
     finally:
-        end_tenant_container_activity(request, tenant)
         touch_tenant_container(request, tenant)
 
 

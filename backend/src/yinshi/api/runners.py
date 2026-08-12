@@ -236,7 +236,7 @@ def register_cloud_runner(body: RunnerRegisterIn, request: Request) -> dict[str,
     except (TypeError, ValueError) as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
 
-    logger.info("Cloud runner registered: runner=%s", registered["runner_id"])
+    logger.info("Cloud runner registered")
     return registered
 
 

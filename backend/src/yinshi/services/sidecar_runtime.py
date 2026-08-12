@@ -13,12 +13,17 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 from fastapi import Request
 
 from yinshi.config import get_settings
-from yinshi.exceptions import ContainerStartError
-from yinshi.services.container import ContainerMount
+from yinshi.exceptions import ContainerNotReadyError, ContainerStartError
+from yinshi.services.container import (
+    ContainerActivityReservation,
+    ContainerManager,
+    ContainerMount,
+)
 from yinshi.services.pi_config import resolve_effective_pi_runtime
 from yinshi.tenant import TenantContext
 from yinshi.utils.paths import is_path_inside
@@ -540,20 +545,35 @@ async def tenant_container_activity(
     if protect_timeout_s is not None and protect_timeout_s < 0:
         raise ValueError("protect_timeout_s must not be negative")
 
-    begin_tenant_container_activity(request, tenant, runtime_id=runtime_id)
+    container_manager, user_id = _tenant_container_manager(request, tenant)
+    reservation: ContainerActivityReservation | None = None
+    if container_manager is not None and user_id is not None:
+        reservation = await container_manager.acquire_activity(
+            user_id,
+            runtime_id=runtime_id,
+        )
+        if reservation is None:
+            raise ContainerNotReadyError("Container runtime is no longer available")
+    elif tenant is not None and get_settings().container_enabled:
+        raise ContainerNotReadyError("Container manager is not initialized")
+
     try:
         yield
     finally:
-        end_tenant_container_activity(request, tenant, runtime_id=runtime_id)
-        if protect_lease_key is not None:
-            assert protect_timeout_s is not None, "protect timeout must be validated"
-            protect_tenant_container(
-                request,
-                tenant,
-                lease_key=protect_lease_key,
-                timeout_s=protect_timeout_s,
-                runtime_id=runtime_id,
-            )
+        try:
+            if protect_lease_key is not None:
+                assert protect_timeout_s is not None, "protect timeout must be validated"
+                protect_tenant_container(
+                    request,
+                    tenant,
+                    lease_key=protect_lease_key,
+                    timeout_s=protect_timeout_s,
+                    runtime_id=runtime_id,
+                )
+        finally:
+            if reservation is not None:
+                assert container_manager is not None
+                await container_manager.release_activity(reservation)
 
 
 def touch_tenant_container(
@@ -648,7 +668,7 @@ def release_tenant_container(
 def _tenant_container_manager(
     request: Request,
     tenant: TenantContext | None,
-) -> tuple[object | None, str | None]:
+) -> tuple[ContainerManager | None, str | None]:
     """Return the container manager plus tenant user id when container mode is active."""
     if tenant is None:
         return None, None
@@ -657,7 +677,10 @@ def _tenant_container_manager(
     if not settings.container_enabled:
         return None, None
 
-    container_manager = getattr(request.app.state, "container_manager", None)
+    container_manager = cast(
+        ContainerManager | None,
+        getattr(request.app.state, "container_manager", None),
+    )
     if container_manager is None:
         return None, None
     return container_manager, tenant.user_id

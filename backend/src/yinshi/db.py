@@ -3,8 +3,8 @@
 import importlib
 import logging
 import os
-import secrets
 import sqlite3
+import stat
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 
 _SCHEMA_VERSION = 5
 _SQLCIPHER_MODULE_NAMES = ("sqlcipher3.dbapi2", "pysqlcipher3.dbapi2")
+_PLAINTEXT_ROLLBACK_SUFFIX = ".plaintext.rollback"
 
 
 class DatabaseEncryptionError(RuntimeError):
@@ -227,6 +228,136 @@ def _validate_encrypted_database(
         connection.close()
 
 
+def _fsync_file(path: str) -> None:
+    """Flush one regular file through its filesystem."""
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    descriptor = os.open(path, flags)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _fsync_parent_directory(path: str) -> None:
+    """Flush directory entries for one filesystem path."""
+    parent_path = os.path.dirname(os.path.abspath(path))
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_DIRECTORY", 0)
+    descriptor = os.open(parent_path, flags)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _create_private_rollback_copy(source_path: str, rollback_path: str) -> None:
+    """Copy a plaintext database into a new owner-only rollback file."""
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(rollback_path, flags, 0o600)
+    try:
+        with open(source_path, "rb") as source, os.fdopen(descriptor, "wb") as rollback:
+            descriptor = -1
+            while chunk := source.read(1024 * 1024):
+                rollback.write(chunk)
+            rollback.flush()
+            os.fchmod(rollback.fileno(), 0o600)
+    except Exception:
+        if descriptor >= 0:
+            os.close(descriptor)
+        if os.path.exists(rollback_path):
+            os.unlink(rollback_path)
+        raise
+
+
+def _remove_sqlite_sidecars(db_path: str) -> None:
+    """Remove checkpointed WAL files and durably record their removal."""
+    removed = False
+    for suffix in ("-wal", "-shm"):
+        sidecar_path = f"{db_path}{suffix}"
+        if os.path.exists(sidecar_path):
+            os.unlink(sidecar_path)
+            removed = True
+    if removed:
+        _fsync_parent_directory(db_path)
+
+
+def _application_rollback_is_trusted(descriptor: int, rollback_path: str) -> bool:
+    """Return whether an open rollback still names one private owner-controlled file."""
+    opened_stat = os.fstat(descriptor)
+    try:
+        path_stat = os.lstat(rollback_path)
+    except FileNotFoundError:
+        return False
+    return (
+        stat.S_ISREG(opened_stat.st_mode)
+        and stat.S_ISREG(path_stat.st_mode)
+        and not stat.S_ISLNK(path_stat.st_mode)
+        and (opened_stat.st_dev, opened_stat.st_ino) == (path_stat.st_dev, path_stat.st_ino)
+        and opened_stat.st_uid == os.geteuid()
+        and opened_stat.st_nlink == 1
+        and opened_stat.st_mode & 0o077 == 0
+    )
+
+
+def _open_trusted_application_rollback(rollback_path: str) -> int | None:
+    """Open and validate an application rollback without following links."""
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    flags |= getattr(os, "O_NONBLOCK", 0)
+    try:
+        descriptor = os.open(rollback_path, flags)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise DatabaseEncryptionError(
+            "Application database migration rollback must be a trusted regular file"
+        ) from exc
+    if _application_rollback_is_trusted(descriptor, rollback_path):
+        return descriptor
+    os.close(descriptor)
+    raise DatabaseEncryptionError(
+        "Application database migration rollback must be a trusted regular file"
+    )
+
+
+def _recover_plaintext_migration_rollback(db_path: str) -> None:
+    """Restore a durable rollback when an interrupted replacement lost its primary."""
+    rollback_path = f"{db_path}{_PLAINTEXT_ROLLBACK_SUFFIX}"
+    if os.path.lexists(db_path):
+        return
+    descriptor = _open_trusted_application_rollback(rollback_path)
+    if descriptor is None:
+        return
+    try:
+        os.fsync(descriptor)
+        if os.path.lexists(db_path):
+            return
+        if not _application_rollback_is_trusted(descriptor, rollback_path):
+            raise DatabaseEncryptionError(
+                "Application database migration rollback must be a trusted regular file"
+            )
+        os.replace(rollback_path, db_path)
+        os.chmod(db_path, 0o600)
+        _fsync_file(db_path)
+        _fsync_parent_directory(db_path)
+    finally:
+        os.close(descriptor)
+    logger.warning("Recovered an interrupted application database migration")
+
+
+def _remove_validated_migration_rollback(db_path: str) -> None:
+    """Remove rollback only after the validated primary is durable."""
+    rollback_path = f"{db_path}{_PLAINTEXT_ROLLBACK_SUFFIX}"
+    if not os.path.exists(rollback_path):
+        return
+    _fsync_file(db_path)
+    _fsync_parent_directory(db_path)
+    os.unlink(rollback_path)
+    _fsync_parent_directory(db_path)
+
+
 def _migrate_plaintext_application_database(
     db_path: str,
     *,
@@ -235,14 +366,27 @@ def _migrate_plaintext_application_database(
 ) -> None:
     """Export plaintext SQLite into SQLCipher and atomically replace the original."""
     temporary_path = f"{db_path}.encrypted.tmp"
-    backup_path = f"{db_path}.plaintext.{secrets.token_hex(8)}"
+    rollback_path = f"{db_path}{_PLAINTEXT_ROLLBACK_SUFFIX}"
     for path in (temporary_path, f"{temporary_path}-wal", f"{temporary_path}-shm"):
         if os.path.exists(path):
             os.unlink(path)
 
+    if os.path.exists(rollback_path):
+        _fsync_file(db_path)
+        _fsync_parent_directory(db_path)
+        os.unlink(rollback_path)
+        _fsync_parent_directory(db_path)
+
     source = cast(sqlite3.Connection, sqlcipher_module.connect(db_path))
     try:
-        source.execute("PRAGMA wal_checkpoint(FULL)").fetchone()
+        checkpoint = source.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        if (
+            checkpoint is None
+            or len(checkpoint) < 3
+            or int(checkpoint[0]) != 0
+            or int(checkpoint[1]) != int(checkpoint[2])
+        ):
+            raise DatabaseEncryptionError("Application database WAL checkpoint did not complete")
         integrity = source.execute("PRAGMA integrity_check").fetchone()
         if integrity is None or str(integrity[0]).lower() != "ok":
             raise DatabaseEncryptionError(
@@ -261,40 +405,49 @@ def _migrate_plaintext_application_database(
     finally:
         source.close()
 
-    _validate_encrypted_database(
-        temporary_path,
-        sqlcipher_module=sqlcipher_module,
-        database_key=database_key,
-    )
-    os.replace(db_path, backup_path)
+    _remove_sqlite_sidecars(db_path)
     try:
+        _validate_encrypted_database(
+            temporary_path,
+            sqlcipher_module=sqlcipher_module,
+            database_key=database_key,
+        )
+        os.chmod(temporary_path, 0o600)
+        _fsync_file(temporary_path)
+        _create_private_rollback_copy(db_path, rollback_path)
+        _fsync_file(rollback_path)
+        _fsync_parent_directory(db_path)
         os.replace(temporary_path, db_path)
+        _fsync_parent_directory(db_path)
         _validate_encrypted_database(
             db_path,
             sqlcipher_module=sqlcipher_module,
             database_key=database_key,
         )
         os.chmod(db_path, 0o600)
+        _fsync_file(db_path)
+        _fsync_parent_directory(db_path)
     except (DatabaseEncryptionError, OSError):
-        if os.path.exists(db_path):
-            os.unlink(db_path)
-        os.replace(backup_path, db_path)
-        raise
-    else:
-        os.unlink(backup_path)
-    finally:
+        if os.path.exists(rollback_path):
+            os.replace(rollback_path, db_path)
+            os.chmod(db_path, 0o600)
+            _fsync_file(db_path)
+            _fsync_parent_directory(db_path)
         if os.path.exists(temporary_path):
             os.unlink(temporary_path)
-    for suffix in ("-wal", "-shm"):
-        sidecar_path = f"{db_path}{suffix}"
-        if os.path.exists(sidecar_path):
-            os.unlink(sidecar_path)
+            _fsync_parent_directory(db_path)
+        raise
+    else:
+        os.unlink(rollback_path)
+        _fsync_parent_directory(db_path)
+    _remove_sqlite_sidecars(db_path)
     logger.info("Migrated an application database to SQLCipher")
 
 
 def _open_application_connection(db_path: str, *, context: str) -> sqlite3.Connection:
     """Open one application database under configured encryption policy."""
     settings = get_settings()
+    _recover_plaintext_migration_rollback(db_path)
     if not tenant_db_encryption_enabled(settings):
         return _open_connection(db_path)
     try:
@@ -308,7 +461,7 @@ def _open_application_connection(db_path: str, *, context: str) -> sqlite3.Conne
     database_key = _application_database_key(context=context)
     if os.path.exists(db_path):
         try:
-            return _open_keyed_connection(
+            connection = _open_keyed_connection(
                 db_path,
                 sqlcipher_module=sqlcipher_module,
                 database_key=database_key,
@@ -321,6 +474,9 @@ def _open_application_connection(db_path: str, *, context: str) -> sqlite3.Conne
                 sqlcipher_module=sqlcipher_module,
                 database_key=database_key,
             )
+        else:
+            _remove_validated_migration_rollback(db_path)
+            return connection
     return _open_keyed_connection(
         db_path,
         sqlcipher_module=sqlcipher_module,
@@ -577,7 +733,8 @@ CREATE TABLE IF NOT EXISTS user_runners (
     id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    user_id TEXT NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    kind TEXT DEFAULT 'byoc' NOT NULL CHECK (kind IN ('byoc', 'managed')),
     name TEXT NOT NULL,
     cloud_provider TEXT NOT NULL,
     region TEXT NOT NULL,
@@ -592,7 +749,8 @@ CREATE TABLE IF NOT EXISTS user_runners (
     data_dir TEXT,
     revoked_at TEXT,
     noise_public_key TEXT,
-    noise_public_key_confirmed_at TEXT
+    noise_public_key_confirmed_at TEXT,
+    UNIQUE(user_id, kind)
 );
 
 CREATE INDEX IF NOT EXISTS idx_user_runners_user ON user_runners(user_id);
@@ -614,6 +772,43 @@ CREATE TABLE IF NOT EXISTS runner_transfer_grants (
 CREATE INDEX IF NOT EXISTS idx_runner_transfer_grants_runner
 ON runner_transfer_grants(runner_id, expires_at);
 
+CREATE TABLE IF NOT EXISTS managed_runtimes (
+    user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    runner_id TEXT NOT NULL UNIQUE REFERENCES user_runners(id) ON DELETE CASCADE,
+    provider_name TEXT NOT NULL CHECK (provider_name = 'fly_sprites'),
+    sprite_external_id TEXT NOT NULL UNIQUE,
+    lifecycle_status TEXT NOT NULL CHECK (
+        lifecycle_status IN ('provisioning', 'ready', 'failed', 'deleting')
+    ),
+    generation INTEGER DEFAULT 1 NOT NULL CHECK (generation > 0),
+    artifact_version TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    last_error TEXT CHECK (last_error IS NULL OR length(last_error) <= 1000)
+);
+
+CREATE TRIGGER IF NOT EXISTS validate_managed_runtime_runner_insert
+BEFORE INSERT ON managed_runtimes
+WHEN NOT EXISTS (
+    SELECT 1 FROM user_runners
+    WHERE id = NEW.runner_id AND user_id = NEW.user_id AND kind = 'managed'
+)
+BEGIN SELECT RAISE(ABORT, 'managed runtime must reference matching managed runner'); END;
+
+CREATE TRIGGER IF NOT EXISTS validate_managed_runtime_runner_update
+BEFORE UPDATE OF user_id, runner_id ON managed_runtimes
+WHEN NOT EXISTS (
+    SELECT 1 FROM user_runners
+    WHERE id = NEW.runner_id AND user_id = NEW.user_id AND kind = 'managed'
+)
+BEGIN SELECT RAISE(ABORT, 'managed runtime must reference matching managed runner'); END;
+
+CREATE TRIGGER IF NOT EXISTS protect_linked_managed_runner_update
+BEFORE UPDATE OF user_id, kind ON user_runners
+WHEN EXISTS (SELECT 1 FROM managed_runtimes WHERE runner_id = OLD.id)
+    AND (NEW.user_id != OLD.user_id OR NEW.kind != OLD.kind)
+BEGIN SELECT RAISE(ABORT, 'cannot change linked managed runtime runner'); END;
+
 CREATE TRIGGER IF NOT EXISTS update_users_updated_at AFTER UPDATE ON users
 BEGIN UPDATE users SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id; END;
 
@@ -625,6 +820,9 @@ BEGIN UPDATE user_settings SET updated_at = CURRENT_TIMESTAMP WHERE user_id = NE
 
 CREATE TRIGGER IF NOT EXISTS update_user_runners_updated_at AFTER UPDATE ON user_runners
 BEGIN UPDATE user_runners SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id; END;
+
+CREATE TRIGGER IF NOT EXISTS update_managed_runtimes_updated_at AFTER UPDATE ON managed_runtimes
+BEGIN UPDATE managed_runtimes SET updated_at = CURRENT_TIMESTAMP WHERE user_id = NEW.user_id; END;
 
 CREATE TRIGGER IF NOT EXISTS update_provider_connections_updated_at AFTER UPDATE ON provider_connections
 BEGIN UPDATE provider_connections SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id; END;
@@ -744,7 +942,8 @@ def _migrate_control(conn: sqlite3.Connection) -> None:
                 id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
-                user_id TEXT NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+                user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                kind TEXT DEFAULT 'byoc' NOT NULL CHECK (kind IN ('byoc', 'managed')),
                 name TEXT NOT NULL,
                 cloud_provider TEXT NOT NULL,
                 region TEXT NOT NULL,
@@ -759,7 +958,8 @@ def _migrate_control(conn: sqlite3.Connection) -> None:
                 data_dir TEXT,
                 revoked_at TEXT,
                 noise_public_key TEXT,
-                noise_public_key_confirmed_at TEXT
+                noise_public_key_confirmed_at TEXT,
+                UNIQUE(user_id, kind)
             );
             CREATE INDEX IF NOT EXISTS idx_user_runners_user ON user_runners(user_id);
             CREATE INDEX IF NOT EXISTS idx_user_runners_registration_token
@@ -785,6 +985,8 @@ def _migrate_control(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE user_runners ADD COLUMN noise_public_key_confirmed_at TEXT")
         conn.commit()
 
+    _migrate_runner_kinds(conn)
+
     conn.execute("""
         CREATE TABLE IF NOT EXISTS runner_transfer_grants (
             transfer_id TEXT PRIMARY KEY,
@@ -801,9 +1003,137 @@ def _migrate_control(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_runner_transfer_grants_runner "
         "ON runner_transfer_grants(runner_id, expires_at)"
     )
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS managed_runtimes (
+            user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+            runner_id TEXT NOT NULL UNIQUE REFERENCES user_runners(id) ON DELETE CASCADE,
+            provider_name TEXT NOT NULL CHECK (provider_name = 'fly_sprites'),
+            sprite_external_id TEXT NOT NULL UNIQUE,
+            lifecycle_status TEXT NOT NULL CHECK (
+                lifecycle_status IN ('provisioning', 'ready', 'failed', 'deleting')
+            ),
+            generation INTEGER DEFAULT 1 NOT NULL CHECK (generation > 0),
+            artifact_version TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+            last_error TEXT CHECK (last_error IS NULL OR length(last_error) <= 1000)
+        );
+        CREATE TRIGGER IF NOT EXISTS validate_managed_runtime_runner_insert
+        BEFORE INSERT ON managed_runtimes
+        WHEN NOT EXISTS (
+            SELECT 1 FROM user_runners
+            WHERE id = NEW.runner_id AND user_id = NEW.user_id AND kind = 'managed'
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'managed runtime must reference matching managed runner');
+        END;
+        CREATE TRIGGER IF NOT EXISTS validate_managed_runtime_runner_update
+        BEFORE UPDATE OF user_id, runner_id ON managed_runtimes
+        WHEN NOT EXISTS (
+            SELECT 1 FROM user_runners
+            WHERE id = NEW.runner_id AND user_id = NEW.user_id AND kind = 'managed'
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'managed runtime must reference matching managed runner');
+        END;
+        CREATE TRIGGER IF NOT EXISTS protect_linked_managed_runner_update
+        BEFORE UPDATE OF user_id, kind ON user_runners
+        WHEN EXISTS (SELECT 1 FROM managed_runtimes WHERE runner_id = OLD.id)
+            AND (NEW.user_id != OLD.user_id OR NEW.kind != OLD.kind)
+        BEGIN
+            SELECT RAISE(ABORT, 'cannot change linked managed runtime runner');
+        END;
+        CREATE TRIGGER IF NOT EXISTS update_managed_runtimes_updated_at
+        AFTER UPDATE ON managed_runtimes
+        BEGIN
+            UPDATE managed_runtimes SET updated_at = CURRENT_TIMESTAMP
+            WHERE user_id = NEW.user_id;
+        END;
+        """)
     conn.commit()
 
     _migrate_encrypted_control_fields(conn)
+
+
+def _migrate_runner_kinds(conn: sqlite3.Connection) -> None:
+    """Rebuild the runner table so one BYOC and one managed runner can coexist."""
+    runner_columns = {row[1] for row in conn.execute("PRAGMA table_info(user_runners)")}
+    if not runner_columns or "kind" in runner_columns:
+        return
+
+    logger.info("Control migration: adding runner kinds to user_runners")
+    conn.commit()
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("DROP TRIGGER IF EXISTS update_user_runners_updated_at")
+        conn.execute("""
+            CREATE TABLE user_runners_with_kinds (
+                id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+                user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                kind TEXT DEFAULT 'byoc' NOT NULL CHECK (kind IN ('byoc', 'managed')),
+                name TEXT NOT NULL,
+                cloud_provider TEXT NOT NULL,
+                region TEXT NOT NULL,
+                status TEXT DEFAULT 'pending' NOT NULL,
+                registration_token_hash TEXT,
+                registration_token_expires_at TEXT,
+                runner_token_hash TEXT,
+                registered_at TEXT,
+                last_heartbeat_at TEXT,
+                runner_version TEXT,
+                capabilities_json TEXT DEFAULT '{}' NOT NULL,
+                data_dir TEXT,
+                revoked_at TEXT,
+                noise_public_key TEXT,
+                noise_public_key_confirmed_at TEXT,
+                UNIQUE(user_id, kind)
+            )
+            """)
+        conn.execute("""
+            INSERT INTO user_runners_with_kinds (
+                id, created_at, updated_at, user_id, kind, name, cloud_provider,
+                region, status, registration_token_hash,
+                registration_token_expires_at, runner_token_hash, registered_at,
+                last_heartbeat_at, runner_version, capabilities_json, data_dir,
+                revoked_at, noise_public_key, noise_public_key_confirmed_at
+            )
+            SELECT
+                id, created_at, updated_at, user_id, 'byoc', name, cloud_provider,
+                region, status, registration_token_hash,
+                registration_token_expires_at, runner_token_hash, registered_at,
+                last_heartbeat_at, runner_version, capabilities_json, data_dir,
+                revoked_at, noise_public_key, noise_public_key_confirmed_at
+            FROM user_runners
+            """)
+        conn.execute("DROP TABLE user_runners")
+        conn.execute("ALTER TABLE user_runners_with_kinds RENAME TO user_runners")
+        conn.execute("CREATE INDEX idx_user_runners_user ON user_runners(user_id)")
+        conn.execute(
+            "CREATE INDEX idx_user_runners_registration_token "
+            "ON user_runners(registration_token_hash)"
+        )
+        conn.execute(
+            "CREATE INDEX idx_user_runners_runner_token ON user_runners(runner_token_hash)"
+        )
+        conn.execute("""
+            CREATE TRIGGER update_user_runners_updated_at
+            AFTER UPDATE ON user_runners
+            BEGIN
+                UPDATE user_runners SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id;
+            END
+            """)
+        foreign_key_issue = conn.execute("PRAGMA foreign_key_check").fetchone()
+        if foreign_key_issue is not None:
+            raise sqlite3.IntegrityError("Runner kind migration left an invalid foreign key")
+        conn.commit()
+    except sqlite3.Error:
+        conn.rollback()
+        raise
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
 
 
 def _migrate_encrypted_control_fields(conn: sqlite3.Connection) -> None:

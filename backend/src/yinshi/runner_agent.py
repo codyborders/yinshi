@@ -7,7 +7,9 @@ import base64
 import binascii
 import json
 import logging
+import math
 import os
+import re
 import secrets
 import stat
 import time
@@ -21,12 +23,17 @@ from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed, InvalidStatus
 from websockets.typing import Origin
 
-from yinshi.runner_worker import RunnerWorkerManager
+from yinshi.runner_worker import (
+    RunnerUserDataEncryptionMode,
+    RunnerWorkerManager,
+    validate_user_data_encryption_mode,
+)
 from yinshi.services.runner_agent_relay import (
     RunnerAgentRelayRuntime,
     RunnerRelaySessionError,
 )
 from yinshi.services.runner_noise import load_or_create_runner_noise_keypair
+from yinshi.services.sprite_task_lease import SpriteTaskLease
 
 logger = logging.getLogger(__name__)
 RUNNER_VERSION = "0.2.0"
@@ -34,20 +41,24 @@ RunnerStorageProfile = Literal[
     "aws_ebs_s3_files",
     "archil_shared_files",
     "archil_all_posix",
+    "fly_sprites_posix",
 ]
 _DEFAULT_CONTROL_URL = "http://localhost:8000"
 _DEFAULT_DATA_DIR = "/var/lib/yinshi"
 _DEFAULT_SQLITE_DIR = f"{_DEFAULT_DATA_DIR}/sqlite"
 _DEFAULT_SHARED_FILES_DIR = "/mnt/yinshi-s3-files"
+_DEFAULT_FLY_SPRITES_SHARED_FILES_DIR = f"{_DEFAULT_DATA_DIR}/files"
 _DEFAULT_ARCHIL_SHARED_FILES_DIR = "/mnt/archil/yinshi"
 _DEFAULT_ARCHIL_SQLITE_DIR = f"{_DEFAULT_ARCHIL_SHARED_FILES_DIR}/sqlite"
 _DEFAULT_TOKEN_FILE = "/var/lib/yinshi/runner-token"
 _DEFAULT_HEARTBEAT_INTERVAL_S = 30.0
 _REQUEST_TIMEOUT_S = 15.0
 _REGISTRATION_TOKEN_ENV_PREFIX = "YINSHI_REGISTRATION_TOKEN="
+_SHA256_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
 _AWS_STORAGE_PROFILE: RunnerStorageProfile = "aws_ebs_s3_files"
 _ARCHIL_SHARED_FILES_PROFILE: RunnerStorageProfile = "archil_shared_files"
 _ARCHIL_ALL_POSIX_PROFILE: RunnerStorageProfile = "archil_all_posix"
+_FLY_SPRITES_POSIX_PROFILE: RunnerStorageProfile = "fly_sprites_posix"
 _STORAGE_ARCHIL = "archil"
 _STORAGE_RUNNER_EBS = "runner_ebs"
 _STORAGE_S3_FILES_OR_LOCAL_POSIX = "s3_files_or_local_posix"
@@ -118,6 +129,19 @@ _STORAGE_PROFILES: dict[RunnerStorageProfile, RunnerStorageProfileSpec] = {
         allowed_sqlite_storage=frozenset({_STORAGE_ARCHIL}),
         allowed_shared_files_storage=frozenset({_STORAGE_ARCHIL}),
     ),
+    _FLY_SPRITES_POSIX_PROFILE: RunnerStorageProfileSpec(
+        value=_FLY_SPRITES_POSIX_PROFILE,
+        sqlite_storage=_STORAGE_LOCAL_POSIX,
+        shared_files_storage=_STORAGE_LOCAL_POSIX,
+        requires_explicit_storage=False,
+        default_sqlite_dir=_DEFAULT_SQLITE_DIR,
+        default_shared_files_dir=_DEFAULT_FLY_SPRITES_SHARED_FILES_DIR,
+        live_sqlite_on_shared_files=False,
+        experimental=False,
+        allow_sqlite_under_shared_files=False,
+        allowed_sqlite_storage=frozenset({_STORAGE_LOCAL_POSIX}),
+        allowed_shared_files_storage=frozenset({_STORAGE_LOCAL_POSIX}),
+    ),
 }
 
 
@@ -137,8 +161,13 @@ class RunnerAgentConfig:
     storage_profile: RunnerStorageProfile
     sqlite_storage: str
     shared_files_storage: str | None
+    user_data_encryption: RunnerUserDataEncryptionMode
     heartbeat_interval_s: float
+    relay_idle_timeout_seconds: float | None
+    sprite_task_lease: bool
     env_file: Path | None
+    artifact_sha256: str | None = None
+    artifact_attestation_file: Path | None = None
 
 
 def _env_text(name: str, default: str | None = None) -> str | None:
@@ -150,6 +179,18 @@ def _env_text(name: str, default: str | None = None) -> str | None:
     if not normalized_value:
         return None
     return normalized_value
+
+
+def _env_user_data_encryption() -> RunnerUserDataEncryptionMode:
+    """Read the dedicated runner user-data encryption setting."""
+    env_name = "YINSHI_RUNNER_USER_DATA_ENCRYPTION"
+    raw_value = _env_text(env_name, "disabled")
+    if raw_value is None:
+        raise RuntimeError(f"{env_name} must be disabled or required")
+    try:
+        return validate_user_data_encryption_mode(raw_value)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(f"{env_name} must be disabled or required") from exc
 
 
 def _env_float(name: str, default: float) -> float:
@@ -164,6 +205,30 @@ def _env_float(name: str, default: float) -> float:
     if value <= 0:
         raise RuntimeError(f"{name} must be positive")
     return value
+
+
+def _env_optional_positive_float(name: str) -> float | None:
+    """Read an absent or positive finite float without accepting empty text."""
+    raw_value = os.environ.get(name)
+    if raw_value is None:
+        return None
+    try:
+        value = float(raw_value.strip())
+    except ValueError:
+        raise RuntimeError(f"{name} must be a positive finite number") from None
+    if not math.isfinite(value) or value <= 0:
+        raise RuntimeError(f"{name} must be a positive finite number")
+    return value
+
+
+def _env_disabled_or_enabled(name: str) -> bool:
+    """Read one exact disabled or enabled feature setting."""
+    raw_value = os.environ.get(name, "disabled").strip()
+    if raw_value == "disabled":
+        return False
+    if raw_value == "enabled":
+        return True
+    raise RuntimeError(f"{name} must be disabled or enabled")
 
 
 def _env_path(name: str, default: str) -> Path:
@@ -230,9 +295,15 @@ def load_config() -> RunnerAgentConfig:
         required=profile.requires_explicit_storage,
     )
     assert sqlite_storage is not None, "SQLite storage has a profile default"
+    shared_files_storage_default = (
+        profile.shared_files_storage if profile.value == _FLY_SPRITES_POSIX_PROFILE else None
+    )
     shared_files_storage = _validate_storage_class(
         env_name="YINSHI_RUNNER_SHARED_FILES_STORAGE",
-        value=_env_text("YINSHI_RUNNER_SHARED_FILES_STORAGE"),
+        value=_env_text(
+            "YINSHI_RUNNER_SHARED_FILES_STORAGE",
+            shared_files_storage_default,
+        ),
         profile=profile,
         expected_value=profile.shared_files_storage,
         allowed_values=profile.allowed_shared_files_storage,
@@ -259,6 +330,28 @@ def load_config() -> RunnerAgentConfig:
     )
     env_file_text = _env_text("YINSHI_RUNNER_ENV_FILE")
     env_file = Path(env_file_text) if env_file_text else None
+    artifact_sha256 = _env_text("YINSHI_RUNNER_ARTIFACT_SHA256")
+    artifact_attestation_text = _env_text("YINSHI_RUNNER_ARTIFACT_ATTESTATION_FILE")
+    artifact_attestation_file = (
+        Path(artifact_attestation_text) if artifact_attestation_text is not None else None
+    )
+    artifact_sha256 = _verify_artifact_attestation(
+        profile.value,
+        artifact_sha256,
+        artifact_attestation_file,
+    )
+    relay_idle_timeout_seconds = _env_optional_positive_float(
+        "YINSHI_RUNNER_RELAY_IDLE_TIMEOUT_SECONDS"
+    )
+    sprite_task_lease = _env_disabled_or_enabled("YINSHI_RUNNER_SPRITE_TASK_LEASE")
+    if sprite_task_lease and profile.value != _FLY_SPRITES_POSIX_PROFILE:
+        raise RuntimeError(
+            "YINSHI_RUNNER_SPRITE_TASK_LEASE requires fly_sprites_posix storage profile"
+        )
+    if sprite_task_lease and relay_idle_timeout_seconds is None:
+        raise RuntimeError(
+            "YINSHI_RUNNER_SPRITE_TASK_LEASE requires " "YINSHI_RUNNER_RELAY_IDLE_TIMEOUT_SECONDS"
+        )
     return RunnerAgentConfig(
         control_url=control_url.rstrip("/"),
         registration_token=_env_text("YINSHI_REGISTRATION_TOKEN"),
@@ -272,11 +365,16 @@ def load_config() -> RunnerAgentConfig:
         storage_profile=profile.value,
         sqlite_storage=sqlite_storage,
         shared_files_storage=shared_files_storage,
+        user_data_encryption=_env_user_data_encryption(),
         heartbeat_interval_s=_env_float(
             "YINSHI_RUNNER_HEARTBEAT_INTERVAL_S",
             _DEFAULT_HEARTBEAT_INTERVAL_S,
         ),
+        relay_idle_timeout_seconds=relay_idle_timeout_seconds,
+        sprite_task_lease=sprite_task_lease,
         env_file=env_file,
+        artifact_sha256=artifact_sha256,
+        artifact_attestation_file=artifact_attestation_file,
     )
 
 
@@ -327,7 +425,7 @@ def _capabilities(config: RunnerAgentConfig) -> dict[str, Any]:
     _probe_writable_directory(config.data_dir, "data")
     _probe_writable_directory(config.sqlite_dir, "sqlite")
     _probe_writable_directory(config.shared_files_dir, "shared files")
-    return {
+    capabilities: dict[str, Any] = {
         "posix_storage": True,
         "sqlite": True,
         "git_worktrees": True,
@@ -341,6 +439,9 @@ def _capabilities(config: RunnerAgentConfig) -> dict[str, Any]:
         "shared_files_storage": _resolved_shared_files_storage(config),
         "live_sqlite_on_shared_files": profile.live_sqlite_on_shared_files,
     }
+    if config.artifact_sha256 is not None:
+        capabilities["artifact_sha256"] = config.artifact_sha256
+    return capabilities
 
 
 def _read_owner_only_text_file(path: Path, label: str) -> str | None:
@@ -372,6 +473,53 @@ def _read_owner_only_text_file(path: Path, label: str) -> str | None:
     if not value:
         raise RuntimeError(f"{label} file is empty")
     return value
+
+
+def _verify_artifact_attestation(
+    storage_profile: str,
+    expected_sha256: str | None,
+    attestation_file: Path | None,
+) -> str | None:
+    """Return artifact digest only after validating its private local attestation."""
+    required = storage_profile == _FLY_SPRITES_POSIX_PROFILE
+    if expected_sha256 is None:
+        if required:
+            raise RuntimeError("YINSHI_RUNNER_ARTIFACT_SHA256 is required for fly_sprites_posix")
+        if attestation_file is not None:
+            raise RuntimeError(
+                "YINSHI_RUNNER_ARTIFACT_SHA256 is required when "
+                "YINSHI_RUNNER_ARTIFACT_ATTESTATION_FILE is set"
+            )
+        return None
+    if _SHA256_PATTERN.fullmatch(expected_sha256) is None:
+        raise RuntimeError(
+            "YINSHI_RUNNER_ARTIFACT_SHA256 must contain exactly "
+            "64 lowercase hexadecimal characters"
+        )
+    if attestation_file is None:
+        profile_suffix = " for fly_sprites_posix" if required else ""
+        raise RuntimeError("YINSHI_RUNNER_ARTIFACT_ATTESTATION_FILE is required" + profile_suffix)
+    if not attestation_file.is_absolute():
+        raise RuntimeError("YINSHI_RUNNER_ARTIFACT_ATTESTATION_FILE must be an absolute path")
+    if ".." in attestation_file.parts:
+        raise RuntimeError(
+            "YINSHI_RUNNER_ARTIFACT_ATTESTATION_FILE must not contain "
+            "parent directory references"
+        )
+    attested_sha256 = _read_owner_only_text_file(
+        attestation_file,
+        "Runner artifact attestation",
+    )
+    if attested_sha256 is None:
+        raise RuntimeError("Runner artifact attestation file is missing")
+    if _SHA256_PATTERN.fullmatch(attested_sha256) is None:
+        raise RuntimeError(
+            "Runner artifact attestation must contain exactly "
+            "64 lowercase hexadecimal characters"
+        )
+    if not secrets.compare_digest(attested_sha256, expected_sha256):
+        raise RuntimeError("Runner artifact attestation does not match expected SHA-256")
+    return expected_sha256
 
 
 def _write_owner_only_text_file(path: Path, value: str, label: str) -> None:
@@ -498,7 +646,7 @@ async def _register(config: RunnerAgentConfig, client: httpx.AsyncClient) -> str
     )
     _write_runner_token(config.runner_token_file, runner_token)
     _scrub_registration_token(config.env_file)
-    logger.info("Registered Yinshi cloud runner %s", body.get("runner_id", "unknown"))
+    logger.info("Registered Yinshi cloud runner")
     return runner_token
 
 
@@ -520,7 +668,7 @@ async def _heartbeat(
         config.capability_signing_key_file,
         body.get("capability_signing_public_key"),
     )
-    logger.info("Heartbeat accepted for Yinshi cloud runner %s", body.get("runner_id"))
+    logger.info("Heartbeat accepted for Yinshi cloud runner")
 
 
 def _runner_relay_url(control_url: str) -> str:
@@ -537,6 +685,7 @@ def _runner_relay_url(control_url: str) -> str:
 def _runner_relay_runtime(
     config: RunnerAgentConfig,
     worker_manager: RunnerWorkerManager,
+    task_lease: SpriteTaskLease | None,
 ) -> RunnerAgentRelayRuntime:
     """Load pinned key material for one fresh relay connection."""
     noise_keypair = load_or_create_runner_noise_keypair(config.noise_private_key_file)
@@ -554,18 +703,31 @@ def _runner_relay_runtime(
         capability_signing_public_key=signing_key_bytes,
         replay_database_path=config.replay_database_file,
         dispatcher_factory=worker_manager.dispatcher,
+        task_lease=task_lease,
     )
 
 
 async def _consume_runner_relay_messages(
     runtime: RunnerAgentRelayRuntime,
     websocket: ClientConnection,
-) -> None:
-    """Apply strict relay controls and return UUID-prefixed encrypted responses."""
+    *,
+    idle_timeout_seconds: float | None = None,
+) -> bool:
+    """Apply relay messages until transport closure or managed idle expiry."""
     try:
-        async for message in websocket:
+        while True:
+            try:
+                if idle_timeout_seconds is not None and not runtime.active_transfer_ids:
+                    message = await asyncio.wait_for(
+                        websocket.recv(),
+                        timeout=idle_timeout_seconds,
+                    )
+                else:
+                    message = await websocket.recv()
+            except TimeoutError:
+                return True
             if isinstance(message, str):
-                runtime.handle_control(message)
+                await runtime.handle_control(message)
                 continue
             try:
                 response = await runtime.handle_binary(
@@ -591,48 +753,69 @@ async def _serve_runner_relay_connection(
     config: RunnerAgentConfig,
     runner_token: str,
     worker_manager: RunnerWorkerManager,
-) -> None:
-    """Serve one outbound relay connection until transport closure."""
-    runtime = _runner_relay_runtime(config, worker_manager)
-    async with connect(
-        _runner_relay_url(config.control_url),
-        origin=Origin(config.control_url.rstrip("/")),
-        compression=None,
-        additional_headers={"Authorization": f"Bearer {runner_token}"},
-        proxy=True,
-        open_timeout=_REQUEST_TIMEOUT_S,
-        ping_interval=20.0,
-        ping_timeout=20.0,
-        close_timeout=5.0,
-        max_size=65_551,
-        max_queue=16,
-    ) as websocket:
-        await _consume_runner_relay_messages(runtime, websocket)
+    task_lease: SpriteTaskLease | None,
+) -> bool:
+    """Serve one outbound relay connection until transport closure or idle expiry."""
+    runtime = _runner_relay_runtime(config, worker_manager, task_lease)
+    try:
+        async with connect(
+            _runner_relay_url(config.control_url),
+            origin=Origin(config.control_url.rstrip("/")),
+            compression=None,
+            additional_headers={"Authorization": f"Bearer {runner_token}"},
+            proxy=True,
+            open_timeout=_REQUEST_TIMEOUT_S,
+            ping_interval=20.0,
+            ping_timeout=20.0,
+            close_timeout=5.0,
+            max_size=65_551,
+            max_queue=16,
+        ) as websocket:
+            return await _consume_runner_relay_messages(
+                runtime,
+                websocket,
+                idle_timeout_seconds=config.relay_idle_timeout_seconds,
+            )
+    finally:
+        await runtime.aclose()
 
 
 async def _runner_relay_loop(config: RunnerAgentConfig, runner_token: str) -> None:
     """Reconnect the outbound relay with bounded backoff until cancelled."""
-    noise_keypair = load_or_create_runner_noise_keypair(config.noise_private_key_file)
-    worker_manager = RunnerWorkerManager(
-        data_directory=config.data_dir / "worker-runtime",
-        database_directory=config.sqlite_dir,
-        user_data_directory=config.shared_files_dir / "users",
-        runner_static_private_key=noise_keypair.private_key,
-    )
-    reconnect_delay_seconds = 1.0
-    while True:
-        try:
-            await _serve_runner_relay_connection(config, runner_token, worker_manager)
-            reconnect_delay_seconds = 1.0
-        except InvalidStatus as error:
-            status_code = error.response.status_code
-            if status_code in {401, 403}:
-                raise RuntimeError("Runner relay authentication was rejected") from None
-            logger.warning("Runner relay unavailable with HTTP status %s", status_code)
-        except (ConnectionClosed, OSError, TimeoutError):
-            logger.warning("Runner relay connection unavailable; retrying")
-        await asyncio.sleep(reconnect_delay_seconds)
-        reconnect_delay_seconds = min(reconnect_delay_seconds * 2, 30.0)
+    task_lease = SpriteTaskLease() if config.sprite_task_lease else None
+    try:
+        noise_keypair = load_or_create_runner_noise_keypair(config.noise_private_key_file)
+        worker_manager = RunnerWorkerManager(
+            data_directory=config.data_dir / "worker-runtime",
+            database_directory=config.sqlite_dir,
+            user_data_directory=config.shared_files_dir / "users",
+            runner_static_private_key=noise_keypair.private_key,
+            user_data_encryption=config.user_data_encryption,
+        )
+        reconnect_delay_seconds = 1.0
+        while True:
+            try:
+                idle_expired = await _serve_runner_relay_connection(
+                    config,
+                    runner_token,
+                    worker_manager,
+                    task_lease,
+                )
+                if idle_expired:
+                    return
+                reconnect_delay_seconds = 1.0
+            except InvalidStatus as error:
+                status_code = error.response.status_code
+                if status_code in {401, 403}:
+                    raise RuntimeError("Runner relay authentication was rejected") from None
+                logger.warning("Runner relay unavailable with HTTP status %s", status_code)
+            except (ConnectionClosed, OSError, TimeoutError):
+                logger.warning("Runner relay connection unavailable; retrying")
+            await asyncio.sleep(reconnect_delay_seconds)
+            reconnect_delay_seconds = min(reconnect_delay_seconds * 2, 30.0)
+    finally:
+        if task_lease is not None:
+            await task_lease.aclose()
 
 
 async def _heartbeat_loop(
@@ -675,15 +858,31 @@ async def run_agent(config: RunnerAgentConfig) -> None:
             _validate_capability_signing_public_key(pinned_key)
 
         logger.info("Runner Noise identity loaded")
-        async with asyncio.TaskGroup() as task_group:
-            task_group.create_task(
-                _heartbeat_loop(config, client, runner_token),
-                name="runner-heartbeat",
+        heartbeat_task = asyncio.create_task(
+            _heartbeat_loop(config, client, runner_token),
+            name="runner-heartbeat",
+        )
+        relay_task = asyncio.create_task(
+            _runner_relay_loop(config, runner_token),
+            name="runner-relay",
+        )
+        tasks = (heartbeat_task, relay_task)
+        try:
+            done, pending = await asyncio.wait(
+                tasks,
+                return_when=asyncio.FIRST_COMPLETED,
             )
-            task_group.create_task(
-                _runner_relay_loop(config, runner_token),
-                name="runner-relay",
-            )
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+            for task in tasks:
+                if task in done:
+                    task.result()
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
 
 
 def main() -> None:
@@ -694,14 +893,9 @@ def main() -> None:
     )
     config = load_config()
     logger.info(
-        (
-            "Starting Yinshi cloud runner agent against %s with profile %s, "
-            "SQLite dir %s, and shared files dir %s"
-        ),
+        "Starting Yinshi cloud runner agent against %s with profile %s",
         config.control_url,
         config.storage_profile,
-        config.sqlite_dir,
-        config.shared_files_dir,
     )
     asyncio.run(run_agent(config))
 

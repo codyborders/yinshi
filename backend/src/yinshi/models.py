@@ -258,10 +258,16 @@ class WSCancel(BaseModel):
 
 # --- Multi-tenant models ---
 
+ByocRunnerStorageProfile = Literal[
+    "aws_ebs_s3_files",
+    "archil_shared_files",
+    "archil_all_posix",
+]
 RunnerStorageProfile = Literal[
     "aws_ebs_s3_files",
     "archil_shared_files",
     "archil_all_posix",
+    "fly_sprites_posix",
 ]
 
 
@@ -282,7 +288,7 @@ class CloudRunnerCreate(BaseModel):
     name: str = Field("AWS runner", min_length=1, max_length=120)
     cloud_provider: Literal["aws"] = "aws"
     region: str = Field("us-east-1", min_length=1, max_length=64)
-    storage_profile: RunnerStorageProfile = "aws_ebs_s3_files"
+    storage_profile: ByocRunnerStorageProfile = "aws_ebs_s3_files"
 
     @field_validator("name", "region")
     @classmethod

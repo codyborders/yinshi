@@ -436,6 +436,98 @@ class TestContainerManager:
         assert mgr._containers[user_id].last_activity > old_time
 
     @pytest.mark.asyncio
+    async def test_activity_acquisition_waits_for_destroy_before_runtime_lookup(self, tmp_path):
+        """Activity acquisition must not reserve a runtime already being removed."""
+        settings = _make_settings(container_socket_base=str(tmp_path))
+        mgr = ContainerManager(settings=settings)
+        user_id = "abcdef12345678901234567890abcdef"
+        info = ContainerInfo(
+            container_id="destroying-container",
+            user_id=user_id,
+            socket_path="/tmp/destroying.sock",
+        )
+        mgr._containers[user_id] = info
+        removal_started = asyncio.Event()
+        finish_removal = asyncio.Event()
+        active_counts_at_removal: list[int] = []
+
+        async def _remove(container_id: str) -> bool:
+            assert container_id == info.container_id
+            active_counts_at_removal.append(info.active_request_count)
+            removal_started.set()
+            await finish_removal.wait()
+            return True
+
+        mgr._remove_container = AsyncMock(side_effect=_remove)
+        destroy_task = asyncio.create_task(mgr.destroy_container(user_id))
+        await removal_started.wait()
+        acquire_task = asyncio.create_task(mgr.acquire_activity(user_id))
+        await asyncio.sleep(0)
+
+        assert not acquire_task.done()
+        finish_removal.set()
+        destroyed, reservation = await asyncio.gather(destroy_task, acquire_task)
+
+        assert destroyed is True
+        assert reservation is None
+        assert active_counts_at_removal == [0]
+        assert user_id not in mgr._containers
+
+    @pytest.mark.asyncio
+    async def test_activity_reservation_blocks_destroy_until_exact_release(self, tmp_path):
+        """Destroy must reject an acquired runtime until its reservation is released."""
+        settings = _make_settings(container_socket_base=str(tmp_path))
+        mgr = ContainerManager(settings=settings)
+        user_id = "abcdef12345678901234567890abcdef"
+        info = ContainerInfo(
+            container_id="active-container",
+            user_id=user_id,
+            socket_path="/tmp/active.sock",
+        )
+        mgr._containers[user_id] = info
+        mgr._remove_container = AsyncMock(return_value=True)
+
+        reservation = await mgr.acquire_activity(user_id)
+
+        assert reservation is not None
+        assert await mgr.destroy_container(user_id) is False
+        mgr._remove_container.assert_not_awaited()
+
+        await mgr.release_activity(reservation)
+
+        assert info.active_request_count == 0
+        assert await mgr.destroy_container(user_id) is True
+        mgr._remove_container.assert_awaited_once_with(info.container_id)
+
+    @pytest.mark.asyncio
+    async def test_stale_activity_release_does_not_change_replacement_generation(self, tmp_path):
+        """A stale reservation must release only the runtime generation it acquired."""
+        settings = _make_settings(container_socket_base=str(tmp_path))
+        mgr = ContainerManager(settings=settings)
+        user_id = "abcdef12345678901234567890abcdef"
+        original = ContainerInfo(
+            container_id="original-container",
+            user_id=user_id,
+            socket_path="/tmp/original.sock",
+        )
+        replacement = ContainerInfo(
+            container_id="replacement-container",
+            user_id=user_id,
+            socket_path="/tmp/replacement.sock",
+            active_request_count=1,
+        )
+        mgr._containers[user_id] = original
+
+        reservation = await mgr.acquire_activity(user_id)
+        assert reservation is not None
+        mgr._containers[user_id] = replacement
+
+        await mgr.release_activity(reservation)
+
+        assert original.active_request_count == 0
+        assert replacement.active_request_count == 1
+
+    @pytest.mark.asyncio
     async def test_begin_activity_prevents_reaping_busy_container(self, tmp_path):
         """Busy containers must stay alive even when their idle timestamp is old."""
         settings = _make_settings(
@@ -499,6 +591,52 @@ class TestContainerManager:
         assert user_id not in mgr._containers
 
     @pytest.mark.asyncio
+    async def test_reap_idle_rechecks_activity_after_waiting_for_runtime(self, tmp_path):
+        """Activity started before lock acquisition must cancel pending reaping."""
+        settings = _make_settings(
+            container_socket_base=str(tmp_path),
+            container_idle_timeout_s=60,
+        )
+        mgr = ContainerManager(settings=settings)
+        mgr._initialized = True
+        user_id = "0" * 32
+        old_time = datetime.now(timezone.utc) - timedelta(minutes=5)
+        mounts = mgr._default_mounts(str(tmp_path))
+        info = ContainerInfo(
+            container_id="idle-before-wait",
+            user_id=user_id,
+            socket_path="/tmp/idle-before-wait.sock",
+            mounts=mounts,
+            created_at=old_time,
+            last_activity=old_time,
+        )
+        mgr._containers[user_id] = info
+        inspect_started = asyncio.Event()
+        release_inspect = asyncio.Event()
+
+        async def _is_running(container_id: str) -> bool:
+            assert container_id == info.container_id
+            inspect_started.set()
+            await release_inspect.wait()
+            return True
+
+        mgr._is_running = AsyncMock(side_effect=_is_running)
+        mgr._remove_container = AsyncMock(return_value=None)
+        ensure_task = asyncio.create_task(mgr.ensure_container(user_id, str(tmp_path)))
+        await inspect_started.wait()
+        reap_task = asyncio.create_task(mgr.reap_idle())
+        await asyncio.sleep(0)
+        mgr.begin_activity(user_id)
+        release_inspect.set()
+
+        ensured_info, count = await asyncio.gather(ensure_task, reap_task)
+
+        assert ensured_info is info
+        assert count == 0
+        assert mgr._containers[user_id] is info
+        mgr._remove_container.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_reap_idle_destroys_old_containers(self, tmp_path):
         settings = _make_settings(
             container_socket_base=str(tmp_path),
@@ -536,6 +674,35 @@ class TestContainerManager:
         assert count == 1
         assert idle_uid not in mgr._containers
         assert active_uid in mgr._containers
+
+    @pytest.mark.asyncio
+    async def test_reap_idle_keeps_quota_entry_when_podman_removal_fails(self, tmp_path):
+        """Failed Podman removal must keep the runtime tracked against quota."""
+        settings = _make_settings(
+            container_socket_base=str(tmp_path),
+            container_idle_timeout_s=60,
+            container_max_count=1,
+        )
+        mgr = ContainerManager(settings=settings)
+        user_id = "0" * 32
+        old_time = datetime.now(timezone.utc) - timedelta(minutes=5)
+        info = ContainerInfo(
+            container_id="remove-failed",
+            user_id=user_id,
+            socket_path="/tmp/remove-failed.sock",
+            created_at=old_time,
+            last_activity=old_time,
+        )
+        mgr._containers[user_id] = info
+
+        with patch(
+            "asyncio.create_subprocess_exec",
+            _podman_router({"rm": _make_mock_process(returncode=1)}),
+        ):
+            count = await mgr.reap_idle()
+
+        assert count == 0
+        assert mgr._containers[user_id] is info
 
     @pytest.mark.asyncio
     async def test_wait_for_socket_requires_live_listener(self, tmp_path):
@@ -675,6 +842,37 @@ class TestContainerManager:
         assert user_id not in mgr._locks
 
     @pytest.mark.asyncio
+    async def test_destroy_container_reports_missing_runtime_safe_to_delete(self, tmp_path):
+        """Destroy should report success when no runtime exists."""
+        settings = _make_settings(container_socket_base=str(tmp_path))
+        mgr = ContainerManager(settings=settings)
+
+        safe_to_delete = await mgr.destroy_container("a" * 32)
+
+        assert safe_to_delete is True
+
+    @pytest.mark.asyncio
+    async def test_destroy_container_reports_busy_runtime_not_removed(self, tmp_path):
+        """Destroy should report a busy current runtime without untracking it."""
+        settings = _make_settings(container_socket_base=str(tmp_path))
+        mgr = ContainerManager(settings=settings)
+        user_id = "a" * 32
+        info = ContainerInfo(
+            container_id="busy-container",
+            user_id=user_id,
+            socket_path="/tmp/busy.sock",
+            active_request_count=1,
+        )
+        mgr._containers[user_id] = info
+        mgr._remove_container = AsyncMock(return_value=True)
+
+        removed = await mgr.destroy_container(user_id)
+
+        assert removed is False
+        assert mgr._containers[user_id] is info
+        mgr._remove_container.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_max_container_count_enforced(self, tmp_path):
         """P5: Reject new containers when max count is reached."""
         settings = _make_settings(
@@ -706,6 +904,99 @@ class TestContainerManager:
 
         with pytest.raises(ContainerStartError, match="Maximum container limit"):
             await mgr.ensure_container(uid3, str(tmp_path / "data"))
+
+    @pytest.mark.asyncio
+    async def test_concurrent_creation_reserves_container_quota(self, tmp_path):
+        """Different runtime keys must not start beyond the configured quota."""
+        settings = _make_settings(
+            container_socket_base=str(tmp_path),
+            container_max_count=1,
+            container_idle_timeout_s=99999,
+        )
+        mgr = ContainerManager(settings=settings)
+        mgr._initialized = True
+        first_started = asyncio.Event()
+        release_first = asyncio.Event()
+        create_calls: list[str] = []
+
+        async def _create(
+            user_id: str,
+            mounts: tuple[ContainerMount, ...],
+            *,
+            runtime_id: str | None = None,
+            environment: tuple[tuple[str, str], ...] = (),
+        ) -> ContainerInfo:
+            del mounts, environment
+            create_calls.append(user_id)
+            if len(create_calls) == 1:
+                first_started.set()
+                await release_first.wait()
+            return ContainerInfo(
+                container_id=f"container-{user_id}",
+                user_id=user_id,
+                socket_path=str(tmp_path / user_id / "sidecar.sock"),
+                runtime_id=runtime_id,
+            )
+
+        mgr._create_container = AsyncMock(side_effect=_create)
+        first_user_id = "a" * 32
+        second_user_id = "b" * 32
+        first_task = asyncio.create_task(mgr.ensure_container(first_user_id, str(tmp_path)))
+        await first_started.wait()
+
+        with pytest.raises(ContainerStartError, match="Maximum container limit"):
+            await mgr.ensure_container(second_user_id, str(tmp_path))
+
+        release_first.set()
+        first_info = await first_task
+
+        assert first_info.user_id == first_user_id
+        assert create_calls == [first_user_id]
+        assert list(mgr._containers) == [first_user_id]
+
+    @pytest.mark.asyncio
+    async def test_destroy_waits_for_creation_then_removes_current_container(self, tmp_path):
+        """Destroy requested during creation should remove the new current runtime."""
+        settings = _make_settings(container_socket_base=str(tmp_path))
+        mgr = ContainerManager(settings=settings)
+        mgr._initialized = True
+        creation_started = asyncio.Event()
+        release_creation = asyncio.Event()
+        user_id = "a" * 32
+        created = ContainerInfo(
+            container_id="created-container",
+            user_id=user_id,
+            socket_path=str(tmp_path / user_id / "created.sock"),
+        )
+
+        async def _create(
+            selected_user_id: str,
+            mounts: tuple[ContainerMount, ...],
+            *,
+            runtime_id: str | None = None,
+            environment: tuple[tuple[str, str], ...] = (),
+        ) -> ContainerInfo:
+            del mounts, runtime_id, environment
+            assert selected_user_id == user_id
+            creation_started.set()
+            await release_creation.wait()
+            return created
+
+        mgr._create_container = AsyncMock(side_effect=_create)
+        mgr._remove_container = AsyncMock(return_value=True)
+        ensure_task = asyncio.create_task(mgr.ensure_container(user_id, str(tmp_path)))
+        await creation_started.wait()
+        destroy_task = asyncio.create_task(mgr.destroy_container(user_id))
+        await asyncio.sleep(0)
+
+        assert not destroy_task.done()
+        release_creation.set()
+        ensured, safe_to_delete = await asyncio.gather(ensure_task, destroy_task)
+
+        assert ensured is created
+        assert safe_to_delete is True
+        assert user_id not in mgr._containers
+        mgr._remove_container.assert_awaited_once_with(created.container_id)
 
     @pytest.mark.asyncio
     async def test_max_container_count_allows_reusing_existing_container(self, tmp_path):
@@ -1039,6 +1330,34 @@ class TestContainerManager:
         assert run_call.kwargs["timeout"] == _PODMAN_RUN_TIMEOUT_S
 
     @pytest.mark.asyncio
+    async def test_create_container_cleans_started_container_when_socket_not_ready(self, tmp_path):
+        """Readiness failure must remove the started container and its cidfile."""
+        socket_base = str(tmp_path / "sockets")
+        settings = _make_settings(container_socket_base=socket_base)
+        user_id = "abcdef12345678901234567890abcdef"
+        container_id = "unready_container_123"
+        cidfile_path = Path(socket_base) / user_id / "container.cid"
+        mgr = ContainerManager(settings=settings)
+        mgr._initialized = True
+
+        async def _run(*args, **kwargs):
+            del args, kwargs
+            cidfile_path.write_text(container_id, encoding="utf-8")
+            return 0, container_id, ""
+
+        mgr._run_podman_waiting_for_exit = AsyncMock(side_effect=_run)
+        mgr._wait_for_socket = AsyncMock(side_effect=ContainerNotReadyError("not ready"))
+        mgr._remove_container = AsyncMock(return_value=True)
+
+        with pytest.raises(ContainerNotReadyError, match="not ready"):
+            await mgr.ensure_container(user_id, str(tmp_path))
+
+        mgr._remove_container.assert_awaited_once_with(container_id)
+        assert not cidfile_path.exists()
+        assert not mgr._pending_container_keys
+        assert user_id not in mgr._containers
+
+    @pytest.mark.asyncio
     async def test_create_container_does_not_wait_on_detached_run_pipe_eof(self, tmp_path):
         """Detached Podman run should finish when the Podman CLI exits, not when pipes close."""
         socket_base = str(tmp_path / "sockets")
@@ -1072,6 +1391,108 @@ class TestContainerManager:
         assert run_process is not None
         assert run_process.wait.await_count == 1
         assert run_process.communicate.await_count == 0
+
+    @pytest.mark.asyncio
+    async def test_cancelled_ensure_cleans_container_started_by_podman(self, tmp_path):
+        """Cancelling creation must remove the exact container reported by its cidfile."""
+        socket_base = str(tmp_path / "sockets")
+        settings = _make_settings(container_socket_base=socket_base)
+        user_id = "abcdef12345678901234567890abcdef"
+        container_id = "cancelled_container_123"
+        run_started = asyncio.Event()
+        run_wait_count = 0
+        removed_ids: list[str] = []
+        run_process = AsyncMock()
+        run_process.returncode = None
+
+        async def _wait_for_run() -> int:
+            nonlocal run_wait_count
+            run_wait_count += 1
+            if run_wait_count == 1:
+                run_started.set()
+                await asyncio.sleep(60)
+            return 0
+
+        run_process.wait = AsyncMock(side_effect=_wait_for_run)
+
+        async def _start_process(*args, **kwargs):
+            del kwargs
+            subcommand = args[1]
+            if subcommand == "run":
+                cidfile_path = Path(args[args.index("--cidfile") + 1])
+                run_process.kill = MagicMock(
+                    side_effect=lambda: cidfile_path.write_text(container_id, encoding="utf-8")
+                )
+                return run_process
+            if subcommand == "rm":
+                removed_ids.append(args[-1])
+            return _make_mock_process()
+
+        with patch(
+            "asyncio.create_subprocess_exec",
+            AsyncMock(side_effect=_start_process),
+        ):
+            mgr = ContainerManager(settings=settings)
+            mgr._initialized = True
+            task = asyncio.create_task(mgr.ensure_container(user_id, str(tmp_path)))
+            await run_started.wait()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        run_process.kill.assert_called_once_with()
+        assert removed_ids == [container_id]
+        assert not (Path(socket_base) / user_id / "container.cid").exists()
+        assert not mgr._pending_container_keys
+        assert user_id not in mgr._containers
+
+    @pytest.mark.asyncio
+    async def test_cancelled_ensure_cleans_started_container_by_validated_name(self, tmp_path):
+        """Cancellation without a container ID should clean the deterministic name."""
+        socket_base = str(tmp_path / "sockets")
+        settings = _make_settings(container_socket_base=socket_base)
+        user_id = "abcdef12345678901234567890abcdef"
+        run_started = asyncio.Event()
+        run_wait_count = 0
+        removed_names: list[str] = []
+        run_process = AsyncMock()
+        run_process.returncode = None
+        run_process.kill = MagicMock()
+
+        async def _wait_for_run() -> int:
+            nonlocal run_wait_count
+            run_wait_count += 1
+            if run_wait_count == 1:
+                run_started.set()
+                await asyncio.sleep(60)
+            return 0
+
+        run_process.wait = AsyncMock(side_effect=_wait_for_run)
+
+        async def _start_process(*args, **kwargs):
+            del kwargs
+            subcommand = args[1]
+            if subcommand == "run":
+                return run_process
+            if subcommand == "rm":
+                removed_names.append(args[-1])
+            return _make_mock_process()
+
+        with patch(
+            "asyncio.create_subprocess_exec",
+            AsyncMock(side_effect=_start_process),
+        ):
+            mgr = ContainerManager(settings=settings)
+            mgr._initialized = True
+            task = asyncio.create_task(mgr.ensure_container(user_id, str(tmp_path)))
+            await run_started.wait()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        assert removed_names == [f"yinshi-sidecar-{user_id}"]
+        assert not mgr._pending_container_keys
+        assert user_id not in mgr._containers
 
     @pytest.mark.asyncio
     async def test_run_podman_timeout_ignores_process_lookup_error(self, tmp_path):

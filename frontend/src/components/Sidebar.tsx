@@ -13,7 +13,11 @@ import { useAuth } from "../hooks/useAuth";
 import { useTheme } from "../hooks/useTheme";
 import { DEFAULT_SESSION_MODEL } from "../models/sessionModels";
 import { listRunnerRepositories } from "../runner/repositories";
-import { runtimeResourceId } from "../runtime/runtimeRef";
+import { resolveRuntimeRef } from "../runtime/resolveRuntime";
+import {
+  runtimeResourceId,
+  type UnresolvedRuntimeRef,
+} from "../runtime/runtimeRef";
 import {
   createRuntimeTransport,
   type RuntimeRef,
@@ -169,13 +173,14 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const navigate = useNavigate();
   const { status, email, logout } = useAuth();
   const { theme, toggle: toggleTheme } = useTheme();
-  const defaultRuntime: RuntimeRef = window.yinshiDesktop
-    ? { location: "local" }
-    : { location: "hosted" };
+  const requestedPrimaryRuntime = useMemo<UnresolvedRuntimeRef>(
+    () =>
+      window.yinshiDesktop ? { location: "local" } : { location: "hosted" },
+    [],
+  );
+  const [primaryRuntime, setPrimaryRuntime] = useState<RuntimeRef | null>(null);
   const [repos, setRepos] = useState<LocatedRepo[]>([]);
-  const [availableRuntimes, setAvailableRuntimes] = useState<RuntimeRef[]>([
-    defaultRuntime,
-  ]);
+  const [availableRuntimes, setAvailableRuntimes] = useState<RuntimeRef[]>([]);
   const [githubInstallations, setGithubInstallations] = useState<
     GitHubInstallation[]
   >([]);
@@ -190,13 +195,16 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
     setRepoLoadError(null);
     setLocationErrors([]);
     try {
-      const data = await api.get<Repo[]>("/api/repos");
+      const resolvedPrimary = await resolveRuntimeRef(requestedPrimaryRuntime);
+      const primaryTransport = createRuntimeTransport(resolvedPrimary);
+      const data = await primaryTransport.get<Repo[]>("/api/repos");
+      setPrimaryRuntime(resolvedPrimary);
       const locatedRepositories: LocatedRepo[] = data.map((repository) => ({
         repository,
-        runtime: defaultRuntime,
+        runtime: resolvedPrimary,
       }));
       const unavailableLocations: string[] = [];
-      const discoveredRuntimes: RuntimeRef[] = [defaultRuntime];
+      const discoveredRuntimes: RuntimeRef[] = [resolvedPrimary];
       if (window.yinshiDesktop !== undefined) {
         try {
           const hostedTransport = createRuntimeTransport({
@@ -269,12 +277,11 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
     }
 
     try {
-      const installationTransport = createRuntimeTransport(
-        window.yinshiDesktop ? { location: "hosted" } : defaultRuntime,
-      );
-      const data = await installationTransport.get<GitHubInstallation[]>(
-        "/api/github/installations",
-      );
+      const data = window.yinshiDesktop
+        ? await createRuntimeTransport({ location: "hosted" }).get<
+            GitHubInstallation[]
+          >("/api/github/installations")
+        : await api.get<GitHubInstallation[]>("/api/github/installations");
       setGithubInstallations(data);
     } catch {
       setGithubInstallations([]);
@@ -309,11 +316,8 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
     );
   }, [location.pathname, location.search, navigate, status]);
 
-  function handleImported(
-    repo: Repo | null,
-    runtime: RuntimeRef = defaultRuntime,
-  ) {
-    if (repo) {
+  function handleImported(repo: Repo | null, runtime?: RuntimeRef) {
+    if (repo && runtime) {
       setRepos((prev) => [{ repository: repo, runtime }, ...prev]);
       setRepoLoadError(null);
     }
@@ -346,14 +350,15 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
         </span>
         <button
           onClick={() => setShowImport(true)}
-          className="text-gray-500 hover:text-gray-300"
+          disabled={!primaryRuntime || loading}
+          className="text-gray-500 hover:text-gray-300 disabled:opacity-40"
           title="Add repository"
         >
           {PlusIcon}
         </button>
       </div>
 
-      {showImport && (
+      {showImport && availableRuntimes.length > 0 && (
         <ImportForm
           onDone={handleImported}
           canConnectGitHub={status === "authenticated"}
@@ -426,7 +431,8 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
 
       <button
         onClick={() => setShowImport(true)}
-        className="flex items-center gap-2 border-t border-gray-800 px-4 py-3 text-sm text-gray-500 hover:text-gray-300"
+        disabled={!primaryRuntime || loading}
+        className="flex items-center gap-2 border-t border-gray-800 px-4 py-3 text-sm text-gray-500 hover:text-gray-300 disabled:opacity-40"
       >
         {PlusIcon}
         Add repository
@@ -979,6 +985,11 @@ function ImportForm({
     runtimes.find(
       (runtime) => runtimeIdentity(runtime) === selectedRuntimeIdentity,
     ) ?? runtimes[0];
+  const localPathImportEnabled =
+    selectedRuntime.location === "local" ||
+    (import.meta.env.DEV &&
+      selectedRuntime.location === "hosted" &&
+      !desktopBridge);
 
   useEffect(() => {
     if (
@@ -1023,7 +1034,7 @@ function ImportForm({
       if (isGitUrl(value)) {
         body.remote_url = value;
       } else if (isLocalPath(value)) {
-        if (selectedRuntime.location !== "local") {
+        if (!localPathImportEnabled) {
           setError("Local paths can only be imported to This Mac.");
           return;
         }
@@ -1162,7 +1173,7 @@ function ImportForm({
       <input
         type="text"
         placeholder={
-          selectedRuntime.location === "local" && !desktopBridge
+          localPathImportEnabled
             ? "GitHub URL, user/repo, or local path"
             : "HTTPS GitHub URL or user/repo"
         }

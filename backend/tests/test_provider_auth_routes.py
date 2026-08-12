@@ -1,7 +1,8 @@
 """Tests for provider OAuth routes, including hosted manual callback input."""
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
+import pytest
 from fastapi.testclient import TestClient
 
 from tests.factories import make_mock_sidecar
@@ -16,6 +17,107 @@ def _tenant_sidecar_context() -> object:
         agent_dir=None,
         settings_payload=None,
     )
+
+
+def test_start_provider_auth_returns_503_when_container_retires_before_activity(
+    auth_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Provider work does not start without a current container reservation."""
+    from yinshi.config import Settings
+    from yinshi.main import app
+
+    settings = Settings(
+        container_enabled=True,
+        google_client_id="test-client",
+        google_client_secret="test-secret",
+        managed_runtime_provider="disabled",
+        _env_file=None,
+    )
+    monkeypatch.setattr("yinshi.services.sidecar_runtime.get_settings", lambda: settings)
+    container_manager = Mock()
+    container_manager.acquire_activity = AsyncMock(return_value=None)
+    container_manager.release_activity = AsyncMock()
+    create_sidecar = AsyncMock()
+    previous_manager = app.state.container_manager
+    app.state.container_manager = container_manager
+    try:
+        with (
+            patch(
+                "yinshi.api.auth_routes.resolve_tenant_sidecar_context",
+                new=AsyncMock(return_value=_tenant_sidecar_context()),
+            ),
+            patch(
+                "yinshi.api.auth_routes.create_sidecar_connection",
+                new=create_sidecar,
+            ),
+        ):
+            response = auth_client.post("/auth/providers/openai-codex/start")
+    finally:
+        app.state.container_manager = previous_manager
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "Agent environment temporarily unavailable"}
+    create_sidecar.assert_not_awaited()
+    container_manager.release_activity.assert_not_awaited()
+
+
+def test_start_provider_auth_installs_lease_before_releasing_activity(
+    auth_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """OAuth lease is active before the request reservation is released."""
+    from yinshi.config import Settings
+    from yinshi.main import app
+
+    settings = Settings(
+        container_enabled=True,
+        google_client_id="test-client",
+        google_client_secret="test-secret",
+        managed_runtime_provider="disabled",
+        _env_file=None,
+    )
+    monkeypatch.setattr("yinshi.services.sidecar_runtime.get_settings", lambda: settings)
+    cleanup_order: list[str] = []
+    reservation = object()
+    container_manager = Mock()
+    container_manager.acquire_activity = AsyncMock(return_value=reservation)
+    container_manager.release_activity = AsyncMock(
+        side_effect=lambda *_args: cleanup_order.append("release")
+    )
+    container_manager.protect = Mock(
+        side_effect=lambda *_args, **_kwargs: cleanup_order.append("protect")
+    )
+    mock_sidecar = AsyncMock()
+    mock_sidecar.start_oauth_flow.return_value = {
+        "flow_id": "flow-openai-codex",
+        "provider": "openai-codex",
+        "auth_url": "https://auth.openai.com/oauth/authorize",
+        "instructions": "Open the browser and sign in.",
+        "manual_input_required": False,
+        "manual_input_prompt": None,
+        "manual_input_submitted": False,
+    }
+    previous_manager = app.state.container_manager
+    app.state.container_manager = container_manager
+    try:
+        with (
+            patch(
+                "yinshi.api.auth_routes.resolve_tenant_sidecar_context",
+                new=AsyncMock(return_value=_tenant_sidecar_context()),
+            ),
+            patch(
+                "yinshi.api.auth_routes.create_sidecar_connection",
+                new=AsyncMock(return_value=mock_sidecar),
+            ),
+        ):
+            response = auth_client.post("/auth/providers/openai-codex/start")
+    finally:
+        app.state.container_manager = previous_manager
+
+    assert response.status_code == 200
+    assert cleanup_order == ["protect", "release"]
+    container_manager.release_activity.assert_awaited_once_with(reservation)
 
 
 def test_start_provider_auth_exposes_manual_input_metadata(auth_client: TestClient) -> None:

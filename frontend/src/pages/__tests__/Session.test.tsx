@@ -151,6 +151,15 @@ function mockSessionApi(
       ? sessionMetadataValue
       : sessionMetadata(sessionMetadataValue);
   apiGetMock.mockImplementation((path: string) => {
+    if (path === "/api/runtime") {
+      return Promise.resolve({
+        provider: "local",
+        status: "ready",
+        artifact_version: null,
+        last_error: null,
+        runner_public_key: null,
+      });
+    }
     if (path === `/api/sessions/${TEST_SESSION_ID}/messages`) {
       return Promise.resolve(messages);
     }

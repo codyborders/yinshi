@@ -398,10 +398,7 @@ def update_provider_connection_secret(
             (normalized_connection_id, normalized_user_id),
         ).fetchone()
     if row is None:
-        logger.warning(
-            "Skipping refresh for missing provider connection %s",
-            normalized_connection_id[:8],
-        )
+        logger.warning("Skipping refresh for missing provider connection")
         return
     normalized_secret = _normalize_connection_secret(
         get_provider_metadata(row["provider"]),

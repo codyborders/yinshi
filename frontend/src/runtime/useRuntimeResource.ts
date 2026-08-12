@@ -36,13 +36,18 @@ export function useRuntimeResource(encodedId: string | undefined): RuntimeResour
       };
     }
 
+    const controller = new AbortController();
     setState({ resource: null, loading: true, error: null });
     void (async () => {
       try {
         const parsed = parseRuntimeResourceId(encodedId, {
           desktop: window.yinshiDesktop !== undefined,
         });
-        const runtime = await resolveRuntimeRef(parsed.runtime);
+        const runtime = await resolveRuntimeRef(
+          parsed.runtime,
+          {},
+          controller.signal,
+        );
         if (!cancelled) {
           setState({
             resource: {
@@ -67,6 +72,7 @@ export function useRuntimeResource(encodedId: string | undefined): RuntimeResour
 
     return () => {
       cancelled = true;
+      controller.abort();
     };
   }, [encodedId]);
 

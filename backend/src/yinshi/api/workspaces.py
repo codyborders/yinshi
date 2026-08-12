@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["workspaces"])
 
 _UPDATABLE_COLUMNS = {"state"}
+_RUNTIME_BUSY_DETAIL = "Workspace is still stopping; deletion can be retried"
 
 
 def _check_repo_owner(
@@ -134,15 +135,19 @@ async def remove_workspace(workspace_id: str, request: Request) -> None:
             elif tenant is not None:
                 container_manager = getattr(request.app.state, "container_manager", None)
                 if container_manager is not None:
-                    await container_manager.destroy_container(
+                    container_removed = await container_manager.destroy_container(
                         tenant.user_id,
                         runtime_id=workspace_id,
                     )
+                    if not container_removed:
+                        raise HTTPException(status_code=409, detail=_RUNTIME_BUSY_DETAIL)
                 elif get_settings().container_enabled:
                     raise RuntimeError("container manager is unavailable")
             await delete_workspace(db, workspace_id, tenant=tenant)
         except (WorkspaceNotFoundError, RepoNotFoundError):
             raise HTTPException(status_code=404, detail="Workspace not found")
+        except HTTPException:
+            raise
         except Exception:
             logger.error("Failed to delete workspace")
             raise HTTPException(status_code=500, detail="Failed to delete workspace")

@@ -12,6 +12,10 @@ export type RuntimeRef =
   | { readonly location: "local" }
   | { readonly location: "hosted" }
   | {
+      readonly location: "managed";
+      readonly runnerPublicKey: string;
+    }
+  | {
       readonly location: "byoc";
       readonly runnerId: string;
       readonly runnerPublicKey: string;
@@ -91,7 +95,7 @@ const PROVIDER_CONNECTION_MEMBER_PATH = new RegExp(
 const PROVIDER_AUTH_START_PATH = /^\/auth\/providers\/[a-z0-9-]{1,64}\/start$/;
 const PROVIDER_AUTH_CALLBACK_PATH =
   /^\/auth\/providers\/[a-z0-9-]{1,64}\/callback$/;
-const BYOC_SESSION_BYTES = 262_144;
+const RUNTIME_TRANSPORT_SESSION_BYTES = 16 * 1024 * 1024;
 
 function requiredScope(method: RuntimeMethod, path: string): string {
   const repositoryCollection = path === "/api/repos";
@@ -202,30 +206,30 @@ function requiredScope(method: RuntimeMethod, path: string): string {
   if (method === "PATCH" && path === "/api/settings/pi-config/categories") {
     return "pi.configure";
   }
-  throw new Error("BYOC runtime method or path is not allowed");
+  throw new Error("Remote runtime method or path is not allowed");
 }
 
-function parseByocPath(path: string): {
+function parseRemotePath(path: string): {
   readonly pathname: string;
   readonly query: Readonly<Record<string, string>>;
 } {
   if (typeof path !== "string" || !path.startsWith("/") || path.includes("#")) {
-    throw new Error("BYOC runtime path is invalid");
+    throw new Error("Remote runtime path is invalid");
   }
   const [pathname, ...queryParts] = path.split("?");
   if (queryParts.length > 1 || !pathname) {
-    throw new Error("BYOC runtime path is invalid");
+    throw new Error("Remote runtime path is invalid");
   }
   const query: Record<string, string> = {};
   if (queryParts.length === 1) {
     const rawQuery = queryParts[0];
     if (!rawQuery) {
-      throw new Error("BYOC runtime query is invalid");
+      throw new Error("Remote runtime query is invalid");
     }
     for (const pair of rawQuery.split("&")) {
       const separatorIndex = pair.indexOf("=");
       if (separatorIndex <= 0) {
-        throw new Error("BYOC runtime query is invalid");
+        throw new Error("Remote runtime query is invalid");
       }
       let key: string;
       let value: string;
@@ -233,10 +237,10 @@ function parseByocPath(path: string): {
         key = decodeURIComponent(pair.slice(0, separatorIndex));
         value = decodeURIComponent(pair.slice(separatorIndex + 1));
       } catch {
-        throw new Error("BYOC runtime query is invalid");
+        throw new Error("Remote runtime query is invalid");
       }
       if (key in query) {
-        throw new Error("BYOC runtime query keys must be unique");
+        throw new Error("Remote runtime query keys must be unique");
       }
       query[key] = value;
     }
@@ -244,8 +248,32 @@ function parseByocPath(path: string): {
   return { pathname, query };
 }
 
+function isCanonicalRunnerPublicKey(value: string): boolean {
+  if (!/^[A-Za-z0-9_-]{43}$/u.test(value)) {
+    return false;
+  }
+  try {
+    const binary = atob(`${value.replace(/-/gu, "+").replace(/_/gu, "/")}=`);
+    return (
+      binary.length === 32 &&
+      btoa(binary)
+        .replace(/\+/gu, "-")
+        .replace(/\//gu, "_")
+        .replace(/=+$/u, "") === value
+    );
+  } catch {
+    return false;
+  }
+}
+
 function validateRuntime(runtime: RuntimeRef): void {
   if (runtime.location === "local" || runtime.location === "hosted") {
+    return;
+  }
+  if (runtime.location === "managed") {
+    if (!isCanonicalRunnerPublicKey(runtime.runnerPublicKey)) {
+      throw new Error("Managed runner public key is invalid");
+    }
     return;
   }
   if (!runtime.runnerId || runtime.runnerId.length > 256) {
@@ -283,8 +311,8 @@ export function createRuntimeTransport(
     path: string,
     body?: unknown,
   ): Promise<T> {
-    if (runtime.location === "byoc") {
-      const parsedPath = parseByocPath(path);
+    if (runtime.location === "byoc" || runtime.location === "managed") {
+      const parsedPath = parseRemotePath(path);
       const scope = requiredScope(method, parsedPath.pathname);
       return runtimeDependencies.encryptedRequest<T>({
         expectedRunnerPublicKey: runtime.runnerPublicKey,
@@ -293,7 +321,10 @@ export function createRuntimeTransport(
         path: parsedPath.pathname,
         query: parsedPath.query,
         body: body ?? null,
-        maxSessionBytes: BYOC_SESSION_BYTES,
+        maxSessionBytes: RUNTIME_TRANSPORT_SESSION_BYTES,
+        ...(runtime.location === "managed"
+          ? { capabilityEndpoint: "/api/runtime/capabilities" as const }
+          : {}),
       });
     }
     if (method === "GET") {
@@ -320,10 +351,10 @@ export function createRuntimeTransport(
     put: <T>(path: string, body?: unknown) => request<T>("PUT", path, body),
     delete: (path: string) => request<void>("DELETE", path),
     upload: <T>(path: string, file: File) => {
-      if (runtime.location === "byoc") {
+      if (runtime.location === "byoc" || runtime.location === "managed") {
         if (path !== "/api/settings/pi-config/upload") {
           return Promise.reject(
-            new Error("BYOC runtime upload path is not allowed"),
+            new Error("Remote runtime upload path is not allowed"),
           );
         }
         return uploadEncryptedPiConfig<T>(runtime, file);

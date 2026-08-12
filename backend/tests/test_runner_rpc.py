@@ -11,6 +11,7 @@ import base64
 import hashlib
 import json
 import sqlite3
+import struct
 import uuid
 from collections.abc import Callable
 from pathlib import Path
@@ -32,7 +33,7 @@ from yinshi.services.runner_noise_session import (
 from yinshi.services.runner_rpc import EncryptedRunnerRpcSession
 from yinshi.tenant import TenantContext
 from yinshi.worker_auth import WorkerPrincipal
-from yinshi.worker_runtime import WorkerHttpDispatcher
+from yinshi.worker_runtime import WorkerHttpDispatcher, WorkerHttpResponse
 
 _RUNNER_PRIVATE_KEY = bytes.fromhex(
     "4a3acbfdb163dec651dfa3194dece676d437029c62a408b4c5ea9114246e4893"
@@ -40,6 +41,8 @@ _RUNNER_PRIVATE_KEY = bytes.fromhex(
 _CLIENT_PRIVATE_KEY = bytes.fromhex(
     "e61ef9919cde45dd5f82166404bd08e38bceb5dfdfded0a34c8df7ed542214d1"
 )
+_USER_ID = "user-1"
+_WORKSPACE_ID = "11111111111141118111111111111111"
 
 
 def _public_key(private_key: bytes) -> bytes:
@@ -62,6 +65,7 @@ async def _open_session(
     *,
     scopes: list[str] | None = None,
     dispatcher_factory: Callable[[str], WorkerHttpDispatcher] | None = None,
+    max_session_bytes: int = 65_536,
 ) -> tuple[EncryptedRunnerRpcSession, NoiseConnection]:
     runner_public_key = _public_key(_RUNNER_PRIVATE_KEY)
     client_public_key = _public_key(_CLIENT_PRIVATE_KEY)
@@ -71,7 +75,7 @@ async def _open_session(
         runner_public_key=_base64url(runner_public_key),
         initiator_public_key=_base64url(client_public_key),
         scopes=scopes or ["worker.health"],
-        max_session_bytes=65_536,
+        max_session_bytes=max_session_bytes,
         current_time=1_900_000_000,
     )
     signing_key = base64.urlsafe_b64decode(runner_capability_signing_public_key() + "=")
@@ -97,6 +101,146 @@ async def _open_session(
     response = await rpc_session.handle_frame(first_message, current_time=1_900_000_001)
     assert json.loads(initiator.read_message(response))["transfer_id"] == claims.transfer_id
     return rpc_session, initiator
+
+
+_TRANSPORT_HEADER = struct.Struct(">4sBIII")
+_TRANSPORT_MAGIC = b"YRP1"
+_TRANSPORT_REQUEST = 1
+_TRANSPORT_ACK = 2
+_TRANSPORT_RESPONSE = 3
+_TRANSPORT_PULL = 4
+_TRANSPORT_PAYLOAD_BYTES_MAX = 65_535 - 16 - _TRANSPORT_HEADER.size
+
+
+def _transport_frames(payload: bytes, *, kind: int) -> list[bytes]:
+    count = max(
+        1, (len(payload) + _TRANSPORT_PAYLOAD_BYTES_MAX - 1) // _TRANSPORT_PAYLOAD_BYTES_MAX
+    )
+    frames: list[bytes] = []
+    for index in range(count):
+        start = index * _TRANSPORT_PAYLOAD_BYTES_MAX
+        chunk = payload[start : start + _TRANSPORT_PAYLOAD_BYTES_MAX]
+        frames.append(
+            _TRANSPORT_HEADER.pack(_TRANSPORT_MAGIC, kind, index, count, len(payload)) + chunk
+        )
+    return frames
+
+
+def _transport_request_payload(
+    *,
+    method: str,
+    path: str,
+    sequence: int,
+    body: object = None,
+    query: dict[str, str] | None = None,
+) -> tuple[bytes, str]:
+    request_id = str(uuid.uuid4())
+    payload = json.dumps(
+        {
+            "body": body,
+            "method": method,
+            "path": path,
+            "query": query or {},
+            "request_id": request_id,
+            "sequence": sequence,
+            "type": "request",
+            "v": 2,
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return payload, request_id
+
+
+async def _transport_round_trip(
+    session: EncryptedRunnerRpcSession,
+    initiator: NoiseConnection,
+    request_payload: bytes,
+) -> bytes:
+    response_frame: bytes | None = None
+    request_frames = _transport_frames(request_payload, kind=_TRANSPORT_REQUEST)
+    for index, frame in enumerate(request_frames):
+        encrypted_response = await session.handle_frame(
+            bytes(initiator.encrypt(frame)),
+            current_time=1_900_000_002,
+        )
+        plaintext_response = bytes(initiator.decrypt(encrypted_response))
+        if index + 1 < len(request_frames):
+            header = _TRANSPORT_HEADER.unpack(plaintext_response[: _TRANSPORT_HEADER.size])
+            assert header == (
+                _TRANSPORT_MAGIC,
+                _TRANSPORT_ACK,
+                index,
+                len(request_frames),
+                len(request_payload),
+            )
+            assert len(plaintext_response) == _TRANSPORT_HEADER.size
+        else:
+            response_frame = plaintext_response
+
+    assert response_frame is not None
+    magic, kind, index, count, total = _TRANSPORT_HEADER.unpack(
+        response_frame[: _TRANSPORT_HEADER.size]
+    )
+    assert (magic, kind, index) == (_TRANSPORT_MAGIC, _TRANSPORT_RESPONSE, 0)
+    response = bytearray(total)
+    first_payload = response_frame[_TRANSPORT_HEADER.size :]
+    response[0 : len(first_payload)] = first_payload
+    for response_index in range(1, count):
+        pull = _TRANSPORT_HEADER.pack(
+            _TRANSPORT_MAGIC,
+            _TRANSPORT_PULL,
+            response_index,
+            count,
+            total,
+        )
+        encrypted_fragment = await session.handle_frame(
+            bytes(initiator.encrypt(pull)),
+            current_time=1_900_000_003,
+        )
+        fragment = bytes(initiator.decrypt(encrypted_fragment))
+        fragment_header = _TRANSPORT_HEADER.unpack(fragment[: _TRANSPORT_HEADER.size])
+        assert fragment_header == (
+            _TRANSPORT_MAGIC,
+            _TRANSPORT_RESPONSE,
+            response_index,
+            count,
+            total,
+        )
+        start = response_index * _TRANSPORT_PAYLOAD_BYTES_MAX
+        fragment_payload = fragment[_TRANSPORT_HEADER.size :]
+        response[start : start + len(fragment_payload)] = fragment_payload
+    return bytes(response)
+
+
+class _LargeResponseDispatcher(WorkerHttpDispatcher):
+    """Test dispatcher that exercises RPC transport above worker route limits."""
+
+    def __init__(self, *, expected_body: object, response_body: object) -> None:
+        self.expected_body = expected_body
+        self.response_body = response_body
+
+    @property
+    def user_id(self) -> str:
+        return _USER_ID
+
+    async def request(
+        self,
+        *,
+        method: str,
+        path: str,
+        body: object,
+        query: dict[str, str] | None = None,
+    ) -> WorkerHttpResponse:
+        assert method == "PUT"
+        assert path == f"/api/workspaces/{_WORKSPACE_ID}/files/content"
+        assert body == self.expected_body
+        assert query == {"path": "large.txt"}
+        return WorkerHttpResponse(
+            status_code=200,
+            body=self.response_body,
+            content_type="application/json",
+        )
 
 
 def _encrypted_request(
@@ -130,11 +274,11 @@ def _encrypted_request(
 
 
 @pytest.mark.asyncio
-async def test_encrypted_health_rpc_returns_allowlisted_metadata(
+async def test_legacy_client_receives_legacy_response_when_both_fit(
     tmp_path: Path,
     db: sqlite3.Connection,
 ) -> None:
-    """Health request crosses the authenticated channel without relay plaintext."""
+    """A legacy client keeps unframed request and response plaintext when both fit."""
     session, initiator = await _open_session(tmp_path)
     request, request_id = _encrypted_request(
         initiator,
@@ -741,6 +885,160 @@ async def test_encrypted_workspace_and_session_crud_use_scoped_worker_routes(
     assert "sk-ant-encrypted-worker-test" not in json.dumps(list_provider_response)
     await prompt_journal.close()
     await terminal_journal.close_all()
+
+
+@pytest.mark.asyncio
+async def test_legacy_request_transitions_to_fragments_for_large_response(
+    tmp_path: Path,
+    db: sqlite3.Connection,
+) -> None:
+    """A legacy request receives framed output only when its response exceeds Noise."""
+    expected_body = {"content": "small"}
+    response_body = {"content": "r" * 100_000}
+    dispatcher = _LargeResponseDispatcher(
+        expected_body=expected_body,
+        response_body=response_body,
+    )
+    session, initiator = await _open_session(
+        tmp_path,
+        scopes=["files.write"],
+        dispatcher_factory=lambda _user_id: dispatcher,
+        max_session_bytes=1 * 1_024 * 1_024,
+    )
+    request, request_id = _encrypted_request(
+        initiator,
+        method="PUT",
+        path=f"/api/workspaces/{_WORKSPACE_ID}/files/content",
+        sequence=0,
+        body=expected_body,
+        version=2,
+        query={"path": "large.txt"},
+    )
+
+    encrypted_first = await session.handle_frame(request, current_time=1_900_000_002)
+    first = bytes(initiator.decrypt(encrypted_first))
+    magic, kind, index, count, total = _TRANSPORT_HEADER.unpack(first[: _TRANSPORT_HEADER.size])
+    assert (magic, kind, index) == (_TRANSPORT_MAGIC, _TRANSPORT_RESPONSE, 0)
+    response = bytearray(total)
+    first_payload = first[_TRANSPORT_HEADER.size :]
+    response[0 : len(first_payload)] = first_payload
+    for response_index in range(1, count):
+        pull = _TRANSPORT_HEADER.pack(
+            _TRANSPORT_MAGIC,
+            _TRANSPORT_PULL,
+            response_index,
+            count,
+            total,
+        )
+        encrypted_fragment = await session.handle_frame(
+            bytes(initiator.encrypt(pull)),
+            current_time=1_900_000_003,
+        )
+        fragment = bytes(initiator.decrypt(encrypted_fragment))
+        start = response_index * _TRANSPORT_PAYLOAD_BYTES_MAX
+        fragment_payload = fragment[_TRANSPORT_HEADER.size :]
+        response[start : start + len(fragment_payload)] = fragment_payload
+
+    decoded = json.loads(response)
+    assert decoded["request_id"] == request_id
+    assert decoded["body"] == response_body
+
+
+@pytest.mark.asyncio
+async def test_encrypted_rpc_fragments_large_requests_and_responses(
+    tmp_path: Path,
+    db: sqlite3.Connection,
+) -> None:
+    """Bounded encrypted fragments carry every supported large RPC payload."""
+    file_content = "f" * (512 * 1_024)
+    prompt = "p" * 100_000
+    expected_body = {"content": file_content, "prompt": prompt}
+    generic_body = "r" * (8 * 1_024 * 1_024)
+    response_body = {
+        "event": "e" * (1 * 1_024 * 1_024),
+        "generic": generic_body,
+    }
+    dispatcher = _LargeResponseDispatcher(
+        expected_body=expected_body,
+        response_body=response_body,
+    )
+    session, initiator = await _open_session(
+        tmp_path,
+        scopes=["files.write"],
+        dispatcher_factory=lambda _user_id: dispatcher,
+        max_session_bytes=32 * 1_024 * 1_024,
+    )
+    request_payload, request_id = _transport_request_payload(
+        method="PUT",
+        path=f"/api/workspaces/{_WORKSPACE_ID}/files/content",
+        sequence=0,
+        body=expected_body,
+        query={"path": "large.txt"},
+    )
+
+    response_payload = await _transport_round_trip(session, initiator, request_payload)
+    response = json.loads(response_payload)
+
+    assert response["request_id"] == request_id
+    assert response["body"] == response_body
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid_stream", ["out-of-order", "excessive", "truncated"])
+async def test_encrypted_rpc_rejects_invalid_fragment_streams_and_fails_closed(
+    invalid_stream: str,
+    tmp_path: Path,
+    db: sqlite3.Connection,
+) -> None:
+    """Invalid fragment metadata closes the encrypted RPC session."""
+    session, initiator = await _open_session(
+        tmp_path,
+        max_session_bytes=4 * 1_024 * 1_024,
+    )
+    payload, _ = _transport_request_payload(
+        method="GET",
+        path="/health",
+        sequence=0,
+        body={"value": "x" * 70_000},
+    )
+    frames = _transport_frames(payload, kind=_TRANSPORT_REQUEST)
+    if invalid_stream == "out-of-order":
+        invalid_frame = frames[1]
+    elif invalid_stream == "excessive":
+        invalid_frame = (
+            _TRANSPORT_HEADER.pack(
+                _TRANSPORT_MAGIC,
+                _TRANSPORT_REQUEST,
+                0,
+                1_000,
+                2 * 1_024 * 1_024 + 1,
+            )
+            + b"x"
+        )
+    else:
+        first_response = await session.handle_frame(
+            bytes(initiator.encrypt(frames[0])),
+            current_time=1_900_000_002,
+        )
+        initiator.decrypt(first_response)
+        invalid_frame = _TRANSPORT_HEADER.pack(
+            _TRANSPORT_MAGIC,
+            _TRANSPORT_PULL,
+            1,
+            2,
+            len(payload),
+        )
+
+    with pytest.raises(ValueError, match="fragment"):
+        await session.handle_frame(
+            bytes(initiator.encrypt(invalid_frame)),
+            current_time=1_900_000_003,
+        )
+    with pytest.raises(RuntimeError, match="failed"):
+        await session.handle_frame(
+            bytes(initiator.encrypt(frames[0])),
+            current_time=1_900_000_004,
+        )
 
 
 @pytest.mark.asyncio

@@ -255,6 +255,434 @@ def test_required_database_encryption_uses_sqlcipher_and_rejects_wrong_key(
         get_settings.cache_clear()
 
 
+def test_application_plaintext_migration_durability_order(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Application migration should sync rollback and replacement in durable order."""
+    import os
+    import shutil
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    import yinshi.db as db_module
+
+    database_path = tmp_path / "ordered-application.db"
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("CREATE TABLE marker (value TEXT NOT NULL)")
+        connection.execute("INSERT INTO marker VALUES ('original')")
+
+    class ExportConnection:
+        def __init__(self, path: str) -> None:
+            self.connection = sqlite3.connect(path)
+            self.target_path: str | None = None
+
+        def execute(self, statement: str, parameters=()):
+            if statement.startswith("ATTACH DATABASE"):
+                self.target_path = parameters[0]
+                return self.connection.execute("SELECT 1")
+            if statement.startswith("SELECT sqlcipher_export"):
+                assert self.target_path is not None
+                shutil.copyfile(database_path, self.target_path)
+                return self.connection.execute("SELECT 1")
+            if statement.startswith("DETACH DATABASE"):
+                return self.connection.execute("SELECT 1")
+            return self.connection.execute(statement, parameters)
+
+        def close(self) -> None:
+            self.connection.close()
+
+    fake_sqlcipher = SimpleNamespace(
+        connect=lambda path: ExportConnection(path),
+        DatabaseError=sqlite3.DatabaseError,
+    )
+    events: list[str] = []
+    original_replace = os.replace
+    original_unlink = os.unlink
+
+    def create_rollback(source_path: str, rollback_path: str) -> None:
+        events.append("copy:rollback")
+        shutil.copyfile(source_path, rollback_path)
+        os.chmod(rollback_path, 0o600)
+
+    def replace(source_path: str, target_path: str) -> None:
+        events.append(f"replace:{Path(source_path).name}->{Path(target_path).name}")
+        original_replace(source_path, target_path)
+
+    def unlink(path: str) -> None:
+        events.append(f"unlink:{Path(path).name}")
+        original_unlink(path)
+
+    monkeypatch.setattr(db_module, "_validate_encrypted_database", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(db_module, "_create_private_rollback_copy", create_rollback, raising=False)
+    monkeypatch.setattr(
+        db_module,
+        "_fsync_file",
+        lambda path: events.append(f"fsync:{Path(path).name}"),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        db_module,
+        "_fsync_parent_directory",
+        lambda path: events.append(f"sync-parent:{Path(path).name}"),
+        raising=False,
+    )
+    monkeypatch.setattr(db_module.os, "replace", replace)
+    monkeypatch.setattr(db_module.os, "unlink", unlink)
+
+    db_module._migrate_plaintext_application_database(
+        str(database_path),
+        sqlcipher_module=fake_sqlcipher,
+        database_key=b"k" * 32,
+    )
+
+    assert events == [
+        "fsync:ordered-application.db.encrypted.tmp",
+        "copy:rollback",
+        "fsync:ordered-application.db.plaintext.rollback",
+        "sync-parent:ordered-application.db",
+        "replace:ordered-application.db.encrypted.tmp->ordered-application.db",
+        "sync-parent:ordered-application.db",
+        "fsync:ordered-application.db",
+        "sync-parent:ordered-application.db",
+        "unlink:ordered-application.db.plaintext.rollback",
+        "sync-parent:ordered-application.db",
+    ]
+
+
+def test_init_db_preserves_plaintext_database_when_wal_checkpoint_is_busy(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Busy WAL checkpoint must stop initialization without replacing existing data."""
+    from types import SimpleNamespace
+
+    import yinshi.db as db_module
+    from yinshi.config import get_settings
+
+    database_path = tmp_path / "busy-application.db"
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("CREATE TABLE marker (value TEXT NOT NULL)")
+        connection.execute("INSERT INTO marker VALUES ('original')")
+
+    class Result:
+        def fetchone(self) -> tuple[int, int, int]:
+            return (1, 4, 2)
+
+    class SourceConnection:
+        def __init__(self, path: str) -> None:
+            self.connection = sqlite3.connect(path)
+
+        def execute(self, statement: str, parameters=()):
+            if statement.startswith("PRAGMA wal_checkpoint"):
+                return Result()
+            return self.connection.execute(statement, parameters)
+
+        def close(self) -> None:
+            self.connection.close()
+
+    fake_sqlcipher = SimpleNamespace(
+        connect=lambda path: SourceConnection(path),
+        DatabaseError=sqlite3.DatabaseError,
+    )
+    events: list[str] = []
+    monkeypatch.setenv("DB_PATH", str(database_path))
+    monkeypatch.setenv("TENANT_DB_ENCRYPTION", "required")
+    monkeypatch.setenv("ENCRYPTION_PEPPER", "a" * 64)
+    get_settings.cache_clear()
+    monkeypatch.setattr(db_module, "_load_sqlcipher_module", lambda: fake_sqlcipher)
+    monkeypatch.setattr(
+        db_module,
+        "_open_keyed_connection",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            db_module.DatabaseEncryptionError("plaintext")
+        ),
+    )
+    monkeypatch.setattr(
+        db_module,
+        "_remove_sqlite_sidecars",
+        lambda _path: events.append("remove-sidecars"),
+    )
+    monkeypatch.setattr(
+        db_module.os,
+        "replace",
+        lambda _source, _target: events.append("replace"),
+    )
+
+    with pytest.raises(db_module.DatabaseEncryptionError, match="WAL checkpoint"):
+        db_module.init_db()
+
+    assert events == []
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute("SELECT value FROM marker").fetchone()[0] == "original"
+
+
+def test_application_migration_failure_durably_restores_original(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Application migration failure should restore and sync plaintext primary."""
+    import os
+    import shutil
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    import yinshi.db as db_module
+
+    database_path = tmp_path / "restore-application.db"
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("CREATE TABLE marker (value TEXT NOT NULL)")
+        connection.execute("INSERT INTO marker VALUES ('original')")
+
+    class ExportConnection:
+        def __init__(self, path: str) -> None:
+            self.connection = sqlite3.connect(path)
+            self.target_path: str | None = None
+
+        def execute(self, statement: str, parameters=()):
+            if statement.startswith("ATTACH DATABASE"):
+                self.target_path = parameters[0]
+                return self.connection.execute("SELECT 1")
+            if statement.startswith("SELECT sqlcipher_export"):
+                assert self.target_path is not None
+                shutil.copyfile(database_path, self.target_path)
+                return self.connection.execute("SELECT 1")
+            if statement.startswith("DETACH DATABASE"):
+                return self.connection.execute("SELECT 1")
+            return self.connection.execute(statement, parameters)
+
+        def close(self) -> None:
+            self.connection.close()
+
+    fake_sqlcipher = SimpleNamespace(
+        connect=lambda path: ExportConnection(path),
+        DatabaseError=sqlite3.DatabaseError,
+    )
+    validation_count = 0
+
+    def validate(*_args, **_kwargs) -> None:
+        nonlocal validation_count
+        validation_count += 1
+        if validation_count == 2:
+            raise db_module.DatabaseEncryptionError("replacement invalid")
+
+    events: list[str] = []
+    original_replace = os.replace
+
+    def replace(source_path: str, target_path: str) -> None:
+        events.append(f"replace:{Path(source_path).name}->{Path(target_path).name}")
+        original_replace(source_path, target_path)
+
+    monkeypatch.setattr(db_module, "_validate_encrypted_database", validate)
+    monkeypatch.setattr(
+        db_module,
+        "_create_private_rollback_copy",
+        lambda source, rollback: shutil.copyfile(source, rollback),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        db_module,
+        "_fsync_file",
+        lambda path: events.append(f"fsync:{Path(path).name}"),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        db_module,
+        "_fsync_parent_directory",
+        lambda path: events.append(f"sync-parent:{Path(path).name}"),
+        raising=False,
+    )
+    monkeypatch.setattr(db_module.os, "replace", replace)
+
+    with pytest.raises(db_module.DatabaseEncryptionError, match="replacement invalid"):
+        db_module._migrate_plaintext_application_database(
+            str(database_path),
+            sqlcipher_module=fake_sqlcipher,
+            database_key=b"k" * 32,
+        )
+
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute("SELECT value FROM marker").fetchone()[0] == "original"
+    restore_index = events.index(
+        "replace:restore-application.db.plaintext.rollback->restore-application.db"
+    )
+    assert events[restore_index + 1 :] == [
+        "fsync:restore-application.db",
+        "sync-parent:restore-application.db",
+    ]
+
+
+def test_init_db_recovers_rollback_when_encryption_policy_is_disabled(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Policy changes must not create an empty primary beside the only valid rollback."""
+    import os
+    from pathlib import Path
+
+    import yinshi.db as db_module
+    from yinshi.config import get_settings
+
+    database_path = tmp_path / "policy-change.db"
+    rollback_path = Path(f"{database_path}.plaintext.rollback")
+    with sqlite3.connect(rollback_path) as connection:
+        connection.execute("CREATE TABLE marker (value TEXT NOT NULL)")
+        connection.execute("INSERT INTO marker VALUES ('durable')")
+    os.chmod(rollback_path, 0o600)
+    monkeypatch.setenv("DB_PATH", str(database_path))
+    monkeypatch.setenv("TENANT_DB_ENCRYPTION", "disabled")
+    get_settings.cache_clear()
+
+    db_module.init_db()
+
+    assert database_path.exists()
+    assert not rollback_path.exists()
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute("SELECT value FROM marker").fetchone()[0] == "durable"
+
+
+def test_restart_recovers_application_rollback_when_primary_is_absent(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Restart recovery should restore the only valid application database."""
+    import os
+    from pathlib import Path
+
+    import yinshi.db as db_module
+
+    database_path = tmp_path / "restart-application.db"
+    rollback_path = Path(f"{database_path}.plaintext.rollback")
+    with sqlite3.connect(rollback_path) as connection:
+        connection.execute("CREATE TABLE marker (value TEXT NOT NULL)")
+        connection.execute("INSERT INTO marker VALUES ('durable')")
+    os.chmod(rollback_path, 0o600)
+
+    events: list[str] = []
+    monkeypatch.setattr(
+        db_module,
+        "_fsync_file",
+        lambda path: events.append(f"fsync:{Path(path).name}"),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        db_module,
+        "_fsync_parent_directory",
+        lambda path: events.append(f"sync-parent:{Path(path).name}"),
+        raising=False,
+    )
+
+    db_module._recover_plaintext_migration_rollback(str(database_path))
+
+    assert database_path.exists()
+    assert not rollback_path.exists()
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute("SELECT value FROM marker").fetchone()[0] == "durable"
+    assert events == [
+        "fsync:restart-application.db",
+        "sync-parent:restart-application.db",
+    ]
+
+
+def test_init_db_rejects_symlink_migration_rollback(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Initialization must not recover a rollback through symlink indirection."""
+    import os
+
+    import yinshi.db as db_module
+    from yinshi.config import get_settings
+
+    database_path = tmp_path / "symlink-primary.db"
+    target_path = tmp_path / "symlink-target.db"
+    rollback_path = tmp_path / "symlink-primary.db.plaintext.rollback"
+    with sqlite3.connect(target_path) as connection:
+        connection.execute("CREATE TABLE marker (value TEXT NOT NULL)")
+        connection.execute("INSERT INTO marker VALUES ('target')")
+    os.chmod(target_path, 0o600)
+    rollback_path.symlink_to(target_path)
+    monkeypatch.setenv("DB_PATH", str(database_path))
+    monkeypatch.setenv("TENANT_DB_ENCRYPTION", "disabled")
+    get_settings.cache_clear()
+
+    with pytest.raises(db_module.DatabaseEncryptionError, match="trusted regular file"):
+        db_module.init_db()
+
+    assert not database_path.exists()
+    assert rollback_path.is_symlink()
+    with sqlite3.connect(target_path) as connection:
+        assert connection.execute("SELECT value FROM marker").fetchone()[0] == "target"
+
+
+def test_init_db_rejects_changed_migration_rollback_inode(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Initialization must reject a rollback path that differs from its open file."""
+    import os
+    from types import SimpleNamespace
+
+    import yinshi.db as db_module
+    from yinshi.config import get_settings
+
+    database_path = tmp_path / "changed-primary.db"
+    rollback_path = tmp_path / "changed-primary.db.plaintext.rollback"
+    with sqlite3.connect(rollback_path) as connection:
+        connection.execute("CREATE TABLE marker (value TEXT NOT NULL)")
+    os.chmod(rollback_path, 0o600)
+    original_lstat = os.lstat
+
+    def changed_lstat(path: str):
+        result = original_lstat(path)
+        if os.fspath(path) == os.fspath(rollback_path):
+            return SimpleNamespace(
+                st_mode=result.st_mode,
+                st_uid=result.st_uid,
+                st_dev=result.st_dev,
+                st_ino=result.st_ino + 1,
+                st_nlink=result.st_nlink,
+            )
+        return result
+
+    monkeypatch.setenv("DB_PATH", str(database_path))
+    monkeypatch.setenv("TENANT_DB_ENCRYPTION", "disabled")
+    get_settings.cache_clear()
+    monkeypatch.setattr(db_module.os, "lstat", changed_lstat)
+
+    with pytest.raises(db_module.DatabaseEncryptionError, match="trusted regular file"):
+        db_module.init_db()
+
+    assert not database_path.exists()
+    assert rollback_path.exists()
+
+
+def test_init_db_rejects_nonprivate_migration_rollback(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Initialization must reject a rollback writable or readable by other users."""
+    import os
+
+    import yinshi.db as db_module
+    from yinshi.config import get_settings
+
+    database_path = tmp_path / "nonprivate-primary.db"
+    rollback_path = tmp_path / "nonprivate-primary.db.plaintext.rollback"
+    with sqlite3.connect(rollback_path) as connection:
+        connection.execute("CREATE TABLE marker (value TEXT NOT NULL)")
+    os.chmod(rollback_path, 0o644)
+    monkeypatch.setenv("DB_PATH", str(database_path))
+    monkeypatch.setenv("TENANT_DB_ENCRYPTION", "disabled")
+    get_settings.cache_clear()
+
+    with pytest.raises(db_module.DatabaseEncryptionError, match="trusted regular file"):
+        db_module.init_db()
+
+    assert not database_path.exists()
+    assert rollback_path.exists()
+
+
 def test_required_database_encryption_migrates_plaintext_without_data_loss(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
@@ -378,6 +806,521 @@ def test_control_db_migrates_existing_desktop_authorization_requests(
         assert row["redirect_uri"] == "http://127.0.0.1:43123/auth/desktop/callback"
         assert row["user_id"] is None
         assert "idx_desktop_authorization_code_hash" in indexes
+    finally:
+        get_settings.cache_clear()
+
+
+def test_control_db_migrates_runner_kind_without_losing_grants(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Existing runner rows become BYOC while transfer grant foreign keys remain valid."""
+    control_path = tmp_path / "control.db"
+    monkeypatch.setenv("CONTROL_DB_PATH", str(control_path))
+    monkeypatch.setenv("SECRET_KEY", "test-secret")
+    monkeypatch.setenv("ENCRYPTION_PEPPER", "a" * 64)
+    monkeypatch.setenv("TENANT_DB_ENCRYPTION", "disabled")
+
+    connection = sqlite3.connect(control_path)
+    connection.execute("PRAGMA foreign_keys = ON")
+    connection.execute("""
+        CREATE TABLE users (
+            id TEXT PRIMARY KEY,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+            email TEXT NOT NULL UNIQUE,
+            credit_used_cents INTEGER DEFAULT 0,
+            credit_limit_cents INTEGER DEFAULT 500
+        )
+        """)
+    connection.execute("""
+        CREATE TABLE user_runners (
+            id TEXT PRIMARY KEY,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+            user_id TEXT NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+            name TEXT NOT NULL,
+            cloud_provider TEXT NOT NULL,
+            region TEXT NOT NULL,
+            status TEXT DEFAULT 'pending' NOT NULL,
+            registration_token_hash TEXT,
+            registration_token_expires_at TEXT,
+            runner_token_hash TEXT,
+            registered_at TEXT,
+            last_heartbeat_at TEXT,
+            runner_version TEXT,
+            capabilities_json TEXT DEFAULT '{}' NOT NULL,
+            data_dir TEXT,
+            revoked_at TEXT,
+            noise_public_key TEXT,
+            noise_public_key_confirmed_at TEXT
+        )
+        """)
+    connection.execute("""
+        CREATE TABLE runner_transfer_grants (
+            transfer_id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            runner_id TEXT NOT NULL REFERENCES user_runners(id) ON DELETE CASCADE,
+            capability_hash TEXT UNIQUE NOT NULL,
+            expires_at INTEGER NOT NULL,
+            max_session_bytes INTEGER NOT NULL,
+            claimed_at INTEGER,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
+        )
+        """)
+    connection.execute(
+        "INSERT INTO users (id, email) VALUES (?, ?)",
+        ("user-1", "runner@example.com"),
+    )
+    connection.execute(
+        """
+        INSERT INTO user_runners (
+            id, user_id, name, cloud_provider, region, status,
+            runner_token_hash, runner_version, capabilities_json, data_dir
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "runner-1",
+            "user-1",
+            "Existing runner",
+            "aws",
+            "us-west-2",
+            "online",
+            "runner-token-digest",
+            "1.2.3",
+            '{"sqlite":true}',
+            "/var/lib/yinshi",
+        ),
+    )
+    connection.execute(
+        """
+        INSERT INTO runner_transfer_grants (
+            transfer_id, user_id, runner_id, capability_hash,
+            expires_at, max_session_bytes
+        )
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        ("transfer-1", "user-1", "runner-1", "capability-digest", 200, 4096),
+    )
+    connection.commit()
+    connection.close()
+
+    from yinshi.config import get_settings
+    from yinshi.db import get_control_db, init_control_db
+
+    get_settings.cache_clear()
+    try:
+        init_control_db()
+        init_control_db()
+        with get_control_db() as database:
+            runner = database.execute(
+                "SELECT * FROM user_runners WHERE id = ?",
+                ("runner-1",),
+            ).fetchone()
+            grant = database.execute(
+                "SELECT * FROM runner_transfer_grants WHERE transfer_id = ?",
+                ("transfer-1",),
+            ).fetchone()
+            foreign_key_issues = database.execute("PRAGMA foreign_key_check").fetchall()
+
+        assert runner is not None
+        assert runner["kind"] == "byoc"
+        assert runner["name"] == "Existing runner"
+        assert runner["runner_token_hash"] == "runner-token-digest"
+        assert runner["capabilities_json"] == '{"sqlite":true}'
+        assert grant is not None
+        assert grant["runner_id"] == "runner-1"
+        assert foreign_key_issues == []
+    finally:
+        get_settings.cache_clear()
+
+
+def test_runner_kind_migration_rolls_back_invalid_foreign_keys(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Invalid old references leave the original runner table intact."""
+    control_path = tmp_path / "control.db"
+    monkeypatch.setenv("CONTROL_DB_PATH", str(control_path))
+    monkeypatch.setenv("SECRET_KEY", "test-secret")
+    monkeypatch.setenv("ENCRYPTION_PEPPER", "a" * 64)
+    monkeypatch.setenv("TENANT_DB_ENCRYPTION", "disabled")
+
+    connection = sqlite3.connect(control_path)
+    connection.executescript("""
+        CREATE TABLE users (
+            id TEXT PRIMARY KEY,
+            email TEXT NOT NULL UNIQUE,
+            credit_used_cents INTEGER DEFAULT 0,
+            credit_limit_cents INTEGER DEFAULT 500
+        );
+        CREATE TABLE user_runners (
+            id TEXT PRIMARY KEY,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+            user_id TEXT NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+            name TEXT NOT NULL,
+            cloud_provider TEXT NOT NULL,
+            region TEXT NOT NULL,
+            status TEXT DEFAULT 'pending' NOT NULL,
+            registration_token_hash TEXT,
+            registration_token_expires_at TEXT,
+            runner_token_hash TEXT,
+            registered_at TEXT,
+            last_heartbeat_at TEXT,
+            runner_version TEXT,
+            capabilities_json TEXT DEFAULT '{}' NOT NULL,
+            data_dir TEXT,
+            revoked_at TEXT,
+            noise_public_key TEXT,
+            noise_public_key_confirmed_at TEXT
+        );
+        CREATE TABLE runner_transfer_grants (
+            transfer_id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            runner_id TEXT NOT NULL REFERENCES user_runners(id) ON DELETE CASCADE,
+            capability_hash TEXT UNIQUE NOT NULL,
+            expires_at INTEGER NOT NULL,
+            max_session_bytes INTEGER NOT NULL,
+            claimed_at INTEGER,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
+        );
+        INSERT INTO runner_transfer_grants (
+            transfer_id, user_id, runner_id, capability_hash,
+            expires_at, max_session_bytes
+        ) VALUES ('invalid-transfer', 'missing-user', 'missing-runner', 'digest', 200, 4096);
+        """)
+    connection.close()
+
+    from yinshi.config import get_settings
+    from yinshi.db import init_control_db
+
+    get_settings.cache_clear()
+    try:
+        for _ in range(2):
+            with pytest.raises(sqlite3.IntegrityError, match="invalid foreign key"):
+                init_control_db()
+        with sqlite3.connect(control_path) as database:
+            columns = {row[1] for row in database.execute("PRAGMA table_info(user_runners)")}
+        assert "kind" not in columns
+    finally:
+        get_settings.cache_clear()
+
+
+def test_managed_runtime_requires_the_users_managed_runner(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Managed runtime metadata must reference the managed runner owned by its user."""
+    monkeypatch.setenv("CONTROL_DB_PATH", str(tmp_path / "control.db"))
+    monkeypatch.setenv("SECRET_KEY", "test-secret")
+    monkeypatch.setenv("ENCRYPTION_PEPPER", "a" * 64)
+    monkeypatch.setenv("TENANT_DB_ENCRYPTION", "disabled")
+
+    from yinshi.config import get_settings
+    from yinshi.db import get_control_db, init_control_db
+
+    get_settings.cache_clear()
+    try:
+        init_control_db()
+        with get_control_db() as database:
+            database.execute(
+                "INSERT INTO users (id, email) VALUES (?, ?)",
+                ("user-1", "managed@example.com"),
+            )
+            database.execute(
+                """
+                INSERT INTO user_runners (id, user_id, kind, name, cloud_provider, region)
+                VALUES (?, ?, 'byoc', ?, 'aws', ?)
+                """,
+                ("byoc-runner", "user-1", "BYOC runner", "us-east-1"),
+            )
+            database.execute(
+                """
+                INSERT INTO user_runners (id, user_id, kind, name, cloud_provider, region)
+                VALUES (?, ?, 'managed', ?, 'fly_sprites', ?)
+                """,
+                ("managed-runner", "user-1", "Managed runner", "ord"),
+            )
+
+            with pytest.raises(sqlite3.IntegrityError, match="managed runner"):
+                database.execute(
+                    """
+                    INSERT INTO managed_runtimes (
+                        user_id, runner_id, provider_name, sprite_external_id,
+                        lifecycle_status, generation, artifact_version
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "user-1",
+                        "byoc-runner",
+                        "fly_sprites",
+                        "sprite-1",
+                        "provisioning",
+                        1,
+                        "worker-v1",
+                    ),
+                )
+
+            database.execute(
+                """
+                INSERT INTO managed_runtimes (
+                    user_id, runner_id, provider_name, sprite_external_id,
+                    lifecycle_status, generation, artifact_version, last_error
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "user-1",
+                    "managed-runner",
+                    "fly_sprites",
+                    "sprite-1",
+                    "ready",
+                    2,
+                    "worker-v2",
+                    "Safe provider summary",
+                ),
+            )
+            runtime = database.execute(
+                "SELECT * FROM managed_runtimes WHERE user_id = ?",
+                ("user-1",),
+            ).fetchone()
+            columns = {row[1] for row in database.execute("PRAGMA table_info(managed_runtimes)")}
+
+        assert runtime is not None
+        assert runtime["runner_id"] == "managed-runner"
+        assert runtime["provider_name"] == "fly_sprites"
+        assert runtime["sprite_external_id"] == "sprite-1"
+        assert runtime["lifecycle_status"] == "ready"
+        assert runtime["generation"] == 2
+        assert runtime["artifact_version"] == "worker-v2"
+        assert "token" not in " ".join(columns)
+    finally:
+        get_settings.cache_clear()
+
+
+def test_managed_runtime_rejects_unsupported_provider(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Managed runtime rows accept only the configured provider."""
+    monkeypatch.setenv("CONTROL_DB_PATH", str(tmp_path / "control.db"))
+    monkeypatch.setenv("SECRET_KEY", "test-secret")
+    monkeypatch.setenv("ENCRYPTION_PEPPER", "a" * 64)
+    monkeypatch.setenv("TENANT_DB_ENCRYPTION", "disabled")
+
+    from yinshi.config import get_settings
+    from yinshi.db import get_control_db, init_control_db
+
+    get_settings.cache_clear()
+    try:
+        init_control_db()
+        with get_control_db() as database:
+            database.execute(
+                "INSERT INTO users (id, email) VALUES ('user-1', 'managed@example.com')"
+            )
+            database.execute("""
+                INSERT INTO user_runners (id, user_id, kind, name, cloud_provider, region)
+                VALUES ('runner-1', 'user-1', 'managed', 'Managed', 'fly_sprites', 'ord')
+                """)
+            with pytest.raises(sqlite3.IntegrityError, match="CHECK constraint failed"):
+                database.execute("""
+                    INSERT INTO managed_runtimes (
+                        user_id, runner_id, provider_name, sprite_external_id,
+                        lifecycle_status, artifact_version
+                    ) VALUES (
+                        'user-1', 'runner-1', 'unsupported',
+                        'sprite-1', 'ready', 'worker-v1'
+                    )
+                    """)
+    finally:
+        get_settings.cache_clear()
+
+
+def test_managed_runtime_constrains_lifecycle_status(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Managed runtime lifecycle uses the control-plane state vocabulary."""
+    monkeypatch.setenv("CONTROL_DB_PATH", str(tmp_path / "control.db"))
+    monkeypatch.setenv("SECRET_KEY", "test-secret")
+    monkeypatch.setenv("ENCRYPTION_PEPPER", "a" * 64)
+    monkeypatch.setenv("TENANT_DB_ENCRYPTION", "disabled")
+
+    from yinshi.config import get_settings
+    from yinshi.db import get_control_db, init_control_db
+
+    get_settings.cache_clear()
+    try:
+        init_control_db()
+        with get_control_db() as database:
+            database.execute(
+                "INSERT INTO users (id, email) VALUES ('user-1', 'managed@example.com')"
+            )
+            database.execute("""
+                INSERT INTO user_runners (id, user_id, kind, name, cloud_provider, region)
+                VALUES ('runner-1', 'user-1', 'managed', 'Managed', 'fly_sprites', 'ord')
+                """)
+            database.execute("""
+                INSERT INTO managed_runtimes (
+                    user_id, runner_id, provider_name, sprite_external_id,
+                    lifecycle_status, artifact_version
+                ) VALUES (
+                    'user-1', 'runner-1', 'fly_sprites',
+                    'sprite-1', 'provisioning', 'worker-v1'
+                )
+                """)
+            for lifecycle_status in ("ready", "failed", "deleting"):
+                database.execute(
+                    "UPDATE managed_runtimes SET lifecycle_status = ? WHERE user_id = 'user-1'",
+                    (lifecycle_status,),
+                )
+            with pytest.raises(sqlite3.IntegrityError, match="CHECK constraint failed"):
+                database.execute("UPDATE managed_runtimes SET lifecycle_status = 'unknown'")
+    finally:
+        get_settings.cache_clear()
+
+
+def test_managed_runtime_external_id_is_unique(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One provider runtime identity cannot belong to two users."""
+    monkeypatch.setenv("CONTROL_DB_PATH", str(tmp_path / "control.db"))
+    monkeypatch.setenv("SECRET_KEY", "test-secret")
+    monkeypatch.setenv("ENCRYPTION_PEPPER", "a" * 64)
+    monkeypatch.setenv("TENANT_DB_ENCRYPTION", "disabled")
+
+    from yinshi.config import get_settings
+    from yinshi.db import get_control_db, init_control_db
+
+    get_settings.cache_clear()
+    try:
+        init_control_db()
+        with get_control_db() as database:
+            database.executemany(
+                "INSERT INTO users (id, email) VALUES (?, ?)",
+                (("user-1", "first@example.com"), ("user-2", "second@example.com")),
+            )
+            database.executemany(
+                """
+                INSERT INTO user_runners (
+                    id, user_id, kind, name, cloud_provider, region
+                ) VALUES (?, ?, 'managed', ?, 'fly_sprites', 'ord')
+                """,
+                (
+                    ("runner-1", "user-1", "Managed one"),
+                    ("runner-2", "user-2", "Managed two"),
+                ),
+            )
+            database.execute("""
+                INSERT INTO managed_runtimes (
+                    user_id, runner_id, provider_name, sprite_external_id,
+                    lifecycle_status, artifact_version
+                ) VALUES (
+                    'user-1', 'runner-1', 'fly_sprites',
+                    'shared-sprite', 'ready', 'worker-v1'
+                )
+                """)
+            with pytest.raises(sqlite3.IntegrityError, match="UNIQUE constraint failed"):
+                database.execute("""
+                    INSERT INTO managed_runtimes (
+                        user_id, runner_id, provider_name, sprite_external_id,
+                        lifecycle_status, artifact_version
+                    ) VALUES (
+                        'user-2', 'runner-2', 'fly_sprites',
+                        'shared-sprite', 'ready', 'worker-v1'
+                    )
+                    """)
+    finally:
+        get_settings.cache_clear()
+
+
+def test_linked_managed_runner_kind_cannot_change(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A managed runtime keeps its runner classified as managed."""
+    monkeypatch.setenv("CONTROL_DB_PATH", str(tmp_path / "control.db"))
+    monkeypatch.setenv("SECRET_KEY", "test-secret")
+    monkeypatch.setenv("ENCRYPTION_PEPPER", "a" * 64)
+    monkeypatch.setenv("TENANT_DB_ENCRYPTION", "disabled")
+
+    from yinshi.config import get_settings
+    from yinshi.db import get_control_db, init_control_db
+
+    get_settings.cache_clear()
+    try:
+        init_control_db()
+        with get_control_db() as database:
+            database.execute(
+                "INSERT INTO users (id, email) VALUES (?, ?)",
+                ("user-1", "managed@example.com"),
+            )
+            database.execute("""
+                INSERT INTO user_runners (id, user_id, kind, name, cloud_provider, region)
+                VALUES ('managed-runner', 'user-1', 'managed', 'Managed', 'fly_sprites', 'ord')
+                """)
+            database.execute("""
+                INSERT INTO managed_runtimes (
+                    user_id, runner_id, provider_name, sprite_external_id,
+                    lifecycle_status, artifact_version
+                ) VALUES (
+                    'user-1', 'managed-runner', 'fly_sprites',
+                    'sprite-1', 'ready', 'worker-v1'
+                )
+                """)
+            with pytest.raises(sqlite3.IntegrityError, match="linked managed runtime"):
+                database.execute(
+                    "UPDATE user_runners SET kind = 'byoc' WHERE id = 'managed-runner'"
+                )
+    finally:
+        get_settings.cache_clear()
+
+
+def test_linked_managed_runner_owner_cannot_change(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A managed runtime keeps its runner assigned to the same user."""
+    monkeypatch.setenv("CONTROL_DB_PATH", str(tmp_path / "control.db"))
+    monkeypatch.setenv("SECRET_KEY", "test-secret")
+    monkeypatch.setenv("ENCRYPTION_PEPPER", "a" * 64)
+    monkeypatch.setenv("TENANT_DB_ENCRYPTION", "disabled")
+
+    from yinshi.config import get_settings
+    from yinshi.db import get_control_db, init_control_db
+
+    get_settings.cache_clear()
+    try:
+        init_control_db()
+        with get_control_db() as database:
+            database.executemany(
+                "INSERT INTO users (id, email) VALUES (?, ?)",
+                (
+                    ("user-1", "managed@example.com"),
+                    ("user-2", "other@example.com"),
+                ),
+            )
+            database.execute("""
+                INSERT INTO user_runners (id, user_id, kind, name, cloud_provider, region)
+                VALUES ('managed-runner', 'user-1', 'managed', 'Managed', 'fly_sprites', 'ord')
+                """)
+            database.execute("""
+                INSERT INTO managed_runtimes (
+                    user_id, runner_id, provider_name, sprite_external_id,
+                    lifecycle_status, artifact_version
+                ) VALUES (
+                    'user-1', 'managed-runner', 'fly_sprites',
+                    'sprite-1', 'ready', 'worker-v1'
+                )
+                """)
+            with pytest.raises(sqlite3.IntegrityError, match="linked managed runtime"):
+                database.execute(
+                    "UPDATE user_runners SET user_id = 'user-2' WHERE id = 'managed-runner'"
+                )
     finally:
         get_settings.cache_clear()
 

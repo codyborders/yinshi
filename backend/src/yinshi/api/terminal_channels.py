@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Request, status
@@ -18,8 +20,11 @@ from yinshi.exceptions import (
     WorkspaceNotFoundError,
 )
 from yinshi.services.sidecar_runtime import (
+    protect_tenant_container,
+    release_tenant_container,
     remap_path_for_container,
     resolve_tenant_sidecar_context,
+    tenant_container_activity,
 )
 from yinshi.services.terminal_journal import (
     TerminalCursorExpiredError,
@@ -79,7 +84,7 @@ def _tenant_identity(request: Request) -> tuple[str, Any]:
 async def _terminal_context(
     request: Request,
     workspace_id: str,
-) -> tuple[str, str, str]:
+) -> tuple[str, Any, str, str, str | None]:
     user_id, tenant = _tenant_identity(request)
     try:
         with get_db_for_request(request) as database:
@@ -106,7 +111,7 @@ async def _terminal_context(
         raise HTTPException(status_code=404, detail="Workspace not found") from None
     except (ContainerStartError, ContainerNotReadyError, GitError, OSError, ValueError):
         raise HTTPException(status_code=503, detail="Terminal runtime unavailable") from None
-    return user_id, socket_path, effective_cwd
+    return user_id, tenant, socket_path, effective_cwd, runtime.runtime_id
 
 
 def _batch_response(batch: TerminalEventBatch) -> TerminalEventBatchResponse:
@@ -116,6 +121,59 @@ def _batch_response(batch: TerminalEventBatch) -> TerminalEventBatchResponse:
         next_sequence=batch.next_sequence,
         closed=batch.closed,
     )
+
+
+def _terminal_lease_key(workspace_id: str, terminal_id: str) -> str:
+    return f"terminal:{workspace_id}:{terminal_id}"
+
+
+def _refresh_terminal_lease(
+    request: Request,
+    tenant: Any,
+    workspace_id: str,
+    terminal_id: str,
+) -> None:
+    protect_tenant_container(
+        request,
+        tenant,
+        lease_key=_terminal_lease_key(workspace_id, terminal_id),
+        timeout_s=get_settings().terminal_keepalive_s,
+        runtime_id=workspace_id,
+    )
+
+
+def _release_terminal_lease(
+    request: Request,
+    tenant: Any,
+    workspace_id: str,
+    terminal_id: str,
+) -> None:
+    release_tenant_container(
+        request,
+        tenant,
+        lease_key=_terminal_lease_key(workspace_id, terminal_id),
+        runtime_id=workspace_id,
+    )
+
+
+@asynccontextmanager
+async def _terminal_runtime_activity(
+    request: Request,
+    tenant: Any,
+    workspace_id: str,
+) -> AsyncIterator[None]:
+    try:
+        async with tenant_container_activity(
+            request,
+            tenant,
+            runtime_id=workspace_id,
+        ):
+            yield
+    except ContainerNotReadyError:
+        raise HTTPException(
+            status_code=503,
+            detail="Terminal runtime unavailable",
+        ) from None
 
 
 @router.post(
@@ -129,19 +187,34 @@ async def start_terminal_channel(
     request: Request,
 ) -> TerminalStartResponse:
     """Attach one account-scoped terminal to the workspace sidecar."""
-    user_id, socket_path, cwd = await _terminal_context(request, workspace_id)
+    user_id, tenant, socket_path, cwd, runtime_id = await _terminal_context(
+        request,
+        workspace_id,
+    )
     try:
-        terminal_id = await _journal(request).start(
-            user_id=user_id,
-            workspace_id=workspace_id,
-            socket_path=socket_path,
-            cwd=cwd,
-            cols=body.cols,
-            rows=body.rows,
-        )
+        async with tenant_container_activity(
+            request,
+            tenant,
+            runtime_id=runtime_id,
+        ):
+            terminal_id = await _journal(request).start(
+                user_id=user_id,
+                workspace_id=workspace_id,
+                socket_path=socket_path,
+                cwd=cwd,
+                cols=body.cols,
+                rows=body.rows,
+            )
+            _refresh_terminal_lease(request, tenant, workspace_id, terminal_id)
     except TerminalLimitError as exc:
         raise HTTPException(status_code=429, detail=str(exc)) from exc
-    except (ConnectionError, OSError, SidecarError, SidecarNotConnectedError):
+    except (
+        ConnectionError,
+        ContainerNotReadyError,
+        OSError,
+        SidecarError,
+        SidecarNotConnectedError,
+    ):
         raise HTTPException(status_code=503, detail="Terminal runtime unavailable") from None
     return TerminalStartResponse(
         id=terminal_id,
@@ -158,14 +231,16 @@ async def send_terminal_input(
     request: Request,
 ) -> None:
     """Forward one bounded input fragment to an attached terminal."""
-    user_id, _tenant = _tenant_identity(request)
+    user_id, tenant = _tenant_identity(request)
     try:
-        await _journal(request).input(
-            user_id=user_id,
-            workspace_id=workspace_id,
-            terminal_id=terminal_id,
-            data=body.data,
-        )
+        async with _terminal_runtime_activity(request, tenant, workspace_id):
+            await _journal(request).input(
+                user_id=user_id,
+                workspace_id=workspace_id,
+                terminal_id=terminal_id,
+                data=body.data,
+            )
+            _refresh_terminal_lease(request, tenant, workspace_id, terminal_id)
     except TerminalNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Terminal not found") from exc
 
@@ -178,15 +253,17 @@ async def resize_terminal_channel(
     request: Request,
 ) -> None:
     """Resize one attached terminal."""
-    user_id, _tenant = _tenant_identity(request)
+    user_id, tenant = _tenant_identity(request)
     try:
-        await _journal(request).resize(
-            user_id=user_id,
-            workspace_id=workspace_id,
-            terminal_id=terminal_id,
-            cols=body.cols,
-            rows=body.rows,
-        )
+        async with _terminal_runtime_activity(request, tenant, workspace_id):
+            await _journal(request).resize(
+                user_id=user_id,
+                workspace_id=workspace_id,
+                terminal_id=terminal_id,
+                cols=body.cols,
+                rows=body.rows,
+            )
+            _refresh_terminal_lease(request, tenant, workspace_id, terminal_id)
     except TerminalNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Terminal not found") from exc
 
@@ -198,13 +275,15 @@ async def restart_terminal_channel(
     request: Request,
 ) -> None:
     """Restart one attached terminal with its original options."""
-    user_id, _tenant = _tenant_identity(request)
+    user_id, tenant = _tenant_identity(request)
     try:
-        await _journal(request).restart(
-            user_id=user_id,
-            workspace_id=workspace_id,
-            terminal_id=terminal_id,
-        )
+        async with _terminal_runtime_activity(request, tenant, workspace_id):
+            await _journal(request).restart(
+                user_id=user_id,
+                workspace_id=workspace_id,
+                terminal_id=terminal_id,
+            )
+            _refresh_terminal_lease(request, tenant, workspace_id, terminal_id)
     except TerminalNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Terminal not found") from exc
 
@@ -220,14 +299,19 @@ async def get_terminal_events(
     request: Request,
 ) -> TerminalEventBatchResponse:
     """Poll one contiguous bounded terminal-output page."""
-    user_id, _tenant = _tenant_identity(request)
+    user_id, tenant = _tenant_identity(request)
     try:
-        batch = await _journal(request).events(
-            user_id=user_id,
-            workspace_id=workspace_id,
-            terminal_id=terminal_id,
-            next_sequence=next_sequence,
-        )
+        async with _terminal_runtime_activity(request, tenant, workspace_id):
+            batch = await _journal(request).events(
+                user_id=user_id,
+                workspace_id=workspace_id,
+                terminal_id=terminal_id,
+                next_sequence=next_sequence,
+            )
+            if batch.closed:
+                _release_terminal_lease(request, tenant, workspace_id, terminal_id)
+            else:
+                _refresh_terminal_lease(request, tenant, workspace_id, terminal_id)
     except TerminalNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Terminal not found") from exc
     except TerminalCursorExpiredError as exc:
@@ -245,9 +329,10 @@ async def close_terminal_channel(
     request: Request,
 ) -> None:
     """Detach one terminal channel idempotently."""
-    user_id, _tenant = _tenant_identity(request)
+    user_id, tenant = _tenant_identity(request)
     await _journal(request).close(
         user_id=user_id,
         workspace_id=workspace_id,
         terminal_id=terminal_id,
     )
+    _release_terminal_lease(request, tenant, workspace_id, terminal_id)

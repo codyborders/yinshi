@@ -173,6 +173,13 @@ const server = net.createServer((socket) => {
 
     if (message.type === "warmup") {
       sessionOptions.set(message.id, message.options ?? {});
+      socket.write(
+        `${JSON.stringify({
+          id: message.id,
+          type: "warmup_status",
+          success: true,
+        })}\n`,
+      );
       return;
     }
 

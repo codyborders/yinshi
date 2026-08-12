@@ -11,7 +11,7 @@ function apiClient() {
     patch: vi.fn(),
     put: vi.fn(),
     delete: vi.fn(),
-    upload: vi.fn(),
+    upload: vi.fn().mockResolvedValue({ status: "direct" }),
   };
 }
 
@@ -48,9 +48,49 @@ describe("runtime transport", () => {
       path: "/api/repos",
       query: {},
       body: null,
-      maxSessionBytes: 262_144,
+      maxSessionBytes: 16_777_216,
     });
     expect(client.get).not.toHaveBeenCalled();
+  });
+
+  it("routes managed JSON calls through its pinned encrypted capability endpoint", async () => {
+    const client = apiClient();
+    const encryptedRequest = vi.fn().mockResolvedValue([]);
+    const transport = createRuntimeTransport(
+      { location: "managed", runnerPublicKey },
+      { apiClient: client, encryptedRequest },
+    );
+
+    await expect(transport.get("/api/repos?owner=me")).resolves.toEqual([]);
+
+    expect(encryptedRequest).toHaveBeenCalledWith({
+      expectedRunnerPublicKey: runnerPublicKey,
+      scopes: ["repository.read"],
+      method: "GET",
+      path: "/api/repos",
+      query: { owner: "me" },
+      body: null,
+      maxSessionBytes: 16_777_216,
+      capabilityEndpoint: "/api/runtime/capabilities",
+    });
+    expect(client.get).not.toHaveBeenCalled();
+  });
+
+  it("keeps managed config uploads off the browser multipart client", async () => {
+    const client = apiClient();
+    const transport = createRuntimeTransport(
+      { location: "managed", runnerPublicKey },
+      { apiClient: client, encryptedRequest: vi.fn() },
+    );
+    const file = {
+      name: "large.zip",
+      size: 50 * 1024 * 1024 + 1,
+    } as File;
+
+    await expect(
+      transport.upload("/api/settings/pi-config/upload", file),
+    ).rejects.toThrow("50MB");
+    expect(client.upload).not.toHaveBeenCalled();
   });
 
   it("routes BYOC provider OAuth state through encrypted query data", async () => {
@@ -72,7 +112,7 @@ describe("runtime transport", () => {
       path: "/auth/providers/openai-codex/callback",
       query: { flow_id: flowId },
       body: null,
-      maxSessionBytes: 262_144,
+      maxSessionBytes: 16_777_216,
     });
   });
 
@@ -112,7 +152,7 @@ describe("runtime transport", () => {
       path: `/api/repos/${resourceId}/workspaces`,
       query: {},
       body: { name: "feature" },
-      maxSessionBytes: 262_144,
+      maxSessionBytes: 16_777_216,
     });
     expect(encryptedRequest).toHaveBeenNthCalledWith(2, {
       expectedRunnerPublicKey: runnerPublicKey,
@@ -121,7 +161,7 @@ describe("runtime transport", () => {
       path: `/api/sessions/${resourceId}/messages`,
       query: {},
       body: null,
-      maxSessionBytes: 262_144,
+      maxSessionBytes: 16_777_216,
     });
   });
 });

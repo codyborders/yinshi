@@ -3,6 +3,7 @@
 import os
 import sqlite3
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -234,6 +235,531 @@ def test_sqlcipher_connection_uses_driver_row_factory(tenant_env, monkeypatch):
     assert not fake_connection.closed
 
 
+def test_plaintext_migration_preserves_prompt_journal_and_schema(
+    tenant_env,
+    monkeypatch,
+) -> None:
+    """SQLCipher migration should retain every schema object and journal row."""
+    from yinshi.tenant import _migrate_plaintext_user_database, init_user_db
+
+    database_path = Path(tenant_env["tmp_path"]) / "complete-migration.db"
+    init_user_db(str(database_path))
+    source = sqlite3.connect(database_path)
+    source.execute("INSERT INTO repos (id, name, root_path) VALUES ('repo-1', 'repo', '/repo')")
+    source.execute("""INSERT INTO workspaces (id, repo_id, name, branch, path)
+           VALUES ('workspace-1', 'repo-1', 'workspace', 'main', '/workspace')""")
+    source.execute("INSERT INTO sessions (id, workspace_id) VALUES ('session-1', 'workspace-1')")
+    source.execute("""INSERT INTO prompt_runs (id, session_id, idempotency_key, status)
+           VALUES ('run-1', 'session-1', 'key-1', 'completed')""")
+    source.execute("""INSERT INTO prompt_events (run_id, sequence, event_json)
+           VALUES ('run-1', 1, '{"type":"done"}')""")
+    source.execute("""INSERT INTO prompt_events (run_id, sequence, event_json)
+           VALUES ('run-1', 0, '{"type":"start"}')""")
+    source.commit()
+    expected_schema = source.execute("""SELECT type, name, tbl_name, sql FROM sqlite_master
+           WHERE type IN ('table', 'index', 'trigger') AND name NOT LIKE 'sqlite_%'
+           ORDER BY type, name""").fetchall()
+    expected_counts = {
+        row[0]: source.execute(f'SELECT count(*) FROM "{row[0]}"').fetchone()[0]
+        for row in source.execute("""SELECT name FROM sqlite_master
+               WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name""").fetchall()
+    }
+    source.close()
+
+    class ExportConnection:
+        def __init__(self, path: str) -> None:
+            self.connection = sqlite3.connect(path)
+            self.target_path: str | None = None
+
+        def execute(self, statement: str, parameters=()):
+            if statement.startswith("ATTACH DATABASE"):
+                self.target_path = parameters[0]
+                return self.connection.execute("SELECT 1")
+            if statement.startswith("SELECT sqlcipher_export"):
+                assert self.target_path is not None
+                target = sqlite3.connect(self.target_path)
+                try:
+                    self.connection.backup(target)
+                finally:
+                    target.close()
+                return self.connection.execute("SELECT 1")
+            if statement.startswith("DETACH DATABASE"):
+                return self.connection.execute("SELECT 1")
+            return self.connection.execute(statement, parameters)
+
+        def close(self) -> None:
+            self.connection.close()
+
+    fake_sqlcipher = SimpleNamespace(
+        connect=lambda path: ExportConnection(path),
+        Row=sqlite3.Row,
+        DatabaseError=sqlite3.DatabaseError,
+    )
+    monkeypatch.setattr("yinshi.tenant._load_sqlcipher_module", lambda: fake_sqlcipher)
+    monkeypatch.setattr(
+        "yinshi.tenant._open_sqlcipher_connection",
+        lambda path, _key: sqlite3.connect(path),
+    )
+
+    _migrate_plaintext_user_database(str(database_path), b"k" * 32)
+
+    migrated = sqlite3.connect(database_path)
+    actual_schema = migrated.execute("""SELECT type, name, tbl_name, sql FROM sqlite_master
+           WHERE type IN ('table', 'index', 'trigger') AND name NOT LIKE 'sqlite_%'
+           ORDER BY type, name""").fetchall()
+    actual_counts = {
+        row[0]: migrated.execute(f'SELECT count(*) FROM "{row[0]}"').fetchone()[0]
+        for row in migrated.execute("""SELECT name FROM sqlite_master
+               WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name""").fetchall()
+    }
+    events = migrated.execute(
+        "SELECT sequence, event_json FROM prompt_events ORDER BY run_id, sequence"
+    ).fetchall()
+    migrated.close()
+
+    assert actual_schema == expected_schema
+    assert actual_counts == expected_counts
+    assert events == [(0, '{"type":"start"}'), (1, '{"type":"done"}')]
+
+
+def test_plaintext_migration_validates_export_before_replacement(
+    tenant_env,
+    monkeypatch,
+) -> None:
+    """A mismatched encrypted export should leave the plaintext primary intact."""
+    from yinshi.tenant import _migrate_plaintext_user_database
+
+    database_path = Path(tenant_env["tmp_path"]) / "mismatched-migration.db"
+    source = sqlite3.connect(database_path)
+    source.execute("CREATE TABLE marker (value TEXT NOT NULL)")
+    source.execute("INSERT INTO marker VALUES ('original')")
+    source.commit()
+    source.close()
+
+    def fake_copy(_source_path: str, target_path: str, _sqlcipher_key: bytes) -> None:
+        target = sqlite3.connect(target_path)
+        target.execute("CREATE TABLE marker (value TEXT NOT NULL)")
+        target.commit()
+        target.close()
+
+    monkeypatch.setattr("yinshi.tenant._copy_plaintext_user_database", fake_copy)
+    monkeypatch.setattr(
+        "yinshi.tenant._open_sqlcipher_connection",
+        lambda path, _key: sqlite3.connect(path),
+    )
+
+    with pytest.raises(RuntimeError, match="does not match"):
+        _migrate_plaintext_user_database(str(database_path), b"k" * 32)
+
+    primary = sqlite3.connect(database_path)
+    assert primary.execute("SELECT value FROM marker").fetchone()[0] == "original"
+    primary.close()
+
+
+def test_plaintext_migration_durability_order(
+    tenant_env,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Migration should durably prepare rollback before atomic replacement."""
+    import shutil
+
+    import yinshi.tenant as tenant_module
+    from yinshi.tenant import _migrate_plaintext_user_database
+
+    database_path = Path(tenant_env["tmp_path"]) / "ordered-migration.db"
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("CREATE TABLE marker (value TEXT NOT NULL)")
+        connection.execute("INSERT INTO marker VALUES ('original')")
+
+    def fake_copy(source_path: str, target_path: str, _key: bytes) -> None:
+        shutil.copyfile(source_path, target_path)
+
+    events: list[str] = []
+    original_replace = os.replace
+    original_unlink = os.unlink
+
+    def create_rollback(source_path: str, rollback_path: str) -> None:
+        events.append("copy:rollback")
+        shutil.copyfile(source_path, rollback_path)
+        os.chmod(rollback_path, 0o600)
+
+    def replace(source_path: str, target_path: str) -> None:
+        events.append(f"replace:{Path(source_path).name}->{Path(target_path).name}")
+        original_replace(source_path, target_path)
+
+    def unlink(path: str) -> None:
+        events.append(f"unlink:{Path(path).name}")
+        original_unlink(path)
+
+    monkeypatch.setattr(tenant_module, "_copy_plaintext_user_database", fake_copy)
+    monkeypatch.setattr(
+        tenant_module,
+        "_open_sqlcipher_connection",
+        lambda path, _key: sqlite3.connect(path),
+    )
+    monkeypatch.setattr(
+        tenant_module, "_create_private_rollback_copy", create_rollback, raising=False
+    )
+    monkeypatch.setattr(
+        tenant_module,
+        "_fsync_file",
+        lambda path: events.append(f"fsync:{Path(path).name}"),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        tenant_module,
+        "_fsync_parent_directory",
+        lambda path: events.append(f"sync-parent:{Path(path).name}"),
+        raising=False,
+    )
+    monkeypatch.setattr(tenant_module.os, "replace", replace)
+    monkeypatch.setattr(tenant_module.os, "unlink", unlink)
+
+    _migrate_plaintext_user_database(str(database_path), b"k" * 32)
+
+    assert events == [
+        "fsync:ordered-migration.db.encrypted.tmp",
+        "copy:rollback",
+        "fsync:ordered-migration.db.plaintext.rollback",
+        "sync-parent:ordered-migration.db",
+        "replace:ordered-migration.db.encrypted.tmp->ordered-migration.db",
+        "sync-parent:ordered-migration.db",
+        "fsync:ordered-migration.db",
+        "sync-parent:ordered-migration.db",
+        "unlink:ordered-migration.db.plaintext.rollback",
+        "sync-parent:ordered-migration.db",
+    ]
+
+
+def test_init_user_db_preserves_plaintext_database_when_wal_checkpoint_is_busy(
+    tenant_env,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Busy WAL checkpoint must stop tenant initialization without replacing data."""
+    import yinshi.tenant as tenant_module
+    from yinshi.config import get_settings
+    from yinshi.tenant import TenantContext, init_user_db
+
+    data_dir = Path(tenant_env["user_data_dir"]) / "ab" / "abcdef"
+    data_dir.mkdir(parents=True)
+    database_path = data_dir / "yinshi.db"
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("CREATE TABLE marker (value TEXT NOT NULL)")
+        connection.execute("INSERT INTO marker VALUES ('original')")
+    tenant = TenantContext(
+        user_id="abcdef",
+        email="user@example.com",
+        data_dir=str(data_dir),
+        db_path=str(database_path),
+    )
+
+    class Result:
+        def fetchone(self) -> tuple[int, int, int]:
+            return (0, 4, 2)
+
+    class SourceConnection:
+        def __init__(self, path: str) -> None:
+            self.connection = sqlite3.connect(path)
+
+        def execute(self, statement: str, parameters=()):
+            if statement.startswith("PRAGMA wal_checkpoint"):
+                return Result()
+            return self.connection.execute(statement, parameters)
+
+        def close(self) -> None:
+            self.connection.close()
+
+    fake_sqlcipher = SimpleNamespace(
+        connect=lambda path: SourceConnection(path),
+        DatabaseError=sqlite3.DatabaseError,
+    )
+    events: list[str] = []
+    monkeypatch.setenv("TENANT_DB_ENCRYPTION", "required")
+    get_settings.cache_clear()
+    monkeypatch.setattr(tenant_module, "_load_sqlcipher_module", lambda: fake_sqlcipher)
+    monkeypatch.setattr(tenant_module, "_tenant_database_key", lambda _tenant: b"k" * 32)
+    monkeypatch.setattr(
+        tenant_module,
+        "_remove_sqlite_sidecars",
+        lambda _path: events.append("remove-sidecars"),
+    )
+    monkeypatch.setattr(
+        tenant_module.os,
+        "replace",
+        lambda _source, _target: events.append("replace"),
+    )
+
+    with pytest.raises(RuntimeError, match="WAL checkpoint"):
+        init_user_db(str(database_path), tenant=tenant)
+
+    assert events == []
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute("SELECT value FROM marker").fetchone()[0] == "original"
+
+
+def test_plaintext_migration_failure_durably_restores_original(
+    tenant_env,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Post-replacement validation failure should atomically restore plaintext."""
+    import shutil
+
+    import yinshi.tenant as tenant_module
+    from yinshi.tenant import _migrate_plaintext_user_database
+
+    database_path = Path(tenant_env["tmp_path"]) / "restore-migration.db"
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("CREATE TABLE marker (value TEXT NOT NULL)")
+        connection.execute("INSERT INTO marker VALUES ('original')")
+
+    def fake_copy(source_path: str, target_path: str, _key: bytes) -> None:
+        shutil.copyfile(source_path, target_path)
+
+    validation_count = 0
+
+    def validate(_path: str, _key: bytes) -> None:
+        nonlocal validation_count
+        validation_count += 1
+        if validation_count == 2:
+            raise RuntimeError("replacement invalid")
+
+    events: list[str] = []
+    original_replace = os.replace
+
+    def replace(source_path: str, target_path: str) -> None:
+        events.append(f"replace:{Path(source_path).name}->{Path(target_path).name}")
+        original_replace(source_path, target_path)
+
+    monkeypatch.setattr(tenant_module, "_copy_plaintext_user_database", fake_copy)
+    monkeypatch.setattr(tenant_module, "_validate_encrypted_user_database", validate)
+    monkeypatch.setattr(tenant_module, "_validate_export_matches_source", lambda *_args: None)
+    monkeypatch.setattr(
+        tenant_module,
+        "_create_private_rollback_copy",
+        lambda source, rollback: shutil.copyfile(source, rollback),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        tenant_module,
+        "_fsync_file",
+        lambda path: events.append(f"fsync:{Path(path).name}"),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        tenant_module,
+        "_fsync_parent_directory",
+        lambda path: events.append(f"sync-parent:{Path(path).name}"),
+        raising=False,
+    )
+    monkeypatch.setattr(tenant_module.os, "replace", replace)
+
+    with pytest.raises(RuntimeError, match="replacement invalid"):
+        _migrate_plaintext_user_database(str(database_path), b"k" * 32)
+
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute("SELECT value FROM marker").fetchone()[0] == "original"
+    assert "replace:restore-migration.db.plaintext.rollback->restore-migration.db" in events
+    restore_index = events.index(
+        "replace:restore-migration.db.plaintext.rollback->restore-migration.db"
+    )
+    assert events[restore_index + 1 :] == [
+        "fsync:restore-migration.db",
+        "sync-parent:restore-migration.db",
+    ]
+
+
+def test_init_user_db_recovers_rollback_before_optional_sqlcipher_fallback(
+    tenant_env,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Missing SQLCipher must not create an empty primary beside a valid rollback."""
+    import yinshi.tenant as tenant_module
+    from yinshi.config import get_settings
+    from yinshi.tenant import TenantContext, init_user_db
+
+    data_dir = Path(tenant_env["user_data_dir"]) / "ab" / "abcdef"
+    data_dir.mkdir(parents=True)
+    database_path = data_dir / "yinshi.db"
+    rollback_path = Path(f"{database_path}.plaintext.rollback")
+    with sqlite3.connect(rollback_path) as connection:
+        connection.execute("CREATE TABLE marker (value TEXT NOT NULL)")
+        connection.execute("INSERT INTO marker VALUES ('durable')")
+    os.chmod(rollback_path, 0o600)
+    tenant = TenantContext(
+        user_id="abcdef",
+        email="user@example.com",
+        data_dir=str(data_dir),
+        db_path=str(database_path),
+    )
+    monkeypatch.setenv("TENANT_DB_ENCRYPTION", "enabled")
+    get_settings.cache_clear()
+    monkeypatch.setattr(
+        tenant_module,
+        "_load_sqlcipher_module",
+        lambda: (_ for _ in ()).throw(RuntimeError("SQLCipher unavailable")),
+    )
+
+    init_user_db(str(database_path), tenant=tenant)
+
+    assert database_path.exists()
+    assert not rollback_path.exists()
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute("SELECT value FROM marker").fetchone()[0] == "durable"
+
+
+def test_restart_recovers_tenant_rollback_when_primary_is_absent(
+    tenant_env,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Restart recovery should never discard the only valid tenant database."""
+    import yinshi.tenant as tenant_module
+
+    database_path = Path(tenant_env["tmp_path"]) / "restart.db"
+    rollback_path = Path(f"{database_path}.plaintext.rollback")
+    with sqlite3.connect(rollback_path) as connection:
+        connection.execute("CREATE TABLE marker (value TEXT NOT NULL)")
+        connection.execute("INSERT INTO marker VALUES ('durable')")
+    os.chmod(rollback_path, 0o600)
+
+    events: list[str] = []
+    monkeypatch.setattr(
+        tenant_module,
+        "_fsync_file",
+        lambda path: events.append(f"fsync:{Path(path).name}"),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        tenant_module,
+        "_fsync_parent_directory",
+        lambda path: events.append(f"sync-parent:{Path(path).name}"),
+        raising=False,
+    )
+
+    tenant_module._recover_plaintext_migration_rollback(str(database_path))
+
+    assert database_path.exists()
+    assert not rollback_path.exists()
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute("SELECT value FROM marker").fetchone()[0] == "durable"
+    assert events == ["fsync:restart.db", "sync-parent:restart.db"]
+
+
+def test_init_user_db_rejects_symlink_migration_rollback(
+    tenant_env,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Tenant initialization must not recover through symlink indirection."""
+    from yinshi.config import get_settings
+    from yinshi.tenant import TenantContext, init_user_db
+
+    data_dir = Path(tenant_env["user_data_dir"]) / "ab" / "abcdef"
+    data_dir.mkdir(parents=True)
+    database_path = data_dir / "yinshi.db"
+    target_path = data_dir / "target.db"
+    rollback_path = Path(f"{database_path}.plaintext.rollback")
+    with sqlite3.connect(target_path) as connection:
+        connection.execute("CREATE TABLE marker (value TEXT NOT NULL)")
+        connection.execute("INSERT INTO marker VALUES ('target')")
+    os.chmod(target_path, 0o600)
+    rollback_path.symlink_to(target_path)
+    tenant = TenantContext(
+        user_id="abcdef",
+        email="user@example.com",
+        data_dir=str(data_dir),
+        db_path=str(database_path),
+    )
+    monkeypatch.setenv("TENANT_DB_ENCRYPTION", "disabled")
+    get_settings.cache_clear()
+
+    with pytest.raises(RuntimeError, match="trusted regular file"):
+        init_user_db(str(database_path), tenant=tenant)
+
+    assert not database_path.exists()
+    assert rollback_path.is_symlink()
+    with sqlite3.connect(target_path) as connection:
+        assert connection.execute("SELECT value FROM marker").fetchone()[0] == "target"
+
+
+def test_init_user_db_rejects_changed_migration_rollback_inode(
+    tenant_env,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Tenant initialization must reject a changed rollback path inode."""
+    from types import SimpleNamespace
+
+    import yinshi.tenant as tenant_module
+    from yinshi.config import get_settings
+    from yinshi.tenant import TenantContext, init_user_db
+
+    data_dir = Path(tenant_env["user_data_dir"]) / "ab" / "abcdef"
+    data_dir.mkdir(parents=True)
+    database_path = data_dir / "yinshi.db"
+    rollback_path = Path(f"{database_path}.plaintext.rollback")
+    with sqlite3.connect(rollback_path) as connection:
+        connection.execute("CREATE TABLE marker (value TEXT NOT NULL)")
+    os.chmod(rollback_path, 0o600)
+    tenant = TenantContext(
+        user_id="abcdef",
+        email="user@example.com",
+        data_dir=str(data_dir),
+        db_path=str(database_path),
+    )
+    original_lstat = os.lstat
+
+    def changed_lstat(path: str):
+        result = original_lstat(path)
+        if os.fspath(path) == os.fspath(rollback_path):
+            return SimpleNamespace(
+                st_mode=result.st_mode,
+                st_uid=result.st_uid,
+                st_dev=result.st_dev,
+                st_ino=result.st_ino + 1,
+                st_nlink=result.st_nlink,
+            )
+        return result
+
+    monkeypatch.setenv("TENANT_DB_ENCRYPTION", "disabled")
+    get_settings.cache_clear()
+    monkeypatch.setattr(tenant_module.os, "lstat", changed_lstat)
+
+    with pytest.raises(RuntimeError, match="trusted regular file"):
+        init_user_db(str(database_path), tenant=tenant)
+
+    assert not database_path.exists()
+    assert rollback_path.exists()
+
+
+def test_init_user_db_rejects_nonprivate_migration_rollback(
+    tenant_env,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Tenant initialization must reject a rollback accessible by other users."""
+    from yinshi.config import get_settings
+    from yinshi.tenant import TenantContext, init_user_db
+
+    data_dir = Path(tenant_env["user_data_dir"]) / "ab" / "abcdef"
+    data_dir.mkdir(parents=True)
+    database_path = data_dir / "yinshi.db"
+    rollback_path = Path(f"{database_path}.plaintext.rollback")
+    with sqlite3.connect(rollback_path) as connection:
+        connection.execute("CREATE TABLE marker (value TEXT NOT NULL)")
+    os.chmod(rollback_path, 0o644)
+    tenant = TenantContext(
+        user_id="abcdef",
+        email="user@example.com",
+        data_dir=str(data_dir),
+        db_path=str(database_path),
+    )
+    monkeypatch.setenv("TENANT_DB_ENCRYPTION", "disabled")
+    get_settings.cache_clear()
+
+    with pytest.raises(RuntimeError, match="trusted regular file"):
+        init_user_db(str(database_path), tenant=tenant)
+
+    assert not database_path.exists()
+    assert rollback_path.exists()
+
+
 def test_plaintext_migration_removes_unencrypted_backup(tenant_env, monkeypatch):
     """Successful SQLCipher migration must not retain a plaintext database copy."""
     from yinshi.tenant import _migrate_plaintext_user_database
@@ -249,8 +775,8 @@ def test_plaintext_migration_removes_unencrypted_backup(tenant_env, monkeypatch)
         assert source_path == str(db_path)
         assert sqlcipher_key == b"k" * 32
         encrypted_connection = sqlite3.connect(target_path)
-        encrypted_connection.execute("CREATE TABLE encrypted_marker (value TEXT NOT NULL)")
-        encrypted_connection.execute("INSERT INTO encrypted_marker VALUES ('encrypted')")
+        encrypted_connection.execute("CREATE TABLE marker (value TEXT NOT NULL)")
+        encrypted_connection.execute("INSERT INTO marker VALUES ('private-marker')")
         encrypted_connection.commit()
         encrypted_connection.close()
 
@@ -263,12 +789,194 @@ def test_plaintext_migration_removes_unencrypted_backup(tenant_env, monkeypatch)
     _migrate_plaintext_user_database(str(db_path), b"k" * 32)
 
     migrated_connection = sqlite3.connect(db_path)
-    assert (
-        migrated_connection.execute("SELECT value FROM encrypted_marker").fetchone()[0]
-        == "encrypted"
-    )
+    assert migrated_connection.execute("SELECT value FROM marker").fetchone()[0] == "private-marker"
     migrated_connection.close()
     assert list(db_path.parent.glob("migration.db.plaintext.*.bak")) == []
+
+
+def test_encrypted_initialization_rejects_symlink_migration_lock(
+    tenant_env,
+    monkeypatch,
+) -> None:
+    """Encrypted initialization should reject a symlink migration lock path."""
+    import importlib
+
+    from yinshi.config import get_settings
+    from yinshi.tenant import TenantContext, init_user_db
+
+    monkeypatch.setenv("TENANT_DB_ENCRYPTION", "required")
+    get_settings.cache_clear()
+    database_path = Path(tenant_env["tmp_path"]) / "symlink-lock.db"
+    connection = sqlite3.connect(database_path)
+    connection.execute("CREATE TABLE marker (value TEXT NOT NULL)")
+    connection.commit()
+    connection.close()
+    lock_target = Path(tenant_env["tmp_path"]) / "lock-target"
+    lock_target.write_text("target", encoding="utf-8")
+    Path(f"{database_path}.migration.lock").symlink_to(lock_target)
+    tenant = TenantContext(
+        user_id="abcdef",
+        email="user@example.com",
+        data_dir=str(database_path.parent),
+        db_path=str(database_path),
+    )
+    fake_sqlcipher = SimpleNamespace(
+        connect=sqlite3.connect,
+        Row=sqlite3.Row,
+        DatabaseError=sqlite3.DatabaseError,
+    )
+    original_import_module = importlib.import_module
+
+    def load_module(name: str):
+        if name == "sqlcipher3.dbapi2":
+            return fake_sqlcipher
+        return original_import_module(name)
+
+    monkeypatch.setattr(importlib, "import_module", load_module)
+    monkeypatch.setattr("yinshi.tenant._tenant_database_key", lambda _tenant: b"k" * 32)
+
+    with pytest.raises(RuntimeError, match="migration lock"):
+        init_user_db(str(database_path), tenant)
+
+    assert lock_target.read_text(encoding="utf-8") == "target"
+
+
+def test_concurrent_initializers_migrate_plaintext_once(
+    tenant_env,
+    monkeypatch,
+) -> None:
+    """Concurrent initializers should leave one complete encrypted database."""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    from yinshi.config import get_settings
+    from yinshi.tenant import TenantContext, init_user_db
+
+    monkeypatch.setenv("TENANT_DB_ENCRYPTION", "required")
+    get_settings.cache_clear()
+    database_path = Path(tenant_env["tmp_path"]) / "concurrent.db"
+    connection = sqlite3.connect(database_path)
+    connection.execute("CREATE TABLE marker (value TEXT NOT NULL)")
+    connection.commit()
+    connection.close()
+    tenant = TenantContext(
+        user_id="abcdef",
+        email="user@example.com",
+        data_dir=str(database_path.parent),
+        db_path=str(database_path),
+    )
+    migration_started = threading.Event()
+    allow_migration = threading.Event()
+    migration_count = 0
+    count_lock = threading.Lock()
+
+    def migrate(path: str, _key: bytes) -> None:
+        nonlocal migration_count
+        if Path(path).read_bytes() == b"encrypted-primary":
+            return
+        with count_lock:
+            migration_count += 1
+        migration_started.set()
+        assert allow_migration.wait(timeout=5)
+        Path(path).write_bytes(b"encrypted-primary")
+
+    monkeypatch.setattr("yinshi.tenant._tenant_database_key", lambda _tenant: b"k" * 32)
+    monkeypatch.setattr("yinshi.tenant._load_sqlcipher_module", lambda: object())
+    monkeypatch.setattr("yinshi.tenant._migrate_plaintext_user_database", migrate)
+    monkeypatch.setattr(
+        "yinshi.tenant._open_sqlcipher_connection",
+        lambda _path, _key: sqlite3.connect(":memory:"),
+    )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(init_user_db, str(database_path), tenant)
+        assert migration_started.wait(timeout=5)
+        second = executor.submit(init_user_db, str(database_path), tenant)
+        assert not second.done()
+        with count_lock:
+            assert migration_count == 1
+        allow_migration.set()
+        first.result(timeout=5)
+        second.result(timeout=5)
+
+    assert migration_count == 1
+    assert database_path.read_bytes() == b"encrypted-primary"
+    assert list(database_path.parent.glob("concurrent.db.plaintext.*.bak")) == []
+    assert not Path(f"{database_path}.encrypted.tmp").exists()
+    assert not Path(f"{database_path}-wal").exists()
+    assert not Path(f"{database_path}-shm").exists()
+
+
+def test_independent_processes_serialize_plaintext_migration(
+    tenant_env,
+    monkeypatch,
+) -> None:
+    """Independent processes should wait for one plaintext migration owner."""
+    import multiprocessing
+
+    from yinshi.config import get_settings
+    from yinshi.tenant import TenantContext, init_user_db
+
+    process_context = multiprocessing.get_context("fork")
+    monkeypatch.setenv("TENANT_DB_ENCRYPTION", "required")
+    get_settings.cache_clear()
+    database_path = Path(tenant_env["tmp_path"]) / "process-concurrent.db"
+    connection = sqlite3.connect(database_path)
+    connection.execute("CREATE TABLE marker (value TEXT NOT NULL)")
+    connection.commit()
+    connection.close()
+    tenant = TenantContext(
+        user_id="abcdef",
+        email="user@example.com",
+        data_dir=str(database_path.parent),
+        db_path=str(database_path),
+    )
+    first_migration_started = process_context.Event()
+    second_migration_started = process_context.Event()
+    allow_migration = process_context.Event()
+    migration_count = process_context.Value("i", 0)
+
+    def migrate(path: str, _key: bytes) -> None:
+        if Path(path).read_bytes() == b"encrypted-primary":
+            return
+        with migration_count.get_lock():
+            migration_count.value += 1
+            current_count = migration_count.value
+        if current_count == 1:
+            first_migration_started.set()
+        else:
+            second_migration_started.set()
+        assert allow_migration.wait(timeout=5)
+        Path(path).write_bytes(b"encrypted-primary")
+
+    monkeypatch.setattr("yinshi.tenant._tenant_database_key", lambda _tenant: b"k" * 32)
+    monkeypatch.setattr("yinshi.tenant._load_sqlcipher_module", lambda: object())
+    monkeypatch.setattr("yinshi.tenant._migrate_plaintext_user_database", migrate)
+    monkeypatch.setattr(
+        "yinshi.tenant._open_sqlcipher_connection",
+        lambda _path, _key: sqlite3.connect(":memory:"),
+    )
+
+    first = process_context.Process(
+        target=init_user_db,
+        args=(str(database_path), tenant),
+    )
+    second = process_context.Process(
+        target=init_user_db,
+        args=(str(database_path), tenant),
+    )
+    first.start()
+    assert first_migration_started.wait(timeout=5)
+    second.start()
+    assert not second_migration_started.wait(timeout=0.5)
+    allow_migration.set()
+    first.join(timeout=5)
+    second.join(timeout=5)
+
+    assert first.exitcode == 0
+    assert second.exitcode == 0
+    assert migration_count.value == 1
+    assert database_path.read_bytes() == b"encrypted-primary"
 
 
 def test_open_encrypted_database_removes_legacy_plaintext_backup(
@@ -354,9 +1062,11 @@ def test_user_data_encryption_required_checks_marker(tenant_env, monkeypatch):
         db_path=db_path,
     )
 
-    with pytest.raises(RuntimeError, match=".yinshi-encrypted-storage"):
+    with pytest.raises(RuntimeError, match=".yinshi-encrypted-storage") as raised:
         init_user_db(db_path, tenant=tenant)
 
+    assert data_dir not in str(raised.value)
+    assert tenant.user_id not in str(raised.value)
     Path(tenant_env["user_data_dir"]).joinpath(".yinshi-encrypted-storage").write_text(
         "fscrypt managed outside Yinshi\n",
         encoding="utf-8",

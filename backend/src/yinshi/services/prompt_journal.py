@@ -19,7 +19,7 @@ from yinshi.config import get_settings
 from yinshi.services.run_coordinator import get_run_coordinator
 
 PromptExecutor = Callable[[Request, str, Any], AsyncIterator[dict[str, Any]]]
-_EVENT_BYTES_MAX = 32_768
+_EVENT_BYTES_MAX = 1_048_576
 _EVENT_BATCH_BYTES_MAX = 48_000
 _EVENT_COUNT_MAX = 100_000
 _EVENT_BATCH_MAX = 100
@@ -64,26 +64,32 @@ async def _default_prompt_executor(
     from yinshi.api.stream import prompt_session
 
     response = await prompt_session(session_id, body, request)
+    body_iterator = response.body_iterator
     buffer = ""
-    async for chunk in response.body_iterator:
-        if isinstance(chunk, str):
-            text = chunk
-        elif isinstance(chunk, bytes):
-            text = chunk.decode("utf-8", errors="strict")
-        else:
-            raise TypeError("prompt stream yielded an invalid chunk type")
-        buffer += text
-        while "\n\n" in buffer:
-            frame, buffer = buffer.split("\n\n", maxsplit=1)
-            data_lines = [line[6:] for line in frame.splitlines() if line.startswith("data: ")]
-            if len(data_lines) != 1:
-                raise ValueError("prompt stream yielded an invalid SSE frame")
-            event = json.loads(data_lines[0])
-            if not isinstance(event, dict):
-                raise ValueError("prompt stream event must be an object")
-            yield event
-    if buffer.strip():
-        raise ValueError("prompt stream ended with an incomplete SSE frame")
+    try:
+        async for chunk in body_iterator:
+            if isinstance(chunk, str):
+                text = chunk
+            elif isinstance(chunk, bytes):
+                text = chunk.decode("utf-8", errors="strict")
+            else:
+                raise TypeError("prompt stream yielded an invalid chunk type")
+            buffer += text
+            while "\n\n" in buffer:
+                frame, buffer = buffer.split("\n\n", maxsplit=1)
+                data_lines = [line[6:] for line in frame.splitlines() if line.startswith("data: ")]
+                if len(data_lines) != 1:
+                    raise ValueError("prompt stream yielded an invalid SSE frame")
+                event = json.loads(data_lines[0])
+                if not isinstance(event, dict):
+                    raise ValueError("prompt stream event must be an object")
+                yield event
+        if buffer.strip():
+            raise ValueError("prompt stream ended with an incomplete SSE frame")
+    finally:
+        close_body_iterator = getattr(body_iterator, "aclose", None)
+        if close_body_iterator is not None:
+            await close_body_iterator()
 
 
 class PromptJournal:
@@ -118,6 +124,8 @@ class PromptJournal:
             raise TypeError("prompt body must not be None")
         await self._recover_database(request)
         async with self._start_lock:
+            if self._closing:
+                raise RuntimeError("prompt journal is closing")
             return await self._start_serialized(
                 request=request,
                 session_id=session_id,
@@ -214,30 +222,31 @@ class PromptJournal:
                    WHERE run_id = ? AND sequence >= ?
                    ORDER BY sequence ASC LIMIT ?""",
                 (run_id, next_sequence, _EVENT_BATCH_MAX),
-            ).fetchall()
+            )
+            events: list[dict[str, Any]] = []
+            cursor = next_sequence
+            event_bytes = 0
+            for row in rows:
+                sequence = row["sequence"]
+                if type(sequence) is not int or sequence != cursor:
+                    raise RuntimeError("prompt journal sequence is not contiguous")
+                serialized_event = row["event_json"]
+                if not isinstance(serialized_event, str):
+                    raise RuntimeError("prompt journal event JSON is invalid")
+                serialized_bytes = len(serialized_event.encode("utf-8"))
+                if events and event_bytes + serialized_bytes > _EVENT_BATCH_BYTES_MAX:
+                    break
+                event = json.loads(serialized_event)
+                if not isinstance(event, dict):
+                    raise RuntimeError("prompt journal event is not an object")
+                events.append(event)
+                event_bytes += serialized_bytes
+                cursor += 1
+            status = run["status"]
 
-        events: list[dict[str, Any]] = []
-        cursor = next_sequence
-        event_bytes = 0
-        for row in rows:
-            sequence = row["sequence"]
-            if type(sequence) is not int or sequence != cursor:
-                raise RuntimeError("prompt journal sequence is not contiguous")
-            serialized_event = row["event_json"]
-            if not isinstance(serialized_event, str):
-                raise RuntimeError("prompt journal event JSON is invalid")
-            serialized_bytes = len(serialized_event.encode("utf-8"))
-            if events and event_bytes + serialized_bytes > _EVENT_BATCH_BYTES_MAX:
-                break
-            event = json.loads(serialized_event)
-            if not isinstance(event, dict):
-                raise RuntimeError("prompt journal event is not an object")
-            events.append(event)
-            event_bytes += serialized_bytes
-            cursor += 1
         return PromptEventBatch(
             run_id=run_id,
-            status=run["status"],
+            status=status,
             events=tuple(events),
             next_sequence=cursor,
         )
@@ -290,28 +299,22 @@ class PromptJournal:
 
     async def close(self) -> None:
         """Cancel active tasks and wait for their cleanup before app shutdown."""
-        async with self._tasks_lock:
-            self._closing = True
-            tasks = tuple(self._tasks.values())
-        for task in tasks:
-            if not task.done():
-                task.cancel()
-        for task in tasks:
-            with suppress(asyncio.CancelledError):
-                await task
-        async with self._tasks_lock:
-            self._tasks.clear()
+        async with self._start_lock:
+            async with self._tasks_lock:
+                self._closing = True
+                tasks = tuple(self._tasks.values())
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            try:
+                await asyncio.gather(*tasks, return_exceptions=True)
+            finally:
+                async with self._tasks_lock:
+                    self._tasks.clear()
 
     async def _recover_database(self, request: Request) -> None:
         """Mark active rows from a previous process as interrupted once per tenant DB."""
-        tenant = getattr(request.state, "tenant", None)
-        database_path = getattr(tenant, "db_path", None)
-        if database_path is None:
-            database_path = str(Path(get_settings().db_path).resolve())
-        if not isinstance(database_path, str) or not database_path:
-            raise RuntimeError("prompt journal request database is unavailable")
-        if database_path in self._recovered_database_paths:
-            return
+        database_path = self._database_path(request)
         async with self._recovery_lock:
             if database_path in self._recovered_database_paths:
                 return
@@ -352,6 +355,12 @@ class PromptJournal:
                     raise
             self._recovered_database_paths.add(database_path)
 
+    async def _rearm_database_recovery(self, request: Request) -> None:
+        """Require orphan recovery again after a terminal status write fails."""
+        database_path = self._database_path(request)
+        async with self._recovery_lock:
+            self._recovered_database_paths.discard(database_path)
+
     async def _consume(
         self,
         *,
@@ -361,6 +370,7 @@ class PromptJournal:
         body: Any,
     ) -> None:
         final_status = "completed"
+        event_source: AsyncIterator[dict[str, Any]] | None = None
         try:
             self._set_status(request, run_id, "running", expected={"starting"})
             event_source = self._executor(request, session_id, body)
@@ -388,11 +398,25 @@ class PromptJournal:
                 {"type": "error", "error": "Prompt execution failed"},
             )
         finally:
-            self._set_terminal_status(request, run_id, final_status)
-            async with self._tasks_lock:
-                current_task = asyncio.current_task()
-                if self._tasks.get(run_id) is current_task:
-                    self._tasks.pop(run_id, None)
+            try:
+                if event_source is not None:
+                    close_event_source = getattr(event_source, "aclose", None)
+                    if close_event_source is not None:
+                        with suppress(Exception):
+                            await close_event_source()
+            finally:
+                try:
+                    try:
+                        self._set_terminal_status(request, run_id, final_status)
+                    except Exception:
+                        with suppress(BaseException):
+                            await self._rearm_database_recovery(request)
+                        raise
+                finally:
+                    async with self._tasks_lock:
+                        current_task = asyncio.current_task()
+                        if self._tasks.get(run_id) is current_task:
+                            self._tasks.pop(run_id, None)
 
     async def _append_terminal_event_safely(
         self,
@@ -494,6 +518,16 @@ class PromptJournal:
         if row is None:
             raise PromptRunNotFoundError("prompt run not found")
         return self._row_to_run(row)
+
+    @staticmethod
+    def _database_path(request: Request) -> str:
+        tenant = getattr(request.state, "tenant", None)
+        database_path = getattr(tenant, "db_path", None)
+        if database_path is None:
+            database_path = str(Path(get_settings().db_path).resolve())
+        if not isinstance(database_path, str) or not database_path:
+            raise RuntimeError("prompt journal request database is unavailable")
+        return database_path
 
     @staticmethod
     def _row_to_run(row: sqlite3.Row) -> PromptRun:

@@ -13,6 +13,8 @@ import PiConfigSection from "../components/PiConfigSection";
 import PiReleaseNotesSection from "../components/PiReleaseNotesSection";
 import { useAuth } from "../hooks/useAuth";
 import { useCatalog } from "../hooks/useCatalog";
+import { resolveRuntimeRef } from "../runtime/resolveRuntime";
+import type { UnresolvedRuntimeRef } from "../runtime/runtimeRef";
 import {
   createRuntimeTransport,
   type RuntimeRef,
@@ -594,16 +596,15 @@ function ProvidersSection({ transport }: { transport: RuntimeTransport }) {
 
 function RuntimeLocationSelector({
   runtime,
+  primaryRuntime,
   byocRuntime,
   onSelect,
 }: {
   runtime: RuntimeRef;
+  primaryRuntime: RuntimeRef;
   byocRuntime: RuntimeRef | null;
   onSelect: (runtime: RuntimeRef) => void;
 }) {
-  const primaryRuntime: RuntimeRef = window.yinshiDesktop
-    ? { location: "local" }
-    : { location: "hosted" };
   const selectedByoc = runtime.location === "byoc";
   const selectedPrimary = runtime.location === primaryRuntime.location;
   return (
@@ -628,9 +629,9 @@ function RuntimeLocationSelector({
               : "border-gray-800 text-gray-400 hover:border-gray-600"
           }`}
         >
-          {primaryRuntime.location === "local" ? "This Mac" : "Hosted Yinshi"}
+          {window.yinshiDesktop ? "This Mac" : "Hosted Yinshi"}
         </button>
-        {primaryRuntime.location === "local" ? (
+        {window.yinshiDesktop ? (
           <button
             type="button"
             onClick={() => onSelect({ location: "hosted" })}
@@ -692,14 +693,17 @@ function SettingsTabButton({
 
 export default function Settings() {
   const { email } = useAuth();
-  const primaryRuntime = useMemo<RuntimeRef>(
+  const requestedPrimaryRuntime = useMemo<UnresolvedRuntimeRef>(
     () =>
       window.yinshiDesktop ? { location: "local" } : { location: "hosted" },
     [],
   );
   const [activeTab, setActiveTab] = useState<SettingsTab>("providers");
-  const [selectedRuntime, setSelectedRuntime] =
-    useState<RuntimeRef>(primaryRuntime);
+  const [primaryRuntime, setPrimaryRuntime] = useState<RuntimeRef | null>(null);
+  const [selectedRuntime, setSelectedRuntime] = useState<RuntimeRef | null>(null);
+  const [runtimeResolutionError, setRuntimeResolutionError] = useState<
+    string | null
+  >(null);
   const [byocRuntime, setByocRuntime] = useState<RuntimeRef | null>(null);
   const [fileVaultStatus, setFileVaultStatus] = useState<
     "disabled" | "enabled" | "unknown" | null
@@ -713,9 +717,32 @@ export default function Settings() {
   >([]);
   const [profileError, setProfileError] = useState<string | null>(null);
   const runtimeTransport = useMemo(
-    () => createRuntimeTransport(selectedRuntime),
+    () =>
+      selectedRuntime ? createRuntimeTransport(selectedRuntime) : null,
     [selectedRuntime],
   );
+
+  useEffect(() => {
+    let cancelled = false;
+    setRuntimeResolutionError(null);
+    void resolveRuntimeRef(requestedPrimaryRuntime)
+      .then((resolvedRuntime) => {
+        if (cancelled) return;
+        setPrimaryRuntime(resolvedRuntime);
+        setSelectedRuntime(resolvedRuntime);
+      })
+      .catch((resolutionError) => {
+        if (cancelled) return;
+        setRuntimeResolutionError(
+          resolutionError instanceof Error
+            ? resolutionError.message
+            : "Failed to resolve runtime",
+        );
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [requestedPrimaryRuntime]);
 
   useEffect(() => {
     const desktopBridge = window.yinshiDesktop;
@@ -761,7 +788,7 @@ export default function Settings() {
         } else {
           setByocRuntime(null);
           setSelectedRuntime((currentRuntime) =>
-            currentRuntime.location === "byoc"
+            currentRuntime?.location === "byoc"
               ? primaryRuntime
               : currentRuntime,
           );
@@ -808,7 +835,7 @@ export default function Settings() {
 
   return (
     <div className="h-full overflow-y-auto">
-      <div className="mx-auto max-w-5xl p-6 pb-12">
+      <div className="mx-auto max-w-5xl p-6 pb-12 pt-12 md:pt-6">
         <h1 className="mb-6 text-2xl font-bold text-gray-100">Settings</h1>
 
         <section className="mb-8">
@@ -942,23 +969,40 @@ export default function Settings() {
           role="tabpanel"
           aria-labelledby={`settings-tab-${activeTab}`}
         >
-          {activeTab === "providers" ||
-          activeTab === "pi-config" ||
-          activeTab === "pi-release-notes" ? (
+          {(activeTab === "providers" ||
+            activeTab === "pi-config" ||
+            activeTab === "pi-release-notes") &&
+          primaryRuntime &&
+          selectedRuntime ? (
             <RuntimeLocationSelector
               runtime={selectedRuntime}
+              primaryRuntime={primaryRuntime}
               byocRuntime={byocRuntime}
               onSelect={setSelectedRuntime}
             />
           ) : null}
-          {activeTab === "providers" ? (
+          {(activeTab === "providers" ||
+            activeTab === "pi-config" ||
+            activeTab === "pi-release-notes") &&
+          !runtimeTransport &&
+          !runtimeResolutionError ? (
+            <div className="rounded border border-gray-700 bg-gray-800 px-4 py-3 text-sm text-gray-400">
+              Loading provider catalog...
+            </div>
+          ) : null}
+          {runtimeResolutionError ? (
+            <div className="rounded border border-red-900/50 bg-gray-800 px-4 py-3 text-sm text-red-400">
+              {runtimeResolutionError}
+            </div>
+          ) : null}
+          {activeTab === "providers" && runtimeTransport ? (
             <ProvidersSection transport={runtimeTransport} />
           ) : null}
           {activeTab === "cloud-runner" ? <CloudRunnerSection /> : null}
-          {activeTab === "pi-config" ? (
+          {activeTab === "pi-config" && runtimeTransport ? (
             <PiConfigSection transport={runtimeTransport} />
           ) : null}
-          {activeTab === "pi-release-notes" ? (
+          {activeTab === "pi-release-notes" && runtimeTransport ? (
             <PiReleaseNotesSection transport={runtimeTransport} />
           ) : null}
         </div>

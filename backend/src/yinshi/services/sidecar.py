@@ -37,6 +37,8 @@ class PiRuntimeVersionPayload(TypedDict):
 logger = logging.getLogger(__name__)
 
 _SIDECAR_MESSAGE_LIMIT_BYTES = 1024 * 1024 * 8
+_SIDECAR_WARMUP_TIMEOUT_SECONDS = 30.0
+_SIDECAR_CANCELLATION_TIMEOUT_SECONDS = 30.0
 
 
 class SidecarClient:
@@ -55,6 +57,10 @@ class SidecarClient:
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
         self._connected = False
+        self._active_query_ids: set[str] = set()
+        self._pending_cancellations: dict[str, asyncio.Future[dict[str, Any] | None]] = {}
+        self._pending_cancellation_waiters: dict[str, int] = {}
+        self._cancelled_before_query: set[str] = set()
 
     @property
     def connected(self) -> bool:
@@ -140,6 +146,31 @@ class SidecarClient:
             raise SidecarError("Sidecar returned a non-object response")
         return message
 
+    def _route_cancellation(self, session_id: str, message: dict[str, Any]) -> bool:
+        """Route a cancellation response to waiters without reading concurrently."""
+        acknowledgement = self._pending_cancellations.get(session_id)
+        if message.get("type") != "cancel_status" or acknowledgement is None:
+            return False
+        if not acknowledgement.done():
+            acknowledgement.set_result(message)
+            if (
+                message
+                == {
+                    "id": session_id,
+                    "type": "cancel_status",
+                    "success": True,
+                }
+                and session_id not in self._active_query_ids
+            ):
+                self._cancelled_before_query.add(session_id)
+        return True
+
+    def _fail_pending_cancellation(self, session_id: str) -> None:
+        """Fail a cancellation when its socket reader exits first."""
+        acknowledgement = self._pending_cancellations.get(session_id)
+        if acknowledgement is not None and not acknowledgement.done():
+            acknowledgement.set_result(None)
+
     @staticmethod
     def _build_options(
         model: str,
@@ -197,6 +228,26 @@ class SidecarClient:
             }
         )
 
+        try:
+            async with asyncio.timeout(_SIDECAR_WARMUP_TIMEOUT_SECONDS):
+                while True:
+                    msg = await self._read_line()
+                    if msg is None:
+                        raise SidecarError("Sidecar connection lost during warmup")
+                    if msg.get("id") != session_id:
+                        continue
+                    if self._route_cancellation(session_id, msg):
+                        continue
+                    if msg.get("type") != "warmup_status":
+                        raise SidecarError(f"Unexpected warmup response type: {msg.get('type')}")
+                    if msg.get("success") is not True:
+                        raise SidecarError(f"Sidecar warmup failed: {msg.get('error', 'unknown')}")
+                    return
+        except TimeoutError as exc:
+            raise SidecarError("Sidecar warmup timed out") from exc
+        finally:
+            self._fail_pending_cancellation(session_id)
+
     async def query(
         self,
         session_id: str,
@@ -211,43 +262,56 @@ class SidecarClient:
         pi_session_file: str | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Send a prompt and yield streaming events from the sidecar."""
-        await self._send(
-            {
-                "type": "query",
-                "id": session_id,
-                "prompt": prompt,
-                "options": self._build_options(
-                    model,
-                    cwd,
-                    provider_auth,
-                    provider_config,
-                    git_auth,
-                    agent_dir=agent_dir,
-                    settings_payload=settings_payload,
-                    pi_session_file=pi_session_file,
-                ),
-            }
-        )
+        if session_id in self._cancelled_before_query:
+            self._cancelled_before_query.discard(session_id)
+            yield {"id": session_id, "type": "cancelled"}
+            return
 
-        while True:
-            msg = await self._read_line()
-            if msg is None:
-                raise SidecarError("Sidecar connection lost")
+        self._active_query_ids.add(session_id)
+        try:
+            await self._send(
+                {
+                    "type": "query",
+                    "id": session_id,
+                    "prompt": prompt,
+                    "options": self._build_options(
+                        model,
+                        cwd,
+                        provider_auth,
+                        provider_config,
+                        git_auth,
+                        agent_dir=agent_dir,
+                        settings_payload=settings_payload,
+                        pi_session_file=pi_session_file,
+                    ),
+                }
+            )
 
-            # On a dedicated connection, all messages should be for this session,
-            # but filter defensively in case of protocol quirks.
-            if msg.get("id") and msg.get("id") != session_id:
-                continue
+            while True:
+                msg = await self._read_line()
+                if msg is None:
+                    raise SidecarError("Sidecar connection lost")
 
-            yield msg
+                # On a dedicated connection, all messages should be for this session,
+                # but filter defensively in case of protocol quirks.
+                if msg.get("id") and msg.get("id") != session_id:
+                    continue
 
-            msg_type = msg.get("type")
-            if msg_type == "error":
-                break
-            if msg_type == "message":
-                data = msg.get("data", {})
-                if data.get("type") == "result":
+                if self._route_cancellation(session_id, msg):
+                    continue
+
+                yield msg
+
+                msg_type = msg.get("type")
+                if msg_type in {"cancelled", "error"}:
                     break
+                if msg_type == "message":
+                    data = msg.get("data", {})
+                    if data.get("type") == "result":
+                        break
+        finally:
+            self._active_query_ids.discard(session_id)
+            self._fail_pending_cancellation(session_id)
 
     async def resolve_model(
         self,
@@ -470,8 +534,42 @@ class SidecarClient:
             raise SidecarError(f"Unexpected response type: {msg.get('type')}")
 
     async def cancel(self, session_id: str) -> None:
-        """Cancel an active session."""
-        await self._send({"type": "cancel", "id": session_id})
+        """Cancel a session after receiving its exact acknowledgement."""
+        acknowledgement = self._pending_cancellations.get(session_id)
+        should_send = acknowledgement is None
+        if acknowledgement is None:
+            acknowledgement = asyncio.get_running_loop().create_future()
+            self._pending_cancellations[session_id] = acknowledgement
+        self._pending_cancellation_waiters[session_id] = (
+            self._pending_cancellation_waiters.get(session_id, 0) + 1
+        )
+
+        try:
+            async with asyncio.timeout(_SIDECAR_CANCELLATION_TIMEOUT_SECONDS):
+                if should_send:
+                    try:
+                        await self._send({"type": "cancel", "id": session_id})
+                    except Exception:
+                        if not acknowledgement.done():
+                            acknowledgement.set_result(None)
+                        raise
+                response = await asyncio.shield(acknowledgement)
+            if response != {
+                "id": session_id,
+                "type": "cancel_status",
+                "success": True,
+            }:
+                raise SidecarError("Sidecar cancellation failed")
+        except Exception as exc:
+            raise SidecarError("Sidecar cancellation failed") from exc
+        finally:
+            remaining_waiters = self._pending_cancellation_waiters[session_id] - 1
+            if remaining_waiters:
+                self._pending_cancellation_waiters[session_id] = remaining_waiters
+            else:
+                self._pending_cancellation_waiters.pop(session_id, None)
+                if self._pending_cancellations.get(session_id) is acknowledgement:
+                    self._pending_cancellations.pop(session_id, None)
 
     async def release_session(self, session_id: str) -> None:
         """Drop one pi session so the sidecar can free its context.

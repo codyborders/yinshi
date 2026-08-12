@@ -7,9 +7,10 @@ import os
 import re
 import tempfile
 import time
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import IO, TYPE_CHECKING, Any
+from typing import IO, TYPE_CHECKING, Any, AsyncIterator
 
 from yinshi.exceptions import ContainerNotReadyError, ContainerStartError
 
@@ -48,6 +49,14 @@ class ContainerInfo:
     protected_operation_deadlines: dict[str, datetime] = field(default_factory=dict)
 
 
+@dataclass(frozen=True, slots=True)
+class ContainerActivityReservation:
+    """Identifies one acquired container generation."""
+
+    container_key: str
+    container: ContainerInfo = field(repr=False, compare=False)
+
+
 class ContainerManager:
     """Manages per-user Podman containers for sidecar isolation.
 
@@ -63,7 +72,9 @@ class ContainerManager:
         self._settings = settings
         self._podman_bin = podman_binary
         self._containers: dict[str, ContainerInfo] = {}
+        self._pending_container_keys: set[str] = set()
         self._locks: dict[str, asyncio.Lock] = {}
+        self._lock_ref_counts: dict[str, int] = {}
         self._global_lock = asyncio.Lock()
         self._initialization_lock = asyncio.Lock()
         self._socket_poll_timeout_s: float = 10.0
@@ -134,6 +145,9 @@ class ContainerManager:
             )
             try:
                 await asyncio.wait_for(proc.wait(), timeout=timeout)
+            except asyncio.CancelledError:
+                await asyncio.shield(self._stop_process(proc))
+                raise
             except asyncio.TimeoutError:
                 await self._stop_process(proc)
                 raise ContainerStartError(
@@ -355,18 +369,38 @@ class ContainerManager:
                 cid = c.get("Id", c.get("id", ""))
                 if cid:
                     await self._run_podman("rm", "-f", cid, check=False)
-                    logger.info("Removed orphaned container %s", cid[:12])
+                    logger.info("Removed orphaned sidecar container")
         except (json.JSONDecodeError, ContainerStartError):
-            logger.warning("Failed to clean up orphaned containers", exc_info=True)
+            logger.warning("Failed to clean up orphaned containers")
 
     # -- Per-user locks -----------------------------------------------------
 
-    async def _get_lock(self, user_id: str) -> asyncio.Lock:
-        """Get or create a per-user lock."""
+    @asynccontextmanager
+    async def _runtime_lock(self, container_key: str) -> AsyncIterator[None]:
+        """Serialize work for one runtime without blocking unrelated runtimes."""
         async with self._global_lock:
-            if user_id not in self._locks:
-                self._locks[user_id] = asyncio.Lock()
-            return self._locks[user_id]
+            lock = self._locks.setdefault(container_key, asyncio.Lock())
+            self._lock_ref_counts[container_key] = self._lock_ref_counts.get(container_key, 0) + 1
+
+        acquired = False
+        try:
+            await lock.acquire()
+            acquired = True
+            yield
+        finally:
+            if acquired:
+                lock.release()
+            async with self._global_lock:
+                remaining = self._lock_ref_counts[container_key] - 1
+                if remaining:
+                    self._lock_ref_counts[container_key] = remaining
+                else:
+                    del self._lock_ref_counts[container_key]
+                    if (
+                        container_key not in self._containers
+                        and container_key not in self._pending_container_keys
+                    ):
+                        self._locks.pop(container_key, None)
 
     def _container_key(self, user_id: str, runtime_id: str | None = None) -> str:
         """Return the in-memory key for one user or workspace runtime."""
@@ -496,8 +530,7 @@ class ContainerManager:
         if not self._initialized:
             await self.initialize()
 
-        lock = await self._get_lock(container_key)
-        async with lock:
+        async with self._runtime_lock(container_key):
             existing = self._containers.get(container_key)
             if existing:
                 if await self._is_running(existing.container_id):
@@ -511,30 +544,74 @@ class ContainerManager:
                         raise ContainerStartError(
                             "Existing sidecar container is busy with a different runtime configuration"
                         )
-                    await self._remove_container(existing.container_id)
-                    del self._containers[container_key]
-                else:
-                    await self._remove_container(existing.container_id)
-                    del self._containers[container_key]
+                removed = await self._remove_container(existing.container_id)
+                if not removed:
+                    raise ContainerStartError("Failed to remove existing sidecar container")
+                self._reserve_replacement(container_key, existing)
+            else:
+                await self._reserve_container_slot(container_key)
 
-            await self._enforce_container_limit()
-            return await self._create_container(
-                user_id,
-                normalized_mounts,
-                runtime_id=runtime_id,
-                environment=normalized_environment,
-            )
+            info: ContainerInfo | None = None
+            try:
+                info = await self._create_container(
+                    user_id,
+                    normalized_mounts,
+                    runtime_id=runtime_id,
+                    environment=normalized_environment,
+                )
+                self._publish_container(container_key, info)
+                return info
+            except BaseException:
+                if info is not None:
+                    await asyncio.shield(self._remove_container(info.container_id))
+                    if self._containers.get(container_key) is info:
+                        del self._containers[container_key]
+                raise
+            finally:
+                self._release_container_slot(container_key)
 
-    async def _enforce_container_limit(self) -> None:
-        """Fail before creating a new container when the configured quota is full."""
+    async def _reserve_container_slot(self, container_key: str) -> None:
+        """Reserve quota before starting Podman for one new runtime."""
         max_count = getattr(self._settings, "container_max_count", 0)
-        if not max_count:
-            return
-        if len(self._containers) < max_count:
-            return
+        async with self._global_lock:
+            tracked_count = len(self._containers) + len(self._pending_container_keys)
+            if not max_count or tracked_count < max_count:
+                self._pending_container_keys.add(container_key)
+                return
+
         await self.reap_idle()
-        if len(self._containers) >= max_count:
-            raise ContainerStartError("Maximum container limit reached")
+
+        async with self._global_lock:
+            tracked_count = len(self._containers) + len(self._pending_container_keys)
+            if max_count and tracked_count >= max_count:
+                raise ContainerStartError("Maximum container limit reached")
+            self._pending_container_keys.add(container_key)
+
+    def _reserve_replacement(
+        self,
+        container_key: str,
+        existing: ContainerInfo,
+    ) -> None:
+        """Convert one tracked container into a creation reservation."""
+        if self._containers.get(container_key) is not existing:
+            raise ContainerStartError("Container runtime changed during replacement")
+        del self._containers[container_key]
+        self._pending_container_keys.add(container_key)
+
+    def _publish_container(
+        self,
+        container_key: str,
+        info: ContainerInfo,
+    ) -> None:
+        """Replace one quota reservation with its ready container."""
+        if container_key not in self._pending_container_keys:
+            raise ContainerStartError("Container quota reservation was lost")
+        self._pending_container_keys.remove(container_key)
+        self._containers[container_key] = info
+
+    def _release_container_slot(self, container_key: str) -> None:
+        """Release a failed or cancelled creation reservation."""
+        self._pending_container_keys.discard(container_key)
 
     def touch(self, user_id: str, *, runtime_id: str | None = None) -> None:
         """Update last activity timestamp for a runtime container."""
@@ -542,12 +619,44 @@ class ContainerManager:
         if info:
             info.last_activity = self._now()
 
+    async def acquire_activity(
+        self,
+        user_id: str,
+        *,
+        runtime_id: str | None = None,
+    ) -> ContainerActivityReservation | None:
+        """Reserve the current runtime generation before a caller uses it."""
+        container_key = self._container_key(user_id, runtime_id)
+        async with self._runtime_lock(container_key):
+            info = self._containers.get(container_key)
+            if info is None:
+                logger.warning("Cannot acquire activity for missing container")
+                return None
+            info.active_request_count += 1
+            info.last_activity = self._now()
+            return ContainerActivityReservation(container_key, info)
+
+    async def release_activity(
+        self,
+        reservation: ContainerActivityReservation,
+    ) -> None:
+        """Release the exact runtime generation represented by a reservation."""
+        if not isinstance(reservation, ContainerActivityReservation):
+            raise TypeError("reservation must be a ContainerActivityReservation")
+        async with self._runtime_lock(reservation.container_key):
+            info = reservation.container
+            if info.active_request_count == 0:
+                logger.warning("Cannot release container activity without a matching acquire")
+                return
+            info.active_request_count -= 1
+            info.last_activity = self._now()
+
     def begin_activity(self, user_id: str, *, runtime_id: str | None = None) -> None:
         """Mark a container as busy for the lifetime of one request."""
         container_key = self._container_key(user_id, runtime_id)
         info = self._containers.get(container_key)
         if info is None:
-            logger.warning("Cannot mark activity for missing container: %s", container_key[:41])
+            logger.warning("Cannot mark activity for missing container")
             return
         info.active_request_count += 1
         info.last_activity = self._now()
@@ -557,13 +666,10 @@ class ContainerManager:
         container_key = self._container_key(user_id, runtime_id)
         info = self._containers.get(container_key)
         if info is None:
-            logger.warning("Cannot end activity for missing container: %s", container_key[:41])
+            logger.warning("Cannot end activity for missing container")
             return
         if info.active_request_count == 0:
-            logger.warning(
-                "Cannot end activity for container %s without a matching begin",
-                container_key[:41],
-            )
+            logger.warning("Cannot end container activity without a matching begin")
             return
         info.active_request_count -= 1
         info.last_activity = self._now()
@@ -590,7 +696,7 @@ class ContainerManager:
 
         info = self._containers.get(container_key)
         if info is None:
-            logger.warning("Cannot protect missing container: %s", container_key[:41])
+            logger.warning("Cannot protect missing container")
             return
         info.protected_operation_deadlines[normalized_lease_key] = self._now() + timedelta(
             seconds=timeout_s
@@ -614,33 +720,53 @@ class ContainerManager:
 
         info = self._containers.get(container_key)
         if info is None:
-            logger.warning("Cannot unprotect missing container: %s", container_key[:41])
+            logger.warning("Cannot unprotect missing container")
             return
         info.protected_operation_deadlines.pop(normalized_lease_key, None)
         info.last_activity = self._now()
 
-    async def destroy_container(self, user_id: str, *, runtime_id: str | None = None) -> None:
-        """Stop and remove a user's runtime container."""
+    async def destroy_container(self, user_id: str, *, runtime_id: str | None = None) -> bool:
+        """Stop the current runtime and report whether workspace deletion is safe."""
         container_key = self._container_key(user_id, runtime_id)
-        info = self._containers.pop(container_key, None)
-        self._locks.pop(container_key, None)
-        if not info:
-            return
-        await self._remove_container(info.container_id)
-        logger.info("Destroyed container runtime %s", container_key[:41])
+        async with self._runtime_lock(container_key):
+            current = self._containers.get(container_key)
+            if current is None:
+                return True
+            self._prune_expired_protection(current, self._now())
+            if self._container_has_busy_state(current):
+                return False
+            removed = await self._remove_container(current.container_id)
+            if not removed:
+                return False
+            del self._containers[container_key]
+            logger.info("Destroyed container runtime")
+            return True
 
     async def reap_idle(self) -> int:
-        """Destroy containers that have been idle past the timeout."""
+        """Destroy containers that remain idle after acquiring their runtime lock."""
         timeout = self._settings.container_idle_timeout_s
         cutoff = self._now()
-        idle_keys = [
-            container_key
+        idle_candidates = [
+            (container_key, info)
             for container_key, info in self._containers.items()
             if self._container_is_reapable(info, cutoff, timeout)
         ]
-        for container_key in idle_keys:
-            await self._destroy_container_by_key(container_key)
-        return len(idle_keys)
+        removed_count = 0
+        for container_key, expected in idle_candidates:
+            async with self._runtime_lock(container_key):
+                current = self._containers.get(container_key)
+                if current is not expected:
+                    continue
+                if not self._container_is_reapable(current, self._now(), timeout):
+                    continue
+                removed = await self._remove_container(current.container_id)
+                if not removed:
+                    continue
+                if self._containers.get(container_key) is current:
+                    del self._containers[container_key]
+                    removed_count += 1
+                    logger.info("Destroyed container runtime")
+        return removed_count
 
     async def run_reaper(self) -> None:
         """Background task that periodically reaps idle containers."""
@@ -655,19 +781,34 @@ class ContainerManager:
 
     async def destroy_all(self) -> None:
         """Destroy all managed containers (shutdown hook)."""
-        container_keys = list(self._containers.keys())
-        for container_key in container_keys:
-            await self._destroy_container_by_key(container_key)
+        container_entries = list(self._containers.items())
+        for container_key, expected in container_entries:
+            await self._destroy_container_by_key(container_key, expected, allow_busy=True)
         logger.info("All sidecar containers destroyed")
 
-    async def _destroy_container_by_key(self, container_key: str) -> None:
-        """Stop and remove one runtime container by its internal key."""
-        info = self._containers.pop(container_key, None)
-        self._locks.pop(container_key, None)
-        if info is None:
-            return
-        await self._remove_container(info.container_id)
-        logger.info("Destroyed container runtime %s", container_key[:41])
+    async def _destroy_container_by_key(
+        self,
+        container_key: str,
+        expected: ContainerInfo | None,
+        *,
+        allow_busy: bool = False,
+    ) -> bool:
+        """Remove the selected runtime container after serializing its lifecycle."""
+        async with self._runtime_lock(container_key):
+            current = self._containers.get(container_key)
+            if expected is None or current is not expected:
+                return False
+            self._prune_expired_protection(current, self._now())
+            if not allow_busy and self._container_has_busy_state(current):
+                return False
+            removed = await self._remove_container(current.container_id)
+            if not removed:
+                return False
+            if self._containers.get(container_key) is not current:
+                return False
+            del self._containers[container_key]
+            logger.info("Destroyed container runtime")
+            return True
 
     # -- Internal helpers ---------------------------------------------------
 
@@ -682,16 +823,19 @@ class ContainerManager:
         )
         return rc == 0 and stdout == "running"
 
-    async def _remove_container(self, container_id: str) -> None:
-        """Force-remove a container."""
+    async def _remove_container(self, container_id: str) -> bool:
+        """Force-remove a container and report whether Podman succeeded."""
         rc, _, _ = await self._run_podman(
             "rm",
             "-f",
             container_id,
             check=False,
         )
-        if rc == 0:
-            logger.info("Removed container %s", container_id[:12])
+        if rc != 0:
+            logger.warning("Failed to remove container")
+            return False
+        logger.info("Removed container")
+        return True
 
     async def _create_container(
         self,
@@ -703,7 +847,6 @@ class ContainerManager:
     ) -> ContainerInfo:
         """Start a new sidecar container for a user or workspace runtime."""
         s = self._settings
-        container_key = self._container_key(user_id, runtime_id)
         socket_dir = self._socket_dir(user_id, runtime_id)
         socket_path = os.path.join(socket_dir, "sidecar.sock")
         cidfile_path = os.path.join(socket_dir, "container.cid")
@@ -721,46 +864,59 @@ class ContainerManager:
         for key, value in environment or (("HOME", "/tmp"),):
             env_args.extend(["--env", f"{key}={value}"])
 
-        _, container_id, _ = await self._run_podman_waiting_for_exit(
-            "run",
-            "-d",
-            "--replace",
-            "--cidfile",
-            cidfile_path,
-            "--name",
-            self._container_name(user_id, runtime_id),
-            "--userns",
-            "keep-id",
-            "--user",
-            f"{runtime_uid}:{runtime_gid}",
-            *env_args,
-            "-v",
-            f"{socket_dir}:/run/sidecar:rw",
-            *mount_args,
-            "--network",
-            _SIDECAR_NET,
-            "--memory",
-            s.container_memory_limit,
-            "--memory-swap",
-            s.container_memory_limit,
-            "--cpus",
-            cpus,
-            "--pids-limit",
-            str(s.container_pids_limit),
-            "--security-opt",
-            "no-new-privileges",
-            "--cap-drop",
-            "ALL",
-            "--label",
-            f"yinshi.user_id={user_id}",
-            "--label",
-            f"yinshi.runtime_id={runtime_id or ''}",
-            s.container_image,
-            timeout=_PODMAN_RUN_TIMEOUT_S,
-        )
-        container_id = self._resolve_created_container_id(container_id, cidfile_path)
-
-        await self._wait_for_socket(socket_path)
+        container_id: str | None = None
+        container_name = self._container_name(user_id, runtime_id)
+        try:
+            _, run_stdout, _ = await self._run_podman_waiting_for_exit(
+                "run",
+                "-d",
+                "--replace",
+                "--cidfile",
+                cidfile_path,
+                "--name",
+                container_name,
+                "--userns",
+                "keep-id",
+                "--user",
+                f"{runtime_uid}:{runtime_gid}",
+                *env_args,
+                "-v",
+                f"{socket_dir}:/run/sidecar:rw",
+                *mount_args,
+                "--network",
+                _SIDECAR_NET,
+                "--memory",
+                s.container_memory_limit,
+                "--memory-swap",
+                s.container_memory_limit,
+                "--cpus",
+                cpus,
+                "--pids-limit",
+                str(s.container_pids_limit),
+                "--security-opt",
+                "no-new-privileges",
+                "--cap-drop",
+                "ALL",
+                "--label",
+                f"yinshi.user_id={user_id}",
+                "--label",
+                f"yinshi.runtime_id={runtime_id or ''}",
+                s.container_image,
+                timeout=_PODMAN_RUN_TIMEOUT_S,
+            )
+            container_id = self._resolve_created_container_id(run_stdout, cidfile_path)
+            self._discard_runtime_file(cidfile_path, "container cidfile")
+            await self._wait_for_socket(socket_path)
+        except BaseException as error:
+            if container_id is None:
+                container_id = self._read_optional_container_id(cidfile_path)
+            if container_id is not None:
+                await asyncio.shield(self._remove_container(container_id))
+            elif isinstance(error, asyncio.CancelledError):
+                await asyncio.shield(self._remove_container(container_name))
+            self._discard_runtime_file(cidfile_path, "container cidfile")
+            self._discard_runtime_file(socket_path, "container socket")
+            raise
 
         info = ContainerInfo(
             container_id=container_id,
@@ -770,12 +926,7 @@ class ContainerManager:
             runtime_id=runtime_id,
             environment=environment or (("HOME", "/tmp"),),
         )
-        self._containers[container_key] = info
-        logger.info(
-            "Started container %s for runtime %s",
-            container_id[:12],
-            container_key[:41],
-        )
+        logger.info("Started container runtime")
         return info
 
     async def _wait_for_socket(self, socket_path: str) -> None:
@@ -835,6 +986,23 @@ class ContainerManager:
         if not container_id:
             raise ContainerStartError("podman run did not report a container id")
         return container_id
+
+    def _read_optional_container_id(self, cidfile_path: str) -> str | None:
+        """Read a container id written before a failed or cancelled Podman run."""
+        try:
+            with open(cidfile_path, encoding="utf-8") as cidfile:
+                container_id = cidfile.read().strip()
+        except OSError:
+            return None
+        return container_id or None
+
+    def _discard_runtime_file(self, path: str, description: str) -> None:
+        """Remove a runtime file without masking its primary lifecycle result."""
+        try:
+            if os.path.lexists(path) and not os.path.isdir(path):
+                os.unlink(path)
+        except OSError:
+            logger.warning("Failed to remove container runtime file")
 
     def _prepare_socket_dir(self, socket_dir: str, socket_path: str) -> None:
         """Create one user socket directory and remove any stale socket file."""

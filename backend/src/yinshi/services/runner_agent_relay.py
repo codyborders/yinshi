@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import uuid
 from pathlib import Path
+from typing import Protocol
 
 from yinshi.services.runner_noise_session import (
     RunnerCapabilityReplayStore,
@@ -17,6 +18,18 @@ _RELAY_FRAME_BYTES_MAX = 65_535
 _ACTIVE_TRANSFERS_MAX = 32
 _WELCOME_KEYS = {"runner_id", "type"}
 _TRANSFER_CONTROL_KEYS = {"transfer_id", "type"}
+
+
+class RunnerTaskLease(Protocol):
+    """Task reference operations needed by managed relay transfers."""
+
+    async def acquire(self) -> None:
+        """Acquire one active-transfer reference."""
+        ...
+
+    async def release(self) -> None:
+        """Release one active-transfer reference."""
+        ...
 
 
 class RunnerRelaySessionError(ValueError):
@@ -50,6 +63,7 @@ class RunnerAgentRelayRuntime:
         capability_signing_public_key: bytes,
         replay_database_path: Path,
         dispatcher_factory: DispatcherFactory | None = None,
+        task_lease: RunnerTaskLease | None = None,
     ) -> None:
         if not isinstance(runner_static_private_key, bytes) or len(runner_static_private_key) != 32:
             raise ValueError("runner_static_private_key must contain exactly 32 bytes")
@@ -66,6 +80,7 @@ class RunnerAgentRelayRuntime:
         self._capability_signing_public_key = bytes(capability_signing_public_key)
         self._replay_store = RunnerCapabilityReplayStore(replay_database_path)
         self._dispatcher_factory = dispatcher_factory
+        self._task_lease = task_lease
         self._runner_id: str | None = None
         self._sessions: dict[str, EncryptedRunnerRpcSession] = {}
 
@@ -74,7 +89,15 @@ class RunnerAgentRelayRuntime:
         """Return random routing IDs only, excluding capability and payload data."""
         return tuple(sorted(self._sessions))
 
-    def handle_control(self, message: str) -> None:
+    async def aclose(self) -> None:
+        """Clear open transfers and release their managed task references once."""
+        reference_count = len(self._sessions)
+        self._sessions.clear()
+        if self._task_lease is not None:
+            for _ in range(reference_count):
+                await self._task_lease.release()
+
+    async def handle_control(self, message: str) -> None:
         """Apply one exact welcome, open, or close relay control message."""
         if not isinstance(message, str) or not message or len(message) > 1_024:
             raise ValueError("Runner relay control message has an invalid length")
@@ -89,7 +112,7 @@ class RunnerAgentRelayRuntime:
             self._handle_welcome(payload)
             return
         if message_type in {"open", "close"}:
-            self._handle_transfer_control(payload, message_type=message_type)
+            await self._handle_transfer_control(payload, message_type=message_type)
             return
         raise ValueError("Runner relay control message type is unsupported")
 
@@ -112,6 +135,8 @@ class RunnerAgentRelayRuntime:
             )
         except (RuntimeError, TypeError, ValueError) as exc:
             del self._sessions[transfer_id]
+            if self._task_lease is not None:
+                await self._task_lease.release()
             raise RunnerRelaySessionError(transfer_id) from exc
         return uuid.UUID(transfer_id).bytes + response
 
@@ -126,7 +151,7 @@ class RunnerAgentRelayRuntime:
             raise ValueError("Runner relay welcome was already received")
         self._runner_id = runner_id
 
-    def _handle_transfer_control(
+    async def _handle_transfer_control(
         self,
         payload: dict[str, object],
         *,
@@ -141,19 +166,29 @@ class RunnerAgentRelayRuntime:
         if message_type == "close":
             if self._sessions.pop(transfer_id, None) is None:
                 raise ValueError("Runner relay transfer is not open")
+            if self._task_lease is not None:
+                await self._task_lease.release()
             return
         if transfer_id in self._sessions:
             raise ValueError("Runner relay transfer is already open")
         if len(self._sessions) >= _ACTIVE_TRANSFERS_MAX:
             raise ValueError("Runner relay active transfer limit was reached")
-        noise_session = RunnerNoiseSession(
-            runner_id=self._runner_id,
-            runner_static_private_key=self._runner_static_private_key,
-            capability_signing_public_key=self._capability_signing_public_key,
-            replay_store=self._replay_store,
-        )
-        self._sessions[transfer_id] = EncryptedRunnerRpcSession(
-            transfer_id=transfer_id,
-            noise_session=noise_session,
-            dispatcher_factory=self._dispatcher_factory,
-        )
+        if self._task_lease is not None:
+            await self._task_lease.acquire()
+        try:
+            noise_session = RunnerNoiseSession(
+                runner_id=self._runner_id,
+                runner_static_private_key=self._runner_static_private_key,
+                capability_signing_public_key=self._capability_signing_public_key,
+                replay_store=self._replay_store,
+            )
+            session = EncryptedRunnerRpcSession(
+                transfer_id=transfer_id,
+                noise_session=noise_session,
+                dispatcher_factory=self._dispatcher_factory,
+            )
+        except Exception:
+            if self._task_lease is not None:
+                await self._task_lease.release()
+            raise
+        self._sessions[transfer_id] = session

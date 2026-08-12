@@ -1,7 +1,8 @@
 """Tests for the provider/model catalog and unsupported-provider guardrails."""
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
+import pytest
 from fastapi.testclient import TestClient
 
 from tests.factories import create_full_stack, make_mock_sidecar
@@ -70,6 +71,74 @@ def test_catalog_filters_unsupported_providers(auth_client: TestClient) -> None:
     mock_sidecar.get_catalog.assert_awaited_once_with(agent_dir=None)
     resolve_context.assert_not_awaited()
     touch_container.assert_not_called()
+
+
+def test_catalog_fallback_releases_exact_activity_reservation(
+    auth_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Tenant fallback reserves its current container generation during sidecar work."""
+    from yinshi.config import Settings
+    from yinshi.exceptions import SidecarNotConnectedError
+    from yinshi.main import app
+    from yinshi.services.sidecar_runtime import TenantSidecarContext
+
+    settings = Settings(
+        container_enabled=True,
+        google_client_id="test-client",
+        google_client_secret="test-secret",
+        managed_runtime_provider="disabled",
+        _env_file=None,
+    )
+    monkeypatch.setattr("yinshi.services.sidecar_runtime.get_settings", lambda: settings)
+    tenant_sidecar_context = TenantSidecarContext(
+        socket_path="/tmp/tenant-sidecar.sock",
+        agent_dir=None,
+        settings_payload=None,
+    )
+    reservation = object()
+    container_manager = Mock()
+    container_manager.acquire_activity = AsyncMock(return_value=reservation)
+    container_manager.release_activity = AsyncMock()
+
+    async def unexpected_query(*args, **kwargs):
+        if False:
+            yield {}
+        raise AssertionError("query should not be called")
+
+    mock_sidecar = make_mock_sidecar(unexpected_query)
+    mock_sidecar.get_catalog = AsyncMock(
+        return_value={
+            "default_model": "openai/gpt-4o-mini",
+            "providers": [{"id": "openai", "model_count": 1}],
+            "models": [],
+        }
+    )
+    previous_manager = app.state.container_manager
+    app.state.container_manager = container_manager
+    try:
+        with (
+            patch(
+                "yinshi.api.catalog.create_sidecar_connection",
+                new=AsyncMock(
+                    side_effect=[
+                        SidecarNotConnectedError("host socket missing"),
+                        mock_sidecar,
+                    ]
+                ),
+            ),
+            patch(
+                "yinshi.api.catalog.resolve_tenant_sidecar_context",
+                new=AsyncMock(return_value=tenant_sidecar_context),
+            ),
+        ):
+            response = auth_client.get("/api/catalog")
+    finally:
+        app.state.container_manager = previous_manager
+
+    assert response.status_code == 200
+    container_manager.acquire_activity.assert_awaited_once()
+    container_manager.release_activity.assert_awaited_once_with(reservation)
 
 
 def test_catalog_returns_503_when_sidecars_are_unavailable(auth_client: TestClient) -> None:

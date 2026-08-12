@@ -22,6 +22,19 @@ _RUNNER_PRIVATE_KEY = bytes.fromhex(
 )
 
 
+class RecordingTaskLease:
+    """Record managed task reference operations."""
+
+    def __init__(self) -> None:
+        self.operations: list[str] = []
+
+    async def acquire(self) -> None:
+        self.operations.append("acquire")
+
+    async def release(self) -> None:
+        self.operations.append("release")
+
+
 def _runtime(tmp_path: Path) -> RunnerAgentRelayRuntime:
     signing_key = base64.urlsafe_b64decode(runner_capability_signing_public_key() + "=")
     return RunnerAgentRelayRuntime(
@@ -31,7 +44,7 @@ def _runtime(tmp_path: Path) -> RunnerAgentRelayRuntime:
     )
 
 
-def test_runner_relay_runtime_requires_welcome_before_transfer(
+async def test_runner_relay_runtime_requires_welcome_before_transfer(
     tmp_path: Path,
     db: sqlite3.Connection,
 ) -> None:
@@ -41,14 +54,19 @@ def test_runner_relay_runtime_requires_welcome_before_transfer(
     open_message = json.dumps({"transfer_id": transfer_id, "type": "open"})
 
     with pytest.raises(ValueError, match="welcome"):
-        runtime.handle_control(open_message)
+        await runtime.handle_control(open_message)
 
-    runtime.handle_control(json.dumps({"runner_id": "runner-1", "type": "welcome"}))
-    runtime.handle_control(open_message)
+    await runtime.handle_control(json.dumps({"runner_id": "runner-1", "type": "welcome"}))
+    await runtime.handle_control(open_message)
     assert runtime.active_transfer_ids == (transfer_id,)
 
-    runtime.handle_control(json.dumps({"transfer_id": transfer_id, "type": "close"}))
-    assert runtime.active_transfer_ids == ()
+    await runtime.handle_control(json.dumps({"transfer_id": transfer_id, "type": "close"}))
+    assert not runtime.active_transfer_ids
+
+    await runtime.handle_control(open_message)
+    await runtime.aclose()
+    await runtime.aclose()
+    assert not runtime.active_transfer_ids
 
 
 @pytest.mark.asyncio
@@ -58,10 +76,10 @@ async def test_runner_relay_runtime_rejects_unknown_or_malformed_frames(
 ) -> None:
     """Unknown UUID prefixes and extra control fields fail closed."""
     runtime = _runtime(tmp_path)
-    runtime.handle_control(json.dumps({"runner_id": "runner-1", "type": "welcome"}))
+    await runtime.handle_control(json.dumps({"runner_id": "runner-1", "type": "welcome"}))
 
     with pytest.raises(ValueError, match="shape"):
-        runtime.handle_control(
+        await runtime.handle_control(
             json.dumps({"extra": True, "runner_id": "runner-1", "type": "welcome"})
         )
     with pytest.raises(ValueError, match="not open"):

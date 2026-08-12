@@ -55,6 +55,23 @@ test("an incoming request disposes pi sessions that have been idle too long", ()
   assert.deepEqual(record, ["unsubscribe:idle", "dispose:idle"]);
 });
 
+test("an active prompt session is never removed by idle pruning", () => {
+  const sidecar = new YinshiSidecar();
+  const record = [];
+  const { socket } = writableMessages();
+  sidecar.activeSessions.set("active", {
+    ...fakeSession(record, "active"),
+    lastActivityMs: 1,
+  });
+  sidecar._trackPromptSession(socket, "active");
+
+  sidecar.handleRequest({ type: "ping" }, socket, 40 * 60 * 1000);
+
+  assert.equal(sidecar.activeSessions.has("active"), true);
+  assert.deepEqual(record, []);
+  sidecar.cleanup();
+});
+
 test("a pi session with no recorded activity is kept and stamped, not destroyed", () => {
   const sidecar = new YinshiSidecar();
   const record = [];
@@ -109,6 +126,27 @@ test("the process keeps at most sixteen pi sessions, dropping the least recent",
     "dispose:session-0",
   ]);
   assert.equal(record.length, 8);
+});
+
+test("LRU eviction never removes an active prompt session", () => {
+  const sidecar = new YinshiSidecar();
+  const record = [];
+  const { socket } = writableMessages();
+  for (let index = 0; index < 17; index += 1) {
+    sidecar.activeSessions.set(`session-${index}`, {
+      ...fakeSession(record, `session-${index}`),
+      lastActivityMs: 1_000 + index,
+    });
+  }
+  sidecar._trackPromptSession(socket, "session-0");
+
+  sidecar.handleRequest({ type: "ping" }, socket, 1_100);
+
+  assert.equal(sidecar.activeSessions.size, 16);
+  assert.equal(sidecar.activeSessions.has("session-0"), true);
+  assert.equal(sidecar.activeSessions.has("session-1"), false);
+  assert.deepEqual(record, ["unsubscribe:session-1", "dispose:session-1"]);
+  sidecar.cleanup();
 });
 
 test("a session_release request disposes that pi session and confirms the release", () => {

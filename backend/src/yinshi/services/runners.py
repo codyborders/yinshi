@@ -7,6 +7,7 @@ import binascii
 import hashlib
 import json
 import secrets
+import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import PurePosixPath
@@ -21,10 +22,12 @@ from yinshi.db import get_control_db
 from yinshi.exceptions import RunnerAuthenticationError, RunnerRegistrationError
 from yinshi.services.runner_capabilities import runner_capability_signing_public_key
 
+RunnerKind = Literal["byoc", "managed"]
 RunnerStorageProfile = Literal[
     "aws_ebs_s3_files",
     "archil_shared_files",
     "archil_all_posix",
+    "fly_sprites_posix",
 ]
 
 _REGISTRATION_TOKEN_TTL_MINUTES = 60
@@ -32,6 +35,7 @@ _HEARTBEAT_ONLINE_WINDOW_SECONDS = 120
 _DEFAULT_RUNNER_DATA_DIR = "/var/lib/yinshi"
 _DEFAULT_SQLITE_DIR = f"{_DEFAULT_RUNNER_DATA_DIR}/sqlite"
 _DEFAULT_SHARED_FILES_DIR = "/mnt/yinshi-s3-files"
+_DEFAULT_FLY_SPRITES_SHARED_FILES_DIR = f"{_DEFAULT_RUNNER_DATA_DIR}/files"
 _DEFAULT_ARCHIL_SHARED_FILES_DIR = "/mnt/archil/yinshi"
 _DEFAULT_ARCHIL_SQLITE_DIR = f"{_DEFAULT_ARCHIL_SHARED_FILES_DIR}/sqlite"
 _DEFAULT_RUNNER_TOKEN_FILE = f"{_DEFAULT_RUNNER_DATA_DIR}/runner-token"
@@ -40,6 +44,7 @@ _REGISTRATION_TOKEN_EXPIRED = "Runner registration token has expired"
 _AWS_STORAGE_PROFILE: RunnerStorageProfile = "aws_ebs_s3_files"
 _ARCHIL_SHARED_FILES_PROFILE: RunnerStorageProfile = "archil_shared_files"
 _ARCHIL_ALL_POSIX_PROFILE: RunnerStorageProfile = "archil_all_posix"
+_FLY_SPRITES_POSIX_PROFILE: RunnerStorageProfile = "fly_sprites_posix"
 _STORAGE_ARCHIL = "archil"
 _STORAGE_RUNNER_EBS = "runner_ebs"
 _STORAGE_S3_FILES_OR_LOCAL_POSIX = "s3_files_or_local_posix"
@@ -117,6 +122,19 @@ _STORAGE_PROFILES: dict[RunnerStorageProfile, RunnerStorageProfileSpec] = {
         allow_sqlite_under_shared_files=True,
         allowed_sqlite_storage=frozenset({_STORAGE_ARCHIL}),
         allowed_shared_files_storage=frozenset({_STORAGE_ARCHIL}),
+    ),
+    _FLY_SPRITES_POSIX_PROFILE: RunnerStorageProfileSpec(
+        value=_FLY_SPRITES_POSIX_PROFILE,
+        sqlite_storage=_STORAGE_LOCAL_POSIX,
+        shared_files_storage=_STORAGE_LOCAL_POSIX,
+        requires_explicit_storage=False,
+        default_sqlite_dir=_DEFAULT_SQLITE_DIR,
+        default_shared_files_dir=_DEFAULT_FLY_SPRITES_SHARED_FILES_DIR,
+        live_sqlite_on_shared_files=False,
+        experimental=False,
+        allow_sqlite_under_shared_files=False,
+        allowed_sqlite_storage=frozenset({_STORAGE_LOCAL_POSIX}),
+        allowed_shared_files_storage=frozenset({_STORAGE_LOCAL_POSIX}),
     ),
 }
 
@@ -424,6 +442,7 @@ def _serialize_runner(row: Any) -> dict[str, Any]:
     noise_public_key = row["noise_public_key"]
     return {
         "id": row["id"],
+        "kind": row["kind"],
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
         "name": row["name"],
@@ -442,11 +461,24 @@ def _serialize_runner(row: Any) -> dict[str, Any]:
 
 
 def get_runner_for_user(user_id: str) -> dict[str, Any] | None:
-    """Return the current runner status for a user, including revoked state."""
+    """Return the current BYOC runner status for a user, including revoked state."""
     normalized_user_id = _require_user_id(user_id)
     with get_control_db() as db:
         row = db.execute(
-            "SELECT * FROM user_runners WHERE user_id = ?",
+            "SELECT * FROM user_runners WHERE user_id = ? AND kind = 'byoc'",
+            (normalized_user_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    return _serialize_runner(row)
+
+
+def get_managed_runner_for_user(user_id: str) -> dict[str, Any] | None:
+    """Return the internal managed runner status for a user, including revoked state."""
+    normalized_user_id = _require_user_id(user_id)
+    with get_control_db() as db:
+        row = db.execute(
+            "SELECT * FROM user_runners WHERE user_id = ? AND kind = 'managed'",
             (normalized_user_id,),
         ).fetchone()
     if row is None:
@@ -462,7 +494,8 @@ def confirm_runner_noise_key(user_id: str, noise_public_key: str) -> dict[str, A
     confirmed_at = _datetime_to_storage(_utc_now())
     with get_control_db() as db:
         row = db.execute(
-            "SELECT * FROM user_runners WHERE user_id = ? AND revoked_at IS NULL",
+            "SELECT * FROM user_runners "
+            "WHERE user_id = ? AND kind = 'byoc' AND revoked_at IS NULL",
             (normalized_user_id,),
         ).fetchone()
         if row is None or row["noise_public_key"] is None:
@@ -510,7 +543,8 @@ def _runner_environment(
     }
 
 
-def create_runner_registration(
+def _create_runner_registration_in_connection(
+    db: sqlite3.Connection,
     user_id: str,
     *,
     name: str,
@@ -518,20 +552,29 @@ def create_runner_registration(
     region: str,
     storage_profile: str,
     control_url: str,
+    runner_kind: RunnerKind = "byoc",
+    now: datetime | None = None,
 ) -> dict[str, Any]:
-    """Create or rotate a one-time runner registration token for a user."""
+    """Upsert registration state without committing the caller-owned transaction."""
     normalized_user_id = _require_user_id(user_id)
     normalized_name = _require_non_empty_text(name, "name")
     normalized_provider = _require_non_empty_text(cloud_provider, "cloud_provider")
     normalized_region = _require_non_empty_text(region, "region")
     normalized_control_url = _require_non_empty_text(control_url, "control_url").rstrip("/")
+    normalized_kind = _require_non_empty_text(runner_kind, "runner_kind")
     profile = _storage_profile_spec(storage_profile)
-    if normalized_provider != "aws":
-        raise ValueError("Only AWS runners are supported")
+    if normalized_kind == "byoc":
+        if normalized_provider != "aws":
+            raise ValueError("Only AWS runners are supported")
+    elif normalized_kind == "managed":
+        if normalized_provider != "fly_sprites":
+            raise ValueError("Managed runners require fly_sprites")
+    else:
+        raise ValueError(f"Unsupported runner kind: {normalized_kind}")
 
     registration_token = _new_token()
     registration_token_hash = _hash_token(registration_token)
-    expires_at = _utc_now() + timedelta(minutes=_REGISTRATION_TOKEN_TTL_MINUTES)
+    expires_at = (now or _utc_now()) + timedelta(minutes=_REGISTRATION_TOKEN_TTL_MINUTES)
     expires_at_text = _datetime_to_storage(expires_at)
     pending_capabilities = _capabilities_json(
         _storage_capabilities(
@@ -545,50 +588,54 @@ def create_runner_registration(
             storage_profile=profile.value,
         )
     )
-
-    with get_control_db() as db:
-        db.execute(
-            """
-            INSERT INTO user_runners (
-                user_id, name, cloud_provider, region, status,
-                registration_token_hash, registration_token_expires_at,
-                runner_token_hash, registered_at, last_heartbeat_at,
-                runner_version, capabilities_json, data_dir, revoked_at
-            )
-            VALUES (?, ?, ?, ?, 'pending', ?, ?, NULL, NULL, NULL, NULL, ?, NULL, NULL)
-            ON CONFLICT(user_id) DO UPDATE SET
-                name = excluded.name,
-                cloud_provider = excluded.cloud_provider,
-                region = excluded.region,
-                status = 'pending',
-                registration_token_hash = excluded.registration_token_hash,
-                registration_token_expires_at = excluded.registration_token_expires_at,
-                runner_token_hash = NULL,
-                registered_at = NULL,
-                last_heartbeat_at = NULL,
-                runner_version = NULL,
-                capabilities_json = excluded.capabilities_json,
-                data_dir = NULL,
-                revoked_at = NULL,
-                noise_public_key = NULL,
-                noise_public_key_confirmed_at = NULL
-            """,
-            (
-                normalized_user_id,
-                normalized_name,
-                normalized_provider,
-                normalized_region,
-                registration_token_hash,
-                expires_at_text,
-                pending_capabilities,
-            ),
+    db.execute(
+        """
+        INSERT INTO user_runners (
+            user_id, kind, name, cloud_provider, region, status,
+            registration_token_hash, registration_token_expires_at,
+            runner_token_hash, registered_at, last_heartbeat_at,
+            runner_version, capabilities_json, data_dir, revoked_at
         )
-        db.commit()
-        row = db.execute(
-            "SELECT * FROM user_runners WHERE user_id = ?",
-            (normalized_user_id,),
-        ).fetchone()
-
+        VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, NULL, NULL, NULL, NULL, ?, NULL, NULL)
+        ON CONFLICT(user_id, kind) DO UPDATE SET
+            name = excluded.name,
+            cloud_provider = excluded.cloud_provider,
+            region = excluded.region,
+            status = 'pending',
+            registration_token_hash = excluded.registration_token_hash,
+            registration_token_expires_at = excluded.registration_token_expires_at,
+            runner_token_hash = NULL,
+            registered_at = NULL,
+            last_heartbeat_at = NULL,
+            runner_version = NULL,
+            capabilities_json = excluded.capabilities_json,
+            data_dir = NULL,
+            revoked_at = NULL,
+            noise_public_key = CASE
+                WHEN excluded.kind = 'managed' THEN user_runners.noise_public_key
+                ELSE NULL
+            END,
+            noise_public_key_confirmed_at = CASE
+                WHEN excluded.kind = 'managed'
+                THEN user_runners.noise_public_key_confirmed_at
+                ELSE NULL
+            END
+        """,
+        (
+            normalized_user_id,
+            normalized_kind,
+            normalized_name,
+            normalized_provider,
+            normalized_region,
+            registration_token_hash,
+            expires_at_text,
+            pending_capabilities,
+        ),
+    )
+    row = db.execute(
+        "SELECT * FROM user_runners WHERE user_id = ? AND kind = ?",
+        (normalized_user_id, normalized_kind),
+    ).fetchone()
     assert row is not None, "runner row must exist after registration upsert"
     return {
         "runner": _serialize_runner(row),
@@ -601,6 +648,32 @@ def create_runner_registration(
             profile=profile,
         ),
     }
+
+
+def create_runner_registration(
+    user_id: str,
+    *,
+    name: str,
+    cloud_provider: str,
+    region: str,
+    storage_profile: str,
+    control_url: str,
+    runner_kind: RunnerKind = "byoc",
+) -> dict[str, Any]:
+    """Create or rotate a one-time BYOC or internal managed registration token."""
+    with get_control_db() as db:
+        registration = _create_runner_registration_in_connection(
+            db,
+            user_id,
+            name=name,
+            cloud_provider=cloud_provider,
+            region=region,
+            storage_profile=storage_profile,
+            control_url=control_url,
+            runner_kind=runner_kind,
+        )
+        db.commit()
+    return registration
 
 
 def revoke_runner_for_user(user_id: str) -> bool:
@@ -616,7 +689,7 @@ def revoke_runner_for_user(user_id: str) -> bool:
                 registration_token_hash = NULL,
                 registration_token_expires_at = NULL,
                 runner_token_hash = NULL
-            WHERE user_id = ? AND revoked_at IS NULL
+            WHERE user_id = ? AND kind = 'byoc' AND revoked_at IS NULL
             """,
             (revoked_at, normalized_user_id),
         )
@@ -660,6 +733,14 @@ def register_runner(
         if expires_at <= _utc_now():
             raise RunnerRegistrationError(_REGISTRATION_TOKEN_EXPIRED)
 
+        stored_noise_public_key = row["noise_public_key"]
+        if row["kind"] == "managed" and stored_noise_public_key is not None:
+            if normalized_noise_public_key is None or not secrets.compare_digest(
+                stored_noise_public_key,
+                normalized_noise_public_key,
+            ):
+                raise RunnerRegistrationError("Managed runner Noise identity does not match")
+
         stored_capabilities = _decode_capabilities(row["capabilities_json"])
         stored_profile = _requested_profile_matches(
             requested_profile=storage_profile,
@@ -689,6 +770,7 @@ def register_runner(
                 data_dir = ?,
                 noise_public_key = ?,
                 noise_public_key_confirmed_at = CASE
+                    WHEN kind = 'managed' THEN ?
                     WHEN noise_public_key = ? THEN noise_public_key_confirmed_at
                     ELSE NULL
                 END
@@ -702,6 +784,7 @@ def register_runner(
                 capabilities_text,
                 normalized_data_dir,
                 normalized_noise_public_key,
+                now_text,
                 normalized_noise_public_key,
                 row["id"],
             ),

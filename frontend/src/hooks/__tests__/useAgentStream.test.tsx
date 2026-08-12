@@ -27,6 +27,64 @@ describe("useAgentStream", () => {
     cancelSessionMock.mockResolvedValue(undefined);
   });
 
+  it("restores a local run after cancellation fails and reports one safe error", async () => {
+    const currentTurnFinished = createDeferredPromise();
+    cancelSessionMock.mockRejectedValueOnce(
+      new Error("provider request failed for secret session path"),
+    );
+    streamPromptMock.mockImplementationOnce(async function* () {
+      yield {
+        type: "assistant",
+        message: { content: [{ type: "text", text: "working" }] },
+      };
+      await currentTurnFinished.promise;
+      yield { type: "result" };
+    });
+
+    const { result } = renderHook(() => useAgentStream("sess-1"));
+
+    let promptPromise: Promise<void> | null = null;
+    await act(async () => {
+      promptPromise = result.current.sendPrompt("keep working");
+      await Promise.resolve();
+    });
+    await waitFor(() => {
+      expect(result.current.runState).toBe("running");
+    });
+
+    await act(async () => {
+      await result.current.cancel();
+    });
+
+    expect(result.current.runState).toBe("running");
+    expect(
+      result.current.messages
+        .filter((message) => message.role === "error")
+        .map((message) => message.content),
+    ).toEqual(["Could not stop the current response. Try again."]);
+    expect(streamPromptMock).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await result.current.cancel();
+    });
+
+    expect(cancelSessionMock).toHaveBeenCalledTimes(2);
+    expect(result.current.runState).toBe("stopping");
+    expect(
+      result.current.messages.filter((message) => message.role === "error"),
+    ).toHaveLength(1);
+    expect(streamPromptMock).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      currentTurnFinished.resolve();
+      if (promptPromise === null) {
+        throw new Error("Prompt promise should be initialized");
+      }
+      await promptPromise;
+    });
+    expect(result.current.runState).toBe("idle");
+  });
+
   it("replays a queued steering prompt after the current run completes", async () => {
     const firstTurnFinished = createDeferredPromise();
 

@@ -35,3 +35,19 @@ test("mobile navigation toggles the authenticated sidebar", async ({ page }) => 
   await overlay.click();
   await expect(overlay).toHaveCount(0);
 });
+
+test("mobile Settings title clears the sidebar toggle", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await authenticateContext(page.context());
+
+  await page.goto("/app/settings");
+
+  const toggleBox = await page.getByLabel("Toggle sidebar").boundingBox();
+  const titleBox = await page
+    .getByRole("heading", { name: "Settings", level: 1 })
+    .boundingBox();
+
+  expect(toggleBox).not.toBeNull();
+  expect(titleBox).not.toBeNull();
+  expect(titleBox!.y).toBeGreaterThanOrEqual(toggleBox!.y + toggleBox!.height);
+});

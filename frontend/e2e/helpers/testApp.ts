@@ -123,11 +123,11 @@ async function backendRequest<T>(
   return (await response.json()) as T;
 }
 
-export async function seedFullStack(
+export async function seedRepository(
   session: AuthSession,
   repoPath: string,
-): Promise<SeededStack> {
-  const repo = await backendRequest<{ id: string; name: string }>(
+): Promise<{ id: string; name: string }> {
+  return backendRequest<{ id: string; name: string }>(
     session,
     "/api/repos",
     "POST",
@@ -136,6 +136,13 @@ export async function seedFullStack(
       local_path: repoPath,
     },
   );
+}
+
+export async function seedFullStack(
+  session: AuthSession,
+  repoPath: string,
+): Promise<SeededStack> {
+  const repo = await seedRepository(session, repoPath);
   const workspace = await backendRequest<{
     id: string;
     name: string;

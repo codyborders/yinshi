@@ -72,6 +72,9 @@ export function runtimeResourceId(
   environment: { readonly desktop: boolean } = { desktop: false },
 ): string {
   validateResourceId(resourceId);
+  if (runtime.location === "managed") {
+    return resourceId;
+  }
   if (runtime.location === "hosted") {
     return environment.desktop ? `hosted.${resourceId}` : resourceId;
   }

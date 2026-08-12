@@ -47,9 +47,8 @@ from yinshi.services.provider_connections import (
 )
 from yinshi.services.sidecar import create_sidecar_connection
 from yinshi.services.sidecar_runtime import (
-    begin_tenant_container_activity,
-    end_tenant_container_activity,
     resolve_tenant_sidecar_context,
+    tenant_container_activity,
     touch_tenant_container,
 )
 
@@ -251,9 +250,8 @@ async def list_pi_config_commands(request: Request) -> dict[str, Any]:
     assert isinstance(resources, dict), "sidecar list_imported_commands must return a dict"
     commands = resources.get("commands", [])
     logger.info(
-        "pi-config/commands: returning %d commands for user %s",
+        "pi-config/commands: returning %d commands",
         len(commands) if isinstance(commands, list) else -1,
-        tenant.user_id[:8],
     )
     return {"commands": commands}
 
@@ -266,21 +264,24 @@ async def _fetch_imported_commands(
 ) -> dict[str, Any]:
     """Open a sidecar connection, fetch commands, guarantee cleanup even on errors."""
     sidecar = None
-    begin_tenant_container_activity(request, tenant)
     try:
-        sidecar = await create_sidecar_connection(socket_path)
-        resources = await sidecar.list_imported_commands(agent_dir=agent_dir)
-        return {"commands": resources["commands"]}
-    except (OSError, SidecarError, json.JSONDecodeError, asyncio.TimeoutError) as error:
+        async with tenant_container_activity(request, tenant):
+            sidecar = await create_sidecar_connection(socket_path)
+            resources = await sidecar.list_imported_commands(agent_dir=agent_dir)
+            return {"commands": resources["commands"]}
+    except (
+        ContainerNotReadyError,
+        ContainerStartError,
+        OSError,
+        SidecarError,
+        json.JSONDecodeError,
+        asyncio.TimeoutError,
+    ) as error:
         logger.warning("Pi config command runtime request failed")
         raise HTTPException(status_code=503, detail=_SIDECAR_UNAVAILABLE_DETAIL) from error
     finally:
         # Each cleanup call is independent. Guard individually so one failure
-        # doesn't skip the rest -- a missed disconnect leaks the socket.
-        try:
-            end_tenant_container_activity(request, tenant)
-        except Exception:
-            logger.error("end_tenant_container_activity failed")
+        # does not skip the rest. A missed disconnect leaks the socket.
         try:
             touch_tenant_container(request, tenant)
         except Exception:

@@ -1,5 +1,6 @@
 """Tests for sidecar client and runtime packaging."""
 
+import asyncio
 import json
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -74,14 +75,20 @@ async def test_release_sessions_survives_any_sidecar_failure(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_sidecar_client_warmup():
-    """warmup should send the correct message format."""
+async def test_sidecar_client_warmup_waits_for_matching_success() -> None:
+    """warmup should return only after its matching success acknowledgement."""
     from yinshi.services.sidecar import SidecarClient
 
     client = SidecarClient()
     client._connected = True
     client._writer = MagicMock()
     client._writer.drain = AsyncMock()
+    client._read_line = AsyncMock(
+        side_effect=[
+            {"id": "other-session", "type": "warmup_status", "success": True},
+            {"id": "sess-1", "type": "warmup_status", "success": True},
+        ]
+    )
 
     await client.warmup("sess-1", model="opus", cwd="/tmp/repo")
 
@@ -91,6 +98,52 @@ async def test_sidecar_client_warmup():
     assert msg["id"] == "sess-1"
     assert msg["options"]["model"] == "opus"
     assert msg["options"]["cwd"] == "/tmp/repo"
+    assert client._read_line.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_sidecar_client_warmup_raises_for_failure_acknowledgement() -> None:
+    """warmup should reject the sidecar's matching failure acknowledgement."""
+    from yinshi.exceptions import SidecarError
+    from yinshi.services.sidecar import SidecarClient
+
+    client = SidecarClient()
+    client._connected = True
+    client._writer = MagicMock()
+    client._writer.drain = AsyncMock()
+    client._read_line = AsyncMock(
+        return_value={
+            "id": "sess-1",
+            "type": "warmup_status",
+            "success": False,
+            "error": "Failed to warm up session",
+        }
+    )
+
+    with pytest.raises(SidecarError, match="Failed to warm up session"):
+        await client.warmup("sess-1")
+
+
+@pytest.mark.asyncio
+async def test_sidecar_client_warmup_has_a_total_timeout(monkeypatch) -> None:
+    """warmup should time out while unrelated acknowledgements keep arriving."""
+    from yinshi.exceptions import SidecarError
+    from yinshi.services import sidecar as sidecar_module
+
+    client = sidecar_module.SidecarClient()
+    client._connected = True
+    client._writer = MagicMock()
+    client._writer.drain = AsyncMock()
+
+    async def unrelated_acknowledgement():
+        await asyncio.sleep(0)
+        return {"id": "other-session", "type": "warmup_status", "success": True}
+
+    client._read_line = AsyncMock(side_effect=unrelated_acknowledgement)
+    monkeypatch.setattr(sidecar_module, "_SIDECAR_WARMUP_TIMEOUT_SECONDS", 0.01)
+
+    with pytest.raises(SidecarError, match="warmup timed out"):
+        await client.warmup("sess-1")
 
 
 @pytest.mark.asyncio
@@ -102,6 +155,9 @@ async def test_sidecar_client_warmup_with_agent_dir_and_settings():
     client._connected = True
     client._writer = MagicMock()
     client._writer.drain = AsyncMock()
+    client._read_line = AsyncMock(
+        return_value={"id": "sess-2", "type": "warmup_status", "success": True}
+    )
 
     await client.warmup(
         "sess-2",
@@ -126,6 +182,9 @@ async def test_sidecar_client_warmup_with_pi_session_file() -> None:
     client._connected = True
     client._writer = MagicMock()
     client._writer.drain = AsyncMock()
+    client._read_line = AsyncMock(
+        return_value={"id": "sess-4", "type": "warmup_status", "success": True}
+    )
 
     await client.warmup(
         "sess-4",
@@ -148,6 +207,9 @@ async def test_sidecar_client_warmup_with_git_auth() -> None:
     client._connected = True
     client._writer = MagicMock()
     client._writer.drain = AsyncMock()
+    client._read_line = AsyncMock(
+        return_value={"id": "sess-3", "type": "warmup_status", "success": True}
+    )
 
     await client.warmup(
         "sess-3",
@@ -171,7 +233,7 @@ async def test_sidecar_client_warmup_with_git_auth() -> None:
 
 @pytest.mark.asyncio
 async def test_sidecar_client_cancel():
-    """cancel should send cancel message."""
+    """Cancel should wait for the matching success acknowledgement."""
     from yinshi.services.sidecar import SidecarClient
 
     client = SidecarClient()
@@ -179,12 +241,24 @@ async def test_sidecar_client_cancel():
     client._writer = MagicMock()
     client._writer.drain = AsyncMock()
 
-    await client.cancel("sess-1")
+    cancellation = asyncio.create_task(client.cancel("sess-1"))
+    await asyncio.sleep(0)
 
     written = client._writer.write.call_args[0][0].decode()
     msg = json.loads(written.strip())
-    assert msg["type"] == "cancel"
-    assert msg["id"] == "sess-1"
+    assert msg == {"type": "cancel", "id": "sess-1"}
+    assert not cancellation.done()
+
+    routed = client._route_cancellation(
+        "sess-1",
+        {
+            "id": "sess-1",
+            "type": "cancel_status",
+            "success": True,
+        },
+    )
+    assert routed is True
+    await cancellation
 
 
 @pytest.mark.asyncio

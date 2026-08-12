@@ -318,7 +318,8 @@ function FileViewer({
             {viewerMode}
           </button>
         ))}
-        {transport.runtime.location !== "byoc" ? (
+        {transport.runtime.location === "local" ||
+        transport.runtime.location === "hosted" ? (
           <a
             href={`/api/workspaces/${workspaceId}/files/download?path=${encodeURIComponent(path)}`}
             className="rounded px-2 py-1 text-[11px] text-gray-500 hover:bg-gray-800 hover:text-gray-200"

@@ -27,15 +27,21 @@ const terminalRestartMock = vi.fn();
 const terminalResetMock = vi.fn();
 const terminalInstances: TerminalMock[] = [];
 const terminalEventFinishers: Array<() => void> = [];
-const runtimeTransport: RuntimeTransport = {
-  runtime: { location: "hosted" },
-  get: (...args) => apiGetMock(...args),
-  post: vi.fn(),
-  patch: vi.fn(),
-  put: vi.fn(),
-  delete: vi.fn(),
-  upload: vi.fn(),
-};
+function transport(
+  runtime: RuntimeTransport["runtime"] = { location: "hosted" },
+): RuntimeTransport {
+  return {
+    runtime,
+    get: (...args) => apiGetMock(...args),
+    post: vi.fn(),
+    patch: vi.fn(),
+    put: vi.fn(),
+    delete: vi.fn(),
+    upload: vi.fn(),
+  };
+}
+
+const runtimeTransport = transport();
 
 vi.mock("../../api/client", () => ({
   api: {
@@ -143,6 +149,7 @@ describe("WorkspaceInspector terminal", () => {
   afterEach(() => {
     cleanup();
     vi.unstubAllGlobals();
+    Reflect.deleteProperty(window, "yinshiDesktop");
     document.documentElement.classList.remove("dark");
     document.documentElement.removeAttribute("style");
   });
@@ -237,5 +244,70 @@ describe("WorkspaceInspector terminal", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("hides direct file downloads for managed runtimes", async () => {
+    apiGetMock.mockImplementation(async (path: string) => {
+      if (path.endsWith("/files/tree")) {
+        return {
+          files: [{ name: "notes.txt", path: "notes.txt", type: "file" }],
+        };
+      }
+      return path.endsWith("/files/changed")
+        ? { files: [] }
+        : { content: "managed file" };
+    });
+
+    render(
+      <WorkspaceInspector
+        workspaceId={WORKSPACE_ID}
+        transport={transport({
+          location: "managed",
+          runnerPublicKey: "MeAwP9ZBjS-MDni5HyLoyu0Pvkhlbc9HZ-SDT3Abj2I",
+        })}
+        refreshKey={0}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "notes.txt" }));
+
+    expect(screen.queryByRole("link", { name: "Download" })).toBeNull();
+  });
+
+  it.each([
+    ["local", { location: "local" } as const],
+    ["desktop-hosted", { location: "hosted" } as const],
+  ])("keeps direct file downloads for %s runtimes", async (label, runtime) => {
+    if (label === "desktop-hosted") {
+      Object.defineProperty(window, "yinshiDesktop", {
+        configurable: true,
+        value: {},
+      });
+    }
+    apiGetMock.mockImplementation(async (path: string) => {
+      if (path.endsWith("/files/tree")) {
+        return {
+          files: [{ name: "notes.txt", path: "notes.txt", type: "file" }],
+        };
+      }
+      return path.endsWith("/files/changed")
+        ? { files: [] }
+        : { content: "downloadable file" };
+    });
+
+    render(
+      <WorkspaceInspector
+        workspaceId={WORKSPACE_ID}
+        transport={transport(runtime)}
+        refreshKey={0}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "notes.txt" }));
+
+    expect(screen.getByRole("link", { name: "Download" })).toHaveAttribute(
+      "href",
+      `/api/workspaces/${WORKSPACE_ID}/files/download?path=notes.txt`,
+    );
   });
 });

@@ -7,6 +7,7 @@ bearer token, and revocation invalidates that bearer token.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import httpx
@@ -16,6 +17,7 @@ from fastapi.testclient import TestClient
 from yinshi import runner_agent
 
 _RUNNER_NOISE_PUBLIC_KEY = "MeAwP9ZBjS-MDni5HyLoyu0Pvkhlbc9HZ-SDT3Abj2I"
+_DIFFERENT_RUNNER_NOISE_PUBLIC_KEY = "zo060cy2M-x7cMF4FKXHbs0CloUFDTRHRboFhw5YfVk"
 
 
 def test_cloud_runner_registration_and_heartbeat(auth_client: TestClient) -> None:
@@ -106,6 +108,363 @@ def test_cloud_runner_registration_and_heartbeat(auth_client: TestClient) -> Non
     assert status_payload["capabilities"]["shared_files_dir"] == "/mnt/yinshi-s3-files"
     assert status_payload["capabilities"]["live_sqlite_on_shared_files"] is False
     assert status_payload["capabilities"]["aws_region"] == "us-west-2"
+
+
+def test_runner_registration_log_excludes_private_values(
+    auth_client: TestClient,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Registration logs use a fixed event without request or response identifiers."""
+    create_response = auth_client.post(
+        "/api/settings/runner",
+        json={"name": "Private runner", "cloud_provider": "aws", "region": "us-east-1"},
+    )
+    assert create_response.status_code == 201
+    registration_token = create_response.json()["registration_token"]
+    provider_body = "provider-body-private"
+    data_dir = "/private/tenant/data"
+    sqlite_dir = "/private/tenant/sqlite"
+    shared_files_dir = "/private/tenant/shared"
+    caplog.clear()
+    caplog.set_level(logging.INFO)
+
+    register_response = auth_client.post(
+        "/runner/register",
+        json={
+            "registration_token": registration_token,
+            "runner_version": "0.2.0",
+            "capabilities": {"provider_body": provider_body},
+            "data_dir": data_dir,
+            "sqlite_dir": sqlite_dir,
+            "shared_files_dir": shared_files_dir,
+            "storage_profile": "aws_ebs_s3_files",
+            "noise_public_key": _RUNNER_NOISE_PUBLIC_KEY,
+        },
+    )
+
+    assert register_response.status_code == 201
+    response_body = register_response.json()
+    tenant = getattr(auth_client, "yinshi_tenant")
+    private_values = (
+        registration_token,
+        response_body["runner_token"],
+        response_body["runner_id"],
+        tenant.user_id,
+        provider_body,
+        data_dir,
+        sqlite_dir,
+        shared_files_dir,
+    )
+    for record in caplog.records:
+        rendered_record = f"{record.getMessage()} {record.args!r}"
+        assert all(value not in rendered_record for value in private_values)
+    assert "Cloud runner registered" in caplog.text
+
+
+def test_public_runner_rejects_managed_provider(auth_client: TestClient) -> None:
+    """Public BYOC settings reject the managed provider."""
+    response = auth_client.post(
+        "/api/settings/runner",
+        json={
+            "name": "Wrong provider",
+            "cloud_provider": "fly_sprites",
+            "region": "ord",
+            "storage_profile": "aws_ebs_s3_files",
+        },
+    )
+
+    assert response.status_code == 422
+
+    storage_response = auth_client.post(
+        "/api/settings/runner",
+        json={
+            "name": "Wrong storage profile",
+            "cloud_provider": "aws",
+            "region": "us-east-1",
+            "storage_profile": "fly_sprites_posix",
+        },
+    )
+    assert storage_response.status_code == 422
+
+
+def test_managed_registration_advertises_fly_sprites_posix_profile(
+    auth_client: TestClient,
+) -> None:
+    """Managed registration advertises persistent local POSIX storage defaults."""
+    from yinshi.services.runners import create_runner_registration
+
+    tenant = getattr(auth_client, "yinshi_tenant")
+    registration = create_runner_registration(
+        tenant.user_id,
+        name="Hosted Sprite runner",
+        cloud_provider="fly_sprites",
+        region="ord",
+        storage_profile="fly_sprites_posix",
+        control_url="https://control.example",
+        runner_kind="managed",
+    )
+
+    capabilities = registration["runner"]["capabilities"]
+    assert capabilities["storage_profile"] == "fly_sprites_posix"
+    assert capabilities["storage_profile_experimental"] is False
+    assert capabilities["sqlite_storage"] == "local_posix"
+    assert capabilities["shared_files_storage"] == "local_posix"
+    assert capabilities["sqlite_dir"] == "/var/lib/yinshi/sqlite"
+    assert capabilities["shared_files_dir"] == "/var/lib/yinshi/files"
+    assert capabilities["live_sqlite_on_shared_files"] is False
+    environment = registration["environment"]
+    assert environment["YINSHI_RUNNER_STORAGE_PROFILE"] == "fly_sprites_posix"
+    assert environment["YINSHI_RUNNER_SQLITE_STORAGE"] == "local_posix"
+    assert environment["YINSHI_RUNNER_SHARED_FILES_STORAGE"] == "local_posix"
+    assert environment["YINSHI_RUNNER_SQLITE_DIR"] == "/var/lib/yinshi/sqlite"
+    assert environment["YINSHI_RUNNER_SHARED_FILES_DIR"] == "/var/lib/yinshi/files"
+
+    register_response = auth_client.post(
+        "/runner/register",
+        json={
+            "registration_token": registration["registration_token"],
+            "runner_version": "0.2.0",
+            "capabilities": {},
+            "data_dir": "/var/lib/yinshi",
+            "storage_profile": "fly_sprites_posix",
+            "noise_public_key": _RUNNER_NOISE_PUBLIC_KEY,
+        },
+    )
+    assert register_response.status_code == 201
+
+
+def test_managed_registration_confirms_first_noise_identity(
+    auth_client: TestClient,
+) -> None:
+    """First managed registration trusts and confirms its valid Noise identity."""
+    from yinshi.services.runners import (
+        create_runner_registration,
+        get_managed_runner_for_user,
+    )
+
+    tenant = getattr(auth_client, "yinshi_tenant")
+    registration = create_runner_registration(
+        tenant.user_id,
+        name="Hosted Sprite runner",
+        cloud_provider="fly_sprites",
+        region="ord",
+        storage_profile="fly_sprites_posix",
+        control_url="https://control.example",
+        runner_kind="managed",
+    )
+
+    response = auth_client.post(
+        "/runner/register",
+        json={
+            "registration_token": registration["registration_token"],
+            "runner_version": "0.2.0",
+            "capabilities": {},
+            "data_dir": "/var/lib/yinshi",
+            "storage_profile": "fly_sprites_posix",
+            "noise_public_key": _RUNNER_NOISE_PUBLIC_KEY,
+        },
+    )
+
+    assert response.status_code == 201
+    managed_runner = get_managed_runner_for_user(tenant.user_id)
+    assert managed_runner is not None
+    assert managed_runner["noise_public_key"] == _RUNNER_NOISE_PUBLIC_KEY
+    assert managed_runner["noise_key_confirmed"] is True
+
+
+def test_managed_rotation_preserves_and_pins_noise_identity(
+    auth_client: TestClient,
+) -> None:
+    """Managed rotation retains the trusted key and rejects identity changes."""
+    from yinshi.services.runners import create_runner_registration
+
+    tenant = getattr(auth_client, "yinshi_tenant")
+    registration_arguments = {
+        "name": "Hosted Sprite runner",
+        "cloud_provider": "fly_sprites",
+        "region": "ord",
+        "storage_profile": "fly_sprites_posix",
+        "control_url": "https://control.example",
+        "runner_kind": "managed",
+    }
+    first = create_runner_registration(tenant.user_id, **registration_arguments)
+    first_response = auth_client.post(
+        "/runner/register",
+        json={
+            "registration_token": first["registration_token"],
+            "runner_version": "0.2.0",
+            "capabilities": {},
+            "data_dir": "/var/lib/yinshi",
+            "storage_profile": "fly_sprites_posix",
+            "noise_public_key": _RUNNER_NOISE_PUBLIC_KEY,
+        },
+    )
+    assert first_response.status_code == 201
+
+    rotated = create_runner_registration(tenant.user_id, **registration_arguments)
+    assert rotated["runner"]["noise_public_key"] == _RUNNER_NOISE_PUBLIC_KEY
+    assert rotated["runner"]["noise_key_confirmed"] is True
+
+    changed_response = auth_client.post(
+        "/runner/register",
+        json={
+            "registration_token": rotated["registration_token"],
+            "runner_version": "0.3.0",
+            "capabilities": {},
+            "data_dir": "/var/lib/yinshi",
+            "storage_profile": "fly_sprites_posix",
+            "noise_public_key": _DIFFERENT_RUNNER_NOISE_PUBLIC_KEY,
+        },
+    )
+    assert changed_response.status_code == 401
+    assert "runner_token" not in changed_response.json()
+
+    current = create_runner_registration(tenant.user_id, **registration_arguments)
+    assert current["runner"]["noise_public_key"] == _RUNNER_NOISE_PUBLIC_KEY
+    assert current["runner"]["noise_key_confirmed"] is True
+
+
+def test_fly_sprites_posix_rejects_sqlite_under_shared_files(
+    auth_client: TestClient,
+) -> None:
+    """Fly Sprite profile rejects live SQLite below its shared files directory."""
+    from yinshi.services.runners import create_runner_registration
+
+    tenant = getattr(auth_client, "yinshi_tenant")
+    registration = create_runner_registration(
+        tenant.user_id,
+        name="Hosted Sprite runner",
+        cloud_provider="fly_sprites",
+        region="ord",
+        storage_profile="fly_sprites_posix",
+        control_url="https://control.example",
+        runner_kind="managed",
+    )
+
+    response = auth_client.post(
+        "/runner/register",
+        json={
+            "registration_token": registration["registration_token"],
+            "runner_version": "0.2.0",
+            "capabilities": {},
+            "data_dir": "/var/lib/yinshi",
+            "sqlite_dir": "/var/lib/yinshi/files/sqlite",
+            "shared_files_dir": "/var/lib/yinshi/files",
+            "storage_profile": "fly_sprites_posix",
+            "noise_public_key": _RUNNER_NOISE_PUBLIC_KEY,
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "sqlite_dir must not live under shared_files_dir"
+
+
+def test_managed_and_byoc_registrations_coexist_without_changing_public_settings(
+    auth_client: TestClient,
+) -> None:
+    """Internal managed registration must not replace the public BYOC runner."""
+    from yinshi.db import get_control_db
+    from yinshi.services.runners import authenticate_runner_token, create_runner_registration
+
+    tenant = getattr(auth_client, "yinshi_tenant")
+    managed = create_runner_registration(
+        tenant.user_id,
+        name="Hosted Sprite runner",
+        cloud_provider="fly_sprites",
+        region="ord",
+        storage_profile="aws_ebs_s3_files",
+        control_url="https://control.example",
+        runner_kind="managed",
+    )
+    assert managed["runner"]["kind"] == "managed"
+    assert managed["runner"]["cloud_provider"] == "fly_sprites"
+    managed_registration = auth_client.post(
+        "/runner/register",
+        json={
+            "registration_token": managed["registration_token"],
+            "runner_version": "0.1.0",
+            "capabilities": {},
+            "data_dir": "/var/lib/yinshi",
+            "storage_profile": "aws_ebs_s3_files",
+            "noise_public_key": _RUNNER_NOISE_PUBLIC_KEY,
+        },
+    )
+    assert managed_registration.status_code == 201
+    managed_runner_token = managed_registration.json()["runner_token"]
+    assert authenticate_runner_token(managed_runner_token)["runner_id"] == managed["runner"]["id"]
+    managed_heartbeat = auth_client.post(
+        "/runner/heartbeat",
+        headers={"Authorization": f"Bearer {managed_runner_token}"},
+        json={
+            "runner_version": "0.1.1",
+            "capabilities": {"sqlite": True},
+            "data_dir": "/var/lib/yinshi",
+            "storage_profile": "aws_ebs_s3_files",
+        },
+    )
+    assert managed_heartbeat.status_code == 200
+
+    create_response = auth_client.post(
+        "/api/settings/runner",
+        json={"name": "AWS runner", "cloud_provider": "aws", "region": "us-east-1"},
+    )
+    assert create_response.status_code == 201
+    byoc_runner_id = create_response.json()["runner"]["id"]
+    assert "kind" not in create_response.json()["runner"]
+    byoc_registration = auth_client.post(
+        "/runner/register",
+        json={
+            "registration_token": create_response.json()["registration_token"],
+            "runner_version": "0.1.0",
+            "capabilities": {},
+            "data_dir": "/var/lib/yinshi",
+            "storage_profile": "aws_ebs_s3_files",
+            "noise_public_key": _RUNNER_NOISE_PUBLIC_KEY,
+        },
+    )
+    assert byoc_registration.status_code == 201
+    confirmation = auth_client.post(
+        "/api/settings/runner/noise-key/confirm",
+        json={"noise_public_key": _RUNNER_NOISE_PUBLIC_KEY},
+    )
+    assert confirmation.status_code == 200
+    capability = auth_client.post(
+        "/api/settings/runner/capabilities",
+        json={
+            "initiator_public_key": "a8OCKiqn9OaYHWU4aSs83z5t-e6m7SaetB2TwidXt1o",
+            "scopes": ["worker.health"],
+            "max_session_bytes": 65_536,
+        },
+    )
+    assert capability.status_code == 201
+    assert capability.json()["runner_id"] == byoc_runner_id
+
+    status_response = auth_client.get("/api/settings/runner")
+    assert status_response.status_code == 200
+    assert status_response.json()["id"] == byoc_runner_id
+    assert status_response.json()["cloud_provider"] == "aws"
+    assert "kind" not in status_response.json()
+
+    revoke_response = auth_client.delete("/api/settings/runner")
+    assert revoke_response.status_code == 204
+    assert authenticate_runner_token(managed_runner_token)["runner_id"] == managed["runner"]["id"]
+
+    with get_control_db() as database:
+        rows = database.execute(
+            """
+            SELECT kind, cloud_provider, revoked_at
+            FROM user_runners
+            WHERE user_id = ?
+            ORDER BY kind
+            """,
+            (tenant.user_id,),
+        ).fetchall()
+    assert [(row["kind"], row["cloud_provider"]) for row in rows] == [
+        ("byoc", "aws"),
+        ("managed", "fly_sprites"),
+    ]
+    assert rows[0]["revoked_at"] is not None
+    assert rows[1]["revoked_at"] is None
 
 
 def test_cloud_runner_rejects_sqlite_under_shared_files(auth_client: TestClient) -> None:
@@ -548,6 +907,39 @@ async def test_runner_agent_pins_control_plane_capability_key(
     assert token == "runner-secret"
     assert config.capability_signing_key_file.read_text(encoding="ascii").strip() == signing_key
     assert config.capability_signing_key_file.stat().st_mode & 0o777 == 0o600
+
+
+def test_runner_agent_advertises_fly_sprites_posix(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Fly Sprite agent advertises persistent local POSIX storage without extra env."""
+    _set_runner_agent_env(monkeypatch, tmp_path)
+    digest = "a" * 64
+    attestation = tmp_path / ".artifact-sha256"
+    attestation.write_text(f"{digest}\n", encoding="ascii")
+    attestation.chmod(0o600)
+    monkeypatch.setenv("YINSHI_RUNNER_STORAGE_PROFILE", "fly_sprites_posix")
+    monkeypatch.setenv("YINSHI_RUNNER_ARTIFACT_SHA256", digest)
+    monkeypatch.setenv("YINSHI_RUNNER_ARTIFACT_ATTESTATION_FILE", str(attestation))
+    monkeypatch.delenv("YINSHI_RUNNER_SQLITE_DIR")
+    monkeypatch.delenv("YINSHI_RUNNER_SHARED_FILES_DIR")
+
+    default_config = runner_agent.load_config()
+    assert default_config.sqlite_dir == Path("/var/lib/yinshi/sqlite")
+    assert default_config.shared_files_dir == Path("/var/lib/yinshi/files")
+
+    monkeypatch.setenv("YINSHI_RUNNER_SQLITE_DIR", str(tmp_path / "sqlite"))
+    monkeypatch.setenv("YINSHI_RUNNER_SHARED_FILES_DIR", str(tmp_path / "shared"))
+    config = runner_agent.load_config()
+    payload = runner_agent._runner_status_payload(config)
+
+    assert payload["storage_profile"] == "fly_sprites_posix"
+    assert payload["capabilities"]["storage_profile_experimental"] is False
+    assert payload["capabilities"]["artifact_sha256"] == digest
+    assert payload["capabilities"]["sqlite_storage"] == "local_posix"
+    assert payload["capabilities"]["shared_files_storage"] == "local_posix"
+    assert payload["capabilities"]["live_sqlite_on_shared_files"] is False
 
 
 def test_runner_agent_advertises_archil_shared_files(

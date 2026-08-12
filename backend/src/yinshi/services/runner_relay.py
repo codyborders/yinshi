@@ -181,6 +181,12 @@ class RunnerRelayBroker:
         self._runners: dict[str, _RunnerConnection] = {}
         self._clients: dict[str, _ClientConnection] = {}
 
+    def is_runner_connected(self, runner_id: str) -> bool:
+        """Return whether this event loop currently owns a runner socket."""
+        if not isinstance(runner_id, str) or not runner_id:
+            raise ValueError("runner_id must not be empty")
+        return runner_id in self._runners
+
     async def register_runner(self, runner_id: str, websocket: RelayWebSocket) -> None:
         """Register one current outbound runner connection, replacing stale state."""
         if not isinstance(runner_id, str) or not runner_id:

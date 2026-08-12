@@ -242,6 +242,38 @@ async def test_create_and_delete_worktree(git_repo, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_cleanup_repository_worktrees_removes_metadata_and_branches(
+    git_repo,
+    tmp_path,
+):
+    """Committed repository cleanup should remove every selected worktree and branch."""
+    from yinshi.services import git as git_service
+
+    worktrees: list[tuple[str, str]] = []
+    quarantine = tmp_path / "quarantine"
+    quarantine.mkdir()
+    for index in range(3):
+        branch = f"cleanup-branch-{index}"
+        worktree_path = tmp_path / "worktrees" / branch
+        await git_service.create_worktree(git_repo, str(worktree_path), branch)
+        os.rename(worktree_path, quarantine / branch)
+        worktrees.append((str(worktree_path), branch))
+
+    await git_service.cleanup_repository_worktrees(git_repo, worktrees)
+
+    listed_worktrees = await git_service._run_git(
+        ["worktree", "list", "--porcelain"],
+        cwd=git_repo,
+    )
+    listed_branches = await git_service._run_git(
+        ["for-each-ref", "--format=%(refname)", "refs/heads"],
+        cwd=git_repo,
+    )
+    assert all(worktree_path not in listed_worktrees for worktree_path, _branch in worktrees)
+    assert all(f"refs/heads/{branch}" not in listed_branches for _path, branch in worktrees)
+
+
+@pytest.mark.asyncio
 async def test_create_worktree_has_files(git_repo, tmp_path):
     """Worktree should contain the repo's files."""
     from yinshi.services.git import create_worktree

@@ -9,6 +9,7 @@ import asyncio
 import json
 import logging
 import sqlite3
+import sys
 import uuid
 from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from dataclasses import dataclass
@@ -32,6 +33,10 @@ from yinshi.exceptions import (
 )
 from yinshi.model_catalog import get_provider_metadata, normalize_model_ref
 from yinshi.rate_limit import limiter
+from yinshi.services.container import (
+    ContainerActivityReservation,
+    ContainerManager,
+)
 from yinshi.services.desktop_devices import desktop_device_is_active
 from yinshi.services.git_runtime import resolve_git_runtime_auth
 from yinshi.services.keys import record_usage
@@ -47,8 +52,6 @@ from yinshi.services.provider_connections import (
 from yinshi.services.run_coordinator import get_run_coordinator
 from yinshi.services.sidecar import SidecarClient, create_sidecar_connection
 from yinshi.services.sidecar_runtime import (
-    begin_tenant_container_activity,
-    end_tenant_container_activity,
     local_pi_session_file,
     remap_path_for_container,
     resolve_tenant_sidecar_context,
@@ -97,6 +100,51 @@ class ExecutionContext:
     model_ref: str = ""
     runtime_id: str | None = None
     pi_session_file: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _ContainerActivity:
+    """Bind one reservation to the manager that issued it."""
+
+    manager: ContainerManager
+    reservation: ContainerActivityReservation
+
+
+async def _acquire_tenant_container_activity(
+    request: Request,
+    tenant: Any,
+    *,
+    runtime_id: str | None,
+    required: bool,
+) -> _ContainerActivity | None:
+    """Acquire the current tenant runtime before any sidecar operation."""
+    if tenant is None:
+        return None
+    manager = cast(
+        ContainerManager | None,
+        getattr(request.app.state, "container_manager", None),
+    )
+    if manager is None:
+        if required:
+            raise ContainerNotReadyError("Container manager is not initialized")
+        return None
+    reservation = await manager.acquire_activity(
+        tenant.user_id,
+        runtime_id=runtime_id,
+    )
+    if reservation is None:
+        if required:
+            raise ContainerNotReadyError("Container runtime is no longer available")
+        return None
+    return _ContainerActivity(manager, reservation)
+
+
+async def _release_tenant_container_activity(
+    activity: _ContainerActivity | None,
+) -> None:
+    """Release the exact container reservation acquired by this caller."""
+    if activity is not None:
+        await activity.manager.release_activity(activity.reservation)
 
 
 class _AuthSessionRevoked(Exception):
@@ -687,11 +735,19 @@ async def _resolve_execution_context(
             ) from exc
 
     sidecar_tmp = None
-    begin_tenant_container_activity(
-        request,
-        tenant,
-        runtime_id=tenant_sidecar_context.runtime_id,
-    )
+    try:
+        activity = await _acquire_tenant_container_activity(
+            request,
+            tenant,
+            runtime_id=tenant_sidecar_context.runtime_id,
+            required=sidecar_socket is not None,
+        )
+    except (ContainerStartError, ContainerNotReadyError):
+        logger.error("Container activity acquisition failed")
+        raise HTTPException(
+            status_code=503,
+            detail="Agent environment temporarily unavailable",
+        ) from None
     try:
         sidecar_tmp = await create_sidecar_connection(sidecar_socket)
         resolved = await sidecar_tmp.resolve_model(model, agent_dir=agent_dir)
@@ -744,13 +800,11 @@ async def _resolve_execution_context(
     except KeyNotFoundError as exc:
         raise HTTPException(status_code=402, detail=str(exc)) from exc
     finally:
-        end_tenant_container_activity(
-            request,
-            tenant,
-            runtime_id=tenant_sidecar_context.runtime_id,
-        )
-        if sidecar_tmp is not None:
-            await sidecar_tmp.disconnect()
+        try:
+            if sidecar_tmp is not None:
+                await sidecar_tmp.disconnect()
+        finally:
+            await _release_tenant_container_activity(activity)
 
     return ExecutionContext(
         sidecar_socket=sidecar_socket,
@@ -874,12 +928,10 @@ async def prompt_session(
         raise
 
     logger.info(
-        "Prompt received: session=%s prompt_len=%d model=%s provider=%s key_source=%s",
-        session_id,
+        "Prompt received: prompt_len=%d model=%s provider=%s",
         len(prompt),
         model,
         context.provider,
-        context.key_source,
     )
 
     async def event_stream() -> AsyncGenerator[str, None]:
@@ -892,10 +944,15 @@ async def prompt_session(
         result_provider = context.provider or ""
         turn_status = "completed"
         turn_events: list[dict[str, Any]] = []
-
-        begin_tenant_container_activity(request, tenant, runtime_id=context.runtime_id)
+        activity: _ContainerActivity | None = None
 
         try:
+            activity = await _acquire_tenant_container_activity(
+                request,
+                tenant,
+                runtime_id=context.runtime_id,
+                required=context.sidecar_socket is not None,
+            )
             sidecar = await create_sidecar_connection(context.sidecar_socket)
             await coordinator.register(session_id, sidecar)
 
@@ -908,9 +965,7 @@ async def prompt_session(
                 )
                 if available_thinking_levels == (_THINKING_LEVEL_OFF,):
                     logger.info(
-                        "Ignoring thinking override for non-reasoning model: "
-                        "session=%s model=%s",
-                        session_id,
+                        "Ignoring thinking override for non-reasoning model: model=%s",
                         context.model_ref or model,
                     )
 
@@ -971,11 +1026,7 @@ async def prompt_session(
                 event_type = event.get("type")
                 if not isinstance(event_type, str):
                     raise SidecarError("Sidecar event type must be a string")
-                logger.debug(
-                    "Sidecar event: type=%s keys=%s",
-                    event_type,
-                    list(event.keys()),
-                )
+                logger.debug("Sidecar event received")
 
                 if event_type == "cancelled":
                     turn_status = "cancelled"
@@ -988,11 +1039,7 @@ async def prompt_session(
                     data = event.get("data", {})
                     if not isinstance(data, dict):
                         raise SidecarError("Sidecar message event must contain object data")
-                    logger.debug(
-                        "SSE data: type=%s keys=%s",
-                        data.get("type"),
-                        list(data.keys()),
-                    )
+                    logger.debug("Sidecar message event received")
                     turn_events.append(_stored_turn_event(data))
 
                     # Extract assistant text for persistence
@@ -1084,10 +1131,17 @@ async def prompt_session(
             logger.info("Prompt stream revoked")
         except _StreamLifetimeReached:
             turn_status = "cancelled"
-            logger.info(
-                "Prompt stream lifetime reached: session=%s turn_id=%s", session_id, turn_id
-            )
-        except (ConnectionError, OSError, GitError, SidecarError, TypeError, ValueError):
+            logger.info("Prompt stream lifetime reached")
+        except (
+            ConnectionError,
+            ContainerNotReadyError,
+            ContainerStartError,
+            OSError,
+            GitError,
+            SidecarError,
+            TypeError,
+            ValueError,
+        ):
             logger.error("Sidecar prompt execution failed")
             error_event = {
                 "type": "error",
@@ -1098,43 +1152,49 @@ async def prompt_session(
             turn_status = "failed"
 
         finally:
-            with get_db_for_request(request) as db:
-                stored_turn = _serialize_stored_turn(turn_events)
-                if assistant_msg_id is None:
-                    if accumulated or stored_turn is not None:
-                        assistant_msg_id = uuid.uuid4().hex
+            active_error = sys.exception()
+            finalization_error: BaseException | None = None
+
+            try:
+                with get_db_for_request(request) as db:
+                    stored_turn = _serialize_stored_turn(turn_events)
+                    if assistant_msg_id is None:
+                        if accumulated or stored_turn is not None:
+                            assistant_msg_id = uuid.uuid4().hex
+                            db.execute(
+                                (
+                                    "INSERT INTO messages "
+                                    "(id, session_id, role, content, full_message, "
+                                    "turn_id, turn_status) "
+                                    "VALUES (?, ?, 'assistant', ?, ?, ?, ?)"
+                                ),
+                                (
+                                    assistant_msg_id,
+                                    session_id,
+                                    accumulated,
+                                    stored_turn,
+                                    turn_id,
+                                    turn_status,
+                                ),
+                            )
+                    else:
                         db.execute(
                             (
-                                "INSERT INTO messages "
-                                "(id, session_id, role, content, full_message, "
-                                "turn_id, turn_status) "
-                                "VALUES (?, ?, 'assistant', ?, ?, ?, ?)"
+                                "UPDATE messages SET content = ?, full_message = ?, "
+                                "turn_status = ? WHERE id = ?"
                             ),
-                            (
-                                assistant_msg_id,
-                                session_id,
-                                accumulated,
-                                stored_turn,
-                                turn_id,
-                                turn_status,
-                            ),
+                            (accumulated, stored_turn, turn_status, assistant_msg_id),
                         )
-                else:
                     db.execute(
-                        (
-                            "UPDATE messages SET content = ?, full_message = ?, "
-                            "turn_status = ? WHERE id = ?"
-                        ),
-                        (accumulated, stored_turn, turn_status, assistant_msg_id),
+                        "UPDATE sessions SET status = 'idle' WHERE id = ?",
+                        (session_id,),
                     )
-                # Reset session status
-                db.execute(
-                    "UPDATE sessions SET status = 'idle' WHERE id = ?",
-                    (session_id,),
-                )
-                db.commit()
+                    db.commit()
+            except BaseException as exc:
+                logger.error("Prompt persistence finalization failed")
+                if active_error is None:
+                    finalization_error = exc
 
-            # Record usage if in tenant mode
             if tenant and usage_data:
                 try:
                     record_usage(
@@ -1148,18 +1208,40 @@ async def prompt_session(
                 except Exception:
                     logger.error("Failed to record prompt usage")
 
-            # Keep container alive after activity
-            end_tenant_container_activity(request, tenant, runtime_id=context.runtime_id)
-            touch_tenant_container(request, tenant, runtime_id=context.runtime_id)
+            try:
+                touch_tenant_container(request, tenant, runtime_id=context.runtime_id)
+            except BaseException as exc:
+                logger.error("Prompt container touch failed")
+                if active_error is None and finalization_error is None:
+                    finalization_error = exc
 
-            await coordinator.release(session_id)
+            try:
+                await coordinator.release(session_id)
+            except BaseException as exc:
+                logger.error("Prompt run release failed")
+                if active_error is None and finalization_error is None:
+                    finalization_error = exc
+
             if sidecar:
-                await sidecar.disconnect()
+                try:
+                    await sidecar.disconnect()
+                except BaseException as exc:
+                    logger.error("Prompt sidecar disconnect failed")
+                    if active_error is None and finalization_error is None:
+                        finalization_error = exc
+
+            try:
+                await _release_tenant_container_activity(activity)
+            except BaseException as exc:
+                logger.error("Prompt container activity release failed")
+                if active_error is None and finalization_error is None:
+                    finalization_error = exc
+
+            if finalization_error is not None:
+                raise finalization_error
 
             logger.info(
-                "Turn complete: session=%s turn_id=%s chunks=%d content_len=%d turn_status=%s",
-                session_id,
-                turn_id,
+                "Turn complete: chunks=%d content_len=%d turn_status=%s",
                 chunk_count,
                 len(accumulated),
                 turn_status,

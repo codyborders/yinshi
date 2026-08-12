@@ -23,8 +23,8 @@ from fastapi.testclient import TestClient
 from tests.conftest import reset_rate_limiter
 
 
-def _activate_container_runtime() -> None:
-    """Mutate cached settings so Pi runtime is active for runtime-path tests."""
+def _activate_container_runtime() -> Any:
+    """Mutate cached settings and return the test container manager."""
     from yinshi.config import get_settings
     from yinshi.main import app
 
@@ -33,6 +33,11 @@ def _activate_container_runtime() -> None:
 
     class _TestContainerManager:
         """Provide the minimal container interface needed by runtime tests."""
+
+        def __init__(self) -> None:
+            self.reservation = object()
+            self.acquired_reservations: list[object] = []
+            self.released_reservations: list[object] = []
 
         async def ensure_container(
             self,
@@ -46,13 +51,28 @@ def _activate_container_runtime() -> None:
             del user_id, data_dir, mounts, runtime_id, environment
             return SimpleNamespace(socket_path="/tmp/test-tenant-sidecar.sock")
 
+        async def acquire_activity(
+            self,
+            user_id: str,
+            *,
+            runtime_id: str | None = None,
+        ) -> object:
+            del user_id, runtime_id
+            self.acquired_reservations.append(self.reservation)
+            return self.reservation
+
+        async def release_activity(self, reservation: object) -> None:
+            self.released_reservations.append(reservation)
+
         def touch(self, user_id: str, *, runtime_id: str | None = None) -> None:
             del user_id, runtime_id
 
         async def destroy_all(self) -> None:
             return None
 
-    app.state.container_manager = _TestContainerManager()
+    manager = _TestContainerManager()
+    app.state.container_manager = manager
+    return manager
 
 
 def _build_pi_archive() -> bytes:
@@ -945,7 +965,7 @@ def test_list_pi_config_commands_returns_sidecar_payload(
     auth_client: TestClient,
 ) -> None:
     """After import, the route proxies the sidecar's commands list through pydantic."""
-    _activate_container_runtime()
+    container_manager = _activate_container_runtime()
     upload_response = auth_client.post(
         "/api/settings/pi-config/upload",
         files={"file": ("pi-config.zip", _build_pi_archive(), "application/zip")},
@@ -981,6 +1001,8 @@ def test_list_pi_config_commands_returns_sidecar_payload(
     # path (varies by test tmp dir) but confirm the sidecar was called.
     assert mock_sidecar.list_imported_commands.await_count == 1
     assert mock_sidecar.disconnect.await_count == 1
+    assert container_manager.acquired_reservations == [container_manager.reservation]
+    assert container_manager.released_reservations == [container_manager.reservation]
 
 
 def test_list_pi_config_commands_returns_503_on_sidecar_failure(

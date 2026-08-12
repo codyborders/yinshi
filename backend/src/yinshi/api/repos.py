@@ -1,9 +1,9 @@
 """CRUD endpoints for repositories."""
 
 import logging
-import shutil
 import sqlite3
 import uuid
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
@@ -20,10 +20,24 @@ from yinshi.exceptions import (
 )
 from yinshi.models import RepoCreate, RepoOut, RepoUpdate
 from yinshi.rate_limit import limiter
-from yinshi.services.git import clone_local_repo, clone_repo, validate_local_repo
+from yinshi.services.git import (
+    cleanup_repository_worktrees,
+    clone_local_repo,
+    clone_repo,
+    validate_local_repo,
+)
 from yinshi.services.github_app import GitHubCloneAccess, resolve_github_clone_access
+from yinshi.services.repository_lifecycle import (
+    ManagedPathQuarantine,
+    repository_lifecycle,
+    repository_lifecycle_root,
+)
 from yinshi.services.run_coordinator import get_run_coordinator
-from yinshi.services.workspace import delete_workspace
+from yinshi.services.sidecar import release_sessions
+from yinshi.services.sidecar_runtime import (
+    _workspace_home_expected_path,
+    local_pi_session_file,
+)
 from yinshi.tenant import TenantContext, validate_user_path
 from yinshi.utils.paths import is_path_inside
 
@@ -32,6 +46,7 @@ router = APIRouter(prefix="/api/repos", tags=["repos"])
 
 # Only these columns can be updated via PATCH
 _UPDATABLE_COLUMNS = {"name", "custom_prompt", "agents_md"}
+_RUNTIME_BUSY_DETAIL = "Workspace is still stopping; deletion can be retried"
 
 
 def _validate_local_path(path_str: str) -> str:
@@ -286,78 +301,213 @@ def update_repo(
         return dict(row)
 
 
-def _delete_managed_repo_root(
+def _workspace_path_plans(
+    repo: sqlite3.Row,
+    workspaces: list[sqlite3.Row],
+) -> list[tuple[Path, Path, str]]:
+    """Return managed worktrees after checking their repository ownership."""
+    repo_root = Path(str(repo["root_path"]))
+    worktree_root = repo_root / ".worktrees"
+    allowed_repo_base = Path(get_settings().allowed_repo_base)
+    plans: list[tuple[Path, Path, str]] = []
+    for workspace in workspaces:
+        workspace_path = Path(str(workspace["path"]))
+        if workspace_path.exists() and not _workspace_belongs_to_repo(
+            repo_root,
+            workspace_path,
+        ):
+            raise ValueError("workspace is not owned by its repository")
+        branch = str(workspace["branch"])
+        if is_path_inside(str(workspace_path), str(worktree_root)):
+            plans.append((workspace_path, worktree_root, branch))
+        elif get_settings().allowed_repo_base and is_path_inside(
+            str(workspace_path),
+            str(allowed_repo_base),
+        ):
+            plans.append((workspace_path, allowed_repo_base, branch))
+        else:
+            raise ValueError("workspace path is outside its managed root")
+    return plans
+
+
+def _workspace_belongs_to_repo(repo_root: Path, workspace_path: Path) -> bool:
+    """Check a linked worktree's gitdir points into the selected repository."""
+    git_file = workspace_path / ".git"
+    if git_file.is_symlink() or not git_file.is_file():
+        return False
+    try:
+        if git_file.stat().st_size > 4096:
+            return False
+        content = git_file.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeError):
+        return False
+    prefix = "gitdir: "
+    if not content.startswith(prefix):
+        return False
+    git_directory = Path(content[len(prefix) :])
+    if not git_directory.is_absolute():
+        git_directory = workspace_path / git_directory
+    return is_path_inside(
+        str(git_directory),
+        str(repo_root / ".git" / "worktrees"),
+    )
+
+
+def _managed_repo_plan(
     repo: sqlite3.Row,
     tenant: TenantContext | None,
-) -> None:
-    """Delete a Yinshi-owned checkout while preserving registered local sources."""
+) -> tuple[Path, Path] | None:
+    """Return a Yinshi-owned checkout and its trusted root."""
     root_path = Path(str(repo["root_path"]))
     if tenant is not None:
         if not is_path_inside(str(root_path), tenant.data_dir):
-            return
+            return None
         validate_user_path(tenant, str(root_path))
-        managed_root = True
-    else:
-        legacy_repo_directory = Path.home() / ".yinshi" / "repos"
-        managed_root = bool(repo["remote_url"]) and is_path_inside(
-            str(root_path),
-            str(legacy_repo_directory),
-        )
-    if not managed_root or not root_path.exists():
-        return
-    if root_path.is_symlink():
-        raise ValueError("managed repository root must not be a symlink")
-    if not shutil.rmtree.avoids_symlink_attacks:
-        raise RuntimeError("safe descriptor-based directory deletion is unavailable")
-    shutil.rmtree(root_path)
+        return root_path, Path(tenant.data_dir)
+
+    legacy_repo_directory = Path.home() / ".yinshi" / "repos"
+    if bool(repo["remote_url"]) and is_path_inside(
+        str(root_path),
+        str(legacy_repo_directory),
+    ):
+        return root_path, legacy_repo_directory
+    return None
 
 
 @router.delete("/{repo_id}", status_code=204)
 async def delete_repo(repo_id: str, request: Request) -> None:
-    """Delete a repository and all its workspaces."""
+    """Delete a repository while holding its lifecycle lock."""
+    tenant = get_tenant(request)
     with get_db_for_request(request) as db:
+        lock_root = repository_lifecycle_root(db, tenant)
+        async with repository_lifecycle(repo_id, lock_root):
+            await _delete_repo_locked(repo_id, request, db)
+
+
+async def _delete_repo_locked(
+    repo_id: str,
+    request: Request,
+    database: sqlite3.Connection,
+) -> None:
+    """Delete a repository after lifecycle serialization."""
+    with nullcontext(database) as db:
         row = db.execute("SELECT * FROM repos WHERE id = ?", (repo_id,)).fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Repo not found")
         _check_repo_owner(row, request)
         tenant = get_tenant(request)
         workspace_rows = db.execute(
-            "SELECT id FROM workspaces WHERE repo_id = ?",
+            "SELECT * FROM workspaces WHERE repo_id = ? ORDER BY rowid ASC",
             (repo_id,),
         ).fetchall()
-        for workspace in workspace_rows:
-            workspace_id = str(workspace["id"])
-            try:
+        session_ids: list[str] = []
+        try:
+            coordinator = get_run_coordinator()
+            for workspace in workspace_rows:
+                workspace_id = str(workspace["id"])
                 session_rows = db.execute(
                     "SELECT id FROM sessions WHERE workspace_id = ?",
                     (workspace_id,),
                 ).fetchall()
-                coordinator = get_run_coordinator()
                 for session_row in session_rows:
-                    await coordinator.request_cancel(str(session_row["id"]))
-                if tenant is not None:
-                    container_manager = getattr(request.app.state, "container_manager", None)
-                    if container_manager is not None:
-                        await container_manager.destroy_container(
+                    session_id = str(session_row["id"])
+                    session_ids.append(session_id)
+                    await coordinator.request_cancel(session_id)
+
+            busy_workspace_found = False
+            if request.app.state.mode == "desktop":
+                await release_sessions(get_settings().sidecar_socket_path, session_ids)
+            elif tenant is not None:
+                container_manager = getattr(request.app.state, "container_manager", None)
+                if container_manager is None and get_settings().container_enabled:
+                    raise RuntimeError("container manager is unavailable")
+                if container_manager is not None:
+                    for workspace in workspace_rows:
+                        workspace_id = str(workspace["id"])
+                        container_removed = await container_manager.destroy_container(
                             tenant.user_id,
                             runtime_id=workspace_id,
                         )
-                    elif get_settings().container_enabled:
-                        raise RuntimeError("container manager is unavailable")
-                await delete_workspace(db, workspace_id, tenant=tenant)
-            except (GitError, OSError, RuntimeError, ValueError):
-                logger.error("Failed to delete workspace while deleting repository")
-                raise HTTPException(
-                    status_code=500,
-                    detail="Repository cleanup failed; deletion can be retried",
-                ) from None
-        try:
-            _delete_managed_repo_root(row, tenant)
+                        if not container_removed:
+                            busy_workspace_found = True
         except (OSError, RuntimeError, ValueError):
-            logger.error("Failed to delete repository checkout")
+            logger.error("Failed to stop workspace runtime while deleting repository")
             raise HTTPException(
                 status_code=500,
                 detail="Repository cleanup failed; deletion can be retried",
             ) from None
-        db.execute("DELETE FROM repos WHERE id = ?", (repo_id,))
-        db.commit()
+
+        if busy_workspace_found:
+            raise HTTPException(status_code=409, detail=_RUNTIME_BUSY_DETAIL)
+
+        quarantine = ManagedPathQuarantine()
+        try:
+            workspace_plans = _workspace_path_plans(row, list(workspace_rows))
+            runtime_root = Path(tenant.data_dir) if tenant is not None else None
+            runtime_paths = (
+                [
+                    _workspace_home_expected_path(tenant, str(workspace["id"]))
+                    for workspace in workspace_rows
+                ]
+                if tenant is not None
+                else []
+            )
+            session_paths = (
+                [Path(local_pi_session_file(session_id)) for session_id in session_ids]
+                if tenant is None
+                else []
+            )
+            managed_repo = _managed_repo_plan(row, tenant)
+            cleanup_repo_root = Path(str(row["root_path"]))
+            git_worktrees = [
+                (str(workspace_path), branch)
+                for workspace_path, _workspace_root, branch in workspace_plans
+            ]
+            if runtime_root is not None:
+                for runtime_path in runtime_paths:
+                    quarantine.validate(runtime_path, runtime_root)
+            for session_path in session_paths:
+                quarantine.validate(session_path, session_path.parent)
+            for workspace_path, workspace_root, _branch in workspace_plans:
+                quarantine.validate(workspace_path, workspace_root)
+            if managed_repo is not None:
+                quarantine.validate(*managed_repo)
+            if runtime_root is not None:
+                for runtime_path in runtime_paths:
+                    quarantine.move(runtime_path, runtime_root)
+            for session_path in session_paths:
+                quarantine.move(session_path, session_path.parent)
+            for workspace_path, workspace_root, _branch in workspace_plans:
+                quarantine.move(workspace_path, workspace_root)
+            if managed_repo is not None:
+                quarantine.move(*managed_repo)
+                for entry in reversed(quarantine.entries):
+                    if entry.source == managed_repo[0]:
+                        cleanup_repo_root = entry.target
+                        break
+            db.execute("DELETE FROM repos WHERE id = ?", (repo_id,))
+            db.commit()
+        except (OSError, RuntimeError, ValueError, sqlite3.Error):
+            db.rollback()
+            try:
+                quarantine.restore()
+            except (OSError, RuntimeError, ValueError):
+                logger.error("Repository path restoration failed")
+            logger.error("Repository deletion failed before database commit")
+            raise HTTPException(
+                status_code=500,
+                detail="Repository cleanup failed; deletion can be retried",
+            ) from None
+
+        try:
+            await cleanup_repository_worktrees(
+                str(cleanup_repo_root),
+                git_worktrees,
+            )
+        except (GitError, OSError, ValueError):
+            logger.error("Repository Git cleanup failed")
+
+        try:
+            quarantine.discard()
+        except (OSError, RuntimeError, ValueError):
+            logger.error("Repository durable cleanup failed")

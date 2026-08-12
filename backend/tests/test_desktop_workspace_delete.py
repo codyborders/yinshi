@@ -11,11 +11,16 @@ def _git(*args: str, cwd: Path) -> None:
     subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)
 
 
-def test_desktop_workspace_delete_releases_pi_sessions(
+@pytest.mark.parametrize(
+    "delete_path",
+    ["/api/workspaces/workspace-id", "/api/repos/repo-id"],
+)
+def test_desktop_delete_releases_pi_sessions(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
+    delete_path: str,
 ) -> None:
-    """Desktop runs one long-lived sidecar, so deleted sessions must be released."""
+    """Desktop deletion should release sessions from its long-lived sidecar."""
     from fastapi.testclient import TestClient
 
     from tests.conftest import _configure_test_env
@@ -57,6 +62,11 @@ def test_desktop_workspace_delete_releases_pi_sessions(
         release_sessions,
         raising=False,
     )
+    monkeypatch.setattr(
+        "yinshi.api.repos.release_sessions",
+        release_sessions,
+        raising=False,
+    )
 
     try:
         init_db()
@@ -93,7 +103,7 @@ def test_desktop_workspace_delete_releases_pi_sessions(
             )
             assert bootstrap.status_code == 204
 
-            response = client.delete("/api/workspaces/workspace-id")
+            response = client.delete(delete_path)
 
         assert response.status_code == 204
         release_sessions.assert_awaited_once()

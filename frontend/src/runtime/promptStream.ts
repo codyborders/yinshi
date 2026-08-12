@@ -48,6 +48,7 @@ export interface RuntimePromptOptions {
   readonly idempotencyKey?: string;
   readonly signal?: AbortSignal;
   readonly pollDelayMs?: number;
+  readonly pollRetryLimit?: number;
 }
 
 export interface RuntimePromptHandle {
@@ -133,25 +134,29 @@ async function delay(milliseconds: number, signal?: AbortSignal): Promise<void> 
   if (signal?.aborted) throw abortError();
   if (milliseconds === 0) return;
   await new Promise<void>((resolve, reject) => {
-    const timer = window.setTimeout(resolve, milliseconds);
-    signal?.addEventListener(
-      "abort",
-      () => {
-        window.clearTimeout(timer);
-        reject(abortError());
-      },
-      { once: true },
-    );
+    const timer = window.setTimeout(() => {
+      signal?.removeEventListener("abort", abort);
+      resolve();
+    }, milliseconds);
+    const abort = (): void => {
+      window.clearTimeout(timer);
+      reject(abortError());
+    };
+    signal?.addEventListener("abort", abort, { once: true });
   });
 }
 
 function shouldRetry(error: unknown): boolean {
   if (error instanceof DOMException && error.name === "AbortError") return false;
+  if (error instanceof TypeError) return true;
   if (error !== null && typeof error === "object" && "status" in error) {
     const status = (error as { status?: unknown }).status;
-    if (typeof status === "number" && status >= 400 && status < 500) return false;
+    return (
+      typeof status === "number" &&
+      (status === 429 || (status >= 500 && status < 600))
+    );
   }
-  return true;
+  return false;
 }
 
 export async function startRuntimePrompt(
@@ -171,9 +176,19 @@ export async function startRuntimePrompt(
   if (typeof idempotencyKey !== "string" || idempotencyKey.length !== 36) {
     throw new Error("Prompt idempotency key is invalid");
   }
-  const pollDelayMs = options.pollDelayMs ?? (transport.runtime.location === "byoc" ? 750 : 250);
+  const remoteRuntime =
+    transport.runtime.location === "byoc" || transport.runtime.location === "managed";
+  const pollDelayMs = options.pollDelayMs ?? (remoteRuntime ? 750 : 250);
   if (!Number.isSafeInteger(pollDelayMs) || pollDelayMs < 0 || pollDelayMs > 5_000) {
     throw new Error("Prompt poll delay is invalid");
+  }
+  const pollRetryLimit = options.pollRetryLimit ?? 5;
+  if (
+    !Number.isSafeInteger(pollRetryLimit) ||
+    pollRetryLimit < 1 ||
+    pollRetryLimit > 5
+  ) {
+    throw new Error("Prompt poll retry limit is invalid");
   }
   const started = validateRun(
     await transport.post<unknown>(`/api/sessions/${sessionId}/runs`, {
@@ -195,6 +210,7 @@ export async function startRuntimePrompt(
       consumed = true;
       let nextSequence = 0;
       let retryDelayMs = pollDelayMs;
+      let consecutiveTransientFailures = 0;
       let emittedTerminalEvent = false;
       while (true) {
         if (options.signal?.aborted) throw abortError();
@@ -203,14 +219,17 @@ export async function startRuntimePrompt(
           rawBatch = await transport.get<unknown>(
             `/api/sessions/${sessionId}/runs/${started.id}/events/${nextSequence}`,
           );
-          retryDelayMs = pollDelayMs;
         } catch (error) {
           if (!shouldRetry(error)) throw error;
+          consecutiveTransientFailures += 1;
+          if (consecutiveTransientFailures >= pollRetryLimit) throw error;
           retryDelayMs = Math.min(Math.max(retryDelayMs * 2, 250), 5_000);
           await delay(retryDelayMs, options.signal);
           continue;
         }
         const batch = validateBatch(rawBatch, started.id, nextSequence);
+        consecutiveTransientFailures = 0;
+        retryDelayMs = pollDelayMs;
         nextSequence = batch.nextSequence;
         for (const event of batch.events) {
           if (event.type === "error" || event.type === "cancelled" || event.type === "result") {

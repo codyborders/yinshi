@@ -42,6 +42,32 @@ test("expired OAuth flows are removed and pending input is rejected", () => {
   assert.equal(rejectionMessage, "OAuth flow expired");
 });
 
+test("supported OAuth starts through the runtime auth interface", async () => {
+  const sidecar = new YinshiSidecar();
+  const { messages, socket } = writableMessages();
+
+  await sidecar.startOAuthFlow("request-1", socket, "anthropic");
+
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].type, "oauth_started", messages[0].error);
+  assert.equal(messages[0].provider, "anthropic");
+  assert.equal(typeof messages[0].auth_url, "string");
+  sidecar.clearOAuthFlow("clear-1", socket, messages[0].flow_id);
+});
+
+test("OAuth providers with a default login method start without an extra round trip", async () => {
+  const sidecar = new YinshiSidecar();
+  const { messages, socket } = writableMessages();
+
+  await sidecar.startOAuthFlow("request-1", socket, "openai-codex");
+
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].type, "oauth_started", messages[0].error);
+  assert.equal(messages[0].provider, "openai-codex");
+  assert.equal(typeof messages[0].auth_url, "string");
+  sidecar.clearOAuthFlow("clear-1", socket, messages[0].flow_id);
+});
+
 test("OAuth flow admission stops before a ninth provider login", async () => {
   const sidecar = new YinshiSidecar();
   for (let index = 0; index < 8; index += 1) {

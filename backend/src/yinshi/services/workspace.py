@@ -26,6 +26,10 @@ from yinshi.services.git import (
     validate_local_repo,
 )
 from yinshi.services.github_app import normalize_github_remote, resolve_github_clone_access
+from yinshi.services.repository_lifecycle import (
+    repository_lifecycle,
+    repository_lifecycle_root,
+)
 from yinshi.services.sidecar_runtime import (
     delete_local_pi_session_file,
     delete_workspace_runtime_home,
@@ -166,14 +170,10 @@ async def _refresh_repo_remote_metadata(
                 access_token,
                 resolved_installation_id,
             ) = await _resolve_remote_checkout(tenant, remote_url)
-        except GitError as exc:
+        except GitError:
             if not source_repo_is_available:
                 raise
-            logger.warning(
-                "Refreshing repo %s from local checkout because remote auth failed: %s",
-                repo_path,
-                exc,
-            )
+            logger.warning("Refreshing repository from local checkout after remote auth failure")
         else:
             if resolved_installation_id is not None:
                 refreshed_installation_id = resolved_installation_id
@@ -346,7 +346,26 @@ async def create_workspace_for_repo(
     username: str | None = None,
     tenant: TenantContext | None = None,
 ) -> dict[str, Any]:
-    """Create a new worktree workspace for a repo."""
+    """Create a new worktree while holding its repository lifecycle lock."""
+    lock_root = repository_lifecycle_root(db, tenant)
+    async with repository_lifecycle(repo_id, lock_root):
+        return await _create_workspace_for_repo_unlocked(
+            db,
+            repo_id,
+            name=name,
+            username=username,
+            tenant=tenant,
+        )
+
+
+async def _create_workspace_for_repo_unlocked(
+    db: sqlite3.Connection,
+    repo_id: str,
+    name: str | None = None,
+    username: str | None = None,
+    tenant: TenantContext | None = None,
+) -> dict[str, Any]:
+    """Create a new worktree after repository lifecycle serialization."""
     if tenant is not None:
         await ensure_repo_checkout_for_tenant(db, tenant, repo_id)
 
@@ -368,12 +387,8 @@ async def create_workspace_for_repo(
             if tenant is not None:
                 _, access_token, _ = await _resolve_remote_checkout(tenant, remote_url)
             base_ref = await resolve_remote_base_ref(repo_path, access_token=access_token)
-        except GitError as exc:
-            logger.warning(
-                "Creating worktree for repo %s from local HEAD because remote sync failed: %s",
-                repo_id,
-                exc,
-            )
+        except GitError:
+            logger.warning("Creating worktree from local HEAD after remote sync failure")
             base_ref = None
 
     await create_worktree(repo_path, worktree_dir, branch, base_ref=base_ref)
@@ -396,28 +411,40 @@ async def delete_workspace(
     *,
     tenant: TenantContext | None = None,
 ) -> None:
-    """Delete a workspace, durable Pi sessions, and its worktree from disk."""
+    """Delete a workspace while holding its repository lifecycle lock."""
     workspace = _fetch_workspace(db, workspace_id)
+    repo_id = str(workspace["repo_id"])
+    lock_root = repository_lifecycle_root(db, tenant)
+    async with repository_lifecycle(repo_id, lock_root):
+        await _delete_workspace_unlocked(db, workspace_id, tenant=tenant)
 
-    if tenant is not None:
-        delete_workspace_runtime_home(tenant, workspace_id)
-    else:
+
+async def _delete_workspace_unlocked(
+    db: sqlite3.Connection,
+    workspace_id: str,
+    *,
+    tenant: TenantContext | None = None,
+) -> None:
+    """Delete one workspace after repository lifecycle serialization."""
+    workspace = _fetch_workspace(db, workspace_id)
+    session_rows = []
+    if tenant is None:
         session_rows = db.execute(
             "SELECT id FROM sessions WHERE workspace_id = ?",
             (workspace_id,),
         ).fetchall()
+
+    repo = _fetch_repo(db, workspace["repo_id"])
+    await delete_worktree(repo["root_path"], workspace["path"])
+
+    if tenant is not None:
+        delete_workspace_runtime_home(tenant, workspace_id)
+    else:
         for session_row in session_rows:
             try:
                 delete_local_pi_session_file(session_row["id"])
             except OSError:
-                logger.warning(
-                    "Failed to delete Pi session file for session %s",
-                    session_row["id"],
-                )
-
-    repo = _fetch_repo(db, workspace["repo_id"])
-
-    await delete_worktree(repo["root_path"], workspace["path"])
+                logger.warning("Failed to delete Pi session file")
 
     db.execute("DELETE FROM workspaces WHERE id = ?", (workspace_id,))
     db.commit()

@@ -134,7 +134,7 @@ async def _fetch_github_releases(repository: str) -> dict[str, Any]:
         try:
             releases.append(_normalize_github_release(raw_release))
         except (TypeError, ValueError):
-            logger.warning("Skipping malformed GitHub release", exc_info=True)
+            logger.warning("Skipping malformed GitHub release")
 
     latest_version = releases[0]["version"] if releases else None
     return {"latest_version": latest_version, "releases": releases}
@@ -155,7 +155,7 @@ async def _get_cached_github_releases(
         try:
             fetched_payload = await _fetch_github_releases(repository)
         except (httpx.HTTPError, TypeError, ValueError) as error:
-            logger.warning("Failed to fetch pi release notes", exc_info=True)
+            logger.warning("Failed to fetch pi release notes")
             if _release_cache_payload is not None:
                 return _release_cache_payload, str(error)
             return {"latest_version": None, "releases": []}, str(error)
@@ -184,7 +184,7 @@ async def _read_runtime_version() -> tuple[PiRuntimeVersionPayload | None, str |
         json.JSONDecodeError,
         asyncio.TimeoutError,
     ) as error:
-        logger.warning(_RUNTIME_VERSION_ERROR, exc_info=True)
+        logger.warning(_RUNTIME_VERSION_ERROR)
         return None, str(error)
     finally:
         if sidecar is not None:

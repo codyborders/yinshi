@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+import asyncio
+from pathlib import Path
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from fastapi import FastAPI
@@ -53,10 +55,47 @@ def test_create_app_builds_independent_health_applications(
     first_app = factory()
     second_app = factory()
     assert first_app is not second_app
+    assert first_app.state.sprites_public_launch_enabled is False
+    assert second_app.state.sprites_public_launch_enabled is False
     with TestClient(first_app) as client:
         response = client.get("/health")
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+
+
+def test_hosted_fly_mode_uses_control_plane_route_surface(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Hosted Fly mode should expose control APIs without local execution APIs."""
+    _configure_startup_env(monkeypatch, tmp_path, container_enabled=False)
+    import yinshi.main as main
+    from yinshi.config import Settings
+
+    fly_settings = Settings(managed_runtime_provider="fly_sprites")
+    monkeypatch.setattr(main, "get_settings", lambda: fly_settings)
+
+    hosted_paths = set(main.create_app(mode="hosted").openapi()["paths"])
+
+    assert "/api/runtime" in hosted_paths
+    assert "/api/runtime/provision" in hosted_paths
+    assert "/api/settings/runner" in hosted_paths
+    assert "/auth/login/google" in hosted_paths
+    assert "/api/github/installations" in hosted_paths
+    assert "/runner/register" in hosted_paths
+    assert "/api/repos" not in hosted_paths
+    assert "/api/repos/{repo_id}/workspaces" not in hosted_paths
+    assert "/api/workspaces/{workspace_id}/files/tree" not in hosted_paths
+    assert "/api/workspaces/{workspace_id}/terminal" not in hosted_paths
+    assert "/api/workspaces/{workspace_id}/terminals" not in hosted_paths
+    assert "/api/workspaces/{workspace_id}/sessions" not in hosted_paths
+    assert "/api/sessions/{session_id}/runs" not in hosted_paths
+    assert "/api/catalog" not in hosted_paths
+    assert "/api/settings/keys" not in hosted_paths
+    assert "/api/settings/connections" not in hosted_paths
+    assert "/auth/providers/{provider}/start" not in hosted_paths
+    assert "/api/settings/pi-config/uploads" not in hosted_paths
+    assert "/api/sessions/{session_id}/prompt" not in hosted_paths
 
 
 def test_application_mode_limits_worker_route_surface(
@@ -70,6 +109,9 @@ def test_application_mode_limits_worker_route_surface(
 
     hosted_paths = set(create_app().openapi()["paths"])
     assert "/api/repos" in hosted_paths
+    assert "/api/catalog" in hosted_paths
+    assert "/api/settings/pi-config/uploads" in hosted_paths
+    assert "/api/runtime" in hosted_paths
     assert "/api/settings/runner" in hosted_paths
     assert "/auth/login/google" in hosted_paths
     assert "/rum/api/v2/{intake_path}" in hosted_paths
@@ -105,6 +147,294 @@ def test_application_mode_limits_worker_route_surface(
     assert "/rum/api/v2/{intake_path}" not in desktop_paths
     with TestClient(desktop_app) as desktop_client:
         assert desktop_client.get("/api/repos").status_code == 200
+
+
+def test_hosted_fly_lifespan_builds_and_closes_managed_runtime(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Hosted Fly startup should wire validated settings into managed services."""
+    _configure_startup_env(monkeypatch, tmp_path, container_enabled=False)
+    bootstrap_path = tmp_path / "bootstrap.sh"
+    bootstrap_path.write_bytes(b"#!/bin/sh\nexit 0\n")
+
+    import yinshi.main as main
+    from yinshi.config import Settings
+    from yinshi.services.runner_relay import runner_relay_broker
+
+    app_settings = Settings(
+        managed_runtime_provider="fly_sprites",
+        sprites_api_token="provider-token",
+        sprites_api_url="https://sprites.invalid/v1",
+        sprites_name_prefix="managed",
+        sprites_name_key="n" * 32,
+        sprites_artifact_url="https://artifacts.invalid/runner.tar.gz",
+        sprites_artifact_sha256="a" * 64,
+        sprites_allowed_domains="control.example.com,api.github.com",
+        sprites_public_control_url="https://control.example.com",
+        sprites_bootstrap_script_path=str(bootstrap_path),
+        sprites_wake_timeout_seconds=17,
+        sprites_operation_stale_seconds=901,
+        control_db_path=str(tmp_path / "control.db"),
+        container_enabled=False,
+    )
+    provider_http_client = Mock()
+    provider_http_client.aclose = AsyncMock()
+    artifact_http_client = Mock()
+    artifact_http_client.aclose = AsyncMock()
+    provider = object()
+    guest_installer = object()
+    manager = Mock()
+    manager.reconcile_startup = AsyncMock(return_value=0)
+    manager.aclose = AsyncMock()
+    sprites_constructor = Mock(return_value=provider)
+    installer_constructor = Mock(return_value=guest_installer)
+    manager_constructor = Mock(return_value=manager)
+
+    monkeypatch.setattr(main, "get_settings", lambda: app_settings)
+    monkeypatch.setattr(
+        main,
+        "_create_provider_http_client",
+        Mock(return_value=provider_http_client),
+    )
+    monkeypatch.setattr(
+        main,
+        "_create_artifact_http_client",
+        Mock(return_value=artifact_http_client),
+    )
+    monkeypatch.setattr(main, "SpritesClient", sprites_constructor)
+    monkeypatch.setattr(main, "ConcreteManagedGuestInstaller", installer_constructor)
+    monkeypatch.setattr(main, "ManagedRuntimeManager", manager_constructor)
+
+    application = main.create_app(mode="hosted")
+
+    async def assert_manager_not_published() -> int:
+        assert application.state.managed_runtime_manager is None
+        return 0
+
+    manager.reconcile_startup.side_effect = assert_manager_not_published
+    with TestClient(application):
+        assert application.state.managed_runtime_manager is manager
+
+    sprites_constructor.assert_called_once_with(
+        api_token="provider-token",
+        http_client=provider_http_client,
+    )
+    installer_kwargs = installer_constructor.call_args.kwargs
+    assert installer_kwargs["client"] is provider
+    assert installer_kwargs["bootstrap_script"] == b"#!/bin/sh\nexit 0\n"
+    assert installer_kwargs["relay_idle_timeout_seconds"] == 20.0
+    assert installer_kwargs["bootstrap_timeout_seconds"] == 901
+    manager_constructor.assert_called_once_with(
+        provider=provider,
+        guest_installer=guest_installer,
+        http_client=artifact_http_client,
+        name_prefix="managed",
+        name_key="n" * 32,
+        artifact_url="https://artifacts.invalid/runner.tar.gz",
+        artifact_sha256="a" * 64,
+        artifact_version="a" * 64,
+        allowed_domains=("control.example.com", "api.github.com"),
+        region="global",
+        control_url="https://control.example.com",
+        readiness_timeout_seconds=17,
+        is_runner_connected=runner_relay_broker.is_runner_connected,
+    )
+    assert not Path(app_settings.db_path).exists()
+    manager.reconcile_startup.assert_awaited_once_with()
+    manager.aclose.assert_awaited_once()
+    provider_http_client.aclose.assert_awaited_once()
+    artifact_http_client.aclose.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_lifespan_attempts_every_cleanup_before_raising_first_error(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Shutdown runs every cleanup and then raises its first non-cancellation error."""
+    _configure_startup_env(monkeypatch, tmp_path, container_enabled=True)
+    import yinshi.main as main
+    import yinshi.services.container as container_service
+    from yinshi.config import Settings
+
+    cleanup_calls: list[str] = []
+    reaper_started = asyncio.Event()
+
+    class FakePromptJournal:
+        async def close(self) -> None:
+            cleanup_calls.append("prompt journal")
+            raise RuntimeError("prompt cleanup failed")
+
+    class FakeTerminalJournal:
+        async def close_all(self) -> None:
+            cleanup_calls.append("terminal journal")
+            raise RuntimeError("terminal cleanup failed")
+
+    class FakeContainerManager:
+        def __init__(self, *, settings: Settings) -> None:
+            self.settings = settings
+
+        async def initialize(self) -> None:
+            return None
+
+        async def run_reaper(self) -> None:
+            reaper_started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cleanup_calls.append("reaper")
+                raise RuntimeError("reaper cleanup failed")
+
+        async def destroy_all(self) -> None:
+            cleanup_calls.append("container manager")
+            raise RuntimeError("container cleanup failed")
+
+    class FakeManagedRuntimeManager:
+        async def reconcile_startup(self) -> int:
+            return 0
+
+        async def aclose(self) -> None:
+            cleanup_calls.append("managed manager")
+            raise RuntimeError("managed cleanup failed")
+
+    class FakeProviderClient:
+        async def aclose(self) -> None:
+            cleanup_calls.append("provider client")
+            raise RuntimeError("provider cleanup failed")
+
+    class FakeRelayProcessLock:
+        def __init__(self, path: Path) -> None:
+            self.path = path
+
+        def acquire(self) -> None:
+            return None
+
+        def release(self) -> None:
+            cleanup_calls.append("relay lock")
+            raise RuntimeError("relay cleanup failed")
+
+    app_settings = Settings(
+        managed_runtime_provider="fly_sprites",
+        control_db_path=str(tmp_path / "control.db"),
+        container_enabled=True,
+    )
+    managed_manager = FakeManagedRuntimeManager()
+    provider_client = FakeProviderClient()
+    application = FastAPI()
+    application.state.mode = "hosted"
+    application.state.prompt_journal = FakePromptJournal()
+    application.state.terminal_journal = FakeTerminalJournal()
+
+    monkeypatch.setattr(main, "get_settings", lambda: app_settings)
+    monkeypatch.setattr(main, "init_control_db", Mock())
+    monkeypatch.setattr(main, "setup_oauth", Mock())
+    monkeypatch.setattr(main, "PromptJournal", FakePromptJournal)
+    monkeypatch.setattr(main, "TerminalJournal", FakeTerminalJournal)
+    monkeypatch.setattr(container_service, "ContainerManager", FakeContainerManager)
+    monkeypatch.setattr(main, "RelayProcessLock", FakeRelayProcessLock)
+    monkeypatch.setattr(
+        main,
+        "_initialize_managed_runtime",
+        AsyncMock(return_value=(managed_manager, provider_client)),
+    )
+
+    with pytest.raises(RuntimeError, match="prompt cleanup failed"):
+        async with main.lifespan(application):
+            await asyncio.wait_for(reaper_started.wait(), timeout=1)
+
+    assert cleanup_calls == [
+        "prompt journal",
+        "terminal journal",
+        "reaper",
+        "container manager",
+        "managed manager",
+        "provider client",
+        "relay lock",
+    ]
+
+
+def test_hosted_fly_partial_startup_closes_provider_client(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Managed startup failure should close the provider client before propagating."""
+    _configure_startup_env(monkeypatch, tmp_path, container_enabled=False)
+    bootstrap_path = tmp_path / "bootstrap.sh"
+    bootstrap_path.write_bytes(b"exit 0\n")
+
+    import yinshi.main as main
+    from yinshi.config import Settings
+
+    app_settings = Settings(
+        managed_runtime_provider="fly_sprites",
+        sprites_bootstrap_script_path=str(bootstrap_path),
+        control_db_path=str(tmp_path / "control.db"),
+        container_enabled=False,
+    )
+    provider_http_client = Mock()
+    provider_http_client.aclose = AsyncMock()
+    monkeypatch.setattr(main, "get_settings", lambda: app_settings)
+    monkeypatch.setattr(
+        main,
+        "_create_provider_http_client",
+        Mock(return_value=provider_http_client),
+    )
+    monkeypatch.setattr(
+        main,
+        "_create_artifact_http_client",
+        Mock(side_effect=RuntimeError("artifact client failed")),
+    )
+
+    with pytest.raises(RuntimeError, match="artifact client failed"):
+        with TestClient(main.create_app(mode="hosted")):
+            pass
+
+    provider_http_client.aclose.assert_awaited_once()
+
+
+def test_desktop_and_worker_lifespans_skip_managed_provider_clients(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Non-hosted modes should never initialize managed provider clients."""
+    _configure_startup_env(monkeypatch, tmp_path, container_enabled=False)
+    import yinshi.main as main
+    from yinshi.config import Settings
+    from yinshi.tenant import TenantContext
+    from yinshi.worker_auth import WorkerPrincipal
+
+    app_settings = Settings(
+        managed_runtime_provider="fly_sprites",
+        control_db_path=str(tmp_path / "control.db"),
+        container_enabled=False,
+    )
+    provider_factory = Mock(side_effect=AssertionError("provider client initialized"))
+    artifact_factory = Mock(side_effect=AssertionError("artifact client initialized"))
+    monkeypatch.setattr(main, "get_settings", lambda: app_settings)
+    monkeypatch.setattr(main, "_create_provider_http_client", provider_factory)
+    monkeypatch.setattr(main, "_create_artifact_http_client", artifact_factory)
+
+    worker_directory = tmp_path / "worker-lifecycle"
+    worker_principal = WorkerPrincipal(
+        tenant=TenantContext(
+            user_id="worker-lifecycle-user",
+            email="worker-lifecycle@runner.invalid",
+            data_dir=str(worker_directory),
+            db_path=str(worker_directory / "yinshi.db"),
+        ),
+        bearer_token="w" * 48,
+    )
+    applications = (
+        main.create_app(mode="desktop"),
+        main.create_app(mode="worker", worker_principal=worker_principal),
+    )
+    for application in applications:
+        with TestClient(application):
+            pass
+
+    provider_factory.assert_not_called()
+    artifact_factory.assert_not_called()
 
 
 def test_desktop_mode_serves_spa_with_restricted_fallback_and_csp(

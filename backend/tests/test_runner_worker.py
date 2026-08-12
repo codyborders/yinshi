@@ -6,7 +6,10 @@ opaque account directory, and refuses capabilities for another account.
 
 from __future__ import annotations
 
+import os
 import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -179,3 +182,122 @@ def test_runner_worker_manager_rejects_a_second_account(
 
     with pytest.raises(ValueError, match="different account"):
         manager.dispatcher("account-2")
+
+
+@pytest.mark.parametrize("mode", ["auto", "enabled", "REQUIRED", " required "])
+def test_runner_worker_manager_rejects_unsafe_user_storage_modes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    mode: str,
+) -> None:
+    """Runner workers accept only exact disabled or required storage modes."""
+    data_directory = tmp_path / "invalid-mode"
+
+    with pytest.raises(ValueError, match="must be disabled or required"):
+        RunnerWorkerManager(
+            data_directory=data_directory,
+            runner_static_private_key=b"r" * 32,
+            user_data_encryption=mode,  # type: ignore[arg-type]
+            environment_setter=monkeypatch.setenv,
+        )
+
+    assert not data_directory.exists()
+
+
+def test_runner_worker_manager_verifies_effective_user_storage_mode(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Database initialization requires the requested effective storage mode."""
+    import yinshi.db as database_module
+
+    def change_environment(name: str, value: str) -> None:
+        if name == "USER_DATA_ENCRYPTION":
+            value = "disabled"
+        monkeypatch.setenv(name, value)
+
+    monkeypatch.setattr(
+        database_module,
+        "init_control_db",
+        lambda: pytest.fail("control database initialized before mode verification"),
+    )
+    monkeypatch.setattr(
+        database_module,
+        "init_db",
+        lambda: pytest.fail("database initialized before mode verification"),
+    )
+
+    with pytest.raises(RuntimeError, match="user data encryption configuration did not apply"):
+        RunnerWorkerManager(
+            data_directory=tmp_path / "managed-runner",
+            runner_static_private_key=b"r" * 32,
+            user_data_encryption="required",
+            environment_setter=change_environment,
+        )
+
+
+def test_runner_worker_manager_requires_managed_user_storage_marker(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    db: sqlite3.Connection,
+) -> None:
+    """Required user storage encryption rejects an unmarked managed volume."""
+    import yinshi.db as database_module
+
+    class ControlDatabase:
+        def execute(self, query: str, parameters: object = None) -> ControlDatabase:
+            return self
+
+        def commit(self) -> None:
+            return None
+
+        def fetchone(self) -> dict[str, str]:
+            return {
+                "email": "91babce145fef900@runner.invalid",
+                "status": "active",
+            }
+
+    @contextmanager
+    def fake_control_database() -> Iterator[ControlDatabase]:
+        yield ControlDatabase()
+
+    monkeypatch.setattr(database_module, "init_control_db", lambda: None)
+    monkeypatch.setattr(database_module, "init_db", lambda: None)
+    monkeypatch.setattr(database_module, "get_control_db", fake_control_database)
+    manager = RunnerWorkerManager(
+        data_directory=tmp_path / "managed-runner",
+        runner_static_private_key=b"r" * 32,
+        user_data_encryption="required",
+        environment_setter=monkeypatch.setenv,
+    )
+
+    assert os.environ["USER_DATA_ENCRYPTION"] == "required"
+    with pytest.raises(RuntimeError, match=".yinshi-encrypted-storage"):
+        manager.dispatcher("managed-account")
+
+
+def test_runner_worker_manager_accepts_external_encrypted_storage_marker(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    db: sqlite3.Connection,
+) -> None:
+    """Required mode accepts a marker created by managed volume operations."""
+    encrypted_volume = tmp_path / "encrypted-volume"
+    encrypted_volume.mkdir(mode=0o700)
+    marker_path = encrypted_volume / ".yinshi-encrypted-storage"
+    marker_contents = "encrypted by managed guest operations\n"
+    marker_path.write_text(marker_contents, encoding="utf-8")
+
+    manager = RunnerWorkerManager(
+        data_directory=tmp_path / "managed-runner",
+        user_data_directory=encrypted_volume / "users",
+        runner_static_private_key=b"r" * 32,
+        user_data_encryption="required",
+        environment_setter=monkeypatch.setenv,
+    )
+
+    dispatcher = manager.dispatcher("managed-account")
+
+    assert dispatcher.user_id == "managed-account"
+    assert marker_path.read_text(encoding="utf-8") == marker_contents
+    assert list(encrypted_volume.rglob(".yinshi-encrypted-storage")) == [marker_path]

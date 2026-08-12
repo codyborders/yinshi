@@ -111,17 +111,31 @@ def get_user_dek(user_id: str) -> bytes:
             "SELECT encrypted_dek FROM users WHERE id = ?",
             (normalized_user_id,),
         ).fetchone()
-    if not row:
-        raise KeyNotFoundError(f"User {normalized_user_id} not found")
+        if not row:
+            raise KeyNotFoundError(f"User {normalized_user_id} not found")
 
-    stored_dek = row["encrypted_dek"]
-    if not stored_dek:
-        # Lazy-generate DEKs for accounts created before encryption was configured.
-        dek = generate_dek()
-        encrypted_dek = _wrap_user_dek(dek, normalized_user_id)
-        _store_wrapped_dek(normalized_user_id, encrypted_dek)
-        logger.info("Generated legacy account data-encryption key")
-        return dek
+        stored_dek = row["encrypted_dek"]
+        if not stored_dek:
+            # Serialize lazy creation, then recheck under the write lock.
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT encrypted_dek FROM users WHERE id = ?",
+                (normalized_user_id,),
+            ).fetchone()
+            if not row:
+                raise KeyNotFoundError(f"User {normalized_user_id} not found")
+            stored_dek = row["encrypted_dek"]
+            if not stored_dek:
+                dek = generate_dek()
+                encrypted_dek = _wrap_user_dek(dek, normalized_user_id)
+                db.execute(
+                    "UPDATE users SET encrypted_dek = ? WHERE id = ?",
+                    (encrypted_dek, normalized_user_id),
+                )
+                db.commit()
+                logger.info("Generated legacy account data-encryption key")
+                return dek
+            db.commit()
 
     dek = _unwrap_user_dek(stored_dek, normalized_user_id)
     if _stored_dek_needs_rewrap(stored_dek):
@@ -241,8 +255,7 @@ def record_usage(
         db.commit()
 
     logger.info(
-        "Usage recorded: user=%s provider=%s model=%s cost=%.2fc source=%s",
-        user_id,
+        "Usage recorded: provider=%s model=%s cost=%.2fc source=%s",
         provider,
         model,
         cost,

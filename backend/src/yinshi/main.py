@@ -7,7 +7,8 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Literal, cast
 
-from fastapi import FastAPI, Request, Response
+import httpx
+from fastapi import APIRouter, FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -25,6 +26,7 @@ from yinshi.api import (
     datadog_proxy,
     desktop_devices,
     github,
+    managed_runtime,
     prompt_runs,
     repos,
     runner_relay,
@@ -43,8 +45,14 @@ from yinshi.config import Settings, get_settings, https_required
 from yinshi.db import init_control_db, init_db
 from yinshi.rate_limit import limiter
 from yinshi.services.encrypted_uploads import EncryptedUploadManager
+from yinshi.services.managed_guest_installer import (
+    ManagedGuestInstaller as ConcreteManagedGuestInstaller,
+)
+from yinshi.services.managed_runtime_manager import ManagedRuntimeManager
 from yinshi.services.prompt_journal import PromptJournal
 from yinshi.services.relay_process_lock import RelayProcessLock
+from yinshi.services.runner_relay import runner_relay_broker
+from yinshi.services.sprites import SpritesClient
 from yinshi.services.terminal_journal import TerminalJournal
 from yinshi.tenant import TenantContext
 from yinshi.worker_auth import (
@@ -60,6 +68,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 AppMode = Literal["desktop", "hosted", "worker"]
+
+_MAX_BOOTSTRAP_SCRIPT_BYTES = 1024 * 1024
+_MANAGED_RELAY_IDLE_TIMEOUT_SECONDS = 20.0
+_MANAGED_REGION = "global"
 
 
 class RequestBodyLimitMiddleware:
@@ -240,12 +252,108 @@ class TransportSecurityMiddleware(BaseHTTPMiddleware):
         return response
 
 
+def _create_provider_http_client(app_settings: Settings) -> httpx.AsyncClient:
+    """Create the dedicated Fly provider HTTP client."""
+    return httpx.AsyncClient(
+        base_url=app_settings.sprites_api_url,
+        follow_redirects=False,
+    )
+
+
+def _create_artifact_http_client() -> httpx.AsyncClient:
+    """Create the dedicated immutable artifact HTTP client."""
+    return httpx.AsyncClient(follow_redirects=False)
+
+
+def _read_bounded_bootstrap_script(path: Path) -> bytes:
+    """Read one validated bootstrap script without unbounded allocation."""
+    with path.open("rb") as script_file:
+        bootstrap_script = script_file.read(_MAX_BOOTSTRAP_SCRIPT_BYTES + 1)
+    if len(bootstrap_script) > _MAX_BOOTSTRAP_SCRIPT_BYTES:
+        raise RuntimeError("Managed bootstrap script exceeds the 1 MiB limit")
+    return bootstrap_script
+
+
+async def _initialize_managed_runtime(
+    app_settings: Settings,
+) -> tuple[ManagedRuntimeManager, httpx.AsyncClient]:
+    """Build managed Fly services and close resources after partial failures."""
+    bootstrap_script = await asyncio.to_thread(
+        _read_bounded_bootstrap_script,
+        Path(app_settings.sprites_bootstrap_script_path),
+    )
+    provider_http_client: httpx.AsyncClient | None = None
+    artifact_http_client: httpx.AsyncClient | None = None
+    manager: ManagedRuntimeManager | None = None
+    try:
+        provider_http_client = _create_provider_http_client(app_settings)
+        artifact_http_client = _create_artifact_http_client()
+        api_token = app_settings.sprites_api_token
+        name_key = app_settings.sprites_name_key
+        if api_token is None or name_key is None:
+            raise RuntimeError("Validated managed runtime secrets are unavailable")
+        provider = SpritesClient(
+            api_token=api_token.get_secret_value(),
+            http_client=provider_http_client,
+        )
+        guest_installer = ConcreteManagedGuestInstaller(
+            client=provider,
+            bootstrap_script=bootstrap_script,
+            relay_idle_timeout_seconds=_MANAGED_RELAY_IDLE_TIMEOUT_SECONDS,
+            bootstrap_timeout_seconds=app_settings.sprites_operation_stale_seconds,
+            clock=asyncio.get_running_loop().time,
+            sleep=asyncio.sleep,
+        )
+        manager = ManagedRuntimeManager(
+            provider=provider,
+            guest_installer=guest_installer,
+            http_client=artifact_http_client,
+            name_prefix=app_settings.sprites_name_prefix,
+            name_key=name_key.get_secret_value(),
+            artifact_url=app_settings.sprites_artifact_url,
+            artifact_sha256=app_settings.sprites_artifact_sha256,
+            artifact_version=app_settings.sprites_artifact_sha256,
+            allowed_domains=tuple(app_settings.sprites_allowed_domains.split(",")),
+            region=_MANAGED_REGION,
+            control_url=app_settings.sprites_public_control_url,
+            readiness_timeout_seconds=app_settings.sprites_wake_timeout_seconds,
+            is_runner_connected=runner_relay_broker.is_runner_connected,
+        )
+        return manager, provider_http_client
+    except BaseException:
+        try:
+            if manager is not None:
+                await manager.aclose()
+            elif artifact_http_client is not None:
+                await artifact_http_client.aclose()
+        finally:
+            if provider_http_client is not None:
+                await provider_http_client.aclose()
+        raise
+
+
+async def _attempt_shutdown_cleanup(
+    cleanup: Callable[[], Awaitable[None]],
+    first_error: BaseException | None,
+) -> BaseException | None:
+    """Run one shutdown cleanup and retain the first non-cancellation failure."""
+    try:
+        await cleanup()
+    except asyncio.CancelledError:
+        return first_error
+    except BaseException as error:
+        if first_error is None:
+            return error
+    return first_error
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Application startup and shutdown."""
     app_settings = get_settings()
     logger.info("Starting %s", app_settings.app_name)
-    init_db()
+    if not (app.state.mode == "hosted" and app_settings.managed_runtime_provider == "fly_sprites"):
+        init_db()
     init_control_db()
     setup_oauth()
 
@@ -263,33 +371,70 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.container_manager = None
 
     relay_process_lock: RelayProcessLock | None = None
-    if app.state.mode == "hosted":
-        relay_process_lock = RelayProcessLock(
-            Path(app_settings.control_db_path).parent / "relay-process.lock"
-        )
-        relay_process_lock.acquire()
-
+    managed_runtime_manager: ManagedRuntimeManager | None = None
+    provider_http_client: httpx.AsyncClient | None = None
     try:
+        if app.state.mode == "hosted":
+            relay_process_lock = RelayProcessLock(
+                Path(app_settings.control_db_path).parent / "relay-process.lock"
+            )
+            relay_process_lock.acquire()
+        if app.state.mode == "hosted" and app_settings.managed_runtime_provider == "fly_sprites":
+            managed_runtime_manager, provider_http_client = await _initialize_managed_runtime(
+                app_settings
+            )
+            await managed_runtime_manager.reconcile_startup()
+            app.state.managed_runtime_manager = managed_runtime_manager
+
         yield
     finally:
-        try:
-            prompt_journal = getattr(app.state, "prompt_journal", None)
-            if isinstance(prompt_journal, PromptJournal):
-                await prompt_journal.close()
-            terminal_journal = getattr(app.state, "terminal_journal", None)
-            if isinstance(terminal_journal, TerminalJournal):
-                await terminal_journal.close_all()
-            if reaper_task:
+        cleanup_error: BaseException | None = None
+        prompt_journal = getattr(app.state, "prompt_journal", None)
+        if isinstance(prompt_journal, PromptJournal):
+            cleanup_error = await _attempt_shutdown_cleanup(
+                prompt_journal.close,
+                cleanup_error,
+            )
+        terminal_journal = getattr(app.state, "terminal_journal", None)
+        if isinstance(terminal_journal, TerminalJournal):
+            cleanup_error = await _attempt_shutdown_cleanup(
+                terminal_journal.close_all,
+                cleanup_error,
+            )
+        if reaper_task is not None:
+
+            async def stop_reaper() -> None:
                 reaper_task.cancel()
-                try:
-                    await reaper_task
-                except asyncio.CancelledError:
-                    pass
-            if app.state.container_manager:
-                await app.state.container_manager.destroy_all()
-        finally:
-            if relay_process_lock is not None:
+                await asyncio.gather(reaper_task, return_exceptions=True)
+
+            cleanup_error = await _attempt_shutdown_cleanup(stop_reaper, cleanup_error)
+        container_manager = getattr(app.state, "container_manager", None)
+        if container_manager is not None:
+            cleanup_error = await _attempt_shutdown_cleanup(
+                container_manager.destroy_all,
+                cleanup_error,
+            )
+        if managed_runtime_manager is not None:
+            cleanup_error = await _attempt_shutdown_cleanup(
+                managed_runtime_manager.aclose,
+                cleanup_error,
+            )
+        if provider_http_client is not None:
+            cleanup_error = await _attempt_shutdown_cleanup(
+                provider_http_client.aclose,
+                cleanup_error,
+            )
+        if relay_process_lock is not None:
+
+            async def release_relay_process_lock() -> None:
                 relay_process_lock.release()
+
+            cleanup_error = await _attempt_shutdown_cleanup(
+                release_relay_process_lock,
+                cleanup_error,
+            )
+        if cleanup_error is not None:
+            raise cleanup_error
     logger.info("Shutdown complete")
 
 
@@ -379,15 +524,25 @@ def _configure_middleware(
     )
 
 
-def _include_routes(application: FastAPI, *, mode: AppMode) -> None:
+def _include_routes(
+    application: FastAPI,
+    app_settings: Settings,
+    *,
+    mode: AppMode,
+) -> None:
     """Attach only the route groups allowed for one application mode."""
     if not isinstance(application, FastAPI):
         raise TypeError("application must be a FastAPI instance")
+    if not isinstance(app_settings, Settings):
+        raise TypeError("app_settings must be Settings")
     if mode not in ("desktop", "hosted", "worker"):
         raise ValueError(f"Unsupported application mode: {mode}")
 
-    execution_routers = (
+    shared_execution_routers: tuple[APIRouter, ...] = (
         auth_routes.provider_router,
+        settings.router,
+    )
+    local_execution_routers: tuple[APIRouter, ...] = (
         catalog.router,
         repos.router,
         workspaces.router,
@@ -398,19 +553,26 @@ def _include_routes(application: FastAPI, *, mode: AppMode) -> None:
         prompt_runs.router,
         runtime_uploads.router,
         stream.router,
-        settings.router,
     )
-    control_routers = (
+    execution_routers: tuple[APIRouter, ...] = (
+        *shared_execution_routers,
+        *local_execution_routers,
+    )
+    control_routers: tuple[APIRouter, ...] = (
         auth_routes.router,
         datadog_proxy.router,
         desktop_devices.router,
         github.router,
         runner_relay.router,
         runners.router,
+        managed_runtime.router,
     )
     selected_routers = list(execution_routers)
     if mode == "hosted":
-        selected_routers = [*control_routers, *execution_routers]
+        hosted_execution_routers = execution_routers
+        if app_settings.managed_runtime_provider == "fly_sprites":
+            hosted_execution_routers = ()
+        selected_routers = [*control_routers, *hosted_execution_routers]
     for router in selected_routers:
         application.include_router(router)
 
@@ -456,6 +618,8 @@ def create_app(
     application.state.limiter = limiter
     application.state.mode = mode
     application.state.encrypted_upload_manager = EncryptedUploadManager()
+    application.state.managed_runtime_manager = None
+    application.state.sprites_public_launch_enabled = False
     application.state.prompt_journal = PromptJournal()
     application.state.terminal_journal = TerminalJournal()
     application.add_exception_handler(
@@ -468,7 +632,7 @@ def create_app(
         mode=mode,
         worker_principal=worker_principal,
     )
-    _include_routes(application, mode=mode)
+    _include_routes(application, app_settings, mode=mode)
     application.add_api_route("/health", health, methods=["GET"])
     if asset_directory is not None:
         application.mount(

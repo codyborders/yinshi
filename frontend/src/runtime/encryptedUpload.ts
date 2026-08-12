@@ -76,7 +76,10 @@ function validateFile(file: File): void {
   }
 }
 
-type UploadInvoker = <Result>(operation: EncryptedRunnerOperation) => Promise<Result>;
+type UploadInvoker = <Result>(
+  operation: EncryptedRunnerOperation,
+  retryConnectionFailures?: boolean,
+) => Promise<Result>;
 
 async function uploadPiConfigChunks<T>(file: File, invoke: UploadInvoker): Promise<T> {
   validateFile(file);
@@ -111,11 +114,14 @@ async function uploadPiConfigChunks<T>(file: File, invoke: UploadInvoker): Promi
       const offset = chunkIndex * CHUNK_BYTES;
       const chunk = fileBytes.subarray(offset, Math.min(offset + CHUNK_BYTES, fileBytes.length));
       validateProgress(
-        await invoke({
-          method: "POST",
-          path: `/api/settings/pi-config/uploads/${uploadId}/chunks/${chunkIndex}`,
-          body: { data: base64url(chunk) },
-        }),
+        await invoke(
+          {
+            method: "POST",
+            path: `/api/settings/pi-config/uploads/${uploadId}/chunks/${chunkIndex}`,
+            body: { data: base64url(chunk) },
+          },
+          true,
+        ),
         {
           id: uploadId,
           filename: file.name,
@@ -147,11 +153,14 @@ async function uploadPiConfigChunks<T>(file: File, invoke: UploadInvoker): Promi
 }
 
 export async function uploadEncryptedPiConfig<T>(
-  runtime: Extract<RuntimeRef, { location: "byoc" }>,
+  runtime: Extract<RuntimeRef, { location: "byoc" | "managed" }>,
   file: File,
 ): Promise<T> {
-  if (runtime.location !== "byoc" || !runtime.runnerPublicKey) {
-    throw new Error("Encrypted upload requires a paired BYOC runtime");
+  if (
+    (runtime.location !== "byoc" && runtime.location !== "managed") ||
+    !runtime.runnerPublicKey
+  ) {
+    throw new Error("Encrypted upload requires a remote runtime");
   }
   const connectionState: { current: EncryptedRunnerConnection | null } = {
     current: null,
@@ -161,9 +170,13 @@ export async function uploadEncryptedPiConfig<T>(
       expectedRunnerPublicKey: runtime.runnerPublicKey,
       scopes: ["pi.configure"],
       maxSessionBytes: SESSION_BYTES,
+      ...(runtime.location === "managed"
+        ? { capabilityEndpoint: "/api/runtime/capabilities" as const }
+        : {}),
     });
   const invoke: UploadInvoker = async <Result>(
     operation: EncryptedRunnerOperation,
+    retryConnectionFailures = false,
   ): Promise<Result> => {
     for (let attempt = 0; attempt < 5; attempt += 1) {
       connectionState.current ??= await connect();
@@ -173,7 +186,7 @@ export async function uploadEncryptedPiConfig<T>(
         if (error instanceof RunnerRpcError) throw error;
         connectionState.current.close();
         connectionState.current = null;
-        if (attempt === 4) throw error;
+        if (!retryConnectionFailures || attempt === 4) throw error;
       }
     }
     throw new Error("Encrypted upload retry limit reached");

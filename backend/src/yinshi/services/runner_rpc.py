@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import struct
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -16,7 +17,22 @@ from yinshi.worker_runtime import WorkerHttpDispatcher
 
 _REQUEST_KEYS_V1 = {"body", "method", "path", "request_id", "sequence", "type", "v"}
 _REQUEST_KEYS_V2 = _REQUEST_KEYS_V1 | {"query"}
-_REQUEST_BYTES_MAX = 49_152
+_REQUEST_BYTES_MAX = 2 * 1_024 * 1_024
+_RESPONSE_BYTES_MAX = 10 * 1_024 * 1_024
+_NOISE_CIPHERTEXT_BYTES_MAX = 65_535
+_NOISE_TAG_BYTES = 16
+_NOISE_PLAINTEXT_BYTES_MAX = _NOISE_CIPHERTEXT_BYTES_MAX - _NOISE_TAG_BYTES
+# Capability budgets count ciphertext for requests, acknowledgements, pulls, and responses.
+# Callers must include Noise tags and transport headers in their requested budget.
+_TRANSPORT_HEADER = struct.Struct(">4sBIII")
+_TRANSPORT_MAGIC = b"YRP1"
+_TRANSPORT_REQUEST = 1
+_TRANSPORT_ACK = 2
+_TRANSPORT_RESPONSE = 3
+_TRANSPORT_PULL = 4
+_TRANSPORT_PAYLOAD_BYTES_MAX = (
+    _NOISE_CIPHERTEXT_BYTES_MAX - _NOISE_TAG_BYTES - _TRANSPORT_HEADER.size
+)
 _RESOURCE_ID = r"[0-9a-f]{32}"
 _REPOSITORY_MEMBER_PATH = re.compile(rf"^/api/repos/{_RESOURCE_ID}$")
 _WORKSPACE_COLLECTION_PATH = re.compile(rf"^/api/repos/{_RESOURCE_ID}/workspaces$")
@@ -293,6 +309,12 @@ class EncryptedRunnerRpcSession:
         self._established = False
         self._failed = False
         self._next_request_sequence = 0
+        self._request_buffer: bytearray | None = None
+        self._request_fragment_count = 0
+        self._next_request_fragment = 0
+        self._response_payload: bytes | None = None
+        self._response_fragment_count = 0
+        self._next_response_fragment = 0
 
     async def handle_frame(self, ciphertext: bytes, *, current_time: int) -> bytes:
         """Accept a handshake or decrypt, dispatch, and encrypt one RPC response."""
@@ -305,28 +327,210 @@ class EncryptedRunnerRpcSession:
 
         try:
             plaintext = self._noise_session.decrypt(ciphertext)
-            request = _parse_request(
-                plaintext,
-                expected_sequence=self._next_request_sequence,
-            )
-            status_code, response_body = await self._dispatch(request)
-            response = json.dumps(
-                {
-                    "body": response_body,
-                    "request_id": request.request_id,
-                    "sequence": request.sequence,
-                    "status": status_code,
-                    "type": "response",
-                    "v": request.version,
-                },
-                separators=(",", ":"),
-                sort_keys=True,
-            ).encode("utf-8")
-            self._next_request_sequence += 1
-            return self._noise_session.encrypt(response)
+            if plaintext.startswith(_TRANSPORT_MAGIC):
+                response = await self._handle_transport_frame(plaintext)
+                return self._noise_session.encrypt(response)
+            if self._request_buffer is not None or self._response_payload is not None:
+                raise ValueError("Runner RPC transport fragment is invalid")
+            response = await self._dispatch_payload(plaintext)
+            if len(response) <= _NOISE_PLAINTEXT_BYTES_MAX:
+                return self._noise_session.encrypt(response)
+            return self._noise_session.encrypt(self._begin_framed_response(response))
         except (TypeError, ValueError):
             self._failed = True
+            self._clear_transport_buffers()
             raise
+
+    async def _handle_transport_frame(self, frame: bytes) -> bytes:
+        """Validate one bounded transport fragment and advance exact stream state."""
+        if len(frame) < _TRANSPORT_HEADER.size:
+            raise ValueError("Runner RPC transport fragment is invalid")
+        try:
+            magic, kind, index, count, total = _TRANSPORT_HEADER.unpack(
+                frame[: _TRANSPORT_HEADER.size]
+            )
+        except struct.error as exc:
+            raise ValueError("Runner RPC transport fragment is invalid") from exc
+        payload = frame[_TRANSPORT_HEADER.size :]
+        if magic != _TRANSPORT_MAGIC:
+            raise ValueError("Runner RPC transport fragment is invalid")
+        if kind == _TRANSPORT_REQUEST:
+            return await self._accept_request_fragment(
+                index=index,
+                count=count,
+                total=total,
+                payload=payload,
+            )
+        if kind == _TRANSPORT_PULL:
+            return self._accept_response_pull(
+                index=index,
+                count=count,
+                total=total,
+                payload=payload,
+            )
+        raise ValueError("Runner RPC transport fragment is invalid")
+
+    async def _accept_request_fragment(
+        self,
+        *,
+        index: int,
+        count: int,
+        total: int,
+        payload: bytes,
+    ) -> bytes:
+        """Buffer one ordered request fragment and dispatch only when complete."""
+        if self._response_payload is not None:
+            raise ValueError("Runner RPC transport fragment is invalid")
+        self._validate_fragment(
+            index=index,
+            count=count,
+            total=total,
+            payload_length=len(payload),
+            total_limit=_REQUEST_BYTES_MAX,
+        )
+        if self._request_buffer is None:
+            if index != 0:
+                raise ValueError("Runner RPC transport fragment is invalid")
+            self._request_buffer = bytearray(total)
+            self._request_fragment_count = count
+            self._next_request_fragment = 0
+        if (
+            count != self._request_fragment_count
+            or total != len(self._request_buffer)
+            or index != self._next_request_fragment
+        ):
+            raise ValueError("Runner RPC transport fragment is invalid")
+        start = index * _TRANSPORT_PAYLOAD_BYTES_MAX
+        self._request_buffer[start : start + len(payload)] = payload
+        self._next_request_fragment += 1
+        if self._next_request_fragment < count:
+            return _TRANSPORT_HEADER.pack(
+                _TRANSPORT_MAGIC,
+                _TRANSPORT_ACK,
+                index,
+                count,
+                total,
+            )
+
+        request_payload = bytes(self._request_buffer)
+        self._request_buffer = None
+        self._request_fragment_count = 0
+        self._next_request_fragment = 0
+        response = await self._dispatch_payload(request_payload)
+        return self._begin_framed_response(response)
+
+    def _begin_framed_response(self, response: bytes) -> bytes:
+        """Return first framed response and retain bounded remaining data for pulls."""
+        if len(response) > _RESPONSE_BYTES_MAX:
+            raise ValueError("Runner RPC response exceeded transport limit")
+        response_count = self._fragment_count(len(response))
+        first = self._pack_response_fragment(response, index=0, count=response_count)
+        if response_count > 1:
+            self._response_payload = response
+            self._response_fragment_count = response_count
+            self._next_response_fragment = 1
+        return first
+
+    def _accept_response_pull(
+        self,
+        *,
+        index: int,
+        count: int,
+        total: int,
+        payload: bytes,
+    ) -> bytes:
+        """Return one requested response fragment in exact order."""
+        response = self._response_payload
+        if (
+            self._request_buffer is not None
+            or response is None
+            or payload
+            or index != self._next_response_fragment
+            or count != self._response_fragment_count
+            or total != len(response)
+        ):
+            raise ValueError("Runner RPC transport fragment is invalid")
+        fragment = self._pack_response_fragment(response, index=index, count=count)
+        self._next_response_fragment += 1
+        if self._next_response_fragment == count:
+            self._response_payload = None
+            self._response_fragment_count = 0
+            self._next_response_fragment = 0
+        return fragment
+
+    async def _dispatch_payload(self, plaintext: bytes) -> bytes:
+        """Parse and dispatch one complete bounded RPC request payload."""
+        request = _parse_request(
+            plaintext,
+            expected_sequence=self._next_request_sequence,
+        )
+        status_code, response_body = await self._dispatch(request)
+        response = json.dumps(
+            {
+                "body": response_body,
+                "request_id": request.request_id,
+                "sequence": request.sequence,
+                "status": status_code,
+                "type": "response",
+                "v": request.version,
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        self._next_request_sequence += 1
+        return response
+
+    @staticmethod
+    def _fragment_count(total: int) -> int:
+        """Return canonical fragment count for one payload length."""
+        return max(1, (total + _TRANSPORT_PAYLOAD_BYTES_MAX - 1) // _TRANSPORT_PAYLOAD_BYTES_MAX)
+
+    @classmethod
+    def _validate_fragment(
+        cls,
+        *,
+        index: int,
+        count: int,
+        total: int,
+        payload_length: int,
+        total_limit: int,
+    ) -> None:
+        """Reject noncanonical fragment metadata before buffering payload bytes."""
+        if total < 1 or total > total_limit or count != cls._fragment_count(total):
+            raise ValueError("Runner RPC transport fragment is invalid")
+        if index >= count:
+            raise ValueError("Runner RPC transport fragment is invalid")
+        expected_length = min(
+            _TRANSPORT_PAYLOAD_BYTES_MAX,
+            total - index * _TRANSPORT_PAYLOAD_BYTES_MAX,
+        )
+        if payload_length != expected_length:
+            raise ValueError("Runner RPC transport fragment is invalid")
+
+    @staticmethod
+    def _pack_response_fragment(response: bytes, *, index: int, count: int) -> bytes:
+        """Pack one canonical response fragment without copying remaining payload."""
+        start = index * _TRANSPORT_PAYLOAD_BYTES_MAX
+        end = min(len(response), start + _TRANSPORT_PAYLOAD_BYTES_MAX)
+        return (
+            _TRANSPORT_HEADER.pack(
+                _TRANSPORT_MAGIC,
+                _TRANSPORT_RESPONSE,
+                index,
+                count,
+                len(response),
+            )
+            + response[start:end]
+        )
+
+    def _clear_transport_buffers(self) -> None:
+        """Release bounded request and response buffers after terminal failure."""
+        self._request_buffer = None
+        self._request_fragment_count = 0
+        self._next_request_fragment = 0
+        self._response_payload = None
+        self._response_fragment_count = 0
+        self._next_response_fragment = 0
 
     def _accept_handshake(self, message: bytes, *, current_time: int) -> bytes:
         """Bind relay routing and any worker dispatcher to signed capability identity."""

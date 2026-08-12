@@ -8,17 +8,19 @@ import * as pty from "node-pty";
 
 import {
   createAgentSession,
-  AuthStorage,
   DefaultResourceLoader,
   ModelRegistry,
+  ModelRuntime,
   SessionManager,
   SettingsManager,
   createEditTool,
   createReadTool,
   createWriteTool,
 } from "@earendil-works/pi-coding-agent";
-import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
-import { getOAuthProvider } from "@earendil-works/pi-ai/oauth";
+import {
+  getSupportedThinkingLevels,
+  InMemoryCredentialStore,
+} from "@earendil-works/pi-ai";
 
 import { HEALTH_CHECK_INTERVAL } from "./constants.js";
 import { createGitAwareBashTool } from "./git_auth.js";
@@ -473,10 +475,18 @@ function normalizeApiKeyWithConfigSecret(secret) {
   return normalizedSecret;
 }
 
-function createAuthStorage(providerAuth) {
-  const authStorage = AuthStorage.inMemory();
+async function writeCredential(credentials, provider, credential) {
+  await credentials.modify(
+    provider,
+    async () => credential,
+    { signal: AbortSignal.timeout(5_000) },
+  );
+}
+
+async function createCredentialStore(providerAuth) {
+  const credentials = new InMemoryCredentialStore();
   if (!providerAuth || typeof providerAuth !== "object") {
-    return authStorage;
+    return credentials;
   }
   if (typeof providerAuth.provider !== "string" || !providerAuth.provider) {
     throw new Error("providerAuth.provider must be a non-empty string");
@@ -488,40 +498,48 @@ function createAuthStorage(providerAuth) {
     if (typeof providerAuth.secret !== "string" || !providerAuth.secret) {
       throw new Error("API key auth requires a non-empty secret");
     }
-    authStorage.set(providerAuth.provider, {
+    await writeCredential(credentials, providerAuth.provider, {
       type: "api_key",
       key: providerAuth.secret,
     });
-    return authStorage;
+    return credentials;
   }
   if (providerAuth.authStrategy === "api_key_with_config") {
     const normalizedSecret = normalizeApiKeyWithConfigSecret(providerAuth.secret);
-    authStorage.set(providerAuth.provider, {
+    const { apiKey, ...env } = normalizedSecret;
+    await writeCredential(credentials, providerAuth.provider, {
       type: "api_key",
-      key: normalizedSecret.apiKey,
+      key: apiKey,
+      env,
     });
-    return authStorage;
+    return credentials;
   }
   if (providerAuth.authStrategy === "oauth") {
     if (!providerAuth.secret || typeof providerAuth.secret !== "object" || Array.isArray(providerAuth.secret)) {
       throw new Error("OAuth auth requires an object secret");
     }
-    authStorage.set(providerAuth.provider, {
+    await writeCredential(credentials, providerAuth.provider, {
       type: "oauth",
       ...providerAuth.secret,
     });
-    return authStorage;
+    return credentials;
   }
   throw new Error(`Unsupported auth strategy: ${providerAuth.authStrategy}`);
 }
 
-function createModelRegistry(providerAuth, agentDir) {
-  const authStorage = createAuthStorage(providerAuth);
-  const modelsJsonPath = buildModelsJsonPath(agentDir);
+async function createModelRegistry(providerAuth, agentDir) {
+  const credentials = await createCredentialStore(providerAuth);
+  const modelsPath = buildModelsJsonPath(agentDir);
   // Pass null when there is no imported agentDir so the SDK does not fall back
-  // to the host machine's ~/.pi/agent/models.json and leak host-local models.
-  const registry = new ModelRegistry(authStorage, modelsJsonPath);
-  return { authStorage, registry };
+  // to the host machine's ~/.pi/agent/models.json or auth.json.
+  const modelRuntime = await ModelRuntime.create({
+    credentials,
+    modelsPath,
+    allowModelNetwork: false,
+    refreshOnCreate: false,
+  });
+  const registry = new ModelRegistry(modelRuntime);
+  return { credentials, modelRuntime, registry };
 }
 
 function getThinkingLevels(model) {
@@ -554,8 +572,8 @@ function toCatalogProvider(providerId, models) {
   };
 }
 
-function getCatalog(agentDir) {
-  const { registry } = createModelRegistry(null, agentDir);
+async function getCatalog(agentDir) {
+  const { registry } = await createModelRegistry(null, agentDir);
   const models = registry.getAll().map(toCatalogModel);
   const providerIds = new Set(models.map((model) => model.provider));
   const providers = [...providerIds]
@@ -837,9 +855,8 @@ function _submitOAuthManualInput(flow, authorizationInput) {
   }
 }
 
-function resolveModel(modelKey, providerAuth, agentDir, providerConfig) {
+function resolveModelFromRegistry(registry, modelKey, providerConfig) {
   const normalizedLookup = normalizeModelLookup(modelKey || DEFAULT_MODEL_REF);
-  const { registry } = createModelRegistry(providerAuth, agentDir);
   const models = registry.getAll();
 
   if (normalizedLookup.includes("/")) {
@@ -868,6 +885,11 @@ function resolveModel(modelKey, providerAuth, agentDir, providerConfig) {
   }
 
   throw new Error(`Unknown model: ${modelKey}`);
+}
+
+async function resolveModel(modelKey, providerAuth, agentDir, providerConfig) {
+  const { registry } = await createModelRegistry(providerAuth, agentDir);
+  return resolveModelFromRegistry(registry, modelKey, providerConfig);
 }
 
 function applyProviderConfig(model, providerConfig) {
@@ -899,10 +921,11 @@ async function resolveProviderRuntimeAuth(provider, modelRef, providerAuth, agen
     };
   }
 
-  const { authStorage } = createModelRegistry(providerAuth, agentDir);
-  const runtimeApiKey = await authStorage.getApiKey(provider, { includeFallback: false });
-  const credential = authStorage.get(provider);
-  const resolvedModel = resolveModel(modelRef, providerAuth, agentDir, providerConfig);
+  const { credentials, modelRuntime, registry } = await createModelRegistry(providerAuth, agentDir);
+  const runtimeAuth = await modelRuntime.getAuth(provider);
+  const runtimeApiKey = runtimeAuth?.auth.apiKey;
+  const credential = await credentials.read(provider);
+  const resolvedModel = resolveModelFromRegistry(registry, modelRef, providerConfig);
   const modelConfig = {};
   if (resolvedModel.provider === "github-copilot" && typeof resolvedModel.baseUrl === "string") {
     modelConfig.baseUrl = resolvedModel.baseUrl;
@@ -934,14 +957,13 @@ async function resolveProviderRuntimeAuth(provider, modelRef, providerAuth, agen
 export class YinshiSidecar {
   constructor() {
     this.activeSessions = new Map();
+    this.activePromptSessionsBySocket = new Map();
+    this.pendingPiSessionCreations = new Map();
     this.activeOAuthFlows = new Map();
     this.activeTerminals = new Map();
     this.socketPath = process.env.SIDECAR_SOCKET_PATH || "/tmp/yinshi-sidecar.sock";
     this.server = net.createServer((socket) => this.handleConnection(socket));
     this.healthCheckInterval = null;
-
-    process.on("SIGINT", () => this.cleanup());
-    process.on("SIGTERM", () => this.cleanup());
   }
 
   initialize() {
@@ -1128,11 +1150,83 @@ export class YinshiSidecar {
         this.handleData(trimmed, socket);
       }
     });
-    socket.on("error", () => console.error("[sidecar] Socket error"));
+    socket.on("error", () => {
+      console.error("[sidecar] Socket error");
+      this._cancelPromptsForSocket(socket);
+    });
     socket.on("close", () => {
+      this._cancelPromptsForSocket(socket);
       this.detachTerminalSocket(socket);
       console.log("[sidecar] Connection closed");
     });
+  }
+
+  _trackPromptSession(socket, sessionId) {
+    let promptsBySession = this.activePromptSessionsBySocket.get(socket);
+    if (!promptsBySession) {
+      promptsBySession = new Map();
+      this.activePromptSessionsBySocket.set(socket, promptsBySession);
+    }
+    let promptStates = promptsBySession.get(sessionId);
+    if (!promptStates) {
+      promptStates = new Set();
+      promptsBySession.set(sessionId, promptStates);
+    }
+    const promptState = {
+      sessionId,
+      cancelled: false,
+      executionStarted: false,
+      cancelRequested: false,
+    };
+    promptStates.add(promptState);
+    return promptState;
+  }
+
+  _untrackPromptSession(socket, promptState) {
+    const promptsBySession = this.activePromptSessionsBySocket.get(socket);
+    const promptStates = promptsBySession?.get(promptState.sessionId);
+    if (!promptStates) {
+      return;
+    }
+    promptStates.delete(promptState);
+    if (promptStates.size === 0) {
+      promptsBySession.delete(promptState.sessionId);
+    }
+    if (promptsBySession.size === 0) {
+      this.activePromptSessionsBySocket.delete(socket);
+    }
+  }
+
+  _cancelPromptsForSocket(socket) {
+    const promptsBySession = this.activePromptSessionsBySocket.get(socket);
+    if (!promptsBySession) {
+      return;
+    }
+    for (const [sessionId, promptStates] of promptsBySession) {
+      let cancellationNeeded = false;
+      for (const promptState of promptStates) {
+        promptState.cancelled = true;
+        if (promptState.executionStarted && !promptState.cancelRequested) {
+          promptState.cancelRequested = true;
+          cancellationNeeded = true;
+        }
+      }
+      if (!cancellationNeeded || this.activeSessions.get(sessionId)?.cancelRequested) {
+        continue;
+      }
+      void this.cancelSession(sessionId).catch(() => {
+        console.error("[sidecar] Disconnected prompt cancellation failed");
+      });
+    }
+  }
+
+  _sessionHasActivePrompt(sessionId) {
+    for (const promptsBySession of this.activePromptSessionsBySocket.values()) {
+      if (promptsBySession.has(sessionId)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   handleData(data, socket) {
@@ -1151,6 +1245,9 @@ export class YinshiSidecar {
       throw new TypeError("Pi session clock must be a non-negative safe integer");
     }
     for (const [sessionId, entry] of this.activeSessions) {
+      if (this._sessionHasActivePrompt(sessionId)) {
+        continue;
+      }
       const lastActivityMs = entry?.lastActivityMs;
       if (!Number.isSafeInteger(lastActivityMs)) {
         // A session from an older code path has no stamp yet. Adopt it rather
@@ -1170,9 +1267,9 @@ export class YinshiSidecar {
     if (this.activeSessions.size <= PI_SESSION_COUNT_MAX) {
       return;
     }
-    const byOldestFirst = [...this.activeSessions.entries()].sort(
-      (left, right) => left[1].lastActivityMs - right[1].lastActivityMs,
-    );
+    const byOldestFirst = [...this.activeSessions.entries()]
+      .filter(([sessionId]) => !this._sessionHasActivePrompt(sessionId))
+      .sort((left, right) => left[1].lastActivityMs - right[1].lastActivityMs);
     const excess = this.activeSessions.size - PI_SESSION_COUNT_MAX;
     for (const [sessionId, entry] of byOldestFirst.slice(0, excess)) {
       this.activeSessions.delete(sessionId);
@@ -1203,10 +1300,10 @@ export class YinshiSidecar {
         void this.handleAuthResolve(id, socket, request);
         break;
       case "cancel":
-        void this.cancelSession(id);
+        void this.handleCancelRequest(id, socket);
         break;
       case "catalog":
-        this.handleCatalog(id, socket, request.options || {});
+        void this.handleCatalog(id, socket, request.options || {});
         break;
       case "version":
         this.handleVersion(id, socket);
@@ -1259,7 +1356,7 @@ export class YinshiSidecar {
         });
         break;
       case "resolve":
-        this.handleResolve(id, socket, request.model, request.options || {});
+        void this.handleResolve(id, socket, request.model, request.options || {});
         break;
       case "warmup":
         void this.warmupSession(id, socket, request.options || {});
@@ -1306,9 +1403,9 @@ export class YinshiSidecar {
     }
   }
 
-  handleCatalog(id, socket, options) {
+  async handleCatalog(id, socket, options) {
     try {
-      const catalog = getCatalog(options.agentDir || null);
+      const catalog = await getCatalog(options.agentDir || null);
       sendToSocket(socket, {
         id: id || "catalog",
         type: "catalog",
@@ -1359,9 +1456,9 @@ export class YinshiSidecar {
     }
   }
 
-  handleResolve(id, socket, modelKey, options) {
+  async handleResolve(id, socket, modelKey, options) {
     try {
-      const resolved = resolveModel(
+      const resolved = await resolveModel(
         modelKey,
         options.providerAuth || null,
         options.agentDir || null,
@@ -1437,8 +1534,9 @@ export class YinshiSidecar {
       if (typeof providerId !== "string" || !providerId) {
         throw new Error("Provider is required");
       }
-      const provider = getOAuthProvider(providerId);
-      if (!provider) {
+      const { modelRuntime } = await createModelRegistry(null, null);
+      const provider = modelRuntime.getProvider(providerId);
+      if (!provider?.auth.oauth) {
         throw new Error(`OAuth provider is not available: ${providerId}`);
       }
       this._pruneExpiredOAuthFlows();
@@ -1469,22 +1567,29 @@ export class YinshiSidecar {
       };
       this.activeOAuthFlows.set(flowId, flow);
 
-      const loginPromise = provider.login({
-        onAuth: (info) => {
-          flow.authUrl = info.url;
-          if (provider.usesCallbackServer) {
-            flow.instructions = _buildHostedCallbackInstructions(info.instructions || null);
-          } else {
-            flow.instructions = info.instructions || null;
+      const loginPromise = modelRuntime.login(providerId, "oauth", {
+        prompt: async (prompt) => {
+          if (prompt.type === "select" && prompt.options.length > 0) {
+            return prompt.options[0].id;
           }
-          flow.status = "pending";
+          return _waitForOAuthManualInput(flow, prompt.message);
         },
-        onPrompt: async (prompt) => _waitForOAuthManualInput(flow, prompt?.message),
-        onManualCodeInput: provider.usesCallbackServer
-          ? async () => _waitForOAuthManualInput(flow, flow.manualInputPrompt)
-          : undefined,
-        onProgress: (message) => {
-          flow.progress.push(message);
+        notify: (event) => {
+          if (event.type === "auth_url") {
+            flow.authUrl = event.url;
+            flow.instructions = event.instructions || null;
+            flow.status = "pending";
+            return;
+          }
+          if (event.type === "device_code") {
+            flow.authUrl = event.verificationUri;
+            flow.instructions = `Enter code ${event.userCode} in the browser.`;
+            flow.status = "pending";
+            return;
+          }
+          if (event.type === "progress" || event.type === "info") {
+            flow.progress.push(event.message);
+          }
         },
       });
 
@@ -1618,9 +1723,8 @@ export class YinshiSidecar {
     importedSettings,
     normalizedPiSessionFile,
   ) {
-    const { authStorage: sessionAuth } = createModelRegistry(providerAuth, agentDir);
-    const sessionRegistry = new ModelRegistry(sessionAuth, buildModelsJsonPath(agentDir));
-    const model = resolveModel(modelRef, providerAuth, agentDir, providerConfig);
+    const { modelRuntime, registry } = await createModelRegistry(providerAuth, agentDir);
+    const model = resolveModelFromRegistry(registry, modelRef, providerConfig);
     const {
       sessionManager,
       resetWarning,
@@ -1645,8 +1749,7 @@ export class YinshiSidecar {
       customTools: createYinshiCodingTools(cwd, gitAuth),
       sessionManager,
       settingsManager,
-      authStorage: sessionAuth,
-      modelRegistry: sessionRegistry,
+      modelRuntime,
     };
     if (agentDir) {
       sessionOptions.agentDir = agentDir;
@@ -1700,12 +1803,58 @@ export class YinshiSidecar {
     return true;
   }
 
-  async warmupSession(sessionId, socket, options) {
-    if (this.activeSessions.has(sessionId)) {
-      console.log("[sidecar] Pi session already active");
+  _admitPiSessionCreation(sessionId) {
+    if (
+      this.activeSessions.has(sessionId)
+      || this.pendingPiSessionCreations.has(sessionId)
+    ) {
       return;
     }
 
+    const reservedSessionIds = new Set([
+      ...this.activeSessions.keys(),
+      ...this.pendingPiSessionCreations.keys(),
+    ]);
+    while (reservedSessionIds.size >= PI_SESSION_COUNT_MAX) {
+      const candidate = [...this.activeSessions.entries()]
+        .filter(([activeSessionId]) => (
+          !this._sessionHasActivePrompt(activeSessionId)
+          && !this.pendingPiSessionCreations.has(activeSessionId)
+        ))
+        .sort((left, right) => (
+          (left[1].lastActivityMs || 0) - (right[1].lastActivityMs || 0)
+        ))[0];
+      if (!candidate) {
+        throw new Error("Pi session capacity reached");
+      }
+      const [candidateSessionId, candidateEntry] = candidate;
+      this.activeSessions.delete(candidateSessionId);
+      reservedSessionIds.delete(candidateSessionId);
+      this._disposePiSessionEntry(candidateEntry);
+    }
+  }
+
+  async _withPiSessionCreationLock(sessionId, operation) {
+    this._admitPiSessionCreation(sessionId);
+    const previous = this.pendingPiSessionCreations.get(sessionId) || Promise.resolve();
+    let release;
+    const current = new Promise((resolve) => {
+      release = resolve;
+    });
+    this.pendingPiSessionCreations.set(sessionId, current);
+
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
+      if (this.pendingPiSessionCreations.get(sessionId) === current) {
+        this.pendingPiSessionCreations.delete(sessionId);
+      }
+    }
+  }
+
+  async warmupSession(sessionId, socket, options) {
     const modelRef = options.model || DEFAULT_MODEL_REF;
     const cwd = options.cwd || process.cwd();
     const providerAuth = options.providerAuth || null;
@@ -1715,44 +1864,62 @@ export class YinshiSidecar {
     const importedSettings = options.settings || null;
 
     try {
-      const requestedPiSessionFile = normalizePiSessionFile(options.piSessionFile || null);
-      const {
-        session: piSession,
-        model,
-        piSessionFile: normalizedPiSessionFile,
-      } = await this._createPiSession(
-        sessionId,
-        socket,
-        modelRef,
-        cwd,
-        providerAuth,
-        providerConfig,
-        gitAuth,
-        agentDir,
-        importedSettings,
-        requestedPiSessionFile,
-      );
-      this.activeSessions.set(sessionId, {
-        piSession,
-        model,
-        modelRef,
-        cwd,
-        providerAuth,
-        providerConfig,
-        gitAuth,
-        importedSettings,
-        piSessionFile: normalizedPiSessionFile,
-        unsubscribe: null,
-        cancelRequested: false,
+      await this._withPiSessionCreationLock(sessionId, async () => {
+        if (this.activeSessions.has(sessionId)) {
+          console.log("[sidecar] Pi session already active");
+          return;
+        }
+        const requestedPiSessionFile = normalizePiSessionFile(options.piSessionFile || null);
+        const {
+          session: piSession,
+          model,
+          piSessionFile: normalizedPiSessionFile,
+        } = await this._createPiSession(
+          sessionId,
+          socket,
+          modelRef,
+          cwd,
+          providerAuth,
+          providerConfig,
+          gitAuth,
+          agentDir,
+          importedSettings,
+          requestedPiSessionFile,
+        );
+        this.activeSessions.set(sessionId, {
+          piSession,
+          model,
+          modelRef,
+          cwd,
+          providerAuth,
+          providerConfig,
+          gitAuth,
+          importedSettings,
+          piSessionFile: normalizedPiSessionFile,
+          unsubscribe: null,
+          cancelRequested: false,
+          lastActivityMs: Date.now(),
+        });
+        console.log("[sidecar] Pi session warmed");
       });
-      console.log("[sidecar] Pi session warmed");
-    } catch (err) {
+      sendToSocket(socket, {
+        id: sessionId,
+        type: "warmup_status",
+        success: true,
+      });
+    } catch {
       console.error("[sidecar] Warmup failed");
-      sendToSocket(socket, { id: sessionId, type: "error", error: err.message });
+      sendToSocket(socket, {
+        id: sessionId,
+        type: "warmup_status",
+        success: false,
+        error: "Failed to warm up session",
+      });
     }
   }
 
   async processQuery(sessionId, socket, prompt, options) {
+    const promptState = this._trackPromptSession(socket, sessionId);
     const modelRef = options.model || DEFAULT_MODEL_REF;
     const cwd = options.cwd || process.cwd();
     const providerAuth = options.providerAuth || null;
@@ -1766,26 +1933,33 @@ export class YinshiSidecar {
 
     try {
       const requestedPiSessionFile = normalizePiSessionFile(options.piSessionFile || null);
-      const authChanged = JSON.stringify(entry?.providerAuth || null) !== JSON.stringify(providerAuth);
-      const configChanged = JSON.stringify(entry?.providerConfig || null) !== JSON.stringify(providerConfig);
-      const gitAuthChanged = JSON.stringify(entry?.gitAuth || null) !== JSON.stringify(gitAuth);
-      const settingsChanged = JSON.stringify(entry?.importedSettings || null)
-        !== JSON.stringify(importedSettings);
-      const piSessionFileChanged = (entry?.piSessionFile || null) !== requestedPiSessionFile;
-      if (
-        !entry
-        || entry.modelRef !== modelRef
-        || authChanged
-        || configChanged
-        || gitAuthChanged
-        || settingsChanged
-        || piSessionFileChanged
-      ) {
-        if (entry) {
-          if (entry.unsubscribe) {
-            entry.unsubscribe();
-          }
-          entry.piSession.dispose();
+      entry = await this._withPiSessionCreationLock(sessionId, async () => {
+        const currentEntry = this.activeSessions.get(sessionId);
+        const authChanged = JSON.stringify(currentEntry?.providerAuth || null)
+          !== JSON.stringify(providerAuth);
+        const configChanged = JSON.stringify(currentEntry?.providerConfig || null)
+          !== JSON.stringify(providerConfig);
+        const gitAuthChanged = JSON.stringify(currentEntry?.gitAuth || null)
+          !== JSON.stringify(gitAuth);
+        const settingsChanged = JSON.stringify(currentEntry?.importedSettings || null)
+          !== JSON.stringify(importedSettings);
+        const piSessionFileChanged = (currentEntry?.piSessionFile || null)
+          !== requestedPiSessionFile;
+        if (
+          currentEntry
+          && currentEntry.modelRef === modelRef
+          && !authChanged
+          && !configChanged
+          && !gitAuthChanged
+          && !settingsChanged
+          && !piSessionFileChanged
+        ) {
+          return currentEntry;
+        }
+
+        if (currentEntry) {
+          this.activeSessions.delete(sessionId);
+          this._disposePiSessionEntry(currentEntry);
         }
         const {
           session: piSession,
@@ -1803,7 +1977,7 @@ export class YinshiSidecar {
           importedSettings,
           requestedPiSessionFile,
         );
-        entry = {
+        const createdEntry = {
           piSession,
           model,
           modelRef,
@@ -1815,8 +1989,14 @@ export class YinshiSidecar {
           piSessionFile: normalizedPiSessionFile,
           unsubscribe: null,
           cancelRequested: false,
+          lastActivityMs: Date.now(),
         };
-        this.activeSessions.set(sessionId, entry);
+        this.activeSessions.set(sessionId, createdEntry);
+        return createdEntry;
+      });
+
+      if (promptState.cancelled) {
+        return;
       }
 
       const { piSession, model } = entry;
@@ -2007,6 +2187,7 @@ export class YinshiSidecar {
       });
 
       console.log("[sidecar] Prompt started");
+      promptState.executionStarted = true;
       await piSession.prompt(prompt);
       console.log("[sidecar] Prompt ended");
       // Clear cancelRequested after normal completion
@@ -2039,6 +2220,27 @@ export class YinshiSidecar {
           error: errorMessage,
         });
       }
+    } finally {
+      this._untrackPromptSession(socket, promptState);
+    }
+  }
+
+  async handleCancelRequest(sessionId, socket) {
+    try {
+      await this.cancelSession(sessionId);
+      sendToSocket(socket, {
+        id: sessionId,
+        type: "cancel_status",
+        success: true,
+      });
+    } catch {
+      console.error("[sidecar] Cancellation failed");
+      sendToSocket(socket, {
+        id: sessionId,
+        type: "cancel_status",
+        success: false,
+        error: "Failed to cancel session",
+      });
     }
   }
 
@@ -2050,9 +2252,14 @@ export class YinshiSidecar {
     }
     console.log("[sidecar] Cancelling prompt");
     entry.cancelRequested = true;
-    entry.piSession.abortCompaction();
-    entry.piSession.abortRetry();
-    await entry.piSession.abort();
+    try {
+      entry.piSession.abortCompaction();
+      entry.piSession.abortRetry();
+      await entry.piSession.abort();
+    } catch (error) {
+      entry.cancelRequested = false;
+      throw error;
+    }
   }
 
   cleanup() {
@@ -2083,6 +2290,8 @@ export class YinshiSidecar {
       }
     }
     this.activeSessions.clear();
+    this.activePromptSessionsBySocket.clear();
+    this.pendingPiSessionCreations.clear();
     this.activeOAuthFlows.clear();
     for (const [, entry] of this.activeTerminals) {
       try {
