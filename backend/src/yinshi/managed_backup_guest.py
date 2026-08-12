@@ -11,6 +11,7 @@ import io
 import json
 import os
 import re
+import shutil
 import stat
 import tarfile
 import tempfile
@@ -34,6 +35,7 @@ _MEMBER_COUNT_MAX = 200_000
 _MEMBER_BYTES_MAX = 64 * 1024 * 1024 * 1024
 _EXPANDED_BYTES_MAX = 200 * 1024 * 1024 * 1024
 _STATE_ROOT = Path("/var/lib/yinshi")
+_RESTORE_TRANSACTION_NAME = ".yinshi-restore-active"
 _JOB_ID_PATTERN = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z")
 
 
@@ -334,6 +336,73 @@ def _extract_validated_tar(tar_path: Path, stage_root: Path) -> None:
                 os.close(descriptor)
 
 
+def _sync_directory(path: Path) -> None:
+    """Persist directory entry changes before the next restore transition."""
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _write_restore_state(transaction_root: Path, phase: str) -> None:
+    """Persist one exact restore phase inside the fixed transaction directory."""
+    state_path = transaction_root / "state.json"
+    temporary_path = transaction_root / ".state.json.tmp"
+    payload = json.dumps(
+        {"phase": phase, "version": 1},
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    with temporary_path.open("w", encoding="utf-8") as output:
+        output.write(payload + "\n")
+        output.flush()
+        os.fsync(output.fileno())
+    os.chmod(temporary_path, 0o600)
+    os.replace(temporary_path, state_path)
+    _sync_directory(transaction_root)
+
+
+def _recover_restore_transaction(sqlite_root: Path, files_root: Path) -> None:
+    """Recover old roots from one interrupted pre-commit replacement."""
+    transaction_root = sqlite_root.parent / _RESTORE_TRANSACTION_NAME
+    if not transaction_root.exists() and not transaction_root.is_symlink():
+        return
+    if transaction_root.is_symlink() or not transaction_root.is_dir():
+        raise ValueError("managed restore transaction path is unsafe")
+    state_path = transaction_root / "state.json"
+    if state_path.is_symlink() or not state_path.is_file():
+        raise ValueError("managed restore transaction state is missing")
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise ValueError("managed restore transaction state is invalid") from None
+    if (
+        not isinstance(state, dict)
+        or state.get("version") != 1
+        or state.get("phase")
+        not in {"prepared", "old_sqlite_moved", "old_roots_moved", "new_sqlite_installed"}
+    ):
+        raise ValueError("managed restore transaction state is invalid")
+    rollback_root = transaction_root / "rollback"
+    for live_root in (sqlite_root, files_root):
+        rollback = rollback_root / live_root.name
+        if rollback.exists():
+            if rollback.is_symlink() or not rollback.is_dir():
+                raise ValueError("managed restore rollback root is unsafe")
+            if live_root.exists() or live_root.is_symlink():
+                failed_root = transaction_root / f"failed-{live_root.name}"
+                if failed_root.exists() or failed_root.is_symlink():
+                    shutil.rmtree(failed_root)
+                os.replace(live_root, failed_root)
+            os.replace(rollback, live_root)
+            _sync_directory(sqlite_root.parent)
+    if not sqlite_root.is_dir() or not files_root.is_dir():
+        raise ValueError("managed restore rollback is incomplete")
+    shutil.rmtree(transaction_root)
+    _sync_directory(sqlite_root.parent)
+
+
 def restore_managed_backup_archive(
     archive_path: Path,
     *,
@@ -350,6 +419,7 @@ def restore_managed_backup_archive(
     state_root = sqlite_root.parent
     if not state_root.is_dir() or state_root.is_symlink():
         raise ValueError("managed restore state root must be a real directory")
+    _recover_restore_transaction(sqlite_root, files_root)
     for root in (sqlite_root, files_root):
         if root.is_symlink() or not root.is_dir():
             raise ValueError("managed restore targets must be real directories")
@@ -367,33 +437,31 @@ def restore_managed_backup_archive(
         _extract_validated_tar(tar_path, extracted_root)
         if not staged_sqlite.is_dir() or not staged_files.is_dir():
             raise ValueError("managed backup is missing required data roots")
-        rollback_root = Path(tempfile.mkdtemp(prefix=".yinshi-restore-rollback-", dir=state_root))
+        transaction_root = state_root / _RESTORE_TRANSACTION_NAME
+        transaction_root.mkdir(mode=0o700)
+        rollback_root = transaction_root / "rollback"
+        rollback_root.mkdir(mode=0o700)
         rollback_sqlite = rollback_root / "sqlite"
         rollback_files = rollback_root / "files"
-        installed: list[tuple[Path, Path]] = []
+        _write_restore_state(transaction_root, "prepared")
         try:
             os.replace(sqlite_root, rollback_sqlite)
+            _sync_directory(state_root)
+            _write_restore_state(transaction_root, "old_sqlite_moved")
             os.replace(files_root, rollback_files)
+            _sync_directory(state_root)
+            _write_restore_state(transaction_root, "old_roots_moved")
             os.replace(staged_sqlite, sqlite_root)
-            installed.append((sqlite_root, rollback_sqlite))
+            _sync_directory(state_root)
+            _write_restore_state(transaction_root, "new_sqlite_installed")
             os.replace(staged_files, files_root)
-            installed.append((files_root, rollback_files))
+            _sync_directory(state_root)
         except BaseException:
-            for installed_root, rollback in reversed(installed):
-                if installed_root.exists():
-                    replacement = stage_root / f"failed-{installed_root.name}"
-                    os.replace(installed_root, replacement)
-                if rollback.exists():
-                    os.replace(rollback, installed_root)
-            if not sqlite_root.exists() and rollback_sqlite.exists():
-                os.replace(rollback_sqlite, sqlite_root)
-            if not files_root.exists() and rollback_files.exists():
-                os.replace(rollback_files, files_root)
+            _recover_restore_transaction(sqlite_root, files_root)
             raise
         else:
-            import shutil
-
-            shutil.rmtree(rollback_root)
+            shutil.rmtree(transaction_root)
+            _sync_directory(state_root)
 
 
 def _decode_archive_key(value: object) -> bytes:
@@ -431,6 +499,50 @@ def _job_context(value: object) -> ManagedArchiveContext:
     )
     _require_context(context)
     return context
+
+
+def _read_existing_job_result(
+    path: Path,
+    *,
+    archive_path: Path,
+    job_id: str,
+    operation: str,
+) -> bool:
+    """Accept only complete same-job output from an interrupted control transfer."""
+    if not path.exists() and not path.is_symlink():
+        return False
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("managed backup result path is unsafe")
+    try:
+        result = json.loads(path.read_text(encoding="utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise ValueError("managed backup result is invalid") from None
+    if operation == "restore":
+        if result != {"job_id": job_id, "status": "restored"}:
+            raise ValueError("managed backup result is invalid")
+        return True
+    if (
+        not isinstance(result, dict)
+        or set(result) != {"job_id", "sha256", "size_bytes", "status"}
+        or result.get("job_id") != job_id
+        or result.get("status") != "ready"
+        or type(result.get("size_bytes")) is not int
+        or result["size_bytes"] <= 0
+        or not isinstance(result.get("sha256"), str)
+        or len(result["sha256"]) != 64
+        or any(character not in "0123456789abcdef" for character in result["sha256"])
+        or archive_path.is_symlink()
+        or not archive_path.is_file()
+        or archive_path.stat().st_size != result["size_bytes"]
+    ):
+        raise ValueError("managed backup result is invalid")
+    digest = hashlib.sha256()
+    with archive_path.open("rb") as source:
+        for chunk in iter(lambda: source.read(_CHUNK_BYTES), b""):
+            digest.update(chunk)
+    if digest.hexdigest() != result["sha256"]:
+        raise ValueError("managed backup result is invalid")
+    return True
 
 
 def _write_job_result(path: Path, payload: dict[str, object]) -> None:
@@ -489,6 +601,13 @@ def run_managed_backup_job(
         raise ValueError("managed backup job is invalid")
     context = _job_context(payload["archive_context"])
     archive_path = maintenance_root / f"{expected_job_id}.archive.enc"
+    if _read_existing_job_result(
+        result_path,
+        archive_path=archive_path,
+        job_id=expected_job_id,
+        operation=operation,
+    ):
+        return
     archive_key = _decode_archive_key(payload["archive_key"])
     if operation == "create":
         record = create_managed_backup_archive(

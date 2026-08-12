@@ -20,6 +20,20 @@ def _safe_job(operation: str) -> dict[str, object]:
     }
 
 
+def test_managed_backup_conflict_returns_safe_409(auth_client: TestClient) -> None:
+    """Durable catalog conflicts must not escape as internal server failures."""
+    from yinshi.services.managed_backups import ManagedBackupConflictError
+
+    manager = Mock()
+    manager.enqueue_restore = Mock(side_effect=ManagedBackupConflictError("operation is active"))
+    auth_client.app.state.managed_backup_manager = manager
+
+    response = auth_client.post("/api/runtime/backups/archive-1/restore")
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "Managed backup state is invalid"}
+
+
 def test_managed_backup_restore_returns_safe_accepted_job(auth_client: TestClient) -> None:
     """Restore mutation should pass only tenant and archive identity to manager."""
     tenant = getattr(auth_client, "yinshi_tenant")

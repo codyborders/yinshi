@@ -163,6 +163,7 @@ def test_s3_backup_store_factory_uses_bounded_https_client_settings(
         ("managed_backup_region", "", "MANAGED_BACKUP_REGION"),
         ("managed_backup_prefix", "../unsafe", "MANAGED_BACKUP_PREFIX"),
         ("managed_backup_part_bytes", 1024, "MANAGED_BACKUP_PART_BYTES"),
+        ("managed_backup_part_bytes", 5 * 1024**3 + 1, "MANAGED_BACKUP_PART_BYTES"),
         ("managed_backup_retention_days", 0, "MANAGED_BACKUP_RETENTION_DAYS"),
         ("managed_backup_secret_access_key", None, "MANAGED_BACKUP credentials"),
     ],

@@ -461,7 +461,7 @@ def _validate_settings(settings: Settings) -> None:
             or ".." in settings.managed_backup_prefix.split("/")
         ):
             raise RuntimeError("MANAGED_BACKUP_PREFIX is invalid")
-        if not 5 * 1024 * 1024 <= settings.managed_backup_part_bytes <= 5 * 1024**4:
+        if not 5 * 1024 * 1024 <= settings.managed_backup_part_bytes <= 5 * 1024**3:
             raise RuntimeError("MANAGED_BACKUP_PART_BYTES is outside S3 multipart limits")
         if not 1 <= settings.managed_backup_retention_days <= 3650:
             raise RuntimeError("MANAGED_BACKUP_RETENTION_DAYS must be between 1 and 3650")

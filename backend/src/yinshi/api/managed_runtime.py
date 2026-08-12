@@ -12,6 +12,7 @@ from yinshi.api.runners import _request_relay_url
 from yinshi.models import RunnerCapabilityCreateIn, RunnerCapabilityOut
 from yinshi.rate_limit import limiter
 from yinshi.services.managed_backups import (
+    ManagedBackupConflictError,
     get_managed_backup_operation,
     list_managed_backup_archives,
 )
@@ -129,7 +130,7 @@ def create_runtime_backup(request: Request) -> ManagedBackupJobOut:
         raise HTTPException(status_code=503, detail="Managed backups are unavailable")
     try:
         job = manager.enqueue_create(tenant.user_id)
-    except ValueError as error:
+    except (ManagedBackupConflictError, ValueError) as error:
         raise HTTPException(status_code=409, detail="Managed backup state is invalid") from error
     manager.wake()
     return ManagedBackupJobOut.model_validate(job)
@@ -148,7 +149,7 @@ def _queue_backup_mutation(
         job = getattr(manager, method_name)(tenant.user_id, archive_id)
     except LookupError as error:
         raise HTTPException(status_code=404, detail="Managed backup was not found") from error
-    except ValueError as error:
+    except (ManagedBackupConflictError, ValueError) as error:
         raise HTTPException(status_code=409, detail="Managed backup state is invalid") from error
     manager.wake()
     return ManagedBackupJobOut.model_validate(job)

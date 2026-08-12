@@ -53,8 +53,10 @@ async def test_runner_relay_quiesces_worker_and_blocks_new_transfers(tmp_path: P
     await runtime.handle_control(json.dumps({"transfer_id": transfer_id, "type": "open"}))
 
     response = await runtime.handle_control(json.dumps({"job_id": job_id, "type": "quiesce"}))
+    retry_response = await runtime.handle_control(json.dumps({"job_id": job_id, "type": "quiesce"}))
 
     assert json.loads(response or "") == {"job_id": job_id, "type": "quiesced"}
+    assert retry_response == response
     assert quiesced == [job_id]
     assert runtime.active_transfer_ids == ()
     assert task_lease.operations == ["acquire", "release"]

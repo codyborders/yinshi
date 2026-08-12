@@ -139,8 +139,8 @@ def activate_managed_restore_candidate(
     candidate_sprite_id: str,
     artifact_version: str,
     now: datetime,
-    job_id: str | None = None,
-    lease_token: str | None = None,
+    job_id: str,
+    lease_token: str,
 ) -> bool:
     """Atomically promote one replacement runner and revoke old authority."""
     normalized_user_id = _require_user_id(user_id)
@@ -149,12 +149,8 @@ def activate_managed_restore_candidate(
     candidate_runner = _required_text(candidate_runner_id, "candidate_runner_id")
     candidate_sprite = _required_text(candidate_sprite_id, "candidate_sprite_id")
     artifact = _required_text(artifact_version, "artifact_version")
-    normalized_job_id = None if job_id is None else _required_text(job_id, "job_id")
-    normalized_lease_token = (
-        None if lease_token is None else _required_text(lease_token, "lease_token")
-    )
-    if (normalized_job_id is None) != (normalized_lease_token is None):
-        raise ValueError("job_id and lease_token must be supplied together")
+    normalized_job_id = _required_text(job_id, "job_id")
+    normalized_lease_token = _required_text(lease_token, "lease_token")
     now_text = _datetime_to_storage(_normalized_now(now)).replace("+00:00", "Z")
     with get_control_db() as database:
         try:
@@ -177,23 +173,22 @@ def activate_managed_restore_candidate(
             if runtime is None or candidate is None:
                 database.rollback()
                 return False
-            if normalized_job_id is not None:
-                operation = database.execute(
-                    """SELECT 1 FROM managed_backup_operations
-                       WHERE user_id = ? AND job_id = ? AND operation = 'restore'
-                         AND status = 'running' AND runtime_generation = ?
-                         AND lease_token = ? AND lease_expires_at > ?""",
-                    (
-                        normalized_user_id,
-                        normalized_job_id,
-                        source_generation,
-                        normalized_lease_token,
-                        now_text,
-                    ),
-                ).fetchone()
-                if operation is None:
-                    database.rollback()
-                    return False
+            operation = database.execute(
+                """SELECT 1 FROM managed_backup_operations
+                   WHERE user_id = ? AND job_id = ? AND operation = 'restore'
+                     AND status = 'running' AND runtime_generation = ?
+                     AND lease_token = ? AND lease_expires_at > ?""",
+                (
+                    normalized_user_id,
+                    normalized_job_id,
+                    source_generation,
+                    normalized_lease_token,
+                    now_text,
+                ),
+            ).fetchone()
+            if operation is None:
+                database.rollback()
+                return False
             old_runner_id = runtime["runner_id"]
             database.execute(
                 """UPDATE user_runners
@@ -202,14 +197,15 @@ def activate_managed_restore_candidate(
                    WHERE id = ? AND user_id = ? AND kind = 'managed'""",
                 (now_text, old_runner_id, normalized_user_id),
             )
-            if normalized_job_id is None or normalized_lease_token is None:
-                database.rollback()
-                return False
             database.execute(
                 """INSERT INTO managed_runtime_activation_guards (
                        user_id, job_id, lease_token
                    ) VALUES (?, ?, ?)""",
                 (normalized_user_id, normalized_job_id, normalized_lease_token),
+            )
+            database.execute(
+                "DELETE FROM user_runners WHERE user_id = ? AND kind = 'managed_retired'",
+                (normalized_user_id,),
             )
             database.execute(
                 "UPDATE user_runners SET kind = 'managed_retired' WHERE id = ?",

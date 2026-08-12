@@ -59,6 +59,109 @@ async def test_manager_claim_lease_outlives_bounded_guest_work() -> None:
 
 
 @pytest.mark.asyncio
+async def test_manager_shutdown_waits_for_external_work_cancellation() -> None:
+    """Manager close must cancel and drain one claimed external operation."""
+    from datetime import datetime, timedelta, timezone
+
+    from yinshi.services.managed_backup_manager import ManagedBackupManager
+    from yinshi.services.managed_backups import ManagedBackupArchive, ManagedBackupOperation
+
+    now = datetime(2026, 8, 12, 12, 0, tzinfo=timezone.utc)
+    operation = ManagedBackupOperation(
+        user_id="user-1",
+        job_id="job-1",
+        archive_id="archive-1",
+        operation="delete",
+        status="running",
+        runtime_generation=7,
+        started_at=now.isoformat(),
+        updated_at=now.isoformat(),
+        last_error=None,
+        lease_owner="worker-1",
+        lease_token="lease-1",
+        lease_expires_at=(now + timedelta(minutes=15)).isoformat(),
+    )
+    archive = ManagedBackupArchive(
+        id="archive-1",
+        user_id="user-1",
+        runtime_generation=7,
+        status="deleting",
+        object_key="private/archive.enc",
+        object_version="version-1",
+        size_bytes=17,
+        sha256="d" * 64,
+        wrapped_key=b"wrapped-key",
+        key_id="backup-v1",
+        owner_digest="c" * 64,
+        created_at=now.isoformat(),
+        completed_at=None,
+        last_error=None,
+    )
+    work_started = asyncio.Event()
+    work_stopped = asyncio.Event()
+    claimed = False
+
+    class Store:
+        async def delete_file(self, **_values) -> None:
+            work_started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                work_stopped.set()
+
+    def claim(**_values):
+        nonlocal claimed
+        if claimed:
+            return None
+        claimed = True
+        return operation
+
+    manager = ManagedBackupManager(
+        provider=object(),
+        store=Store(),
+        relay=object(),
+        claim_operation=claim,
+        get_archive=lambda _user_id, _archive_id: archive,
+        list_retention=lambda **_values: (),
+        now=lambda: now,
+        new_lease_token=lambda: "lease-1",
+    )
+    await manager.start()
+    await asyncio.wait_for(work_started.wait(), timeout=1)
+
+    await manager.aclose()
+
+    assert work_stopped.is_set()
+
+
+@pytest.mark.asyncio
+async def test_manager_continues_after_one_reconciliation_failure() -> None:
+    """One transient job failure must not stop the shared background manager."""
+    from yinshi.services.managed_backup_manager import ManagedBackupManager
+
+    calls = 0
+    recovered = asyncio.Event()
+
+    async def reconcile_once() -> bool:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("transient provider failure")
+        recovered.set()
+        return False
+
+    manager = ManagedBackupManager(
+        reconcile_once=reconcile_once,
+        interval_seconds=0.01,
+    )
+    await manager.start()
+    await asyncio.wait_for(recovered.wait(), timeout=1)
+    await manager.aclose()
+
+    assert calls >= 2
+
+
+@pytest.mark.asyncio
 async def test_manager_reconciles_after_start_and_wake() -> None:
     """Startup and accepted API work should each prompt bounded reconciliation."""
     from yinshi.services.managed_backup_manager import ManagedBackupManager
@@ -76,6 +179,7 @@ async def test_manager_reconciles_after_start_and_wake() -> None:
     manager = ManagedBackupManager(
         reconcile_once=reconcile_once,
         interval_seconds=60,
+        list_retention=lambda **_values: (),
     )
     await manager.start()
     while calls == 0:
@@ -121,6 +225,19 @@ async def test_manager_schedules_retention_during_background_reconciliation() ->
 
     assert retention_calls == 0
     assert retention_scans == 1
+
+
+def test_manager_reports_missing_archive_before_restore_state_conflict() -> None:
+    """Missing tenant archive should map to the API not-found contract."""
+    from yinshi.services.managed_backup_manager import ManagedBackupManager
+
+    manager = ManagedBackupManager(
+        get_runtime=lambda _user_id: None,
+        get_archive=lambda _user_id, _archive_id: None,
+    )
+
+    with pytest.raises(LookupError, match="not found"):
+        manager.enqueue_restore("user-1", "missing-archive")
 
 
 @pytest.mark.asyncio
@@ -238,6 +355,218 @@ async def test_manager_enqueues_create_with_server_generated_authority() -> None
 
 
 @pytest.mark.asyncio
+async def test_manager_renews_operation_lease_during_external_work() -> None:
+    """Claimed work should retain exact ownership until coordination finishes."""
+    from datetime import datetime, timedelta, timezone
+
+    from yinshi.services.managed_backup_manager import ManagedBackupManager
+    from yinshi.services.managed_backups import ManagedBackupArchive, ManagedBackupOperation
+
+    now = datetime(2026, 8, 12, 12, 0, tzinfo=timezone.utc)
+    operation = ManagedBackupOperation(
+        user_id="user-1",
+        job_id="job-1",
+        archive_id="archive-1",
+        operation="delete",
+        status="running",
+        runtime_generation=7,
+        started_at="2026-08-12T12:00:00Z",
+        updated_at="2026-08-12T12:00:00Z",
+        last_error=None,
+        lease_owner="worker-1",
+        lease_token="lease-1",
+        lease_expires_at=(now + timedelta(minutes=15)).isoformat(),
+    )
+    archive = ManagedBackupArchive(
+        id="archive-1",
+        user_id="user-1",
+        runtime_generation=7,
+        status="deleting",
+        object_key="private/archive.enc",
+        object_version="version-1",
+        size_bytes=17,
+        sha256="d" * 64,
+        wrapped_key=b"wrapped-key",
+        key_id="backup-v1",
+        owner_digest="c" * 64,
+        created_at="2026-08-11T12:00:00Z",
+        completed_at=None,
+        last_error=None,
+    )
+    renewed = asyncio.Event()
+    release_delete = asyncio.Event()
+    current_now = now
+
+    class Store:
+        async def delete_file(self, **_values) -> None:
+            await asyncio.wait_for(release_delete.wait(), timeout=1)
+
+    def renew_lease(**values) -> bool:
+        nonlocal current_now
+        assert values["job_id"] == "job-1"
+        assert values["lease_token"] == "lease-1"
+        current_now = now + timedelta(minutes=1)
+        renewed.set()
+        release_delete.set()
+        return True
+
+    manager = ManagedBackupManager(
+        provider=object(),
+        store=Store(),
+        relay=object(),
+        worker_id="worker-1",
+        claim_operation=lambda **_values: operation,
+        get_archive=lambda _user_id, _archive_id: archive,
+        renew_lease=renew_lease,
+        lease_renew_interval_seconds=0.01,
+        complete_deletion=lambda *_args, **_values: True,
+        now=lambda: current_now,
+        new_lease_token=lambda: "lease-1",
+    )
+
+    assert await manager.run_once()
+    assert renewed.is_set()
+
+
+@pytest.mark.asyncio
+async def test_run_once_cancellation_stops_external_work() -> None:
+    """Manager cancellation must stop a claimed external operation before returning."""
+    from datetime import datetime, timedelta, timezone
+
+    from yinshi.services.managed_backup_manager import ManagedBackupManager
+    from yinshi.services.managed_backups import ManagedBackupArchive, ManagedBackupOperation
+
+    now = datetime(2026, 8, 12, 12, 0, tzinfo=timezone.utc)
+    operation = ManagedBackupOperation(
+        user_id="user-1",
+        job_id="job-1",
+        archive_id="archive-1",
+        operation="delete",
+        status="running",
+        runtime_generation=7,
+        started_at=now.isoformat(),
+        updated_at=now.isoformat(),
+        last_error=None,
+        lease_owner="worker-1",
+        lease_token="lease-1",
+        lease_expires_at=(now + timedelta(minutes=15)).isoformat(),
+    )
+    archive = ManagedBackupArchive(
+        id="archive-1",
+        user_id="user-1",
+        runtime_generation=7,
+        status="deleting",
+        object_key="private/archive.enc",
+        object_version="version-1",
+        size_bytes=17,
+        sha256="d" * 64,
+        wrapped_key=b"wrapped-key",
+        key_id="backup-v1",
+        owner_digest="c" * 64,
+        created_at=now.isoformat(),
+        completed_at=None,
+        last_error=None,
+    )
+    work_started = asyncio.Event()
+    work_stopped = asyncio.Event()
+
+    class Store:
+        async def delete_file(self, **_values) -> None:
+            work_started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                work_stopped.set()
+
+    manager = ManagedBackupManager(
+        provider=object(),
+        store=Store(),
+        relay=object(),
+        claim_operation=lambda **_values: operation,
+        get_archive=lambda _user_id, _archive_id: archive,
+        now=lambda: now,
+        new_lease_token=lambda: "lease-1",
+    )
+    task = asyncio.create_task(manager.run_once())
+    await asyncio.wait_for(work_started.wait(), timeout=1)
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert work_stopped.is_set()
+
+
+@pytest.mark.asyncio
+async def test_manager_aborts_work_when_lease_renewal_fails() -> None:
+    """Lost lease ownership should cancel external work before it can finish."""
+    from datetime import datetime, timedelta, timezone
+
+    from yinshi.services.managed_backup_manager import ManagedBackupManager
+    from yinshi.services.managed_backups import ManagedBackupArchive, ManagedBackupOperation
+
+    now = datetime(2026, 8, 12, 12, 0, tzinfo=timezone.utc)
+    operation = ManagedBackupOperation(
+        user_id="user-1",
+        job_id="job-1",
+        archive_id="archive-1",
+        operation="delete",
+        status="running",
+        runtime_generation=7,
+        started_at=now.isoformat(),
+        updated_at=now.isoformat(),
+        last_error=None,
+        lease_owner="worker-1",
+        lease_token="lease-1",
+        lease_expires_at=(now + timedelta(minutes=15)).isoformat(),
+    )
+    archive = ManagedBackupArchive(
+        id="archive-1",
+        user_id="user-1",
+        runtime_generation=7,
+        status="deleting",
+        object_key="private/archive.enc",
+        object_version="version-1",
+        size_bytes=17,
+        sha256="d" * 64,
+        wrapped_key=b"wrapped-key",
+        key_id="backup-v1",
+        owner_digest="c" * 64,
+        created_at=now.isoformat(),
+        completed_at=None,
+        last_error=None,
+    )
+    cancelled = asyncio.Event()
+
+    class Store:
+        async def delete_file(self, **_values) -> None:
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+
+    manager = ManagedBackupManager(
+        provider=object(),
+        store=Store(),
+        relay=object(),
+        worker_id="worker-1",
+        claim_operation=lambda **_values: operation,
+        get_archive=lambda _user_id, _archive_id: archive,
+        renew_lease=lambda **_values: False,
+        lease_renew_interval_seconds=0.01,
+        now=lambda: now,
+        new_lease_token=lambda: "lease-1",
+    )
+
+    loop = asyncio.get_running_loop()
+    started_at = loop.time()
+    with pytest.raises(RuntimeError, match="lease was lost"):
+        await asyncio.wait_for(manager.run_once(), timeout=1)
+    assert loop.time() - started_at < 0.2
+    assert cancelled.is_set()
+
+
+@pytest.mark.asyncio
 async def test_manager_create_uploads_before_release_and_publishes_after_recovery(
     tmp_path,
 ) -> None:
@@ -257,6 +586,7 @@ async def test_manager_create_uploads_before_release_and_publishes_after_recover
     from yinshi.services.sprites import SpriteFileTransfer
 
     events: list[str] = []
+    upload_intent_recorded = False
     now = datetime(2026, 8, 12, 12, 0, tzinfo=timezone.utc)
     operation = ManagedBackupOperation(
         user_id="user-1",
@@ -348,6 +678,7 @@ async def test_manager_create_uploads_before_release_and_publishes_after_recover
     class Store:
         async def put_file(self, source_path: Path, **values) -> StoredManagedBackup:
             events.append("upload")
+            assert upload_intent_recorded
             assert source_path.read_bytes() == ciphertext
             assert values["object_key"] == archive.object_key
             return StoredManagedBackup(
@@ -369,6 +700,13 @@ async def test_manager_create_uploads_before_release_and_publishes_after_recover
 
         def is_runner_connected(self, runner_id: str) -> bool:
             return runner_id == "runner-1"
+
+    def advance_operation(**values) -> bool:
+        nonlocal upload_intent_recorded
+        assert values["expected_phase"] == "claimed"
+        assert values["next_phase"] == "object_uploading"
+        upload_intent_recorded = True
+        return True
 
     def record_upload(*_args, **values) -> bool:
         events.append("record-upload")
@@ -397,6 +735,7 @@ async def test_manager_create_uploads_before_release_and_publishes_after_recover
         },
         unwrap_key=lambda **_values: b"k" * 32,
         record_upload=record_upload,
+        advance_operation=advance_operation,
         complete_creation=complete,
         now=lambda: now,
         new_lease_token=lambda: "lease-1",
@@ -404,6 +743,7 @@ async def test_manager_create_uploads_before_release_and_publishes_after_recover
     )
 
     assert await manager.run_once()
+    assert upload_intent_recorded
     assert events.index("upload") < events.index("record-upload")
     assert events.index("record-upload") < events.index("write:.release")
     assert events.index("start:yinshi-sidecar") < events.index("publish")
@@ -487,6 +827,7 @@ async def test_manager_restore_executes_download_guest_restore_and_activation(tm
             )
 
         async def verify_restore_candidate(self, user_id: str, **values) -> None:
+            assert values["job_id"] == "job-restore"
             events.append(f"verify:{values['candidate_runner_id']}")
 
         def get_status(self, _user_id: str):
@@ -616,6 +957,9 @@ async def test_restore_recovery_after_activation_only_deletes_old_sprite(tmp_pat
         async def delete_sprite(self, name: str) -> None:
             events.append(f"delete:{name}")
 
+        async def delete_file(self, name: str, **values) -> None:
+            events.append(f"cleanup:{name}:{values['path']}")
+
     class RuntimeService:
         async def provision_restore_candidate(self, *_args, **_values):
             raise AssertionError("activated restore must not provision again")
@@ -636,7 +980,14 @@ async def test_restore_recovery_after_activation_only_deletes_old_sprite(tmp_pat
     )
 
     assert await manager.run_once()
-    assert events == ["delete:sprite-1", "complete"]
+    assert events[0] == "delete:sprite-1"
+    assert events[-1] == "complete"
+    assert events[1:-1] == [
+        "cleanup:candidate-sprite:/var/lib/yinshi/maintenance/job-restore.job",
+        "cleanup:candidate-sprite:/var/lib/yinshi/maintenance/job-restore.result",
+        "cleanup:candidate-sprite:/var/lib/yinshi/maintenance/job-restore.archive.enc",
+        "cleanup:candidate-sprite:/var/lib/yinshi/maintenance/job-restore.release",
+    ]
 
 
 @pytest.mark.asyncio
@@ -669,6 +1020,7 @@ async def test_restore_failure_before_activation_revokes_candidate_authority(
         candidate_sprite_id="sprite-candidate",
     )
     revoked: list[str] = []
+    cleared: list[str] = []
 
     class Provider:
         async def delete_sprite(self, _name: str) -> None:
@@ -685,14 +1037,100 @@ async def test_restore_failure_before_activation_revokes_candidate_authority(
         provider=Provider(),
         store=object(),
         relay=Relay(),
-        revoke_restore_runner=lambda user_id: revoked.append(user_id) or True,
+        revoke_restore_runner=lambda user_id, job_id: (
+            revoked.append(f"{user_id}:{job_id}") or True
+        ),
+        clear_candidate=lambda **values: (cleared.append(values["candidate_runner_id"]) or True),
         now=lambda: now,
         staging_root=tmp_path,
     )
 
     await manager._recover_failed_restore(operation, "sprite-candidate")
 
-    assert revoked == ["user-1"]
+    assert revoked == ["user-1:job-restore"]
+    assert cleared == ["runner-candidate"]
+
+
+@pytest.mark.asyncio
+async def test_failed_candidate_deletion_retains_durable_identity(tmp_path) -> None:
+    """A provider deletion failure must preserve candidate IDs for retry."""
+    from datetime import datetime, timedelta, timezone
+
+    from yinshi.services.managed_backup_manager import ManagedBackupManager
+    from yinshi.services.managed_backups import ManagedBackupArchive, ManagedBackupOperation
+
+    now = datetime(2026, 8, 12, 12, 0, tzinfo=timezone.utc)
+    operation = ManagedBackupOperation(
+        user_id="user-1",
+        job_id="job-restore",
+        archive_id="archive-1",
+        operation="restore",
+        status="running",
+        runtime_generation=7,
+        started_at=now.isoformat(),
+        updated_at=now.isoformat(),
+        last_error=None,
+        phase="candidate_provisioning",
+        lease_owner="worker-1",
+        lease_token="lease-1",
+        lease_expires_at=(now + timedelta(minutes=2)).isoformat(),
+        source_runner_id="runner-source",
+        source_sprite_id="sprite-source",
+        candidate_runner_id="runner-candidate",
+        candidate_sprite_id="sprite-candidate",
+    )
+    archive = ManagedBackupArchive(
+        id="archive-1",
+        user_id="user-1",
+        runtime_generation=5,
+        status="ready",
+        object_key="private/archive.enc",
+        object_version="version-1",
+        size_bytes=17,
+        sha256="d" * 64,
+        wrapped_key=b"wrapped-key",
+        key_id="backup-v1",
+        owner_digest="c" * 64,
+        created_at=now.isoformat(),
+        completed_at=now.isoformat(),
+        last_error=None,
+    )
+    cleared: list[str] = []
+
+    class RuntimeService:
+        async def provision_restore_candidate(self, *_args, **_values):
+            raise RuntimeError("candidate unavailable")
+
+    class Provider:
+        async def delete_sprite(self, _name: str) -> None:
+            raise RuntimeError("candidate deletion failed")
+
+        async def start_service(self, *_args, **_values) -> None:
+            return None
+
+    class Relay:
+        async def release_maintenance(self, *_args, **_values) -> None:
+            return None
+
+    manager = ManagedBackupManager(
+        provider=Provider(),
+        store=object(),
+        relay=Relay(),
+        runtime_service=RuntimeService(),
+        wrapping_key=b"w" * 32,
+        restore_name_key="restore-secret",
+        claim_operation=lambda **_values: operation,
+        get_archive=lambda _user_id, _archive_id: archive,
+        clear_candidate=lambda **values: (cleared.append(values["candidate_runner_id"]) or True),
+        now=lambda: now,
+        new_lease_token=lambda: "lease-1",
+        staging_root=tmp_path,
+    )
+
+    with pytest.raises(RuntimeError, match="candidate unavailable"):
+        await manager.run_once()
+
+    assert cleared == []
 
 
 @pytest.mark.asyncio

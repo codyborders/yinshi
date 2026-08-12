@@ -79,6 +79,25 @@ async def test_relay_requests_exact_runner_quiescence() -> None:
 
 
 @pytest.mark.asyncio
+async def test_relay_reuses_exact_runner_maintenance_fence() -> None:
+    """A retry for the same job should reacquire its existing transfer fence."""
+    broker = RunnerRelayBroker()
+    runner = FakeWebSocket()
+    await broker.register_runner("runner-1", runner)
+    job_id = str(uuid.uuid4())
+    first_waiter = asyncio.create_task(
+        broker.quiesce_runner("runner-1", job_id=job_id, timeout_seconds=1.0)
+    )
+    await asyncio.sleep(0)
+    await broker.runner_quiesced("runner-1", job_id)
+    await first_waiter
+
+    await broker.quiesce_runner("runner-1", job_id=job_id, timeout_seconds=1.0)
+
+    assert runner.text_frames[-1] == f'{{"job_id":"{job_id}","type":"quiesce"}}'
+
+
+@pytest.mark.asyncio
 async def test_relay_releases_exact_runner_maintenance_fence() -> None:
     """Coordinator recovery should remove only its matching in-memory fence."""
     broker = RunnerRelayBroker()
@@ -170,6 +189,40 @@ async def test_relay_enforces_shared_byte_budget_and_runner_replacement() -> Non
             grant.runner_id,
             uuid.UUID(grant.transfer_id).bytes + b"c",
         )
+
+
+def test_runner_websocket_sends_welcome_before_recovered_maintenance(
+    auth_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A reconnected runner must receive its identity before maintenance control."""
+    from yinshi.api import runner_relay as runner_relay_api
+
+    job_id = str(uuid.uuid4())
+
+    async def register_runner(_runner_id: str, websocket: object) -> None:
+        await websocket.send_text(f'{{"job_id":"{job_id}","type":"quiesce"}}')
+
+    monkeypatch.setattr(
+        runner_relay_api,
+        "authenticate_runner_token",
+        lambda _token: {"runner_id": "runner-1"},
+    )
+    monkeypatch.setattr(
+        runner_relay_api.runner_relay_broker,
+        "register_runner",
+        register_runner,
+    )
+
+    with auth_client.websocket_connect(
+        "/runner/relay",
+        headers={"Authorization": "Bearer runner-token"},
+    ) as runner_socket:
+        assert runner_socket.receive_json() == {
+            "runner_id": "runner-1",
+            "type": "welcome",
+        }
+        assert runner_socket.receive_json() == {"job_id": job_id, "type": "quiesce"}
 
 
 def test_runner_websocket_routes_quiesced_acknowledgement(

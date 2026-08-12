@@ -457,6 +457,7 @@ def _serialize_runner(row: Any) -> dict[str, Any]:
         "noise_public_key": noise_public_key,
         "noise_key_fingerprint": _noise_key_fingerprint(noise_public_key),
         "noise_key_confirmed": bool(noise_public_key and row["noise_public_key_confirmed_at"]),
+        "restore_job_id": row["restore_job_id"] if "restore_job_id" in row.keys() else None,
     }
 
 
@@ -648,6 +649,73 @@ def _create_runner_registration_in_connection(
             profile=profile,
         ),
     }
+
+
+def create_managed_restore_registration(
+    user_id: str,
+    *,
+    job_id: str,
+    name: str,
+    region: str,
+    control_url: str,
+) -> dict[str, Any]:
+    """Create replacement authority bound to one exact restore job."""
+    normalized_user_id = _require_user_id(user_id)
+    normalized_job_id = _require_non_empty_text(job_id, "job_id")
+    with get_control_db() as database:
+        registration = _create_runner_registration_in_connection(
+            database,
+            normalized_user_id,
+            name=name,
+            cloud_provider="fly_sprites",
+            region=region,
+            storage_profile="fly_sprites_posix",
+            control_url=control_url,
+            runner_kind="managed_restore",
+        )
+        result = database.execute(
+            "UPDATE user_runners SET restore_job_id = ? WHERE id = ?",
+            (normalized_job_id, registration["runner"]["id"]),
+        )
+        if result.rowcount != 1:
+            database.rollback()
+            raise RunnerRegistrationError("Restore runner registration could not be bound")
+        database.commit()
+    return registration
+
+
+def get_managed_restore_runner_for_job(
+    user_id: str,
+    job_id: str,
+) -> dict[str, Any] | None:
+    """Return only replacement authority bound to one exact restore job."""
+    normalized_user_id = _require_user_id(user_id)
+    normalized_job_id = _require_non_empty_text(job_id, "job_id")
+    with get_control_db() as database:
+        row = database.execute(
+            """SELECT * FROM user_runners
+               WHERE user_id = ? AND kind = 'managed_restore' AND restore_job_id = ?""",
+            (normalized_user_id, normalized_job_id),
+        ).fetchone()
+    return _serialize_runner(row) if row is not None else None
+
+
+def revoke_managed_restore_runner_for_job(user_id: str, job_id: str) -> bool:
+    """Revoke only replacement authority bound to one exact restore job."""
+    normalized_user_id = _require_user_id(user_id)
+    normalized_job_id = _require_non_empty_text(job_id, "job_id")
+    revoked_at = _datetime_to_storage(_utc_now())
+    with get_control_db() as database:
+        result = database.execute(
+            """UPDATE user_runners
+               SET status = 'revoked', revoked_at = ?, registration_token_hash = NULL,
+                   registration_token_expires_at = NULL, runner_token_hash = NULL
+               WHERE user_id = ? AND kind = 'managed_restore'
+                 AND restore_job_id = ? AND revoked_at IS NULL""",
+            (revoked_at, normalized_user_id, normalized_job_id),
+        )
+        database.commit()
+    return result.rowcount == 1
 
 
 def get_managed_restore_runner_for_user(user_id: str) -> dict[str, Any] | None:

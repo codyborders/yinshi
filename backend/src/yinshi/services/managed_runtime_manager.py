@@ -26,8 +26,8 @@ from yinshi.services.managed_runners import (
 from yinshi.services.runners import (
     _HEARTBEAT_ONLINE_WINDOW_SECONDS,
     _datetime_from_storage,
-    create_runner_registration,
-    get_managed_restore_runner_for_user,
+    create_managed_restore_registration,
+    get_managed_restore_runner_for_job,
     get_managed_runner_for_user,
 )
 from yinshi.services.sprites import SpriteRecord
@@ -168,11 +168,11 @@ class ManagedRuntimeManager:
                 self._artifact_sha256,
             )
         )
-        self._create_restore_registration: Callable[[str], dict[str, Any]] = (
+        self._create_restore_registration: Callable[[str, str], dict[str, Any]] = (
             self._new_restore_registration
         )
-        self._get_restore_runner: Callable[[str], dict[str, Any] | None] = (
-            get_managed_restore_runner_for_user
+        self._get_restore_runner: Callable[[str, str], dict[str, Any] | None] = (
+            get_managed_restore_runner_for_job
         )
         self._provisioning_tasks: dict[asyncio.Task[ManagedRuntimeStatus], tuple[str, int]] = {}
         self._online_lock = asyncio.Lock()
@@ -231,17 +231,35 @@ class ManagedRuntimeManager:
         *,
         job_id: str,
         candidate_sprite_name: str,
+        candidate_runner_id: str | None = None,
     ) -> OnlineManagedRunner:
-        """Install one private non-active replacement and validate fresh identity."""
+        """Install a fresh candidate or resume one exact persisted replacement."""
         if not user_id or not job_id or not candidate_sprite_name:
             raise ManagedRuntimeStateError(_STATE_ERROR_MESSAGE)
-        registration = self._create_restore_registration(user_id)
+        sprite = await self._provider.get_sprite(candidate_sprite_name)
+        if candidate_runner_id is not None:
+            runner = self._get_restore_runner(user_id, job_id)
+            if (
+                sprite is None
+                or runner is None
+                or runner.get("id") != candidate_runner_id
+                or runner.get("kind") != "managed_restore"
+                or runner.get("status") != "online"
+                or runner.get("noise_key_confirmed") is not True
+                or not self._artifact_attestation_matches(runner)
+                or not self._is_runner_connected(candidate_runner_id)
+            ):
+                raise ManagedRuntimeStateError(_STATE_ERROR_MESSAGE)
+            noise_key = runner.get("noise_public_key")
+            if not isinstance(noise_key, str) or not noise_key:
+                raise ManagedRuntimeIdentityError(_IDENTITY_ERROR_MESSAGE)
+            return OnlineManagedRunner(candidate_runner_id, noise_key)
+        registration = self._create_restore_registration(user_id, job_id)
         candidate_runner_id = registration["runner"]["id"]
         environment = registration.get("environment")
         if not isinstance(environment, dict):
             raise ManagedRuntimeStateError(_STATE_ERROR_MESSAGE)
         artifact = await self._fetch_restore_artifact()
-        sprite = await self._provider.get_sprite(candidate_sprite_name)
         if sprite is None:
             sprite = await self._provider.create_sprite(candidate_sprite_name)
         if sprite.name != candidate_sprite_name:
@@ -259,7 +277,7 @@ class ManagedRuntimeManager:
         )
         deadline = self._now() + self._readiness_timeout
         while True:
-            runner = self._get_restore_runner(user_id)
+            runner = self._get_restore_runner(user_id, job_id)
             if runner is not None:
                 noise_key = runner.get("noise_public_key")
                 ready = (
@@ -285,32 +303,31 @@ class ManagedRuntimeManager:
                 raise ManagedRuntimeTimeoutError(_TIMEOUT_ERROR_MESSAGE)
             await self._sleep(self._poll_interval_seconds)
 
-    def _new_restore_registration(self, user_id: str) -> dict[str, Any]:
-        """Create fresh candidate authority that cannot receive user capabilities."""
-        return create_runner_registration(
+    def _new_restore_registration(self, user_id: str, job_id: str) -> dict[str, Any]:
+        """Create candidate authority bound to one exact restore job."""
+        return create_managed_restore_registration(
             user_id,
+            job_id=job_id,
             name="Managed restore candidate",
-            cloud_provider="fly_sprites",
             region=self._region,
-            storage_profile="fly_sprites_posix",
             control_url=self._control_url,
-            runner_kind="managed_restore",
         )
 
     async def verify_restore_candidate(
         self,
         user_id: str,
         *,
+        job_id: str,
         candidate_runner_id: str,
         candidate_sprite_name: str,
         expected_public_key: str,
     ) -> None:
         """Revalidate candidate identity, attestation, heartbeat, and relay connection."""
-        if not candidate_sprite_name:
+        if not job_id or not candidate_sprite_name:
             raise ManagedRuntimeStateError(_STATE_ERROR_MESSAGE)
         deadline = self._now() + self._readiness_timeout
         while True:
-            runner = self._get_restore_runner(user_id)
+            runner = self._get_restore_runner(user_id, job_id)
             if runner is not None:
                 noise_key = runner.get("noise_public_key")
                 if noise_key != expected_public_key:

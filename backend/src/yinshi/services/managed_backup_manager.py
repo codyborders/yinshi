@@ -6,6 +6,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import logging
 import os
 import tempfile
 import uuid
@@ -26,12 +27,14 @@ from yinshi.services.managed_backups import (
     ManagedBackupOperation,
     advance_managed_backup_operation,
     claim_due_managed_backup_operation,
+    clear_managed_backup_candidate,
     complete_managed_backup_creation,
     complete_managed_backup_deletion,
     get_managed_backup_archive,
     list_managed_backup_retention_candidates,
     record_managed_backup_candidate,
     record_managed_backup_upload,
+    renew_managed_backup_operation_lease,
     start_managed_backup_creation,
 )
 from yinshi.services.managed_runners import (
@@ -42,11 +45,13 @@ from yinshi.services.managed_runners import (
 )
 from yinshi.services.runners import (
     get_managed_runner_for_user,
-    revoke_managed_restore_runner_for_user,
+    revoke_managed_restore_runner_for_job,
 )
 
 _MAINTENANCE_ROOT = "/var/lib/yinshi/maintenance"
 _RESULT_BYTES_MAX = 4096
+
+logger = logging.getLogger(__name__)
 
 
 class ManagedBackupManager:
@@ -74,6 +79,8 @@ class ManagedBackupManager:
         claim_operation: Callable[
             ..., ManagedBackupOperation | None
         ] = claim_due_managed_backup_operation,
+        renew_lease: Callable[..., bool] = renew_managed_backup_operation_lease,
+        lease_renew_interval_seconds: float = 60.0,
         get_archive: Callable[[str, str], ManagedBackupArchive | None] = get_managed_backup_archive,
         unwrap_key: Callable[..., bytes] = unwrap_managed_archive_key,
         record_upload: Callable[..., bool] = record_managed_backup_upload,
@@ -83,10 +90,11 @@ class ManagedBackupManager:
         restore_name_prefix: str = "managed-restore",
         restore_name_key: str | None = None,
         record_candidate: Callable[..., bool] = record_managed_backup_candidate,
+        clear_candidate: Callable[..., bool] = clear_managed_backup_candidate,
         advance_operation: Callable[..., bool] = advance_managed_backup_operation,
         activate_candidate: Callable[..., bool] = activate_managed_restore_candidate,
         complete_restore: Callable[..., bool] | None = None,
-        revoke_restore_runner: Callable[[str], bool] = (revoke_managed_restore_runner_for_user),
+        revoke_restore_runner: Callable[[str, str], bool] = (revoke_managed_restore_runner_for_job),
         coordinate_restore: (
             Callable[[ManagedBackupOperation, ManagedBackupArchive], Awaitable[None]] | None
         ) = None,
@@ -122,6 +130,10 @@ class ManagedBackupManager:
         self._relay = relay
         self._worker_id = worker_id
         self._claim_operation = claim_operation
+        if lease_renew_interval_seconds <= 0:
+            raise ValueError("lease_renew_interval_seconds must be positive")
+        self._renew_lease = renew_lease
+        self._lease_renew_interval_seconds = lease_renew_interval_seconds
         self._get_archive = get_archive
         self._unwrap_key = unwrap_key
         self._record_upload = record_upload
@@ -131,6 +143,7 @@ class ManagedBackupManager:
         self._restore_name_prefix = restore_name_prefix
         self._restore_name_key = restore_name_key
         self._record_candidate = record_candidate
+        self._clear_candidate = clear_candidate
         self._advance_operation = advance_operation
         self._activate_candidate = activate_candidate
         self._complete_restore = complete_restore
@@ -143,8 +156,11 @@ class ManagedBackupManager:
         self._retention_days = retention_days
         self._retention_batch_size = retention_batch_size
         self._list_retention = list_retention
-        self._enqueue_retention = enqueue_retention
+        self._enqueue_retention = enqueue_retention or self.enqueue_delete
+        self._next_retention_at: datetime | None = None
         self._wake_event = asyncio.Event()
+        self._wake_generation = 0
+        self._handled_wake_generation = 0
         self._stop_event = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
 
@@ -204,10 +220,11 @@ class ManagedBackupManager:
         """Persist one tenant-owned replacement restore request."""
         runtime = self._get_runtime(user_id)
         archive = self._get_archive(user_id, archive_id)
+        if archive is None:
+            raise LookupError("managed backup archive was not found")
         if (
             runtime is None
             or runtime.lifecycle_status != "ready"
-            or archive is None
             or archive.status != "ready"
             or archive.object_version is None
             or self._start_restore is None
@@ -239,22 +256,24 @@ class ManagedBackupManager:
 
     def enqueue_delete(self, user_id: str, archive_id: str) -> ManagedBackupOperation:
         """Persist one tenant-owned exact-version deletion request."""
-        runtime = self._get_runtime(user_id)
         archive = self._get_archive(user_id, archive_id)
+        if archive is None:
+            raise LookupError("managed backup archive was not found")
         if (
-            runtime is None
-            or runtime.lifecycle_status != "ready"
-            or archive is None
-            or archive.status != "ready"
+            archive.status != "ready"
             or archive.object_version is None
             or self._start_deletion is None
         ):
             raise ValueError("managed backup archive is not deletable")
+        runtime = self._get_runtime(user_id)
+        deletion_generation = (
+            runtime.generation if runtime is not None else archive.runtime_generation
+        )
         job_id = self._new_id()
         claim = self._start_deletion(
             user_id,
             archive_id=archive_id,
-            runtime_generation=runtime.generation,
+            runtime_generation=deletion_generation,
             job_id=job_id,
             now=self._now(),
         )
@@ -268,17 +287,19 @@ class ManagedBackupManager:
             archive_id=archive_id,
             operation="delete",
             status="running",
-            runtime_generation=runtime.generation,
+            runtime_generation=deletion_generation,
             started_at=self._now().isoformat(),
             updated_at=self._now().isoformat(),
             last_error=None,
         )
 
     def schedule_retention(self) -> int:
-        """Queue bounded old archives through the normal deletion path."""
-        if self._enqueue_retention is None:
+        """Queue bounded old archives no more than once per minute."""
+        now = self._now()
+        if self._next_retention_at is not None and now < self._next_retention_at:
             return 0
-        cutoff = (self._now() - timedelta(days=self._retention_days)).isoformat()
+        self._next_retention_at = now + timedelta(minutes=1)
+        cutoff = (now - timedelta(days=self._retention_days)).isoformat()
         candidates = self._list_retention(
             cutoff=cutoff,
             limit=self._retention_batch_size,
@@ -301,6 +322,34 @@ class ManagedBackupManager:
         )
         if operation is None:
             return False
+        work_task = asyncio.create_task(
+            self._coordinate_operation(operation),
+            name="managed-backup-operation",
+        )
+        lease_task = asyncio.create_task(
+            self._renew_operation_lease(operation),
+            name="managed-backup-lease-renewal",
+        )
+        try:
+            done, _pending = await asyncio.wait(
+                (work_task, lease_task),
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if lease_task in done:
+                work_task.cancel()
+                await asyncio.gather(work_task, return_exceptions=True)
+                lease_task.result()
+                raise RuntimeError("managed backup lease task ended unexpectedly")
+            lease_task.cancel()
+            await asyncio.gather(lease_task, return_exceptions=True)
+            return work_task.result()
+        finally:
+            work_task.cancel()
+            lease_task.cancel()
+            await asyncio.gather(work_task, lease_task, return_exceptions=True)
+
+    async def _coordinate_operation(self, operation: ManagedBackupOperation) -> bool:
+        """Dispatch one leased operation while the caller supervises ownership."""
         archive = self._get_archive(operation.user_id, operation.archive_id)
         if operation.operation == "delete":
             if archive is not None:
@@ -321,6 +370,25 @@ class ManagedBackupManager:
             return True
         await self._coordinate_create(operation, archive, runtime, runner)
         return True
+
+    async def _renew_operation_lease(self, operation: ManagedBackupOperation) -> None:
+        """Keep exact job ownership alive while external work remains active."""
+        if operation.lease_token is None or operation.lease_owner is None:
+            raise RuntimeError("managed backup operation lease is incomplete")
+        while True:
+            await asyncio.sleep(self._lease_renew_interval_seconds)
+            now = self._now()
+            renewed = await asyncio.to_thread(
+                self._renew_lease,
+                job_id=operation.job_id,
+                worker_id=operation.lease_owner,
+                lease_token=operation.lease_token,
+                runtime_generation=operation.runtime_generation,
+                now=now,
+                lease_expires_at=now + timedelta(minutes=15),
+            )
+            if not renewed:
+                raise RuntimeError("managed backup operation lease was lost")
 
     async def _coordinate_restore(
         self,
@@ -344,25 +412,28 @@ class ManagedBackupManager:
         ):
             return
         if operation.phase == "activated":
-            await self._provider.delete_sprite(operation.source_sprite_id)
-            if self._complete_restore is not None:
-                self._complete_restore(
-                    job_id=operation.job_id,
-                    lease_token=operation.lease_token,
-                    runtime_generation=operation.runtime_generation,
-                    now=self._now(),
-                )
+            if operation.candidate_sprite_id is None:
+                raise RuntimeError("activated restore candidate is missing")
+            await self._finish_activated_restore(
+                operation,
+                operation.candidate_sprite_id,
+            )
             return
         candidate_name = operation.candidate_sprite_id or managed_sprite_name(
             f"{operation.user_id}:{operation.job_id}",
             prefix=self._restore_name_prefix,
             secret_key=self._restore_name_key,
         )
-        candidate = await self._runtime_service.provision_restore_candidate(
-            operation.user_id,
-            job_id=operation.job_id,
-            candidate_sprite_name=candidate_name,
-        )
+        try:
+            candidate = await self._runtime_service.provision_restore_candidate(
+                operation.user_id,
+                job_id=operation.job_id,
+                candidate_sprite_name=candidate_name,
+                candidate_runner_id=operation.candidate_runner_id,
+            )
+        except BaseException:
+            await self._recover_failed_restore(operation, candidate_name)
+            raise
         if operation.candidate_sprite_id is None and not self._record_candidate(
             job_id=operation.job_id,
             lease_token=operation.lease_token,
@@ -371,9 +442,10 @@ class ManagedBackupManager:
             candidate_sprite_id=candidate_name,
             now=self._now(),
         ):
+            await self._recover_failed_restore(operation, candidate_name)
             return
         try:
-            await self._prepare_restore_candidate(
+            activated = await self._prepare_restore_candidate(
                 operation,
                 archive,
                 candidate_name,
@@ -382,6 +454,10 @@ class ManagedBackupManager:
         except BaseException:
             await self._recover_failed_restore(operation, candidate_name)
             raise
+        if not activated:
+            await self._recover_failed_restore(operation, candidate_name)
+            return
+        await self._finish_activated_restore(operation, candidate_name)
 
     async def _prepare_restore_candidate(
         self,
@@ -389,8 +465,8 @@ class ManagedBackupManager:
         archive: ManagedBackupArchive,
         candidate_name: str,
         candidate: Any,
-    ) -> None:
-        """Run replacement restore and cut over only after strict validation."""
+    ) -> bool:
+        """Run replacement restore and report whether cutover became irreversible."""
         assert self._provider is not None
         assert self._store is not None
         assert self._relay is not None
@@ -484,6 +560,7 @@ class ManagedBackupManager:
         assert self._runtime_service is not None
         await self._runtime_service.verify_restore_candidate(
             operation.user_id,
+            job_id=operation.job_id,
             candidate_runner_id=candidate.runner_id,
             candidate_sprite_name=candidate_name,
             expected_public_key=candidate.runner_public_key,
@@ -504,8 +581,22 @@ class ManagedBackupManager:
             job_id=operation.job_id,
             lease_token=operation.lease_token,
         ):
-            return
+            return False
+        return True
+
+    async def _finish_activated_restore(
+        self,
+        operation: ManagedBackupOperation,
+        candidate_name: str,
+    ) -> None:
+        """Finish post-cutover cleanup without reverting active authority."""
+        assert self._provider is not None
+        assert operation.source_sprite_id is not None
         await self._provider.delete_sprite(operation.source_sprite_id)
+        root = f"{_MAINTENANCE_ROOT}/{operation.job_id}"
+        for suffix in (".job", ".result", ".archive.enc", ".release"):
+            with suppress(Exception):
+                await self._provider.delete_file(candidate_name, path=f"{root}{suffix}")
         if self._complete_restore is not None:
             self._complete_restore(
                 job_id=operation.job_id,
@@ -523,9 +614,28 @@ class ManagedBackupManager:
         assert self._provider is not None
         assert self._relay is not None
         with suppress(Exception):
-            self._revoke_restore_runner(operation.user_id)
-        with suppress(Exception):
+            self._revoke_restore_runner(operation.user_id, operation.job_id)
+        candidate_deleted = False
+        try:
             await self._provider.delete_sprite(candidate_name)
+            candidate_deleted = True
+        except Exception:
+            pass
+        if (
+            candidate_deleted
+            and operation.lease_token is not None
+            and operation.candidate_runner_id is not None
+            and operation.candidate_sprite_id is not None
+        ):
+            with suppress(Exception):
+                self._clear_candidate(
+                    job_id=operation.job_id,
+                    lease_token=operation.lease_token,
+                    runtime_generation=operation.runtime_generation,
+                    candidate_runner_id=operation.candidate_runner_id,
+                    candidate_sprite_id=operation.candidate_sprite_id,
+                    now=self._now(),
+                )
         if operation.source_sprite_id is not None:
             for service in ("yinshi-sidecar", "yinshi-runner"):
                 with suppress(Exception):
@@ -588,6 +698,8 @@ class ManagedBackupManager:
         if archive.status == "uploaded":
             await self._recover_uploaded_create(operation, archive, runtime)
             return
+        if operation.phase == "object_uploading":
+            raise RuntimeError("managed backup requires manual storage reconciliation")
         assert self._wrapping_key is not None
         archive_key = self._unwrap_key(
             envelope=archive.wrapped_key,
@@ -665,25 +777,38 @@ class ManagedBackupManager:
             if maintenance_started:
                 await self._recover_failed_create(operation, runtime, root)
             raise
-        with tempfile.TemporaryDirectory(
-            prefix="yinshi-managed-backup-", dir=self._staging_root
-        ) as directory:
-            local_path = Path(directory) / "archive.enc"
-            await self._provider.download_file(
-                runtime.sprite_name,
-                path=f"{root}.archive.enc",
-                target_path=local_path,
-                expected_size=result["size_bytes"],
-                expected_sha256=result["sha256"],
-            )
-            stored = await self._store.put_file(
-                local_path,
-                object_key=archive.object_key,
-                expected_size=result["size_bytes"],
-                expected_sha256=result["sha256"],
-                archive_id=archive.id,
-                owner_digest=archive.owner_digest,
-            )
+        try:
+            with tempfile.TemporaryDirectory(
+                prefix="yinshi-managed-backup-", dir=self._staging_root
+            ) as directory:
+                local_path = Path(directory) / "archive.enc"
+                await self._provider.download_file(
+                    runtime.sprite_name,
+                    path=f"{root}.archive.enc",
+                    target_path=local_path,
+                    expected_size=result["size_bytes"],
+                    expected_sha256=result["sha256"],
+                )
+                if not self._advance_operation(
+                    job_id=operation.job_id,
+                    lease_token=operation.lease_token,
+                    runtime_generation=operation.runtime_generation,
+                    expected_phase=operation.phase,
+                    next_phase="object_uploading",
+                    now=self._now(),
+                ):
+                    await self._recover_failed_create(operation, runtime, root)
+                    return
+                stored = await self._store.put_file(
+                    local_path,
+                    object_key=archive.object_key,
+                    expected_size=result["size_bytes"],
+                    expected_sha256=result["sha256"],
+                    archive_id=archive.id,
+                )
+        except BaseException:
+            await self._recover_failed_create(operation, runtime, root)
+            raise
         if not self._record_upload(
             operation.user_id,
             job_id=operation.job_id,
@@ -694,6 +819,7 @@ class ManagedBackupManager:
             object_version=stored.version,
             now=self._now(),
         ):
+            await self._recover_failed_create(operation, runtime, root)
             return
         await self._provider.write_file(
             runtime.sprite_name,
@@ -831,6 +957,7 @@ class ManagedBackupManager:
         """Request prompt reconciliation."""
         if self._task is None:
             raise RuntimeError("managed backup manager is not started")
+        self._wake_generation += 1
         self._wake_event.set()
 
     async def aclose(self) -> None:
@@ -847,11 +974,21 @@ class ManagedBackupManager:
 
     async def _run(self) -> None:
         while not self._stop_event.is_set():
-            self.schedule_retention()
-            did_work = await self._reconcile_once()
+            try:
+                self.schedule_retention()
+                did_work = await self._reconcile_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Managed backup reconciliation failed")
+                did_work = False
             if did_work:
                 continue
+            if self._wake_generation != self._handled_wake_generation:
+                self._handled_wake_generation = self._wake_generation
             self._wake_event.clear()
+            if self._wake_generation != self._handled_wake_generation:
+                continue
             try:
                 await asyncio.wait_for(
                     self._wake_event.wait(),

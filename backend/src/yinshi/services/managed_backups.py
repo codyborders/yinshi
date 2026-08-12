@@ -10,7 +10,7 @@ from typing import Literal, cast
 from yinshi.db import get_control_db
 from yinshi.services.runners import _require_user_id
 
-ArchiveStatus = Literal["creating", "uploaded", "ready", "failed", "deleting"]
+ArchiveStatus = Literal["creating", "uploaded", "ready", "failed", "deleting", "deleted"]
 OperationStatus = Literal["running", "failed"]
 OperationKind = Literal["create", "restore", "delete"]
 
@@ -179,6 +179,49 @@ def claim_due_managed_backup_operation(
     return _operation(claimed)
 
 
+def renew_managed_backup_operation_lease(
+    *,
+    job_id: str,
+    worker_id: str,
+    lease_token: str,
+    runtime_generation: int,
+    now: datetime,
+    lease_expires_at: datetime,
+) -> bool:
+    """Extend one unexpired operation lease held by its exact current owner."""
+    for value, name in (
+        (job_id, "job_id"),
+        (worker_id, "worker_id"),
+        (lease_token, "lease_token"),
+    ):
+        if not isinstance(value, str) or not value or len(value) > 128:
+            raise ValueError(f"{name} must be bounded non-empty text")
+    if type(runtime_generation) is not int or runtime_generation <= 0:
+        raise ValueError("runtime_generation must be a positive integer")
+    now_text = _timestamp(now)
+    expiry_text = _timestamp(lease_expires_at)
+    if expiry_text <= now_text:
+        raise ValueError("lease_expires_at must be after now")
+    with get_control_db() as database:
+        result = database.execute(
+            """UPDATE managed_backup_operations
+               SET lease_expires_at = ?, updated_at = ?
+               WHERE job_id = ? AND status = 'running' AND runtime_generation = ?
+                 AND lease_owner = ? AND lease_token = ? AND lease_expires_at > ?""",
+            (
+                expiry_text,
+                now_text,
+                job_id,
+                runtime_generation,
+                worker_id,
+                lease_token,
+                now_text,
+            ),
+        )
+        database.commit()
+    return result.rowcount == 1
+
+
 def record_managed_backup_candidate(
     *,
     job_id: str,
@@ -218,6 +261,51 @@ def record_managed_backup_candidate(
             (
                 candidate_runner_id,
                 candidate_sprite_id,
+                timestamp,
+                job_id,
+                lease_token,
+                runtime_generation,
+                candidate_runner_id,
+                candidate_sprite_id,
+                timestamp,
+            ),
+        )
+        database.commit()
+    return result.rowcount == 1
+
+
+def clear_managed_backup_candidate(
+    *,
+    job_id: str,
+    lease_token: str,
+    runtime_generation: int,
+    candidate_runner_id: str,
+    candidate_sprite_id: str,
+    now: datetime,
+) -> bool:
+    """Clear one failed replacement identity from its exact leased restore job."""
+    for value, name in (
+        (job_id, "job_id"),
+        (lease_token, "lease_token"),
+        (candidate_runner_id, "candidate_runner_id"),
+        (candidate_sprite_id, "candidate_sprite_id"),
+    ):
+        if not isinstance(value, str) or not value or len(value) > 128:
+            raise ValueError(f"{name} must be bounded non-empty text")
+    if type(runtime_generation) is not int or runtime_generation <= 0:
+        raise ValueError("runtime_generation must be a positive integer")
+    timestamp = _timestamp(now)
+    with get_control_db() as database:
+        result = database.execute(
+            """UPDATE managed_backup_operations
+               SET candidate_runner_id = NULL, candidate_sprite_id = NULL,
+                   phase = 'claimed', updated_at = ?
+               WHERE job_id = ? AND lease_token = ? AND operation = 'restore'
+                 AND status = 'running' AND runtime_generation = ?
+                 AND phase = 'candidate_provisioning'
+                 AND candidate_runner_id = ? AND candidate_sprite_id = ?
+                 AND lease_expires_at > ?""",
+            (
                 timestamp,
                 job_id,
                 lease_token,
@@ -346,7 +434,8 @@ def start_managed_backup_creation(
                     (normalized_user_id,),
                 )
             runtime = database.execute(
-                "SELECT generation, lifecycle_status FROM managed_runtimes WHERE user_id = ?",
+                """SELECT generation, lifecycle_status, runner_id, sprite_external_id
+                   FROM managed_runtimes WHERE user_id = ?""",
                 (normalized_user_id,),
             ).fetchone()
             if (
@@ -374,13 +463,16 @@ def start_managed_backup_creation(
             database.execute(
                 """INSERT INTO managed_backup_operations (
                        user_id, job_id, archive_id, operation, status,
-                       runtime_generation, started_at, updated_at
-                   ) VALUES (?, ?, ?, 'create', 'running', ?, ?, ?)""",
+                       runtime_generation, source_runner_id, source_sprite_id,
+                       started_at, updated_at
+                   ) VALUES (?, ?, ?, 'create', 'running', ?, ?, ?, ?, ?)""",
                 (
                     normalized_user_id,
                     job_id,
                     archive_id,
                     runtime_generation,
+                    runtime["runner_id"],
+                    runtime["sprite_external_id"],
                     timestamp,
                     timestamp,
                 ),
@@ -503,13 +595,6 @@ def start_managed_backup_deletion(
     with get_control_db() as database:
         try:
             database.execute("BEGIN IMMEDIATE")
-            runtime = database.execute(
-                """SELECT generation FROM managed_runtimes
-                   WHERE user_id = ? AND lifecycle_status = 'ready'""",
-                (normalized_user_id,),
-            ).fetchone()
-            if runtime is None or runtime["generation"] != runtime_generation:
-                raise ManagedBackupConflictError("managed runtime generation changed")
             result = database.execute(
                 """UPDATE managed_backup_archives SET status = 'deleting'
                    WHERE id = ? AND user_id = ? AND status = 'ready'
@@ -734,6 +819,21 @@ def managed_backup_operation_is_running(user_id: str) -> bool:
             (normalized_user_id,),
         ).fetchone()
     return row is not None
+
+
+def get_running_managed_backup_operation_for_runner(
+    runner_id: str,
+) -> ManagedBackupOperation | None:
+    """Return the running maintenance job that fences one exact source runner."""
+    if not isinstance(runner_id, str) or not runner_id or len(runner_id) > 128:
+        raise ValueError("runner_id must be bounded non-empty text")
+    with get_control_db() as database:
+        row = database.execute(
+            """SELECT * FROM managed_backup_operations
+               WHERE source_runner_id = ? AND status = 'running'""",
+            (runner_id,),
+        ).fetchone()
+    return None if row is None else _operation(row)
 
 
 def list_managed_backup_archives(

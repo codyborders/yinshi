@@ -95,14 +95,15 @@ def test_restore_candidate_promotion_rejects_unready_candidate(auth_client) -> N
         )
         database.commit()
 
-    assert not activate_managed_restore_candidate(
-        tenant.user_id,
-        source_generation=claim.runtime.generation,
-        candidate_runner_id=candidate["runner"]["id"],
-        candidate_sprite_id="candidate-sprite",
-        artifact_version="runner-v1",
-        now=now,
-    )
+    with pytest.raises(TypeError):
+        activate_managed_restore_candidate(
+            tenant.user_id,
+            source_generation=claim.runtime.generation,
+            candidate_runner_id=candidate["runner"]["id"],
+            candidate_sprite_id="candidate-sprite",
+            artifact_version="runner-v1",
+            now=now,
+        )
     runtime = get_managed_runtime_status(tenant.user_id)
     assert runtime is not None
     assert runtime.runner_id == claim.runtime.runner_id
@@ -403,6 +404,92 @@ def test_restore_candidate_promotion_atomically_replaces_active_runtime(auth_cli
     assert old_runner["status"] == "revoked"
     assert promoted is not None
     assert promoted["kind"] == "managed"
+
+
+def test_restore_candidate_promotion_replaces_prior_retired_runner(auth_client) -> None:
+    """A later restore must not fail because one retired identity already exists."""
+    from yinshi.db import get_control_db
+    from yinshi.services.managed_backups import (
+        claim_due_managed_backup_operation,
+        start_managed_backup_restore,
+    )
+    from yinshi.services.managed_runners import activate_managed_restore_candidate
+    from yinshi.services.runners import create_runner_registration
+
+    now = datetime(2026, 8, 12, 12, 0, tzinfo=timezone.utc)
+    tenant, claim = _provisioning_runtime(auth_client, now)
+    candidate = create_runner_registration(
+        tenant.user_id,
+        name="Managed restore candidate",
+        cloud_provider="fly_sprites",
+        region="ord",
+        storage_profile="fly_sprites_posix",
+        control_url="https://control.example",
+        runner_kind="managed_restore",
+    )
+    with get_control_db() as database:
+        database.execute(
+            "UPDATE managed_runtimes SET lifecycle_status = 'ready' WHERE user_id = ?",
+            (tenant.user_id,),
+        )
+        database.execute(
+            """UPDATE user_runners SET status = 'online', runner_token_hash = 'candidate',
+                   registered_at = ?, last_heartbeat_at = ?, noise_public_key = ?,
+                   noise_public_key_confirmed_at = ? WHERE id = ?""",
+            (
+                now.isoformat(),
+                now.isoformat(),
+                "b" * 43,
+                now.isoformat(),
+                candidate["runner"]["id"],
+            ),
+        )
+        database.execute(
+            """INSERT INTO user_runners (
+                   id, user_id, kind, name, cloud_provider, region, status,
+                   capabilities_json, revoked_at
+               ) VALUES (
+                   'prior-retired', ?, 'managed_retired', 'Prior retired',
+                   'fly_sprites', 'ord', 'revoked', '{}', ?
+               )""",
+            (tenant.user_id, now.isoformat()),
+        )
+        database.execute(
+            """INSERT INTO managed_backup_archives (
+                   id, user_id, runtime_generation, status, object_key,
+                   object_version, size_bytes, sha256, wrapped_key, key_id,
+                   owner_digest, created_at, completed_at
+               ) VALUES (
+                   'archive-next', ?, 1, 'ready', 'managed/v1/next.enc',
+                   'version-1', 1, ?, X'01', 'backup-v1', ?, ?, ?
+               )""",
+            (tenant.user_id, "d" * 64, "c" * 64, now.isoformat(), now.isoformat()),
+        )
+        database.commit()
+    start_managed_backup_restore(
+        tenant.user_id,
+        archive_id="archive-next",
+        runtime_generation=claim.runtime.generation,
+        job_id="018f47a2-9d3a-7f3b-8f0f-1a2b3c4d5e99",
+        now=now,
+    )
+    claim_due_managed_backup_operation(
+        worker_id="worker-a",
+        lease_token="lease-a",
+        now=now,
+        lease_expires_at=now + timedelta(minutes=2),
+    )
+
+    assert activate_managed_restore_candidate(
+        tenant.user_id,
+        source_generation=claim.runtime.generation,
+        candidate_runner_id=candidate["runner"]["id"],
+        candidate_sprite_id="candidate-sprite",
+        artifact_version="runner-v2",
+        now=now,
+        job_id="018f47a2-9d3a-7f3b-8f0f-1a2b3c4d5e99",
+        lease_token="lease-a",
+    )
 
 
 def test_absent_runtime_status_is_none(auth_client) -> None:

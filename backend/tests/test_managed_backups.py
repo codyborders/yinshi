@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from typing import Literal, get_args
 
 
 def _ready_runtime(auth_client, *, generation: int):
@@ -70,6 +71,8 @@ def test_start_backup_creation_claims_one_active_operation(auth_client) -> None:
 
     assert first.archive.status == "creating"
     assert first.operation.status == "running"
+    assert first.operation.source_runner_id is not None
+    assert first.operation.source_sprite_id is not None
     try:
         start_managed_backup_creation(
             tenant.user_id,
@@ -169,6 +172,54 @@ def test_claim_due_operation_uses_expiring_owner_token(auth_client) -> None:
     assert claimed.lease_owner == "worker-a"
     assert claimed.lease_token == "lease-a"
     assert competing is None
+
+
+def test_current_operation_owner_can_renew_exact_lease(auth_client) -> None:
+    """Long external work should retain ownership through exact lease renewal."""
+    from datetime import timedelta
+
+    from yinshi.services.managed_backups import (
+        claim_due_managed_backup_operation,
+        renew_managed_backup_operation_lease,
+        start_managed_backup_creation,
+    )
+
+    tenant = _ready_runtime(auth_client, generation=2)
+    now = datetime(2026, 8, 12, 12, 0, tzinfo=timezone.utc)
+    creation = start_managed_backup_creation(
+        tenant.user_id,
+        runtime_generation=2,
+        archive_id="018f47a2-9d3a-7f3b-8f0f-1a2b3c4d5e90",
+        job_id="018f47a2-9d3a-7f3b-8f0f-1a2b3c4d5e91",
+        object_key="managed/v1/renew.enc",
+        wrapped_key=b"wrapped-key",
+        key_id="backup-v1",
+        owner_digest="a" * 64,
+        now=now,
+    )
+    claim_due_managed_backup_operation(
+        worker_id="worker-a",
+        lease_token="lease-a",
+        now=now,
+        lease_expires_at=now + timedelta(minutes=2),
+    )
+
+    assert renew_managed_backup_operation_lease(
+        job_id=creation.operation.job_id,
+        worker_id="worker-a",
+        lease_token="lease-a",
+        runtime_generation=2,
+        now=now + timedelta(minutes=1),
+        lease_expires_at=now + timedelta(minutes=16),
+    )
+    assert not renew_managed_backup_operation_lease(
+        job_id=creation.operation.job_id,
+        worker_id="worker-b",
+        lease_token="stale-token",
+        runtime_generation=2,
+        now=now + timedelta(minutes=1),
+        lease_expires_at=now + timedelta(minutes=16),
+    )
 
 
 def test_advance_operation_requires_current_lease_phase_and_generation(
@@ -515,6 +566,78 @@ def test_restore_candidate_metadata_is_idempotent_for_exact_owned_identity(
     assert record_managed_backup_candidate(**values)
 
 
+def test_failed_restore_candidate_cleanup_clears_exact_identity(auth_client) -> None:
+    """Failed replacement cleanup must remove candidate IDs before retry."""
+    from yinshi.db import get_control_db
+    from yinshi.services.managed_backups import (
+        claim_due_managed_backup_operation,
+        clear_managed_backup_candidate,
+        get_managed_backup_operation,
+        record_managed_backup_candidate,
+        start_managed_backup_restore,
+    )
+
+    tenant = _ready_runtime(auth_client, generation=3)
+    now = datetime(2026, 8, 12, 12, 0, tzinfo=timezone.utc)
+    archive_id = "018f47a2-9d3a-7f3b-8f0f-1a2b3c4d5eb0"
+    job_id = "018f47a2-9d3a-7f3b-8f0f-1a2b3c4d5eb1"
+    with get_control_db() as database:
+        database.execute(
+            """INSERT INTO managed_backup_archives (
+                   id, user_id, runtime_generation, status, object_key,
+                   object_version, size_bytes, sha256, wrapped_key, key_id,
+                   owner_digest, created_at, completed_at
+               ) VALUES (?, ?, 2, 'ready', ?, 'version-1', 1024, ?, ?, ?, ?, ?, ?)""",
+            (
+                archive_id,
+                tenant.user_id,
+                "managed/v1/candidate-cleanup.enc",
+                "d" * 64,
+                b"wrapped-key",
+                "backup-v1",
+                "c" * 64,
+                "2026-08-11T12:00:00Z",
+                "2026-08-11T12:01:00Z",
+            ),
+        )
+        database.commit()
+    start_managed_backup_restore(
+        tenant.user_id,
+        archive_id=archive_id,
+        runtime_generation=3,
+        job_id=job_id,
+        now=now,
+    )
+    claim_due_managed_backup_operation(
+        worker_id="worker-a",
+        lease_token="lease-a",
+        now=now,
+        lease_expires_at=now + timedelta(minutes=2),
+    )
+    assert record_managed_backup_candidate(
+        job_id=job_id,
+        lease_token="lease-a",
+        runtime_generation=3,
+        candidate_runner_id="candidate-runner",
+        candidate_sprite_id="candidate-sprite",
+        now=now,
+    )
+
+    assert clear_managed_backup_candidate(
+        job_id=job_id,
+        lease_token="lease-a",
+        runtime_generation=3,
+        candidate_runner_id="candidate-runner",
+        candidate_sprite_id="candidate-sprite",
+        now=now,
+    )
+    operation = get_managed_backup_operation(tenant.user_id, job_id)
+    assert operation is not None
+    assert operation.phase == "claimed"
+    assert operation.candidate_runner_id is None
+    assert operation.candidate_sprite_id is None
+
+
 def test_restore_candidate_metadata_requires_exact_owned_lease(auth_client) -> None:
     """Only the current restore worker may persist candidate provider identity."""
     from yinshi.db import get_control_db
@@ -753,9 +876,17 @@ def test_complete_archive_deletion_erases_wrapped_key_after_remote_delete(
     )
     archive = get_managed_backup_archive(tenant.user_id, archive_id)
     assert archive is not None
-    assert archive.status == "deleted"
+    deleted_status: Literal["deleted"] = archive.status
+    assert deleted_status == "deleted"
     assert archive.wrapped_key == b""
     assert archive.object_version is None
+
+
+def test_archive_status_contract_includes_deleted_tombstone() -> None:
+    """Exported archive status values must match persisted catalog values."""
+    from yinshi.services.managed_backups import ArchiveStatus
+
+    assert "deleted" in get_args(ArchiveStatus)
 
 
 def test_retention_selects_only_old_ready_archives_without_active_restore(

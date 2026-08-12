@@ -11,6 +11,60 @@ import pytest
 
 
 @pytest.mark.asyncio
+async def test_restore_candidate_provisioning_reuses_persisted_candidate_authority() -> None:
+    """Crash retry should reuse the exact recorded candidate instead of rotating authority."""
+    from yinshi.services.managed_runtime_manager import ManagedRuntimeManager
+
+    provider = Mock()
+    provider.get_sprite = AsyncMock(return_value=SimpleNamespace(name="candidate-sprite"))
+    provider.stop_service = AsyncMock()
+    installer = Mock()
+    installer.install = AsyncMock()
+    manager = ManagedRuntimeManager(
+        provider=provider,
+        guest_installer=installer,
+        http_client=Mock(),
+        name_prefix="managed",
+        name_key="secret",
+        artifact_url="https://artifact.invalid/runner.tar.gz",
+        artifact_sha256="a" * 64,
+        artifact_version="runner-v1",
+        allowed_domains=("control.example",),
+        region="ord",
+        control_url="https://control.example",
+        readiness_timeout_seconds=5,
+        is_runner_connected=lambda runner_id: runner_id == "candidate-runner",
+        clock=lambda: datetime(2026, 8, 12, 12, 0, tzinfo=timezone.utc),
+        sleep=lambda _seconds: asyncio.sleep(0),
+    )
+    manager._create_restore_registration = Mock(side_effect=AssertionError("rotated authority"))
+    manager._get_restore_runner = Mock(
+        return_value={
+            "id": "candidate-runner",
+            "kind": "managed_restore",
+            "status": "online",
+            "registered_at": "2026-08-12T12:00:00Z",
+            "last_heartbeat_at": "2026-08-12T12:00:00Z",
+            "noise_public_key": "candidate-key",
+            "noise_key_confirmed": True,
+            "capabilities": {"artifact_sha256": "a" * 64},
+        }
+    )
+
+    candidate = await manager.provision_restore_candidate(
+        "user-1",
+        job_id="job-1",
+        candidate_sprite_name="candidate-sprite",
+        candidate_runner_id="candidate-runner",
+    )
+
+    assert candidate.runner_id == "candidate-runner"
+    manager._get_restore_runner.assert_called_once_with("user-1", "job-1")
+    manager._create_restore_registration.assert_not_called()
+    installer.install.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_restore_candidate_provisioning_uses_private_non_active_runner() -> None:
     """Restore candidates should install privately and wait for fresh confirmed identity."""
     from yinshi.services.managed_runtime_manager import ManagedRuntimeManager
@@ -78,7 +132,7 @@ async def test_restore_candidate_provisioning_uses_private_non_active_runner() -
             "environment": {"YINSHI_REGISTRATION_TOKEN": "token"},
         }
     )
-    manager._get_restore_runner = Mock(side_effect=lambda _user_id: next(runner_states))
+    manager._get_restore_runner = Mock(side_effect=lambda _user_id, _job_id: next(runner_states))
 
     candidate = await manager.provision_restore_candidate(
         "user-1",
@@ -88,6 +142,7 @@ async def test_restore_candidate_provisioning_uses_private_non_active_runner() -
 
     assert candidate.runner_id == "candidate-runner"
     assert candidate.runner_public_key == "candidate-key"
+    manager._create_restore_registration.assert_called_once_with("user-1", "job-1")
     assert events == [
         "get:candidate-sprite",
         "create:candidate-sprite",

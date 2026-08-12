@@ -213,7 +213,13 @@ class RunnerAgentRelayRuntime:
             raise ValueError("Runner relay welcome is required before maintenance")
         job_id = _canonical_uuid(payload.get("job_id"), "job_id")
         if self._maintenance_job_id is not None:
-            raise ValueError("Runner relay is already in maintenance")
+            if self._maintenance_job_id != job_id:
+                raise ValueError("Runner relay is already in maintenance")
+            return json.dumps(
+                {"job_id": job_id, "type": "quiesced"},
+                separators=(",", ":"),
+                sort_keys=True,
+            )
         self._maintenance_job_id = job_id
         try:
             reference_count = len(self._sessions)

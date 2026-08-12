@@ -45,13 +45,13 @@ async def runner_relay_socket(websocket: WebSocket) -> None:
 
     runner_id = runner["runner_id"]
     await websocket.accept()
-    await runner_relay_broker.register_runner(runner_id, websocket)
     await websocket.send_json(
         {
             "runner_id": runner_id,
             "type": "welcome",
         }
     )
+    await runner_relay_broker.register_runner(runner_id, websocket)
     try:
         while True:
             message = await websocket.receive()

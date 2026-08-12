@@ -751,6 +751,7 @@ CREATE TABLE IF NOT EXISTS user_runners (
     revoked_at TEXT,
     noise_public_key TEXT,
     noise_public_key_confirmed_at TEXT,
+    restore_job_id TEXT,
     UNIQUE(user_id, kind)
 );
 
@@ -1017,6 +1018,7 @@ def _migrate_control(conn: sqlite3.Connection) -> None:
                 revoked_at TEXT,
                 noise_public_key TEXT,
                 noise_public_key_confirmed_at TEXT,
+                restore_job_id TEXT,
                 UNIQUE(user_id, kind)
             );
             CREATE INDEX IF NOT EXISTS idx_user_runners_user ON user_runners(user_id);
@@ -1041,6 +1043,10 @@ def _migrate_control(conn: sqlite3.Connection) -> None:
     if runner_columns and "noise_public_key_confirmed_at" not in runner_columns:
         logger.info("Control migration: adding Noise key confirmation to user_runners")
         conn.execute("ALTER TABLE user_runners ADD COLUMN noise_public_key_confirmed_at TEXT")
+        conn.commit()
+    if runner_columns and "restore_job_id" not in runner_columns:
+        logger.info("Control migration: adding restore job binding to user_runners")
+        conn.execute("ALTER TABLE user_runners ADD COLUMN restore_job_id TEXT")
         conn.commit()
 
     _migrate_runner_kinds(conn)
@@ -1282,6 +1288,30 @@ def _migrate_managed_backup_operation_columns(conn: sqlite3.Connection) -> None:
     for column_name, statement in migrations.items():
         if column_name not in columns:
             conn.execute(statement)
+    conn.execute("""
+        UPDATE managed_backup_operations
+        SET source_runner_id = (
+                SELECT runtime.runner_id
+                FROM managed_runtimes AS runtime
+                WHERE runtime.user_id = managed_backup_operations.user_id
+                  AND runtime.generation = managed_backup_operations.runtime_generation
+            ),
+            source_sprite_id = (
+                SELECT runtime.sprite_external_id
+                FROM managed_runtimes AS runtime
+                WHERE runtime.user_id = managed_backup_operations.user_id
+                  AND runtime.generation = managed_backup_operations.runtime_generation
+            )
+        WHERE status = 'running'
+          AND source_runner_id IS NULL
+          AND source_sprite_id IS NULL
+          AND EXISTS (
+              SELECT 1
+              FROM managed_runtimes AS runtime
+              WHERE runtime.user_id = managed_backup_operations.user_id
+                AND runtime.generation = managed_backup_operations.runtime_generation
+          )
+        """)
     conn.commit()
 
 
@@ -1319,6 +1349,7 @@ def _migrate_runner_kinds(conn: sqlite3.Connection) -> None:
                 revoked_at TEXT,
                 noise_public_key TEXT,
                 noise_public_key_confirmed_at TEXT,
+                restore_job_id TEXT,
                 UNIQUE(user_id, kind)
             )
             """)
@@ -1328,14 +1359,16 @@ def _migrate_runner_kinds(conn: sqlite3.Connection) -> None:
                 region, status, registration_token_hash,
                 registration_token_expires_at, runner_token_hash, registered_at,
                 last_heartbeat_at, runner_version, capabilities_json, data_dir,
-                revoked_at, noise_public_key, noise_public_key_confirmed_at
+                revoked_at, noise_public_key, noise_public_key_confirmed_at,
+                restore_job_id
             )
             SELECT
                 id, created_at, updated_at, user_id, 'byoc', name, cloud_provider,
                 region, status, registration_token_hash,
                 registration_token_expires_at, runner_token_hash, registered_at,
                 last_heartbeat_at, runner_version, capabilities_json, data_dir,
-                revoked_at, noise_public_key, noise_public_key_confirmed_at
+                revoked_at, noise_public_key, noise_public_key_confirmed_at,
+                restore_job_id
             FROM user_runners
             """)
         conn.execute("DROP TABLE user_runners")
@@ -1392,7 +1425,8 @@ def _migrate_managed_restore_runner_kind(conn: sqlite3.Connection) -> None:
                    registered_at TEXT, last_heartbeat_at TEXT, runner_version TEXT,
                    capabilities_json TEXT DEFAULT '{}' NOT NULL, data_dir TEXT,
                    revoked_at TEXT, noise_public_key TEXT,
-                   noise_public_key_confirmed_at TEXT, UNIQUE(user_id, kind)
+                   noise_public_key_confirmed_at TEXT, restore_job_id TEXT,
+                   UNIQUE(user_id, kind)
                )""")
         conn.execute("""INSERT INTO user_runners_expanded
                SELECT * FROM user_runners""")

@@ -1,0 +1,662 @@
+"""Regression tests for managed backup lifecycle review findings."""
+
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+
+import pytest
+
+
+@pytest.mark.asyncio
+async def test_restore_post_activation_delete_failure_preserves_candidate(tmp_path) -> None:
+    """A source cleanup failure must never delete the activated replacement."""
+    from yinshi.services.managed_backup_manager import ManagedBackupManager
+    from yinshi.services.managed_backups import ManagedBackupArchive, ManagedBackupOperation
+    from yinshi.services.managed_runtime_manager import OnlineManagedRunner
+
+    now = datetime(2026, 8, 12, 12, 0, tzinfo=timezone.utc)
+    operation = ManagedBackupOperation(
+        user_id="user-1",
+        job_id="job-restore",
+        archive_id="archive-1",
+        operation="restore",
+        status="running",
+        runtime_generation=7,
+        started_at="2026-08-12T12:00:00Z",
+        updated_at="2026-08-12T12:00:00Z",
+        last_error=None,
+        lease_owner="worker-1",
+        lease_token="lease-1",
+        lease_expires_at=(now + timedelta(minutes=2)).isoformat(),
+        source_runner_id="runner-1",
+        source_sprite_id="sprite-1",
+    )
+    archive = ManagedBackupArchive(
+        id="archive-1",
+        user_id="user-1",
+        runtime_generation=5,
+        status="ready",
+        object_key="private/archive.enc",
+        object_version="version-1",
+        size_bytes=17,
+        sha256="d" * 64,
+        wrapped_key=b"wrapped-key",
+        key_id="backup-v1",
+        owner_digest="c" * 64,
+        created_at="2026-08-11T12:00:00Z",
+        completed_at="2026-08-11T12:01:00Z",
+        last_error=None,
+    )
+    deleted: list[str] = []
+    revoked: list[str] = []
+
+    class RuntimeService:
+        artifact_version = "runner-v7"
+
+        async def provision_restore_candidate(self, *_args, **_values):
+            return OnlineManagedRunner(
+                "candidate-runner",
+                "MeAwP9ZBjS-MDni5HyLoyu0Pvkhlbc9HZ-SDT3Abj2I",
+            )
+
+        async def verify_restore_candidate(self, *_args, **_values) -> None:
+            return None
+
+    class Store:
+        async def get_file(self, target_path, **_values) -> None:
+            target_path.write_bytes(b"encrypted-archive")
+
+    class Provider:
+        async def upload_file(self, *_args, **_values) -> None:
+            return None
+
+        async def write_file(self, *_args, **_values) -> None:
+            return None
+
+        async def configure_service(self, *_args, **_values) -> None:
+            return None
+
+        async def start_service(self, *_args, **_values) -> None:
+            return None
+
+        async def delete_file(self, *_args, **_values) -> None:
+            return None
+
+        async def read_file(self, *_args, **_values) -> bytes:
+            return b'{"job_id":"job-restore","status":"restored"}'
+
+        async def delete_sprite(self, name: str) -> None:
+            deleted.append(name)
+            if name == "sprite-1":
+                raise RuntimeError("source deletion failed")
+
+    class Relay:
+        async def quiesce_runner(self, *_args, **_values) -> None:
+            return None
+
+        async def release_maintenance(self, *_args, **_values) -> None:
+            return None
+
+    manager = ManagedBackupManager(
+        provider=Provider(),
+        store=Store(),
+        relay=Relay(),
+        runtime_service=RuntimeService(),
+        wrapping_key=b"w" * 32,
+        restore_name_key="restore-secret",
+        claim_operation=lambda **_values: operation,
+        get_archive=lambda _user_id, _archive_id: archive,
+        unwrap_key=lambda **_values: b"k" * 32,
+        record_candidate=lambda **_values: True,
+        activate_candidate=lambda *_args, **_values: True,
+        revoke_restore_runner=lambda user_id, job_id: (
+            revoked.append(f"{user_id}:{job_id}") or True
+        ),
+        now=lambda: now,
+        new_lease_token=lambda: "lease-1",
+        staging_root=tmp_path,
+    )
+
+    with pytest.raises(RuntimeError, match="source deletion failed"):
+        await manager.run_once()
+
+    assert all("managed-restore-" not in name for name in deleted)
+    assert revoked == []
+
+
+@pytest.mark.asyncio
+async def test_restore_provisioning_failure_cleans_candidate_identity(tmp_path) -> None:
+    """Partial candidate provisioning must revoke authority and delete its Sprite."""
+    from yinshi.services.managed_backup_manager import ManagedBackupManager
+    from yinshi.services.managed_backups import ManagedBackupArchive, ManagedBackupOperation
+
+    now = datetime(2026, 8, 12, 12, 0, tzinfo=timezone.utc)
+    operation = ManagedBackupOperation(
+        user_id="user-1",
+        job_id="job-restore",
+        archive_id="archive-1",
+        operation="restore",
+        status="running",
+        runtime_generation=7,
+        started_at=now.isoformat(),
+        updated_at=now.isoformat(),
+        last_error=None,
+        lease_owner="worker-1",
+        lease_token="lease-1",
+        lease_expires_at=(now + timedelta(minutes=2)).isoformat(),
+        source_runner_id="runner-1",
+        source_sprite_id="sprite-1",
+    )
+    archive = ManagedBackupArchive(
+        id="archive-1",
+        user_id="user-1",
+        runtime_generation=5,
+        status="ready",
+        object_key="private/archive.enc",
+        object_version="version-1",
+        size_bytes=17,
+        sha256="d" * 64,
+        wrapped_key=b"wrapped-key",
+        key_id="backup-v1",
+        owner_digest="c" * 64,
+        created_at=now.isoformat(),
+        completed_at=now.isoformat(),
+        last_error=None,
+    )
+    deleted: list[str] = []
+    revoked: list[str] = []
+
+    class RuntimeService:
+        async def provision_restore_candidate(self, *_args, **_values):
+            raise RuntimeError("candidate install failed")
+
+    class Provider:
+        async def delete_sprite(self, name: str) -> None:
+            deleted.append(name)
+
+        async def start_service(self, *_args, **_values) -> None:
+            return None
+
+    class Relay:
+        async def release_maintenance(self, *_args, **_values) -> None:
+            return None
+
+    manager = ManagedBackupManager(
+        provider=Provider(),
+        store=object(),
+        relay=Relay(),
+        runtime_service=RuntimeService(),
+        wrapping_key=b"w" * 32,
+        restore_name_key="restore-secret",
+        claim_operation=lambda **_values: operation,
+        get_archive=lambda _user_id, _archive_id: archive,
+        revoke_restore_runner=lambda user_id, job_id: (
+            revoked.append(f"{user_id}:{job_id}") or True
+        ),
+        now=lambda: now,
+        new_lease_token=lambda: "lease-1",
+        staging_root=tmp_path,
+    )
+
+    with pytest.raises(RuntimeError, match="candidate install failed"):
+        await manager.run_once()
+    assert len(deleted) == 1
+    assert revoked == ["user-1:job-restore"]
+
+
+@pytest.mark.asyncio
+async def test_unrecorded_restore_candidate_is_cleaned_up(tmp_path) -> None:
+    """A candidate without a durable job link must lose Sprite and runner authority."""
+    from yinshi.services.managed_backup_manager import ManagedBackupManager
+    from yinshi.services.managed_backups import ManagedBackupArchive, ManagedBackupOperation
+    from yinshi.services.managed_runtime_manager import OnlineManagedRunner
+
+    now = datetime(2026, 8, 12, 12, 0, tzinfo=timezone.utc)
+    operation = ManagedBackupOperation(
+        user_id="user-1",
+        job_id="job-restore",
+        archive_id="archive-1",
+        operation="restore",
+        status="running",
+        runtime_generation=7,
+        started_at="2026-08-12T12:00:00Z",
+        updated_at="2026-08-12T12:00:00Z",
+        last_error=None,
+        lease_owner="worker-1",
+        lease_token="lease-1",
+        lease_expires_at=(now + timedelta(minutes=2)).isoformat(),
+        source_runner_id="runner-1",
+        source_sprite_id="sprite-1",
+    )
+    archive = ManagedBackupArchive(
+        id="archive-1",
+        user_id="user-1",
+        runtime_generation=5,
+        status="ready",
+        object_key="private/archive.enc",
+        object_version="version-1",
+        size_bytes=17,
+        sha256="d" * 64,
+        wrapped_key=b"wrapped-key",
+        key_id="backup-v1",
+        owner_digest="c" * 64,
+        created_at="2026-08-11T12:00:00Z",
+        completed_at="2026-08-11T12:01:00Z",
+        last_error=None,
+    )
+    deleted: list[str] = []
+    revoked: list[str] = []
+
+    class RuntimeService:
+        async def provision_restore_candidate(self, *_args, **_values):
+            return OnlineManagedRunner(
+                "candidate-runner",
+                "MeAwP9ZBjS-MDni5HyLoyu0Pvkhlbc9HZ-SDT3Abj2I",
+            )
+
+    class Provider:
+        async def delete_sprite(self, name: str) -> None:
+            deleted.append(name)
+
+        async def start_service(self, *_args, **_values) -> None:
+            return None
+
+    class Relay:
+        async def release_maintenance(self, *_args, **_values) -> None:
+            return None
+
+    manager = ManagedBackupManager(
+        provider=Provider(),
+        store=object(),
+        relay=Relay(),
+        runtime_service=RuntimeService(),
+        wrapping_key=b"w" * 32,
+        restore_name_key="restore-secret",
+        claim_operation=lambda **_values: operation,
+        get_archive=lambda _user_id, _archive_id: archive,
+        record_candidate=lambda **_values: False,
+        revoke_restore_runner=lambda user_id, job_id: (
+            revoked.append(f"{user_id}:{job_id}") or True
+        ),
+        now=lambda: now,
+        new_lease_token=lambda: "lease-1",
+        staging_root=tmp_path,
+    )
+
+    assert await manager.run_once()
+    assert len(deleted) == 1
+    assert "managed-restore-" in deleted[0]
+    assert revoked == ["user-1:job-restore"]
+
+
+@pytest.mark.asyncio
+async def test_create_upload_retry_does_not_replace_unrecorded_version(tmp_path) -> None:
+    """An uncertain first upload must not create a second immutable version."""
+    import hashlib
+    import json
+
+    from yinshi.services.managed_backup_manager import ManagedBackupManager
+    from yinshi.services.managed_backup_store import StoredManagedBackup
+    from yinshi.services.managed_backups import ManagedBackupArchive, ManagedBackupOperation
+    from yinshi.services.managed_runners import ManagedRuntimeStatus
+
+    payload = b"encrypted-archive"
+    digest = hashlib.sha256(payload).hexdigest()
+    now = datetime(2026, 8, 12, 12, 0, tzinfo=timezone.utc)
+    operation = ManagedBackupOperation(
+        user_id="user-1",
+        job_id="job-create",
+        archive_id="archive-1",
+        operation="create",
+        status="running",
+        runtime_generation=7,
+        started_at=now.isoformat(),
+        updated_at=now.isoformat(),
+        last_error=None,
+        phase="object_uploading",
+        lease_owner="worker-1",
+        lease_token="lease-1",
+        lease_expires_at=(now + timedelta(minutes=2)).isoformat(),
+    )
+    archive = ManagedBackupArchive(
+        id="archive-1",
+        user_id="user-1",
+        runtime_generation=7,
+        status="creating",
+        object_key="managed-v1/archive-1.enc",
+        object_version=None,
+        size_bytes=None,
+        sha256=None,
+        wrapped_key=b"wrapped-key",
+        key_id="backup-v1",
+        owner_digest="c" * 64,
+        created_at=now.isoformat(),
+        completed_at=None,
+        last_error=None,
+    )
+    runtime = ManagedRuntimeStatus(
+        user_id="user-1",
+        runner_id="runner-1",
+        provider_name="fly_sprites",
+        sprite_name="sprite-1",
+        lifecycle_status="ready",
+        generation=7,
+        artifact_version="runner-v1",
+        created_at=now.isoformat(),
+        updated_at=now.isoformat(),
+        last_error=None,
+    )
+
+    class Provider:
+        async def stop_service(self, *_args, **_values) -> None:
+            return None
+
+        async def write_file(self, *_args, **_values) -> None:
+            return None
+
+        async def configure_service(self, *_args, **_values) -> None:
+            return None
+
+        async def start_service(self, *_args, **_values) -> None:
+            return None
+
+        async def read_file(self, *_args, **_values) -> bytes:
+            return json.dumps(
+                {
+                    "job_id": operation.job_id,
+                    "sha256": digest,
+                    "size_bytes": len(payload),
+                    "status": "ready",
+                }
+            ).encode()
+
+        async def download_file(self, _name, **values) -> None:
+            values["target_path"].write_bytes(payload)
+
+        async def delete_file(self, *_args, **_values) -> None:
+            return None
+
+    class Store:
+        async def put_file(self, *_args, **_values) -> StoredManagedBackup:
+            raise AssertionError("uncertain upload must not be repeated")
+
+    class Relay:
+        async def quiesce_runner(self, *_args, **_values) -> None:
+            return None
+
+        async def release_maintenance(self, *_args, **_values) -> None:
+            return None
+
+    manager = ManagedBackupManager(
+        provider=Provider(),
+        store=Store(),
+        relay=Relay(),
+        wrapping_key=b"w" * 32,
+        claim_operation=lambda **_values: operation,
+        get_archive=lambda _user_id, _archive_id: archive,
+        get_runtime=lambda _user_id: runtime,
+        get_runner=lambda _user_id: {
+            "id": "runner-1",
+            "noise_public_key": "MeAwP9ZBjS-MDni5HyLoyu0Pvkhlbc9HZ-SDT3Abj2I",
+        },
+        unwrap_key=lambda **_values: b"k" * 32,
+        now=lambda: now,
+        new_lease_token=lambda: "lease-1",
+        staging_root=tmp_path,
+    )
+
+    with pytest.raises(RuntimeError, match="manual storage reconciliation"):
+        await manager.run_once()
+
+
+@pytest.mark.asyncio
+async def test_create_upload_publication_failure_keeps_version_for_retry(tmp_path) -> None:
+    """A failed catalog publication must retain exact object metadata for retry."""
+    import hashlib
+    import json
+
+    from yinshi.services.managed_backup_manager import ManagedBackupManager
+    from yinshi.services.managed_backup_store import StoredManagedBackup
+    from yinshi.services.managed_backups import ManagedBackupArchive, ManagedBackupOperation
+    from yinshi.services.managed_runners import ManagedRuntimeStatus
+
+    payload = b"encrypted-archive"
+    digest = hashlib.sha256(payload).hexdigest()
+    now = datetime(2026, 8, 12, 12, 0, tzinfo=timezone.utc)
+    operation = ManagedBackupOperation(
+        user_id="user-1",
+        job_id="job-create",
+        archive_id="archive-1",
+        operation="create",
+        status="running",
+        runtime_generation=7,
+        started_at=now.isoformat(),
+        updated_at=now.isoformat(),
+        last_error=None,
+        lease_owner="worker-1",
+        lease_token="lease-1",
+        lease_expires_at=(now + timedelta(minutes=2)).isoformat(),
+    )
+    archive = ManagedBackupArchive(
+        id="archive-1",
+        user_id="user-1",
+        runtime_generation=7,
+        status="creating",
+        object_key="managed-v1/archive-1.enc",
+        object_version=None,
+        size_bytes=None,
+        sha256=None,
+        wrapped_key=b"wrapped-key",
+        key_id="backup-v1",
+        owner_digest="c" * 64,
+        created_at=now.isoformat(),
+        completed_at=None,
+        last_error=None,
+    )
+    runtime = ManagedRuntimeStatus(
+        user_id="user-1",
+        runner_id="runner-1",
+        provider_name="fly_sprites",
+        sprite_name="sprite-1",
+        lifecycle_status="ready",
+        generation=7,
+        artifact_version="runner-v1",
+        created_at=now.isoformat(),
+        updated_at=now.isoformat(),
+        last_error=None,
+    )
+    cleanup_versions: list[str] = []
+
+    class Provider:
+        async def stop_service(self, *_args, **_values) -> None:
+            return None
+
+        async def write_file(self, *_args, **_values) -> None:
+            return None
+
+        async def configure_service(self, *_args, **_values) -> None:
+            return None
+
+        async def start_service(self, *_args, **_values) -> None:
+            return None
+
+        async def read_file(self, *_args, **_values) -> bytes:
+            return json.dumps(
+                {
+                    "job_id": operation.job_id,
+                    "sha256": digest,
+                    "size_bytes": len(payload),
+                    "status": "ready",
+                }
+            ).encode()
+
+        async def download_file(self, _name, **values) -> None:
+            values["target_path"].write_bytes(payload)
+
+        async def delete_file(self, *_args, **_values) -> None:
+            return None
+
+    class Store:
+        async def put_file(self, *_args, **_values) -> StoredManagedBackup:
+            return StoredManagedBackup("version-1", len(payload), digest)
+
+        async def delete_file(self, **values) -> None:
+            cleanup_versions.append(values["object_version"])
+            raise RuntimeError("storage cleanup unavailable")
+
+    class Relay:
+        async def quiesce_runner(self, *_args, **_values) -> None:
+            return None
+
+        async def release_maintenance(self, *_args, **_values) -> None:
+            return None
+
+    recorded: list[str] = []
+    manager = ManagedBackupManager(
+        provider=Provider(),
+        store=Store(),
+        relay=Relay(),
+        wrapping_key=b"w" * 32,
+        claim_operation=lambda **_values: operation,
+        get_archive=lambda _user_id, _archive_id: archive,
+        get_runtime=lambda _user_id: runtime,
+        get_runner=lambda _user_id: {
+            "id": "runner-1",
+            "noise_public_key": "MeAwP9ZBjS-MDni5HyLoyu0Pvkhlbc9HZ-SDT3Abj2I",
+        },
+        unwrap_key=lambda **_values: b"k" * 32,
+        record_upload=lambda *_args, **values: (recorded.append(values["object_version"]) or False),
+        advance_operation=lambda **_values: True,
+        now=lambda: now,
+        new_lease_token=lambda: "lease-1",
+        staging_root=tmp_path,
+    )
+
+    assert await manager.run_once()
+    assert recorded == ["version-1"]
+    assert cleanup_versions == []
+
+
+@pytest.mark.asyncio
+async def test_create_upload_failure_recovers_source_runtime(tmp_path) -> None:
+    """A transfer failure after quiescence must restore source availability."""
+    import hashlib
+    import json
+
+    from yinshi.services.managed_backup_manager import ManagedBackupManager
+    from yinshi.services.managed_backups import ManagedBackupArchive, ManagedBackupOperation
+    from yinshi.services.managed_runners import ManagedRuntimeStatus
+
+    payload = b"encrypted-archive"
+    digest = hashlib.sha256(payload).hexdigest()
+    now = datetime(2026, 8, 12, 12, 0, tzinfo=timezone.utc)
+    operation = ManagedBackupOperation(
+        user_id="user-1",
+        job_id="018f47a2-9d3a-7f3b-8f0f-1a2b3c4d5e91",
+        archive_id="archive-1",
+        operation="create",
+        status="running",
+        runtime_generation=7,
+        started_at="2026-08-12T12:00:00Z",
+        updated_at="2026-08-12T12:00:00Z",
+        last_error=None,
+        lease_owner="worker-1",
+        lease_token="lease-1",
+        lease_expires_at=(now + timedelta(minutes=2)).isoformat(),
+    )
+    archive = ManagedBackupArchive(
+        id="archive-1",
+        user_id="user-1",
+        runtime_generation=7,
+        status="creating",
+        object_key="managed/archive.enc",
+        object_version=None,
+        size_bytes=None,
+        sha256=None,
+        wrapped_key=b"wrapped-key",
+        key_id="backup-v1",
+        owner_digest="c" * 64,
+        created_at="2026-08-12T12:00:00Z",
+        completed_at=None,
+        last_error=None,
+    )
+    runtime = ManagedRuntimeStatus(
+        user_id="user-1",
+        runner_id="runner-1",
+        provider_name="fly_sprites",
+        sprite_name="sprite-1",
+        lifecycle_status="ready",
+        generation=7,
+        artifact_version="runner-v1",
+        created_at="2026-08-12T12:00:00Z",
+        updated_at="2026-08-12T12:00:00Z",
+        last_error=None,
+    )
+    events: list[str] = []
+
+    class Provider:
+        async def stop_service(self, *_args, **_values) -> None:
+            return None
+
+        async def write_file(self, *_args, **_values) -> None:
+            return None
+
+        async def configure_service(self, *_args, **_values) -> None:
+            return None
+
+        async def delete_file(self, *_args, **_values) -> None:
+            events.append("cleanup")
+
+        async def start_service(self, _name, **values) -> None:
+            events.append(f"start:{values['service_name']}")
+
+        async def read_file(self, *_args, **_values) -> bytes:
+            return json.dumps(
+                {
+                    "job_id": operation.job_id,
+                    "sha256": digest,
+                    "size_bytes": len(payload),
+                    "status": "ready",
+                }
+            ).encode()
+
+        async def download_file(self, _name, **values) -> None:
+            values["target_path"].write_bytes(payload)
+
+    class Store:
+        async def put_file(self, *_args, **_values):
+            raise RuntimeError("object storage unavailable")
+
+    class Relay:
+        async def quiesce_runner(self, *_args, **_values) -> None:
+            return None
+
+        async def release_maintenance(self, *_args, **_values) -> None:
+            events.append("release")
+
+    manager = ManagedBackupManager(
+        provider=Provider(),
+        store=Store(),
+        relay=Relay(),
+        wrapping_key=b"w" * 32,
+        claim_operation=lambda **_values: operation,
+        get_archive=lambda _user_id, _archive_id: archive,
+        get_runtime=lambda _user_id: runtime,
+        get_runner=lambda _user_id: {
+            "id": "runner-1",
+            "noise_public_key": "MeAwP9ZBjS-MDni5HyLoyu0Pvkhlbc9HZ-SDT3Abj2I",
+        },
+        unwrap_key=lambda **_values: b"k" * 32,
+        advance_operation=lambda **_values: True,
+        now=lambda: now,
+        new_lease_token=lambda: "lease-1",
+        staging_root=tmp_path,
+    )
+
+    with pytest.raises(RuntimeError, match="object storage unavailable"):
+        await manager.run_once()
+
+    assert "start:yinshi-sidecar" in events
+    assert "start:yinshi-runner" in events
+    assert "release" in events
+    assert "cleanup" in events

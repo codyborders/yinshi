@@ -7,10 +7,12 @@ import hashlib
 import secrets
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Protocol
 
 from yinshi.db import get_control_db
+from yinshi.services.managed_backups import ManagedBackupOperation
 from yinshi.services.runner_capabilities import VerifiedRunnerCapability
 
 _RUNNER_PREFIX_LENGTH = 16
@@ -161,8 +163,12 @@ class _RunnerConnection:
     websocket: RelayWebSocket
     send_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     sessions: set[str] = field(default_factory=set)
-    maintenance_job_id: str | None = None
-    maintenance_acknowledgement: asyncio.Future[None] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _RunnerMaintenance:
+    job_id: str
+    acknowledgement: asyncio.Future[None] | None
 
 
 @dataclass(slots=True)
@@ -175,12 +181,31 @@ class _ClientConnection:
     ciphertext_bytes: int = 0
 
 
+def _get_running_maintenance_operation(
+    runner_id: str,
+) -> ManagedBackupOperation | None:
+    """Load one durable source-runner fence without coupling relay import startup."""
+    from yinshi.services.managed_backups import (
+        get_running_managed_backup_operation_for_runner,
+    )
+
+    return get_running_managed_backup_operation_for_runner(runner_id)
+
+
 class RunnerRelayBroker:
     """Route framed ciphertext between one outbound runner and bounded clients."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        get_running_operation: Callable[[str], ManagedBackupOperation | None] | None = None,
+    ) -> None:
+        if get_running_operation is not None and not callable(get_running_operation):
+            raise TypeError("get_running_operation must be callable or None")
+        self._get_running_operation = get_running_operation
         self._lock = asyncio.Lock()
         self._runners: dict[str, _RunnerConnection] = {}
+        self._maintenance: dict[str, _RunnerMaintenance] = {}
         self._clients: dict[str, _ClientConnection] = {}
 
     def is_runner_connected(self, runner_id: str) -> bool:
@@ -193,6 +218,10 @@ class RunnerRelayBroker:
         """Register one current outbound runner connection, replacing stale state."""
         if not isinstance(runner_id, str) or not runner_id:
             raise ValueError("runner_id must not be empty")
+        durable_operation = (
+            None if self._get_running_operation is None else self._get_running_operation(runner_id)
+        )
+        durable_job_id = None if durable_operation is None else durable_operation.job_id
         clients_to_close: list[_ClientConnection] = []
         async with self._lock:
             previous = self._runners.get(runner_id)
@@ -203,10 +232,23 @@ class RunnerRelayBroker:
                         self._close_client_queue(client)
                         clients_to_close.append(client)
             self._runners[runner_id] = _RunnerConnection(websocket=websocket)
+            maintenance = self._maintenance.get(runner_id)
+            maintenance_job_id = None if maintenance is None else maintenance.job_id
+            if durable_job_id is not None and maintenance is None:
+                acknowledgement = asyncio.get_running_loop().create_future()
+                self._maintenance[runner_id] = _RunnerMaintenance(
+                    durable_job_id,
+                    acknowledgement,
+                )
+                maintenance_job_id = durable_job_id
         if previous is not None:
             await previous.websocket.close(code=4001, reason="Runner connection replaced")
         for client in clients_to_close:
             await client.websocket.close(code=4002, reason="Runner connection replaced")
+        if maintenance_job_id is not None:
+            control_message = '{"job_id":"' + maintenance_job_id + '","type":"quiesce"}'
+            async with self._runners[runner_id].send_lock:
+                await websocket.send_text(control_message)
 
     async def unregister_runner(self, runner_id: str, websocket: RelayWebSocket) -> None:
         """Remove only the matching runner connection and close attached clients."""
@@ -246,11 +288,18 @@ class RunnerRelayBroker:
             runner = self._runners.get(runner_id)
             if runner is None:
                 raise RunnerRelayAuthorizationError("Runner is not connected")
-            if runner.maintenance_job_id is not None:
-                raise RunnerRelayAuthorizationError("Runner maintenance is already active")
-            acknowledgement: asyncio.Future[None] = asyncio.get_running_loop().create_future()
-            runner.maintenance_job_id = normalized_job_id
-            runner.maintenance_acknowledgement = acknowledgement
+            existing_maintenance = self._maintenance.get(runner_id)
+            if existing_maintenance is not None:
+                if existing_maintenance.job_id != normalized_job_id:
+                    raise RunnerRelayAuthorizationError("Runner maintenance is already active")
+                acknowledgement = existing_maintenance.acknowledgement
+                if acknowledgement is None or acknowledgement.done():
+                    return
+                maintenance = existing_maintenance
+            else:
+                acknowledgement = asyncio.get_running_loop().create_future()
+                maintenance = _RunnerMaintenance(normalized_job_id, acknowledgement)
+                self._maintenance[runner_id] = maintenance
             for transfer_id in tuple(runner.sessions):
                 client = self._clients.pop(transfer_id, None)
                 runner.sessions.discard(transfer_id)
@@ -269,23 +318,21 @@ class RunnerRelayBroker:
             )
         except BaseException:
             async with self._lock:
-                current = self._runners.get(runner_id)
-                if current is runner and current.maintenance_job_id == normalized_job_id:
-                    current.maintenance_job_id = None
-                    current.maintenance_acknowledgement = None
+                current = self._maintenance.get(runner_id)
+                if current is maintenance:
+                    del self._maintenance[runner_id]
             raise
 
     async def runner_quiesced(self, runner_id: str, job_id: str) -> None:
         """Accept one exact maintenance acknowledgement from the current runner."""
         normalized_job_id = _require_transfer_id(job_id)
         async with self._lock:
-            runner = self._runners.get(runner_id)
-            if runner is None or runner.maintenance_job_id != normalized_job_id:
+            maintenance = self._maintenance.get(runner_id)
+            if maintenance is None or maintenance.job_id != normalized_job_id:
                 raise RunnerRelayAuthorizationError("Runner maintenance acknowledgement mismatched")
-            acknowledgement = runner.maintenance_acknowledgement
-            if acknowledgement is None or acknowledgement.done():
-                raise RunnerRelayAuthorizationError("Runner maintenance acknowledgement is stale")
-            acknowledgement.set_result(None)
+            acknowledgement = maintenance.acknowledgement
+            if acknowledgement is not None and not acknowledgement.done():
+                acknowledgement.set_result(None)
 
     async def release_maintenance(self, runner_id: str, *, job_id: str) -> None:
         """Release only the matching maintenance fence on one current runner."""
@@ -293,14 +340,13 @@ class RunnerRelayBroker:
             raise ValueError("runner_id must not be empty")
         normalized_job_id = _require_transfer_id(job_id)
         async with self._lock:
-            runner = self._runners.get(runner_id)
-            if runner is None or runner.maintenance_job_id != normalized_job_id:
+            maintenance = self._maintenance.get(runner_id)
+            if maintenance is None or maintenance.job_id != normalized_job_id:
                 raise RunnerRelayAuthorizationError("Runner maintenance release mismatched")
-            acknowledgement = runner.maintenance_acknowledgement
-            if acknowledgement is None or not acknowledgement.done():
+            acknowledgement = maintenance.acknowledgement
+            if acknowledgement is not None and not acknowledgement.done():
                 raise RunnerRelayAuthorizationError("Runner maintenance is not quiesced")
-            runner.maintenance_job_id = None
-            runner.maintenance_acknowledgement = None
+            del self._maintenance[runner_id]
 
     async def attach_client(
         self,
@@ -314,7 +360,7 @@ class RunnerRelayBroker:
             runner = self._runners.get(grant.runner_id)
             if runner is None:
                 raise RunnerRelayAuthorizationError("Runner is not connected")
-            if runner.maintenance_job_id is not None:
+            if grant.runner_id in self._maintenance:
                 raise RunnerRelayAuthorizationError("Runner maintenance is active")
             if len(runner.sessions) >= _RUNNER_SESSIONS_MAX:
                 raise RunnerRelayAuthorizationError("Runner session limit was reached")
@@ -438,6 +484,7 @@ class RunnerRelayBroker:
         clients_to_close: list[_ClientConnection] = []
         async with self._lock:
             runner = self._runners.pop(runner_id, None)
+            self._maintenance.pop(runner_id, None)
             if runner is None:
                 return
             for transfer_id in tuple(runner.sessions):
@@ -469,4 +516,4 @@ class RunnerRelayBroker:
         client.ciphertext_bytes += count
 
 
-runner_relay_broker = RunnerRelayBroker()
+runner_relay_broker = RunnerRelayBroker(get_running_operation=_get_running_maintenance_operation)

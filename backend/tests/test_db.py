@@ -962,6 +962,60 @@ def test_control_db_migrates_runner_kind_without_losing_grants(
         get_settings.cache_clear()
 
 
+def test_control_db_migrates_pre_kind_runner_before_restore_job_binding(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Old runner schemas must gain kind and restore-job columns without data loss."""
+    control_path = tmp_path / "control.db"
+    monkeypatch.setenv("CONTROL_DB_PATH", str(control_path))
+    monkeypatch.setenv("SECRET_KEY", "test-secret")
+    monkeypatch.setenv("ENCRYPTION_PEPPER", "a" * 64)
+    monkeypatch.setenv("TENANT_DB_ENCRYPTION", "disabled")
+    connection = sqlite3.connect(control_path)
+    connection.executescript("""
+        CREATE TABLE users (
+            id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE,
+            credit_used_cents INTEGER DEFAULT 0, credit_limit_cents INTEGER DEFAULT 500
+        );
+        CREATE TABLE user_runners (
+            id TEXT PRIMARY KEY, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+            user_id TEXT NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+            name TEXT NOT NULL, cloud_provider TEXT NOT NULL, region TEXT NOT NULL,
+            status TEXT DEFAULT 'pending' NOT NULL, registration_token_hash TEXT,
+            registration_token_expires_at TEXT, runner_token_hash TEXT,
+            registered_at TEXT, last_heartbeat_at TEXT, runner_version TEXT,
+            capabilities_json TEXT DEFAULT '{}' NOT NULL, data_dir TEXT,
+            revoked_at TEXT, noise_public_key TEXT, noise_public_key_confirmed_at TEXT
+        );
+        INSERT INTO users (id, email) VALUES ('user-1', 'runner@example.com');
+        INSERT INTO user_runners (
+            id, user_id, name, cloud_provider, region
+        ) VALUES ('runner-1', 'user-1', 'Existing', 'aws', 'us-west-2');
+        """)
+    connection.commit()
+    connection.close()
+
+    from yinshi.config import get_settings
+    from yinshi.db import get_control_db, init_control_db
+
+    get_settings.cache_clear()
+    try:
+        init_control_db()
+        with get_control_db() as database:
+            columns = {row[1] for row in database.execute("PRAGMA table_info(user_runners)")}
+            runner = database.execute(
+                "SELECT kind, restore_job_id FROM user_runners WHERE id = 'runner-1'"
+            ).fetchone()
+        assert {"kind", "restore_job_id"} <= columns
+        assert runner is not None
+        assert runner["kind"] == "byoc"
+        assert runner["restore_job_id"] is None
+    finally:
+        get_settings.cache_clear()
+
+
 def test_control_db_expands_existing_managed_runner_roles(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1388,7 +1442,8 @@ def test_managed_backup_schema_migrates_existing_operation_rows(
         assert operation is not None
         assert operation["phase"] == "claimed"
         assert operation["attempt_count"] == 0
-        assert operation["source_runner_id"] is None
+        assert operation["source_runner_id"] == "runner-1"
+        assert operation["source_sprite_id"] == "sprite-1"
     finally:
         get_settings.cache_clear()
 

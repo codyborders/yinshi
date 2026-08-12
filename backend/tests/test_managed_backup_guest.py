@@ -219,6 +219,76 @@ def test_run_create_job_writes_fixed_private_result(tmp_path: Path) -> None:
     assert result_path.stat().st_mode & 0o777 == 0o600
 
 
+def test_run_create_job_reuses_valid_existing_result(tmp_path: Path) -> None:
+    """A same-job retry should reuse completed encrypted output without overwriting it."""
+    import base64
+    import json
+
+    from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
+
+    from yinshi.managed_backup_guest import run_managed_backup_job
+    from yinshi.services.managed_backup_crypto import seal_managed_backup_job
+
+    state_root = tmp_path / "state"
+    sqlite_root = state_root / "sqlite"
+    files_root = state_root / "files"
+    maintenance_root = state_root / "maintenance"
+    sqlite_root.mkdir(parents=True)
+    files_root.mkdir()
+    maintenance_root.mkdir()
+    (sqlite_root / "control.db").write_bytes(b"database")
+    runner_key = X25519PrivateKey.generate()
+    job_id = "018f47a2-9d3a-7f3b-8f0f-1a2b3c4d5e80"
+    envelope = seal_managed_backup_job(
+        {
+            "archive_context": {
+                "archive_id": "archive-1",
+                "created_at": "2026-08-12T12:00:00+00:00",
+                "owner_digest": "a" * 64,
+                "runtime_generation": 8,
+            },
+            "archive_key": base64.urlsafe_b64encode(b"j" * 32).rstrip(b"=").decode("ascii"),
+            "job_id": job_id,
+            "operation": "create",
+            "version": 1,
+        },
+        runner_public_key=base64.urlsafe_b64encode(runner_key.public_key().public_bytes_raw())
+        .rstrip(b"=")
+        .decode("ascii"),
+        job_id=job_id,
+    )
+    job_path = maintenance_root / f"{job_id}.job"
+    result_path = maintenance_root / f"{job_id}.result"
+    archive_path = maintenance_root / f"{job_id}.archive.enc"
+    job_path.write_bytes(envelope)
+    job_path.chmod(0o600)
+
+    run_managed_backup_job(
+        job_path=job_path,
+        result_path=result_path,
+        runner_private_key=runner_key.private_bytes_raw(),
+        sqlite_root=sqlite_root,
+        files_root=files_root,
+        maintenance_root=maintenance_root,
+        expected_job_id=job_id,
+    )
+    first_archive = archive_path.read_bytes()
+    first_result = json.loads(result_path.read_text(encoding="utf-8"))
+
+    run_managed_backup_job(
+        job_path=job_path,
+        result_path=result_path,
+        runner_private_key=runner_key.private_bytes_raw(),
+        sqlite_root=sqlite_root,
+        files_root=files_root,
+        maintenance_root=maintenance_root,
+        expected_job_id=job_id,
+    )
+
+    assert archive_path.read_bytes() == first_archive
+    assert json.loads(result_path.read_text(encoding="utf-8")) == first_result
+
+
 def test_run_restore_job_replaces_data_and_writes_private_result(tmp_path: Path) -> None:
     """A sealed restore job should replace both roots and report exact completion."""
     import base64

@@ -83,7 +83,6 @@ async def test_s3_store_roundtrips_a_versioned_encrypted_object(tmp_path: Path) 
         expected_size=len(payload),
         expected_sha256=digest,
         archive_id="archive-1",
-        owner_digest="a" * 64,
     )
     restored = tmp_path / "restored.enc"
     await store.get_file(
@@ -101,7 +100,6 @@ async def test_s3_store_roundtrips_a_versioned_encrypted_object(tmp_path: Path) 
     assert client.metadata == {
         "archive-id": "archive-1",
         "format": "yinshi-managed-backup-v1",
-        "owner-digest": "a" * 64,
         "sha256": digest,
     }
     assert not client.aborted
@@ -138,7 +136,6 @@ async def test_s3_store_removes_completed_object_when_validation_fails(
             expected_size=len(payload),
             expected_sha256=hashlib.sha256(payload).hexdigest(),
             archive_id="archive-1",
-            owner_digest="a" * 64,
         )
 
     assert client.object == b""

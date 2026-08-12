@@ -139,7 +139,6 @@ class S3ManagedBackupStore:
         expected_size: int,
         expected_sha256: str,
         archive_id: str,
-        owner_digest: str,
     ) -> StoredManagedBackup:
         """Upload one file with multipart checksums and conditional completion."""
         key = self._object_key(object_key)
@@ -148,16 +147,11 @@ class S3ManagedBackupStore:
             raise ValueError("source_path must be a regular file")
         if source_path.stat().st_size != expected_size:
             raise ValueError("source file size does not match expected_size")
-        if (
-            not archive_id
-            or len(archive_id) > 128
-            or _SHA256_PATTERN.fullmatch(owner_digest) is None
-        ):
+        if not archive_id or len(archive_id) > 128:
             raise ValueError("archive object metadata is invalid")
         metadata = {
             "archive-id": archive_id,
             "format": "yinshi-managed-backup-v1",
-            "owner-digest": owner_digest,
             "sha256": expected_sha256,
         }
         created = await asyncio.to_thread(
