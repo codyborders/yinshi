@@ -4,7 +4,10 @@ import {
   uploadHostedPiConfig,
 } from "./encryptedUpload";
 import {
+  connectEncryptedRunner,
   requestEncryptedRunner,
+  type EncryptedRunnerConnection,
+  type EncryptedRunnerConnectionOptions,
   type EncryptedRunnerRequest,
 } from "../runner/encryptedRunnerClient";
 
@@ -33,10 +36,15 @@ interface JsonApiClient {
 }
 
 type EncryptedRequest = <T>(request: EncryptedRunnerRequest) => Promise<T>;
+type ConnectEncrypted = (
+  options: EncryptedRunnerConnectionOptions,
+) => Promise<EncryptedRunnerConnection>;
 
 interface RuntimeTransportDependencies {
   readonly apiClient: JsonApiClient;
   readonly encryptedRequest: EncryptedRequest;
+  readonly connectEncrypted?: ConnectEncrypted;
+  readonly now?: () => number;
 }
 
 export interface RuntimeTransport {
@@ -47,6 +55,7 @@ export interface RuntimeTransport {
   put<T>(path: string, body?: unknown): Promise<T>;
   delete(path: string): Promise<void>;
   upload<T>(path: string, file: File): Promise<T>;
+  close(): void;
 }
 
 const RESOURCE_ID = "[0-9a-f]{32}";
@@ -295,6 +304,8 @@ export function createRuntimeTransport(
         ? hostedApi
         : api,
     encryptedRequest: requestEncryptedRunner,
+    connectEncrypted: connectEncryptedRunner,
+    now: Date.now,
   };
   if (
     !runtimeDependencies.apiClient ||
@@ -305,6 +316,107 @@ export function createRuntimeTransport(
   if (typeof runtimeDependencies.encryptedRequest !== "function") {
     throw new TypeError("Encrypted runtime request must be callable");
   }
+  if (
+    runtimeDependencies.connectEncrypted !== undefined &&
+    typeof runtimeDependencies.connectEncrypted !== "function"
+  ) {
+    throw new TypeError("Encrypted runtime connector must be callable");
+  }
+  interface ManagedConnectionEntry {
+    connection: Promise<EncryptedRunnerConnection>;
+    tail: Promise<void>;
+  }
+
+  const managedConnections = new Map<string, ManagedConnectionEntry>();
+  let closed = false;
+
+  async function managedRequest<T>(
+    scope: string,
+    method: RuntimeMethod,
+    pathname: string,
+    query: Readonly<Record<string, string>>,
+    body: unknown,
+  ): Promise<T> {
+    if (closed) {
+      throw new Error("Runtime transport is closed");
+    }
+    const connect =
+      runtimeDependencies.connectEncrypted ?? connectEncryptedRunner;
+    let entry = managedConnections.get(scope);
+    if (entry === undefined) {
+      const connection = connect({
+        expectedRunnerPublicKey:
+          runtime.location === "managed" ? runtime.runnerPublicKey : "",
+        scopes: [scope],
+        maxSessionBytes: RUNTIME_TRANSPORT_SESSION_BYTES,
+        capabilityEndpoint: "/api/runtime/capabilities",
+      });
+      entry = { connection, tail: Promise.resolve() };
+      managedConnections.set(scope, entry);
+      void connection.catch(() => {
+        if (managedConnections.get(scope) === entry) {
+          managedConnections.delete(scope);
+        }
+      });
+    }
+    const activeEntry = entry;
+    const operation = activeEntry.tail.then(async () => {
+      let connection = await activeEntry.connection;
+      if (closed) {
+        connection.close();
+        throw new Error("Runtime transport is closed");
+      }
+      const now = runtimeDependencies.now ?? Date.now;
+      if (
+        connection.expiresAtMs !== undefined &&
+        connection.expiresAtMs <= now()
+      ) {
+        connection.close();
+        if (closed) {
+          throw new Error("Runtime transport is closed");
+        }
+        const replacement = connect({
+          expectedRunnerPublicKey:
+            runtime.location === "managed" ? runtime.runnerPublicKey : "",
+          scopes: [scope],
+          maxSessionBytes: RUNTIME_TRANSPORT_SESSION_BYTES,
+          capabilityEndpoint: "/api/runtime/capabilities",
+        });
+        activeEntry.connection = replacement;
+        try {
+          connection = await replacement;
+        } catch (error) {
+          if (managedConnections.get(scope) === activeEntry) {
+            managedConnections.delete(scope);
+          }
+          throw error;
+        }
+        if (closed) {
+          connection.close();
+          throw new Error("Runtime transport is closed");
+        }
+      }
+      try {
+        return await connection.request<T>({
+          method,
+          path: pathname,
+          query,
+          body,
+        });
+      } catch (error) {
+        if (managedConnections.get(scope) === activeEntry) {
+          managedConnections.delete(scope);
+        }
+        connection.close();
+        throw error;
+      }
+    });
+    activeEntry.tail = operation.then(
+      () => undefined,
+      () => undefined,
+    );
+    return operation;
+  }
 
   async function request<T>(
     method: RuntimeMethod,
@@ -314,6 +426,15 @@ export function createRuntimeTransport(
     if (runtime.location === "byoc" || runtime.location === "managed") {
       const parsedPath = parseRemotePath(path);
       const scope = requiredScope(method, parsedPath.pathname);
+      if (runtime.location === "managed") {
+        return managedRequest<T>(
+          scope,
+          method,
+          parsedPath.pathname,
+          parsedPath.query,
+          body ?? null,
+        );
+      }
       return runtimeDependencies.encryptedRequest<T>({
         expectedRunnerPublicKey: runtime.runnerPublicKey,
         scopes: [scope],
@@ -322,9 +443,6 @@ export function createRuntimeTransport(
         query: parsedPath.query,
         body: body ?? null,
         maxSessionBytes: RUNTIME_TRANSPORT_SESSION_BYTES,
-        ...(runtime.location === "managed"
-          ? { capabilityEndpoint: "/api/runtime/capabilities" as const }
-          : {}),
       });
     }
     if (method === "GET") {
@@ -368,6 +486,17 @@ export function createRuntimeTransport(
         return uploadHostedPiConfig<T>(file);
       }
       return runtimeDependencies.apiClient.upload<T>(path, file);
+    },
+    close: () => {
+      if (closed) return;
+      closed = true;
+      for (const entry of managedConnections.values()) {
+        void entry.connection.then(
+          (connection) => connection.close(),
+          () => undefined,
+        );
+      }
+      managedConnections.clear();
     },
   };
 }

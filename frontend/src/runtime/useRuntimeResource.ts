@@ -29,6 +29,7 @@ export function useRuntimeResource(encodedId: string | undefined): RuntimeResour
 
   useEffect(() => {
     let cancelled = false;
+    let transport: RuntimeTransport | null = null;
     if (!encodedId) {
       setState({ resource: null, loading: false, error: "Runtime resource ID is missing" });
       return () => {
@@ -49,11 +50,12 @@ export function useRuntimeResource(encodedId: string | undefined): RuntimeResour
           controller.signal,
         );
         if (!cancelled) {
+          transport = createRuntimeTransport(runtime);
           setState({
             resource: {
               resourceId: parsed.resourceId,
               runtime,
-              transport: createRuntimeTransport(runtime),
+              transport,
             },
             loading: false,
             error: null,
@@ -73,6 +75,7 @@ export function useRuntimeResource(encodedId: string | undefined): RuntimeResour
     return () => {
       cancelled = true;
       controller.abort();
+      transport?.close();
     };
   }, [encodedId]);
 

@@ -55,25 +55,319 @@ describe("runtime transport", () => {
 
   it("routes managed JSON calls through its pinned encrypted capability endpoint", async () => {
     const client = apiClient();
-    const encryptedRequest = vi.fn().mockResolvedValue([]);
+    const connection = {
+      request: vi.fn().mockResolvedValue([]),
+      close: vi.fn(),
+    };
+    const connectEncrypted = vi.fn().mockResolvedValue(connection);
     const transport = createRuntimeTransport(
       { location: "managed", runnerPublicKey },
-      { apiClient: client, encryptedRequest },
+      { apiClient: client, encryptedRequest: vi.fn(), connectEncrypted },
     );
 
     await expect(transport.get("/api/repos?owner=me")).resolves.toEqual([]);
 
-    expect(encryptedRequest).toHaveBeenCalledWith({
+    expect(connectEncrypted).toHaveBeenCalledWith({
       expectedRunnerPublicKey: runnerPublicKey,
       scopes: ["repository.read"],
+      maxSessionBytes: 16_777_216,
+      capabilityEndpoint: "/api/runtime/capabilities",
+    });
+    expect(connection.request).toHaveBeenCalledWith({
       method: "GET",
       path: "/api/repos",
       query: { owner: "me" },
       body: null,
-      maxSessionBytes: 16_777_216,
-      capabilityEndpoint: "/api/runtime/capabilities",
     });
     expect(client.get).not.toHaveBeenCalled();
+  });
+
+  it("reuses one managed encrypted connection for sequential same-scope requests", async () => {
+    const connection = {
+      request: vi.fn().mockResolvedValue([]),
+      close: vi.fn(),
+    };
+    const connectEncrypted = vi.fn().mockResolvedValue(connection);
+    const transport = createRuntimeTransport(
+      { location: "managed", runnerPublicKey },
+      {
+        apiClient: apiClient(),
+        encryptedRequest: vi.fn(),
+        connectEncrypted,
+      },
+    );
+
+    await transport.get("/api/repos");
+    await transport.get(`/api/repos/${"a".repeat(32)}`);
+
+    expect(connectEncrypted).toHaveBeenCalledTimes(1);
+    expect(connection.request).toHaveBeenCalledTimes(2);
+    transport.close();
+    await Promise.resolve();
+    expect(connection.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("serializes concurrent managed requests on one scoped connection", async () => {
+    let activeRequests = 0;
+    let releaseFirst: (() => void) | undefined;
+    const firstReleased = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const request = vi.fn().mockImplementation(async () => {
+      activeRequests += 1;
+      if (activeRequests > 1) {
+        throw new Error("requests overlapped");
+      }
+      await firstReleased;
+      activeRequests -= 1;
+      return [];
+    });
+    const transport = createRuntimeTransport(
+      { location: "managed", runnerPublicKey },
+      {
+        apiClient: apiClient(),
+        encryptedRequest: vi.fn(),
+        connectEncrypted: vi.fn().mockResolvedValue({
+          request,
+          close: vi.fn(),
+        }),
+      },
+    );
+
+    const first = transport.get("/api/repos");
+    const second = transport.get(`/api/repos/${"a".repeat(32)}`);
+    await Promise.resolve();
+    releaseFirst?.();
+
+    await expect(Promise.all([first, second])).resolves.toEqual([[], []]);
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+
+  it("closes every managed connection when the transport closes", async () => {
+    const connections = [
+      { request: vi.fn().mockResolvedValue([]), close: vi.fn() },
+      { request: vi.fn().mockResolvedValue({}), close: vi.fn() },
+    ];
+    const connectEncrypted = vi
+      .fn()
+      .mockResolvedValueOnce(connections[0])
+      .mockResolvedValueOnce(connections[1]);
+    const transport = createRuntimeTransport(
+      { location: "managed", runnerPublicKey },
+      {
+        apiClient: apiClient(),
+        encryptedRequest: vi.fn(),
+        connectEncrypted,
+      },
+    );
+    await transport.get("/api/repos");
+    await transport.post(`/api/repos/${"a".repeat(32)}/workspaces`, {});
+
+    transport.close();
+    await Promise.resolve();
+
+    expect(connections[0].close).toHaveBeenCalledTimes(1);
+    expect(connections[1].close).toHaveBeenCalledTimes(1);
+    await expect(transport.get("/api/repos")).rejects.toThrow(
+      "Runtime transport is closed",
+    );
+  });
+
+  it("evicts a connection after its capability expires", async () => {
+    let nowMs = 1_000;
+    const firstConnection = {
+      request: vi.fn().mockResolvedValue([]),
+      close: vi.fn(),
+      expiresAtMs: 2_000,
+    };
+    const secondConnection = {
+      request: vi.fn().mockResolvedValue([]),
+      close: vi.fn(),
+      expiresAtMs: 4_000,
+    };
+    const connectEncrypted = vi
+      .fn()
+      .mockResolvedValueOnce(firstConnection)
+      .mockResolvedValueOnce(secondConnection);
+    const transport = createRuntimeTransport(
+      { location: "managed", runnerPublicKey },
+      {
+        apiClient: apiClient(),
+        encryptedRequest: vi.fn(),
+        connectEncrypted,
+        now: () => nowMs,
+      },
+    );
+
+    await transport.get("/api/repos");
+    nowMs = 2_001;
+    await transport.get("/api/repos");
+
+    expect(connectEncrypted).toHaveBeenCalledTimes(2);
+    expect(firstConnection.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("shares one replacement when concurrent requests find an expired connection", async () => {
+    let releaseExpired: (() => void) | undefined;
+    const expiredReady = new Promise<void>((resolve) => {
+      releaseExpired = resolve;
+    });
+    const expiredConnection = {
+      request: vi.fn().mockResolvedValue([]),
+      close: vi.fn(),
+      expiresAtMs: 2_000,
+    };
+    const replacementConnection = {
+      request: vi.fn().mockResolvedValue([]),
+      close: vi.fn(),
+      expiresAtMs: 4_000,
+    };
+    const connectEncrypted = vi
+      .fn()
+      .mockImplementationOnce(async () => {
+        await expiredReady;
+        return expiredConnection;
+      })
+      .mockResolvedValue(replacementConnection);
+    const transport = createRuntimeTransport(
+      { location: "managed", runnerPublicKey },
+      {
+        apiClient: apiClient(),
+        encryptedRequest: vi.fn(),
+        connectEncrypted,
+        now: () => 3_000,
+      },
+    );
+
+    const first = transport.get("/api/repos");
+    const second = transport.get(`/api/repos/${"a".repeat(32)}`);
+    releaseExpired?.();
+    await Promise.all([first, second]);
+
+    expect(connectEncrypted).toHaveBeenCalledTimes(2);
+    expect(expiredConnection.close).toHaveBeenCalledTimes(1);
+    expect(replacementConnection.request).toHaveBeenCalledTimes(2);
+  });
+
+  it("evicts a rejected expiry replacement so a later request can retry", async () => {
+    const expiredConnection = {
+      request: vi.fn(),
+      close: vi.fn(),
+      expiresAtMs: 2_000,
+    };
+    const recoveredConnection = {
+      request: vi.fn().mockResolvedValue([]),
+      close: vi.fn(),
+      expiresAtMs: 4_000,
+    };
+    const connectEncrypted = vi
+      .fn()
+      .mockResolvedValueOnce(expiredConnection)
+      .mockRejectedValueOnce(new Error("renewal failed"))
+      .mockResolvedValueOnce(recoveredConnection);
+    const transport = createRuntimeTransport(
+      { location: "managed", runnerPublicKey },
+      {
+        apiClient: apiClient(),
+        encryptedRequest: vi.fn(),
+        connectEncrypted,
+        now: () => 3_000,
+      },
+    );
+
+    await expect(transport.get("/api/repos")).rejects.toThrow(
+      "renewal failed",
+    );
+    await expect(transport.get("/api/repos")).resolves.toEqual([]);
+
+    expect(connectEncrypted).toHaveBeenCalledTimes(3);
+    expect(recoveredConnection.request).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not open an expiry replacement after transport close", async () => {
+    let releaseExpired: (() => void) | undefined;
+    const expiredReady = new Promise<void>((resolve) => {
+      releaseExpired = resolve;
+    });
+    const expiredConnection = {
+      request: vi.fn(),
+      close: vi.fn(),
+      expiresAtMs: 2_000,
+    };
+    const connectEncrypted = vi.fn().mockImplementation(async () => {
+      await expiredReady;
+      return expiredConnection;
+    });
+    const transport = createRuntimeTransport(
+      { location: "managed", runnerPublicKey },
+      {
+        apiClient: apiClient(),
+        encryptedRequest: vi.fn(),
+        connectEncrypted,
+        now: () => 3_000,
+      },
+    );
+
+    const request = transport.get("/api/repos");
+    transport.close();
+    releaseExpired?.();
+
+    await expect(request).rejects.toThrow("Runtime transport is closed");
+    expect(connectEncrypted).toHaveBeenCalledTimes(1);
+    expect(expiredConnection.close).toHaveBeenCalled();
+  });
+
+  it("handles a pending connection rejection after transport close", async () => {
+    let rejectConnection: ((error: Error) => void) | undefined;
+    const pendingConnection = new Promise<never>((_resolve, reject) => {
+      rejectConnection = reject;
+    });
+    const transport = createRuntimeTransport(
+      { location: "managed", runnerPublicKey },
+      {
+        apiClient: apiClient(),
+        encryptedRequest: vi.fn(),
+        connectEncrypted: vi.fn().mockReturnValue(pendingConnection),
+      },
+    );
+
+    const request = transport.get("/api/repos");
+    transport.close();
+    rejectConnection?.(new Error("connection failed"));
+
+    await expect(request).rejects.toThrow("connection failed");
+    await Promise.resolve();
+  });
+
+  it("evicts a failed managed connection without retrying the operation", async () => {
+    const failedConnection = {
+      request: vi.fn().mockRejectedValue(new Error("transport failed")),
+      close: vi.fn(),
+    };
+    const replacementConnection = {
+      request: vi.fn().mockResolvedValue([]),
+      close: vi.fn(),
+    };
+    const connectEncrypted = vi
+      .fn()
+      .mockResolvedValueOnce(failedConnection)
+      .mockResolvedValueOnce(replacementConnection);
+    const transport = createRuntimeTransport(
+      { location: "managed", runnerPublicKey },
+      {
+        apiClient: apiClient(),
+        encryptedRequest: vi.fn(),
+        connectEncrypted,
+      },
+    );
+
+    await expect(transport.get("/api/repos")).rejects.toThrow(
+      "transport failed",
+    );
+    expect(connectEncrypted).toHaveBeenCalledTimes(1);
+    await expect(transport.get("/api/repos")).resolves.toEqual([]);
+    expect(connectEncrypted).toHaveBeenCalledTimes(2);
+    expect(failedConnection.close).toHaveBeenCalledTimes(1);
   });
 
   it("keeps managed config uploads off the browser multipart client", async () => {

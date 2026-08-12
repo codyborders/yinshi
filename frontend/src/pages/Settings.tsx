@@ -13,7 +13,10 @@ import PiConfigSection from "../components/PiConfigSection";
 import PiReleaseNotesSection from "../components/PiReleaseNotesSection";
 import { useAuth } from "../hooks/useAuth";
 import { useCatalog } from "../hooks/useCatalog";
-import { resolveRuntimeRef } from "../runtime/resolveRuntime";
+import {
+  provisionRuntimeRef,
+  resolveRuntimeRef,
+} from "../runtime/resolveRuntime";
 import type { UnresolvedRuntimeRef } from "../runtime/runtimeRef";
 import {
   createRuntimeTransport,
@@ -716,11 +719,38 @@ export default function Settings() {
     }[]
   >([]);
   const [profileError, setProfileError] = useState<string | null>(null);
+  const [runtimeProvisioning, setRuntimeProvisioning] = useState(false);
   const runtimeTransport = useMemo(
     () =>
       selectedRuntime ? createRuntimeTransport(selectedRuntime) : null,
     [selectedRuntime],
   );
+
+  useEffect(
+    () => () => {
+      runtimeTransport?.close();
+    },
+    [runtimeTransport],
+  );
+
+  async function provisionManagedRuntime() {
+    if (runtimeProvisioning) return;
+    setRuntimeProvisioning(true);
+    setRuntimeResolutionError(null);
+    try {
+      const resolvedRuntime = await provisionRuntimeRef(requestedPrimaryRuntime);
+      setPrimaryRuntime(resolvedRuntime);
+      setSelectedRuntime(resolvedRuntime);
+    } catch (provisionError) {
+      setRuntimeResolutionError(
+        provisionError instanceof Error
+          ? provisionError.message
+          : "Managed runtime setup failed",
+      );
+    } finally {
+      setRuntimeProvisioning(false);
+    }
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -992,7 +1022,20 @@ export default function Settings() {
           ) : null}
           {runtimeResolutionError ? (
             <div className="rounded border border-red-900/50 bg-gray-800 px-4 py-3 text-sm text-red-400">
-              {runtimeResolutionError}
+              <p>{runtimeResolutionError}</p>
+              {requestedPrimaryRuntime.location === "hosted" &&
+              window.yinshiDesktop === undefined ? (
+                <button
+                  type="button"
+                  onClick={() => void provisionManagedRuntime()}
+                  disabled={runtimeProvisioning}
+                  className="mt-3 rounded border border-gray-600 px-3 py-1.5 text-sm text-gray-200 hover:border-gray-500 disabled:opacity-50"
+                >
+                  {runtimeProvisioning
+                    ? "Provisioning managed runtime..."
+                    : "Provision managed runtime"}
+                </button>
+              ) : null}
             </div>
           ) : null}
           {activeTab === "providers" && runtimeTransport ? (

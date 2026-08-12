@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hmac
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Protocol, TypeVar
 
@@ -56,6 +57,14 @@ _IDENTITY_ERROR_MESSAGE = "Managed runtime identity changed"
 _PROVISIONING_HEARTBEAT_INTERVAL_SECONDS = 30.0
 
 _Result = TypeVar("_Result")
+
+
+@dataclass(frozen=True, slots=True)
+class OnlineManagedRunner:
+    """Validated managed runner identity authorized for capability issue."""
+
+    runner_id: str
+    runner_public_key: str
 
 
 class ManagedRuntimeProvider(Protocol):
@@ -141,6 +150,9 @@ class ManagedRuntimeManager:
         self._sleep = sleep
         self._heartbeat_sleep = heartbeat_sleep
         self._provisioning_tasks: dict[asyncio.Task[ManagedRuntimeStatus], tuple[str, int]] = {}
+        self._online_lock = asyncio.Lock()
+        self._online_tasks: dict[str, asyncio.Task[OnlineManagedRunner]] = {}
+        self._closing = False
 
     async def reconcile_startup(self) -> int:
         """Fail abandoned provisioning before this manager serves requests."""
@@ -148,14 +160,25 @@ class ManagedRuntimeManager:
         return reconcile_managed_runtime_provisioning(active_owners, self._now())
 
     async def aclose(self) -> None:
-        """Cancel owned provisioning work before closing the artifact client."""
+        """Cancel manager-owned work before closing the artifact client."""
+        async with self._online_lock:
+            self._closing = True
+            online_tasks = list(self._online_tasks.values())
+        for online_task in online_tasks:
+            online_task.cancel()
+        if online_tasks:
+            await asyncio.gather(*online_tasks, return_exceptions=True)
+
         tracked = list(self._provisioning_tasks.items())
-        for task, _ in tracked:
-            task.cancel()
+        for provisioning_task, _ in tracked:
+            provisioning_task.cancel()
         if tracked:
-            await asyncio.gather(*(task for task, _ in tracked), return_exceptions=True)
-        for task, (user_id, generation) in tracked:
-            if task.cancelled():
+            await asyncio.gather(
+                *(provisioning_task for provisioning_task, _ in tracked),
+                return_exceptions=True,
+            )
+        for provisioning_task, (user_id, generation) in tracked:
+            if provisioning_task.cancelled():
                 try:
                     mark_managed_runtime_failed(
                         user_id,
@@ -167,8 +190,56 @@ class ManagedRuntimeManager:
                     pass
         await self._http_client.aclose()
 
-    async def ensure_online(self, user_id: str) -> dict[str, Any]:
-        """Wake one ready managed runtime and return its connected runner."""
+    async def ensure_online(self, user_id: str) -> OnlineManagedRunner:
+        """Join one manager-owned wake operation for the user's runtime."""
+        if not isinstance(user_id, str) or not user_id:
+            raise ManagedRuntimeStateError(_STATE_ERROR_MESSAGE)
+        async with self._online_lock:
+            if self._closing:
+                raise ManagedRuntimeStateError(_STATE_ERROR_MESSAGE)
+            task = self._online_tasks.get(user_id)
+            if task is None:
+                task = asyncio.create_task(self._ensure_online(user_id))
+                self._online_tasks[user_id] = task
+                task.add_done_callback(self._online_task_finished)
+        return await asyncio.shield(task)
+
+    async def _ensure_online(self, user_id: str) -> OnlineManagedRunner:
+        """Wake one ready managed runtime and return its validated identity."""
+        runtime, runner, expected_noise_key = self._load_ready_runner(user_id)
+        if self._runner_is_connected(runtime, runner):
+            return OnlineManagedRunner(runtime.runner_id, expected_noise_key)
+
+        try:
+            await self._provider.restart_service(
+                runtime.sprite_name,
+                service_name="yinshi-runner",
+                monitor_duration=None,
+            )
+        except Exception:
+            raise ManagedRuntimeProviderError(_PROVIDER_ERROR_MESSAGE) from None
+
+        deadline = self._now() + self._readiness_timeout
+        while True:
+            current_runtime, runner, current_noise_key = self._load_ready_runner(user_id)
+            if (
+                current_runtime.runner_id != runtime.runner_id
+                or current_runtime.sprite_name != runtime.sprite_name
+            ):
+                raise ManagedRuntimeStateError(_STATE_ERROR_MESSAGE)
+            if current_noise_key != expected_noise_key:
+                raise ManagedRuntimeIdentityError(_IDENTITY_ERROR_MESSAGE)
+            if self._runner_is_connected(current_runtime, runner):
+                return OnlineManagedRunner(runtime.runner_id, expected_noise_key)
+            if self._now() >= deadline:
+                raise ManagedRuntimeTimeoutError(_TIMEOUT_ERROR_MESSAGE)
+            await self._sleep(self._poll_interval_seconds)
+
+    def _load_ready_runner(
+        self,
+        user_id: str,
+    ) -> tuple[ManagedRuntimeStatus, dict[str, Any], str]:
+        """Load one internally consistent ready runtime and confirmed runner."""
         try:
             runtime = get_managed_runtime_status(user_id)
             runner = get_managed_runner_for_user(user_id)
@@ -184,74 +255,43 @@ class ManagedRuntimeManager:
             or runner.get("cloud_provider") != runtime.provider_name
         ):
             raise ManagedRuntimeStateError(_STATE_ERROR_MESSAGE)
-        expected_noise_key = runner.get("noise_public_key")
-        if not isinstance(expected_noise_key, str) or not runner.get("noise_key_confirmed"):
+        noise_key = runner.get("noise_public_key")
+        if not isinstance(noise_key, str) or not runner.get("noise_key_confirmed"):
             raise ManagedRuntimeStateError(_STATE_ERROR_MESSAGE)
+        return runtime, runner, noise_key
+
+    def _runner_is_connected(
+        self,
+        runtime: ManagedRuntimeStatus,
+        runner: dict[str, Any],
+    ) -> bool:
+        """Return whether heartbeat and relay state authorize immediate use."""
         now = self._now()
         try:
             heartbeat_at = _datetime_from_storage(runner.get("last_heartbeat_at"))
             connected = self._is_runner_connected(runtime.runner_id)
         except Exception:
             raise ManagedRuntimeStateError(_STATE_ERROR_MESSAGE) from None
-        heartbeat_age = None if heartbeat_at is None else (now - heartbeat_at).total_seconds()
-        if (
+        if heartbeat_at is None:
+            return False
+        heartbeat_age = (now - heartbeat_at).total_seconds()
+        return (
             runner.get("status") == "online"
-            and heartbeat_age is not None
             and 0 <= heartbeat_age <= _HEARTBEAT_ONLINE_WINDOW_SECONDS
             and connected
-        ):
-            return runner
+        )
 
-        try:
-            await self._provider.restart_service(
-                runtime.sprite_name,
-                service_name="yinshi-runner",
-                monitor_duration=None,
-            )
-        except Exception:
-            raise ManagedRuntimeProviderError(_PROVIDER_ERROR_MESSAGE) from None
-
-        deadline = self._now() + self._readiness_timeout
-        while True:
-            now = self._now()
-            try:
-                current_runtime = get_managed_runtime_status(user_id)
-                runner = get_managed_runner_for_user(user_id)
-            except Exception:
-                raise ManagedRuntimeStateError(_STATE_ERROR_MESSAGE) from None
-            if (
-                current_runtime is None
-                or current_runtime.lifecycle_status != "ready"
-                or current_runtime.provider_name != "fly_sprites"
-                or current_runtime.runner_id != runtime.runner_id
-                or current_runtime.sprite_name != runtime.sprite_name
-                or runner is None
-                or runner.get("id") != runtime.runner_id
-                or runner.get("kind") != "managed"
-                or runner.get("cloud_provider") != runtime.provider_name
-            ):
-                raise ManagedRuntimeStateError(_STATE_ERROR_MESSAGE)
-            if runner.get("noise_public_key") != expected_noise_key or not runner.get(
-                "noise_key_confirmed"
-            ):
-                raise ManagedRuntimeIdentityError(_IDENTITY_ERROR_MESSAGE)
-            try:
-                heartbeat_at = _datetime_from_storage(runner.get("last_heartbeat_at"))
-            except Exception:
-                raise ManagedRuntimeStateError(_STATE_ERROR_MESSAGE) from None
-            heartbeat_age = None if heartbeat_at is None else (now - heartbeat_at).total_seconds()
-            heartbeat_is_current = heartbeat_age is not None and (
-                0 <= heartbeat_age <= _HEARTBEAT_ONLINE_WINDOW_SECONDS
-            )
-            try:
-                connected = self._is_runner_connected(runtime.runner_id)
-            except Exception:
-                raise ManagedRuntimeStateError(_STATE_ERROR_MESSAGE) from None
-            if runner.get("status") == "online" and heartbeat_is_current and connected:
-                return runner
-            if now >= deadline:
-                raise ManagedRuntimeTimeoutError(_TIMEOUT_ERROR_MESSAGE)
-            await self._sleep(self._poll_interval_seconds)
+    def _online_task_finished(
+        self,
+        task: asyncio.Task[OnlineManagedRunner],
+    ) -> None:
+        """Consume one wake result and remove only its current registry entry."""
+        for user_id, current_task in tuple(self._online_tasks.items()):
+            if current_task is task:
+                self._online_tasks.pop(user_id, None)
+                break
+        if not task.cancelled():
+            task.exception()
 
     async def provision(
         self,

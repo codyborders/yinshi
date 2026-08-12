@@ -19,6 +19,7 @@ function transport(): RuntimeTransport {
     put: vi.fn(),
     delete: vi.fn(),
     upload: vi.fn(),
+    close: vi.fn(),
   };
 }
 

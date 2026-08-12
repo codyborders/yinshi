@@ -6,6 +6,7 @@ const useCatalogMock = vi.fn();
 const apiGetMock = vi.fn();
 const apiPostMock = vi.fn();
 const apiDeleteMock = vi.fn();
+const closeRuntimeTransportMock = vi.fn();
 
 vi.mock("../../hooks/useAuth", () => ({
   useAuth: () => useAuthMock(),
@@ -22,6 +23,25 @@ vi.mock("../../components/PiConfigSection", () => ({
 vi.mock("../../components/PiReleaseNotesSection", () => ({
   default: () => <div data-testid="pi-release-notes-section" />,
 }));
+
+vi.mock("../../runtime/runtimeTransport", async (importOriginal) => {
+  const actual = await importOriginal<
+    typeof import("../../runtime/runtimeTransport")
+  >();
+  return {
+    ...actual,
+    createRuntimeTransport: (runtime: { location: "hosted" }) => ({
+      runtime,
+      get: apiGetMock,
+      post: apiPostMock,
+      patch: vi.fn(),
+      put: vi.fn(),
+      delete: apiDeleteMock,
+      upload: vi.fn(),
+      close: closeRuntimeTransportMock,
+    }),
+  };
+});
 
 vi.mock("../../api/client", () => ({
   api: {
@@ -104,6 +124,58 @@ describe("Settings", () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it("closes the selected runtime transport when Settings unmounts", async () => {
+    const { unmount } = render(<Settings />);
+    await waitFor(() => {
+      expect(apiGetMock).toHaveBeenCalledWith("/api/runtime");
+    });
+    await waitFor(() => {
+      expect(closeRuntimeTransportMock).not.toHaveBeenCalled();
+      expect(apiGetMock).toHaveBeenCalledWith("/api/settings/connections");
+    });
+
+    unmount();
+
+    expect(closeRuntimeTransportMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("offers an explicit managed runtime provision action", async () => {
+    apiGetMock.mockImplementation((path: string) => {
+      if (path === "/api/runtime") {
+        return Promise.resolve({
+          provider: "fly_sprites",
+          status: "absent",
+          runner_public_key: null,
+        });
+      }
+      if (path === "/api/settings/runner") return Promise.resolve(null);
+      throw new Error(`Unexpected GET path: ${path}`);
+    });
+    apiPostMock.mockImplementation((path: string) => {
+      if (path === "/api/runtime/provision") {
+        return Promise.resolve({
+          provider: "fly_sprites",
+          status: "ready",
+          runner_public_key:
+            "MeAwP9ZBjS-MDni5HyLoyu0Pvkhlbc9HZ-SDT3Abj2I",
+        });
+      }
+      throw new Error(`Unexpected POST path: ${path}`);
+    });
+
+    render(<Settings />);
+    const provision = await screen.findByRole("button", {
+      name: "Provision managed runtime",
+    });
+    expect(apiPostMock).not.toHaveBeenCalledWith("/api/runtime/provision", undefined);
+
+    fireEvent.click(provision);
+
+    await waitFor(() => {
+      expect(apiPostMock).toHaveBeenCalledWith("/api/runtime/provision");
+    });
   });
 
   it("waits for browser primary runtime resolution before loading execution settings", async () => {

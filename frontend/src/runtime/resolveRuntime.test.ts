@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { resolveRuntimeRef } from "./resolveRuntime";
+import {
+  provisionRuntimeRef,
+  resolveRuntimeRef,
+} from "./resolveRuntime";
 
 const runnerKey = "MeAwP9ZBjS-MDni5HyLoyu0Pvkhlbc9HZ-SDT3Abj2I";
 
@@ -28,52 +31,87 @@ describe("runtime resolution", () => {
     expect(provisionRuntime).not.toHaveBeenCalled();
   });
 
-  it.each(["absent", "failed"])(
-    "provisions a %s Fly runtime once before resolving it",
-    async (status) => {
-      const getRuntime = vi.fn().mockResolvedValue({
-        provider: "fly_sprites",
-        status,
-        artifact_version: null,
-        last_error: status === "failed" ? "provider_error" : null,
-        runner_public_key: null,
-      });
-      const provisionRuntime = vi.fn().mockResolvedValue({
-        provider: "fly_sprites",
-        status: "ready",
-        artifact_version: "release-1",
-        last_error: null,
-        runner_public_key: runnerKey,
-      });
+  it.each([
+    ["absent", "Managed runtime is not provisioned"],
+    ["failed", "Managed runtime setup failed"],
+  ])("does not provision a %s Fly runtime while resolving", async (status, message) => {
+    const getRuntime = vi.fn().mockResolvedValue({
+      provider: "fly_sprites",
+      status,
+      artifact_version: null,
+      last_error: null,
+      runner_public_key: null,
+    });
+    const provisionRuntime = vi.fn();
 
-      await expect(
-        resolveRuntimeRef(
-          { location: "hosted" },
-          { desktop: false, getRuntime, provisionRuntime },
-        ),
-      ).resolves.toEqual({
-        location: "managed",
-        runnerPublicKey: runnerKey,
-      });
-      expect(getRuntime).toHaveBeenCalledTimes(1);
-      expect(provisionRuntime).toHaveBeenCalledTimes(1);
-    },
-  );
+    await expect(
+      resolveRuntimeRef(
+        { location: "hosted" },
+        { desktop: false, getRuntime, provisionRuntime },
+      ),
+    ).rejects.toThrow(message);
+    expect(getRuntime).toHaveBeenCalledTimes(1);
+    expect(provisionRuntime).not.toHaveBeenCalled();
+  });
 
-  it("reports a safe allowlisted failure after provision starts asynchronous creation", async () => {
-    const getRuntime = vi
-      .fn()
-      .mockResolvedValueOnce({
-        provider: "fly_sprites",
-        status: "absent",
-        runner_public_key: null,
-      })
-      .mockResolvedValueOnce({
-        provider: "fly_sprites",
-        status: "failed",
-        last_error: "bootstrap_failed",
-        runner_public_key: null,
-      });
+  it("inspects absent managed state without provider mutation", async () => {
+    const provisionRuntime = vi.fn();
+
+    await expect(
+      resolveRuntimeRef(
+        { location: "hosted" },
+        {
+          desktop: false,
+          getRuntime: vi.fn().mockResolvedValue({
+            provider: "fly_sprites",
+            status: "absent",
+            runner_public_key: null,
+          }),
+          provisionRuntime,
+        },
+      ),
+    ).rejects.toThrow("Managed runtime is not provisioned");
+    expect(provisionRuntime).not.toHaveBeenCalled();
+  });
+
+  it("provisions managed state only through the explicit command", async () => {
+    const getRuntime = vi.fn().mockResolvedValue({
+      provider: "fly_sprites",
+      status: "ready",
+      runner_public_key: runnerKey,
+    });
+    const provisionRuntime = vi.fn().mockResolvedValue({
+      provider: "fly_sprites",
+      status: "provisioning",
+      runner_public_key: null,
+    });
+
+    await expect(
+      provisionRuntimeRef(
+        { location: "hosted" },
+        {
+          desktop: false,
+          getRuntime,
+          provisionRuntime,
+          sleep: vi.fn().mockResolvedValue(undefined),
+          maxPollAttempts: 1,
+        },
+      ),
+    ).resolves.toEqual({
+      location: "managed",
+      runnerPublicKey: runnerKey,
+    });
+    expect(provisionRuntime).toHaveBeenCalledTimes(1);
+    expect(getRuntime).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports a safe allowlisted failure after explicit provisioning starts", async () => {
+    const getRuntime = vi.fn().mockResolvedValue({
+      provider: "fly_sprites",
+      status: "failed",
+      last_error: "bootstrap_failed",
+      runner_public_key: null,
+    });
     const provisionRuntime = vi.fn().mockResolvedValue({
       provider: "fly_sprites",
       status: "provisioning",
@@ -82,7 +120,7 @@ describe("runtime resolution", () => {
     const sleep = vi.fn().mockResolvedValue(undefined);
 
     await expect(
-      resolveRuntimeRef(
+      provisionRuntimeRef(
         { location: "hosted" },
         {
           desktop: false,
@@ -94,7 +132,7 @@ describe("runtime resolution", () => {
       ),
     ).rejects.toThrow("Managed runtime setup failed");
     expect(provisionRuntime).toHaveBeenCalledTimes(1);
-    expect(getRuntime).toHaveBeenCalledTimes(2);
+    expect(getRuntime).toHaveBeenCalledTimes(1);
     expect(sleep).toHaveBeenCalledTimes(1);
   });
 
@@ -109,15 +147,10 @@ describe("runtime resolution", () => {
     ["delete_failed", "Managed runtime deletion failed"],
   ])("maps allowlisted failure %s to a fixed safe message", async (code, message) => {
     await expect(
-      resolveRuntimeRef(
+      provisionRuntimeRef(
         { location: "hosted" },
         {
           desktop: false,
-          getRuntime: vi.fn().mockResolvedValue({
-            provider: "fly_sprites",
-            status: "absent",
-            runner_public_key: null,
-          }),
           provisionRuntime: vi.fn().mockResolvedValue({
             provider: "fly_sprites",
             status: "failed",

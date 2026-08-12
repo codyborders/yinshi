@@ -11,7 +11,6 @@ import base64
 import hashlib
 import json
 import sqlite3
-import struct
 import uuid
 from collections.abc import Callable
 from pathlib import Path
@@ -31,6 +30,15 @@ from yinshi.services.runner_noise_session import (
     RunnerNoiseSession,
 )
 from yinshi.services.runner_rpc import EncryptedRunnerRpcSession
+from yinshi.services.runner_rpc_transport import (
+    TRANSPORT_ACK,
+    TRANSPORT_HEADER,
+    TRANSPORT_MAGIC,
+    TRANSPORT_PAYLOAD_BYTES_MAX,
+    TRANSPORT_PULL,
+    TRANSPORT_REQUEST,
+    TRANSPORT_RESPONSE,
+)
 from yinshi.tenant import TenantContext
 from yinshi.worker_auth import WorkerPrincipal
 from yinshi.worker_runtime import WorkerHttpDispatcher, WorkerHttpResponse
@@ -103,13 +111,13 @@ async def _open_session(
     return rpc_session, initiator
 
 
-_TRANSPORT_HEADER = struct.Struct(">4sBIII")
-_TRANSPORT_MAGIC = b"YRP1"
-_TRANSPORT_REQUEST = 1
-_TRANSPORT_ACK = 2
-_TRANSPORT_RESPONSE = 3
-_TRANSPORT_PULL = 4
-_TRANSPORT_PAYLOAD_BYTES_MAX = 65_535 - 16 - _TRANSPORT_HEADER.size
+_TRANSPORT_HEADER = TRANSPORT_HEADER
+_TRANSPORT_MAGIC = TRANSPORT_MAGIC
+_TRANSPORT_REQUEST = TRANSPORT_REQUEST
+_TRANSPORT_ACK = TRANSPORT_ACK
+_TRANSPORT_RESPONSE = TRANSPORT_RESPONSE
+_TRANSPORT_PULL = TRANSPORT_PULL
+_TRANSPORT_PAYLOAD_BYTES_MAX = TRANSPORT_PAYLOAD_BYTES_MAX
 
 
 def _transport_frames(payload: bytes, *, kind: int) -> list[bytes]:

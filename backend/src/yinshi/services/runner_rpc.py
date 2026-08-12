@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import re
-import struct
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -13,26 +12,31 @@ from urllib.parse import urlsplit
 
 from yinshi.services.runner_capabilities import RUNNER_PROTOCOL_VERSION
 from yinshi.services.runner_noise_session import RunnerNoiseSession
+from yinshi.services.runner_rpc_transport import (
+    NOISE_CIPHERTEXT_BYTES_MAX as _NOISE_CIPHERTEXT_BYTES_MAX,
+)
+from yinshi.services.runner_rpc_transport import NOISE_TAG_BYTES as _NOISE_TAG_BYTES
+from yinshi.services.runner_rpc_transport import TRANSPORT_ACK as _TRANSPORT_ACK
+from yinshi.services.runner_rpc_transport import TRANSPORT_HEADER as _TRANSPORT_HEADER
+from yinshi.services.runner_rpc_transport import TRANSPORT_MAGIC as _TRANSPORT_MAGIC
+from yinshi.services.runner_rpc_transport import (
+    TRANSPORT_PAYLOAD_BYTES_MAX as _TRANSPORT_PAYLOAD_BYTES_MAX,
+)
+from yinshi.services.runner_rpc_transport import TRANSPORT_PULL as _TRANSPORT_PULL
+from yinshi.services.runner_rpc_transport import TRANSPORT_REQUEST as _TRANSPORT_REQUEST
+from yinshi.services.runner_rpc_transport import TRANSPORT_RESPONSE as _TRANSPORT_RESPONSE
+from yinshi.services.runner_rpc_transport import (
+    fragment_count,
+)
 from yinshi.worker_runtime import WorkerHttpDispatcher
 
 _REQUEST_KEYS_V1 = {"body", "method", "path", "request_id", "sequence", "type", "v"}
 _REQUEST_KEYS_V2 = _REQUEST_KEYS_V1 | {"query"}
 _REQUEST_BYTES_MAX = 2 * 1_024 * 1_024
 _RESPONSE_BYTES_MAX = 10 * 1_024 * 1_024
-_NOISE_CIPHERTEXT_BYTES_MAX = 65_535
-_NOISE_TAG_BYTES = 16
 _NOISE_PLAINTEXT_BYTES_MAX = _NOISE_CIPHERTEXT_BYTES_MAX - _NOISE_TAG_BYTES
 # Capability budgets count ciphertext for requests, acknowledgements, pulls, and responses.
 # Callers must include Noise tags and transport headers in their requested budget.
-_TRANSPORT_HEADER = struct.Struct(">4sBIII")
-_TRANSPORT_MAGIC = b"YRP1"
-_TRANSPORT_REQUEST = 1
-_TRANSPORT_ACK = 2
-_TRANSPORT_RESPONSE = 3
-_TRANSPORT_PULL = 4
-_TRANSPORT_PAYLOAD_BYTES_MAX = (
-    _NOISE_CIPHERTEXT_BYTES_MAX - _NOISE_TAG_BYTES - _TRANSPORT_HEADER.size
-)
 _RESOURCE_ID = r"[0-9a-f]{32}"
 _REPOSITORY_MEMBER_PATH = re.compile(rf"^/api/repos/{_RESOURCE_ID}$")
 _WORKSPACE_COLLECTION_PATH = re.compile(rf"^/api/repos/{_RESOURCE_ID}/workspaces$")
@@ -349,7 +353,7 @@ class EncryptedRunnerRpcSession:
             magic, kind, index, count, total = _TRANSPORT_HEADER.unpack(
                 frame[: _TRANSPORT_HEADER.size]
             )
-        except struct.error as exc:
+        except ValueError as exc:
             raise ValueError("Runner RPC transport fragment is invalid") from exc
         payload = frame[_TRANSPORT_HEADER.size :]
         if magic != _TRANSPORT_MAGIC:
@@ -483,7 +487,7 @@ class EncryptedRunnerRpcSession:
     @staticmethod
     def _fragment_count(total: int) -> int:
         """Return canonical fragment count for one payload length."""
-        return max(1, (total + _TRANSPORT_PAYLOAD_BYTES_MAX - 1) // _TRANSPORT_PAYLOAD_BYTES_MAX)
+        return fragment_count(total)
 
     @classmethod
     def _validate_fragment(

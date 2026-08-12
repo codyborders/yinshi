@@ -197,7 +197,9 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
     try {
       const resolvedPrimary = await resolveRuntimeRef(requestedPrimaryRuntime);
       const primaryTransport = createRuntimeTransport(resolvedPrimary);
-      const data = await primaryTransport.get<Repo[]>("/api/repos");
+      const data = await primaryTransport.get<Repo[]>("/api/repos").finally(() => {
+        primaryTransport.close();
+      });
       setPrimaryRuntime(resolvedPrimary);
       const locatedRepositories: LocatedRepo[] = data.map((repository) => ({
         repository,
@@ -210,8 +212,11 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
           const hostedTransport = createRuntimeTransport({
             location: "hosted",
           });
-          const hostedRepositories =
-            await hostedTransport.get<Repo[]>("/api/repos");
+          const hostedRepositories = await hostedTransport
+            .get<Repo[]>("/api/repos")
+            .finally(() => {
+              hostedTransport.close();
+            });
           discoveredRuntimes.push({ location: "hosted" });
           locatedRepositories.push(
             ...hostedRepositories.map((repository) => ({
@@ -277,11 +282,17 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
     }
 
     try {
-      const data = window.yinshiDesktop
-        ? await createRuntimeTransport({ location: "hosted" }).get<
-            GitHubInstallation[]
-          >("/api/github/installations")
-        : await api.get<GitHubInstallation[]>("/api/github/installations");
+      let data: GitHubInstallation[];
+      if (window.yinshiDesktop) {
+        const hostedTransport = createRuntimeTransport({ location: "hosted" });
+        data = await hostedTransport
+          .get<GitHubInstallation[]>("/api/github/installations")
+          .finally(() => {
+            hostedTransport.close();
+          });
+      } else {
+        data = await api.get<GitHubInstallation[]>("/api/github/installations");
+      }
       setGithubInstallations(data);
     } catch {
       setGithubInstallations([]);
@@ -522,6 +533,12 @@ function RepoSection({
 }) {
   const navigate = useNavigate();
   const transport = useMemo(() => createRuntimeTransport(runtime), [runtime]);
+  useEffect(
+    () => () => {
+      transport.close();
+    },
+    [transport],
+  );
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [expanded, setExpanded] = useState(runtime.location !== "byoc");
   const [loaded, setLoaded] = useState(false);
@@ -1052,7 +1069,9 @@ function ImportForm({
         return;
       }
       const importTransport = createRuntimeTransport(selectedRuntime);
-      const repo = await importTransport.post<Repo>("/api/repos", body);
+      const repo = await importTransport.post<Repo>("/api/repos", body).finally(() => {
+        importTransport.close();
+      });
       onDone(repo, selectedRuntime);
     } catch (err) {
       if (err instanceof ApiError) {

@@ -91,6 +91,7 @@ describe("Sidebar repo settings", () => {
       put: vi.fn(),
       delete: vi.fn(),
       upload: vi.fn(),
+      close: vi.fn(),
     }));
     mockGet.mockImplementation(async (path: string) => {
       if (path === "/api/repos") {
@@ -157,6 +158,31 @@ describe("Sidebar repo settings", () => {
     });
     expect(mockGet).not.toHaveBeenCalledWith("/api/repos");
     expect(mockResolveRuntimeRef).toHaveBeenCalledWith({ location: "hosted" });
+  });
+
+  it("closes the temporary desktop transport after installation loading", async () => {
+    const close = vi.fn();
+    Object.defineProperty(window, "yinshiDesktop", {
+      configurable: true,
+      value: { signOut: vi.fn() },
+    });
+    mockCreateRuntimeTransport.mockImplementation((runtime) => ({
+      runtime,
+      get: mockGet,
+      post: mockPost,
+      patch: mockPatch,
+      put: vi.fn(),
+      delete: vi.fn(),
+      upload: vi.fn(),
+      close,
+    }));
+
+    renderSidebar();
+
+    await waitFor(() => {
+      expect(mockGet).toHaveBeenCalledWith("/api/github/installations");
+    });
+    expect(close).toHaveBeenCalled();
   });
 
   it("keeps the desktop title clear of macOS window controls", () => {

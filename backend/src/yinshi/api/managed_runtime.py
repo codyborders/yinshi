@@ -155,28 +155,11 @@ async def issue_managed_runtime_capability(
     except ManagedRuntimeTimeoutError as error:
         raise HTTPException(status_code=503, detail="Managed runtime wake timed out") from error
 
-    runtime = get_managed_runtime_status(tenant.user_id)
-    current_runner = get_managed_runner_for_user(tenant.user_id)
-    if (
-        runtime is None
-        or runtime.lifecycle_status != "ready"
-        or runtime.provider_name != "fly_sprites"
-        or current_runner is None
-        or current_runner.get("id") != runtime.runner_id
-        or current_runner.get("id") != runner.get("id")
-        or current_runner.get("kind") != "managed"
-        or current_runner.get("cloud_provider") != "fly_sprites"
-        or not current_runner.get("noise_key_confirmed")
-    ):
-        raise HTTPException(status_code=409, detail="Managed runtime state is invalid")
-    runner_public_key = current_runner.get("noise_public_key")
-    if not isinstance(runner_public_key, str) or not runner_public_key:
-        raise HTTPException(status_code=409, detail="Managed runtime state is invalid")
     try:
         capability, claims = create_runner_capability(
             user_id=tenant.user_id,
-            runner_id=str(current_runner["id"]),
-            runner_public_key=runner_public_key,
+            runner_id=runner.runner_id,
+            runner_public_key=runner.runner_public_key,
             initiator_public_key=body.initiator_public_key,
             scopes=body.scopes,
             max_session_bytes=body.max_session_bytes,

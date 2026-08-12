@@ -35,12 +35,17 @@ class FakeManager:
         assert self.provision_result is not None
         return self.provision_result
 
-    async def ensure_online(self, user_id: str) -> dict[str, Any]:
+    async def ensure_online(self, user_id: str):
+        from yinshi.services.managed_runtime_manager import OnlineManagedRunner
+
         self.calls.append(("ensure_online", user_id))
         if self.error is not None:
             raise self.error
         assert self.runner is not None
-        return self.runner
+        return OnlineManagedRunner(
+            runner_id=str(self.runner["id"]),
+            runner_public_key=str(self.runner["noise_public_key"]),
+        )
 
 
 @contextmanager
@@ -272,21 +277,8 @@ def test_issue_managed_capability_wakes_before_signing_and_stores_grant(
 ) -> None:
     """Capability issuance uses the revalidated managed runner and stores its grant."""
     from yinshi.api import managed_runtime
-    from yinshi.services.managed_runners import ManagedRuntimeStatus
 
     tenant = getattr(auth_client, "yinshi_tenant")
-    runtime = ManagedRuntimeStatus(
-        user_id=tenant.user_id,
-        runner_id="managed-runner",
-        provider_name="fly_sprites",
-        sprite_name="private-sprite",
-        lifecycle_status="ready",
-        generation=1,
-        artifact_version="runner-v1",
-        created_at="2026-08-11T12:00:00Z",
-        updated_at="2026-08-11T12:01:00Z",
-        last_error=None,
-    )
     runner = {
         "id": "managed-runner",
         "user_id": tenant.user_id,
@@ -305,7 +297,7 @@ def test_issue_managed_capability_wakes_before_signing_and_stores_grant(
     original_create = managed_runtime.create_runner_capability
     original_ensure_online = manager.ensure_online
 
-    async def ensure_online(user_id: str) -> dict[str, Any]:
+    async def ensure_online(user_id: str):
         calls.append("wake")
         return await original_ensure_online(user_id)
 
@@ -322,8 +314,12 @@ def test_issue_managed_capability_wakes_before_signing_and_stores_grant(
         assert getattr(claims, "runner_id") == "managed-runner"
 
     monkeypatch.setattr(manager, "ensure_online", ensure_online)
-    monkeypatch.setattr(managed_runtime, "get_managed_runtime_status", lambda user_id: runtime)
-    monkeypatch.setattr(managed_runtime, "get_managed_runner_for_user", lambda user_id: runner)
+
+    def fail_reload(user_id: str):
+        raise AssertionError("capability route must not reload managed runtime state")
+
+    monkeypatch.setattr(managed_runtime, "get_managed_runtime_status", fail_reload)
+    monkeypatch.setattr(managed_runtime, "get_managed_runner_for_user", fail_reload)
     monkeypatch.setattr(managed_runtime, "create_runner_capability", create_capability)
     monkeypatch.setattr(managed_runtime, "store_runner_transfer_grant", store_grant)
 

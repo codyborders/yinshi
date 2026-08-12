@@ -813,6 +813,115 @@ async def test_provider_wait_heartbeat_prevents_overlapping_stale_claim(
         await request
 
 
+async def test_concurrent_ensure_online_calls_share_one_restart(
+    auth_client,
+) -> None:
+    """Concurrent waiters must share one manager-owned wake operation."""
+    tenant = getattr(auth_client, "yinshi_tenant")
+    wake_now = datetime.now(timezone.utc)
+    runner_id, _, noise_key = _store_ready_runtime(tenant.user_id, wake_now)
+    provider_started = asyncio.Event()
+    release_provider = asyncio.Event()
+    connected = False
+
+    class BlockingProvider(FakeProvider):
+        async def restart_service(
+            self,
+            name: str,
+            *,
+            service_name: str,
+            monitor_duration: float | None,
+        ) -> None:
+            await super().restart_service(
+                name,
+                service_name=service_name,
+                monitor_duration=monitor_duration,
+            )
+            provider_started.set()
+            await release_provider.wait()
+
+    def is_runner_connected(candidate_runner_id: str) -> bool:
+        assert candidate_runner_id == runner_id
+        return connected
+
+    provider = BlockingProvider()
+    manager = _manager(
+        provider,
+        FakeInstaller(),
+        is_runner_connected=is_runner_connected,
+        clock=lambda: wake_now,
+    )
+
+    first = asyncio.create_task(manager.ensure_online(tenant.user_id))
+    await provider_started.wait()
+    second = asyncio.create_task(manager.ensure_online(tenant.user_id))
+    await asyncio.sleep(0)
+    connected = True
+    release_provider.set()
+
+    first_runner, second_runner = await asyncio.gather(first, second)
+    await manager.aclose()
+
+    assert first_runner.runner_id == runner_id
+    assert first_runner.runner_public_key == noise_key
+    assert second_runner == first_runner
+    assert [call[0] for call in provider.calls].count("restart") == 1
+
+
+async def test_cancelled_ensure_online_waiter_does_not_cancel_shared_wake(
+    auth_client,
+) -> None:
+    """Cancelling one waiter must preserve wake work for another waiter."""
+    tenant = getattr(auth_client, "yinshi_tenant")
+    wake_now = datetime.now(timezone.utc)
+    runner_id, _, _ = _store_ready_runtime(tenant.user_id, wake_now)
+    provider_started = asyncio.Event()
+    release_provider = asyncio.Event()
+    connected = False
+
+    class BlockingProvider(FakeProvider):
+        async def restart_service(
+            self,
+            name: str,
+            *,
+            service_name: str,
+            monitor_duration: float | None,
+        ) -> None:
+            await super().restart_service(
+                name,
+                service_name=service_name,
+                monitor_duration=monitor_duration,
+            )
+            provider_started.set()
+            await release_provider.wait()
+
+    provider = BlockingProvider()
+    manager = _manager(
+        provider,
+        FakeInstaller(),
+        is_runner_connected=lambda candidate_runner_id: (
+            candidate_runner_id == runner_id and connected
+        ),
+        clock=lambda: wake_now,
+    )
+
+    cancelled_waiter = asyncio.create_task(manager.ensure_online(tenant.user_id))
+    await provider_started.wait()
+    surviving_waiter = asyncio.create_task(manager.ensure_online(tenant.user_id))
+    await asyncio.sleep(0)
+    cancelled_waiter.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await cancelled_waiter
+    connected = True
+    release_provider.set()
+
+    result = await surviving_waiter
+    await manager.aclose()
+
+    assert result.runner_id == runner_id
+    assert [call[0] for call in provider.calls].count("restart") == 1
+
+
 async def test_ensure_online_returns_connected_runtime_without_restart(
     auth_client,
 ) -> None:
@@ -840,8 +949,8 @@ async def test_ensure_online_returns_connected_runtime_without_restart(
     runner = await manager.ensure_online(tenant.user_id)
     await manager.aclose()
 
-    assert runner["id"] == runner_id
-    assert runner["noise_public_key"] == noise_key
+    assert runner.runner_id == runner_id
+    assert runner.runner_public_key == noise_key
     assert sprite_name
     assert provider.calls == []
     assert connected_runner_ids == [runner_id]

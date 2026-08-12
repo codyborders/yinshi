@@ -101,6 +101,66 @@ function isCanonicalRunnerPublicKey(value: unknown): value is string {
   }
 }
 
+export async function provisionRuntimeRef(
+  runtime: UnresolvedRuntimeRef,
+  dependencies: RuntimeResolverDependencies = defaultDependencies,
+  signal?: AbortSignal,
+): Promise<RuntimeRef> {
+  if (runtime.location !== "hosted") {
+    throw new Error("Only a hosted runtime can be provisioned");
+  }
+  const desktop =
+    dependencies.desktop ??
+    (typeof window !== "undefined" && window.yinshiDesktop !== undefined);
+  if (desktop) {
+    throw new Error("Desktop runtime provisioning is unavailable");
+  }
+  const provisionRuntime =
+    dependencies.provisionRuntime ?? defaultDependencies.provisionRuntime;
+  const getRuntime = dependencies.getRuntime ?? defaultDependencies.getRuntime;
+  throwIfAborted(signal);
+  let managed = parseManagedRuntime(await provisionRuntime(signal));
+  throwIfAborted(signal);
+  if (managed.provider !== "fly_sprites") {
+    throw new Error("Managed runtime provider is unsupported");
+  }
+  if (managed.status === "provisioning") {
+    const sleep = dependencies.sleep ?? defaultDependencies.sleep;
+    const maxPollAttempts =
+      dependencies.maxPollAttempts ?? MANAGED_RUNTIME_MAX_POLL_ATTEMPTS;
+    for (let attempt = 0; attempt < maxPollAttempts; attempt += 1) {
+      await sleep(MANAGED_RUNTIME_POLL_INTERVAL_MS, signal);
+      throwIfAborted(signal);
+      managed = parseManagedRuntime(await getRuntime(signal));
+      throwIfAborted(signal);
+      if (managed.status !== "provisioning") break;
+    }
+  }
+  if (managed.status === "provisioning") {
+    throw new Error("Managed runtime provisioning timed out");
+  }
+  if (managed.status === "ready") {
+    if (!isCanonicalRunnerPublicKey(managed.runner_public_key)) {
+      throw new Error("Managed runtime runner public key is invalid");
+    }
+    return {
+      location: "managed",
+      runnerPublicKey: managed.runner_public_key,
+    };
+  }
+  if (managed.status === "failed") {
+    const message =
+      typeof managed.last_error === "string"
+        ? MANAGED_RUNTIME_FAILURE_MESSAGES[managed.last_error]
+        : undefined;
+    throw new Error(message ?? "Managed runtime setup failed");
+  }
+  if (managed.status === "deleting") {
+    throw new Error("Managed runtime is deleting");
+  }
+  throw new Error("Managed runtime response is invalid");
+}
+
 export async function resolveRuntimeRef(
   runtime: UnresolvedRuntimeRef,
   dependencies: RuntimeResolverDependencies = defaultDependencies,
@@ -123,15 +183,8 @@ export async function resolveRuntimeRef(
     if (managed.provider === "local") {
       return runtime;
     }
-    if (
-      managed.provider === "fly_sprites" &&
-      (managed.status === "absent" || managed.status === "failed")
-    ) {
-      const provisionRuntime =
-        dependencies.provisionRuntime ?? defaultDependencies.provisionRuntime;
-      throwIfAborted(signal);
-      managed = parseManagedRuntime(await provisionRuntime(signal));
-      throwIfAborted(signal);
+    if (managed.provider === "fly_sprites" && managed.status === "absent") {
+      throw new Error("Managed runtime is not provisioned");
     }
     if (
       managed.provider === "fly_sprites" &&
