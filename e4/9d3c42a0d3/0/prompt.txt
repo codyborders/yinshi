@@ -1,0 +1,21 @@
+What's remaining to turn this project into a production-ready SaaS product?
+
+---
+
+We need to fix the execution isolation, concurrency faults, production recovery and restore, hosted data encryption required. The other tasks can wait.
+
+---
+
+Say I have two users who are working on an average of two projects, three branches/workstreams per project per day. What would the cost implications of your recommendations be?
+
+---
+
+What can get us started in the most cost-effective way?
+
+---
+
+How to we integrate sprites into the project? Which files do we need to focus on?
+
+---
+
+Ok, go.
