@@ -3,8 +3,35 @@
   "checkpoint_id": "7579a8ba79f3",
   "strategy": "manual-commit",
   "branch": "main",
-  "checkpoints_count": 10,
-  "files_touched": null,
+  "checkpoints_count": 24,
+  "files_touched": [
+    ".gitignore",
+    "backend/src/yinshi/api/managed_runtime.py",
+    "backend/src/yinshi/services/managed_runtime_manager.py",
+    "backend/src/yinshi/services/runner_rpc.py",
+    "backend/src/yinshi/services/runner_rpc_transport.py",
+    "backend/tests/test_managed_runtime_api.py",
+    "backend/tests/test_managed_runtime_manager.py",
+    "backend/tests/test_runner_rpc.py",
+    "docs/security/runner-rpc-fragmentation.md",
+    "frontend/src/components/Sidebar.tsx",
+    "frontend/src/components/__tests__/PiReleaseNotesSection.test.tsx",
+    "frontend/src/components/__tests__/Sidebar.test.tsx",
+    "frontend/src/components/__tests__/WorkspaceInspector.test.tsx",
+    "frontend/src/pages/Settings.tsx",
+    "frontend/src/pages/__tests__/Settings.test.tsx",
+    "frontend/src/runner/encryptedRunnerClient.ts",
+    "frontend/src/runner/runnerRpcTransport.test.ts",
+    "frontend/src/runner/runnerRpcTransport.ts",
+    "frontend/src/runtime/promptStream.test.ts",
+    "frontend/src/runtime/resolveRuntime.test.ts",
+    "frontend/src/runtime/resolveRuntime.ts",
+    "frontend/src/runtime/runtimeTransport.test.ts",
+    "frontend/src/runtime/runtimeTransport.ts",
+    "frontend/src/runtime/terminalChannel.test.ts",
+    "frontend/src/runtime/useRuntimeResource.test.ts",
+    "frontend/src/runtime/useRuntimeResource.ts"
+  ],
   "sessions": [
     {
       "metadata": "/75/79a8ba79f3/0/metadata.json",
@@ -12,13 +39,20 @@
       "compact_transcript": "/75/79a8ba79f3/0/transcript.jsonl",
       "content_hash": "/75/79a8ba79f3/0/content_hash.txt",
       "prompt": "/75/79a8ba79f3/0/prompt.txt"
+    },
+    {
+      "metadata": "/75/79a8ba79f3/1/metadata.json",
+      "transcript": "/75/79a8ba79f3/1/full.jsonl",
+      "compact_transcript": "/75/79a8ba79f3/1/transcript.jsonl",
+      "content_hash": "/75/79a8ba79f3/1/content_hash.txt",
+      "prompt": "/75/79a8ba79f3/1/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 7137958,
+    "input_tokens": 7165029,
     "cache_creation_tokens": 0,
-    "cache_read_tokens": 356863488,
-    "output_tokens": 485918,
-    "api_call_count": 2062
+    "cache_read_tokens": 356937216,
+    "output_tokens": 487673,
+    "api_call_count": 2068
   }
 }
