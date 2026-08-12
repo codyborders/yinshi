@@ -1709,6 +1709,25 @@ async def test_checkpoint_rejects_invalid_ndjson() -> None:
 
 
 @pytest.mark.asyncio
+async def test_set_network_policy_accepts_successful_empty_response() -> None:
+    """Fly may acknowledge a policy update with a successful empty response."""
+
+    def handle_request(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"")
+
+    transport = httpx.MockTransport(handle_request)
+    async with httpx.AsyncClient(
+        base_url="https://api.sprites.dev",
+        transport=transport,
+    ) as http_client:
+        client = SpritesClient(api_token="provider-token", http_client=http_client)
+        await client.set_network_policy(
+            "yinshi-test-user",
+            allowed_domains=("control.example.com",),
+        )
+
+
+@pytest.mark.asyncio
 async def test_set_network_policy_rejects_mismatched_response() -> None:
     """The client should reject a policy response missing requested restrictions."""
 

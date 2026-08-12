@@ -501,6 +501,8 @@ class SpritesClient:
             raise SpritesProviderError(
                 f"Fly could not set network policy (status {status_code})"
             ) from None
+        if not body:
+            return
         try:
             payload = httpx.Response(status_code, content=body).json()
         except ValueError:
