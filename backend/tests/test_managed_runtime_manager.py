@@ -922,6 +922,52 @@ async def test_cancelled_ensure_online_waiter_does_not_cancel_shared_wake(
     assert [call[0] for call in provider.calls].count("restart") == 1
 
 
+async def test_provision_rejects_running_managed_backup(
+    auth_client,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Provisioning should fail while durable managed maintenance is active."""
+    from yinshi.services.managed_runtime_manager import ManagedRuntimeStateError
+
+    tenant = getattr(auth_client, "yinshi_tenant")
+    manager = _manager(FakeProvider(), FakeInstaller())
+    monkeypatch.setattr(
+        "yinshi.services.managed_runtime_manager.managed_backup_operation_is_running",
+        lambda user_id: user_id == tenant.user_id,
+    )
+
+    with pytest.raises(ManagedRuntimeStateError, match="maintenance"):
+        await manager.provision(tenant.user_id)
+    await manager.aclose()
+
+
+@pytest.mark.asyncio
+async def test_ensure_online_rejects_running_managed_backup(
+    auth_client,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Capability wake should fail while durable managed maintenance is active."""
+    from yinshi.services.managed_runtime_manager import (
+        ManagedRuntimeManager,
+        ManagedRuntimeStateError,
+    )
+
+    tenant = getattr(auth_client, "yinshi_tenant")
+    manager = object.__new__(ManagedRuntimeManager)
+    manager._online_lock = asyncio.Lock()
+    manager._online_tasks = {}
+    manager._closing = False
+    monkeypatch.setattr(
+        "yinshi.services.managed_runtime_manager.managed_backup_operation_is_running",
+        lambda user_id: user_id == tenant.user_id,
+        raising=False,
+    )
+
+    with pytest.raises(ManagedRuntimeStateError, match="maintenance"):
+        await manager.ensure_online(tenant.user_id)
+
+
+@pytest.mark.asyncio
 async def test_ensure_online_returns_connected_runtime_without_restart(
     auth_client,
 ) -> None:

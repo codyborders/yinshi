@@ -12,6 +12,7 @@ from typing import Any, Protocol, TypeVar
 import httpx
 
 from yinshi.services.managed_artifacts import fetch_pinned_artifact
+from yinshi.services.managed_backups import managed_backup_operation_is_running
 from yinshi.services.managed_runners import (
     ManagedRuntimeStatus,
     ProvisioningClaimResult,
@@ -25,6 +26,8 @@ from yinshi.services.managed_runners import (
 from yinshi.services.runners import (
     _HEARTBEAT_ONLINE_WINDOW_SECONDS,
     _datetime_from_storage,
+    create_runner_registration,
+    get_managed_restore_runner_for_user,
     get_managed_runner_for_user,
 )
 from yinshi.services.sprites import SpriteRecord
@@ -53,6 +56,7 @@ class ManagedRuntimeIdentityError(ManagedRuntimeWakeError):
 _PROVIDER_ERROR_MESSAGE = "Managed runtime provider unavailable"
 _TIMEOUT_ERROR_MESSAGE = "Managed runtime wake timed out"
 _STATE_ERROR_MESSAGE = "Managed runtime state is invalid"
+_MAINTENANCE_ERROR_MESSAGE = "Managed runtime maintenance is active"
 _IDENTITY_ERROR_MESSAGE = "Managed runtime identity changed"
 _PROVISIONING_HEARTBEAT_INTERVAL_SECONDS = 30.0
 
@@ -87,6 +91,14 @@ class ManagedRuntimeProvider(Protocol):
         *,
         service_name: str,
         monitor_duration: float | None,
+    ) -> None: ...
+
+    async def stop_service(
+        self,
+        name: str,
+        *,
+        service_name: str,
+        timeout_seconds: int,
     ) -> None: ...
 
 
@@ -149,10 +161,33 @@ class ManagedRuntimeManager:
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._sleep = sleep
         self._heartbeat_sleep = heartbeat_sleep
+        self._fetch_restore_artifact: Callable[[], Awaitable[bytes]] = (
+            lambda: fetch_pinned_artifact(
+                self._http_client,
+                self._artifact_url,
+                self._artifact_sha256,
+            )
+        )
+        self._create_restore_registration: Callable[[str], dict[str, Any]] = (
+            self._new_restore_registration
+        )
+        self._get_restore_runner: Callable[[str], dict[str, Any] | None] = (
+            get_managed_restore_runner_for_user
+        )
         self._provisioning_tasks: dict[asyncio.Task[ManagedRuntimeStatus], tuple[str, int]] = {}
         self._online_lock = asyncio.Lock()
         self._online_tasks: dict[str, asyncio.Task[OnlineManagedRunner]] = {}
         self._closing = False
+
+    @property
+    def provider(self) -> ManagedRuntimeProvider:
+        """Return the provider authority for control-plane maintenance services."""
+        return self._provider
+
+    @property
+    def artifact_version(self) -> str:
+        """Return the exact installed artifact version for replacement activation."""
+        return self._artifact_version
 
     async def reconcile_startup(self) -> int:
         """Fail abandoned provisioning before this manager serves requests."""
@@ -190,10 +225,115 @@ class ManagedRuntimeManager:
                     pass
         await self._http_client.aclose()
 
+    async def provision_restore_candidate(
+        self,
+        user_id: str,
+        *,
+        job_id: str,
+        candidate_sprite_name: str,
+    ) -> OnlineManagedRunner:
+        """Install one private non-active replacement and validate fresh identity."""
+        if not user_id or not job_id or not candidate_sprite_name:
+            raise ManagedRuntimeStateError(_STATE_ERROR_MESSAGE)
+        registration = self._create_restore_registration(user_id)
+        candidate_runner_id = registration["runner"]["id"]
+        environment = registration.get("environment")
+        if not isinstance(environment, dict):
+            raise ManagedRuntimeStateError(_STATE_ERROR_MESSAGE)
+        artifact = await self._fetch_restore_artifact()
+        sprite = await self._provider.get_sprite(candidate_sprite_name)
+        if sprite is None:
+            sprite = await self._provider.create_sprite(candidate_sprite_name)
+        if sprite.name != candidate_sprite_name:
+            raise ManagedRuntimeProviderError(_PROVIDER_ERROR_MESSAGE)
+        await self._provider.set_network_policy(
+            candidate_sprite_name,
+            allowed_domains=self._allowed_domains,
+        )
+        await self._guest_installer.install(
+            sprite_name=candidate_sprite_name,
+            artifact=artifact,
+            environment=dict(environment),
+            artifact_version=self._artifact_version,
+            artifact_sha256=self._artifact_sha256,
+        )
+        deadline = self._now() + self._readiness_timeout
+        while True:
+            runner = self._get_restore_runner(user_id)
+            if runner is not None:
+                noise_key = runner.get("noise_public_key")
+                ready = (
+                    runner.get("id") == candidate_runner_id
+                    and runner.get("kind") == "managed_restore"
+                    and runner.get("status") == "online"
+                    and runner.get("registered_at") is not None
+                    and isinstance(noise_key, str)
+                    and runner.get("noise_key_confirmed") is True
+                    and self._artifact_attestation_matches(runner)
+                    and self._is_runner_connected(candidate_runner_id)
+                )
+                if ready:
+                    for service in ("yinshi-runner", "yinshi-sidecar"):
+                        await self._provider.stop_service(
+                            candidate_sprite_name,
+                            service_name=service,
+                            timeout_seconds=30,
+                        )
+                    assert isinstance(noise_key, str)
+                    return OnlineManagedRunner(candidate_runner_id, noise_key)
+            if self._now() >= deadline:
+                raise ManagedRuntimeTimeoutError(_TIMEOUT_ERROR_MESSAGE)
+            await self._sleep(self._poll_interval_seconds)
+
+    def _new_restore_registration(self, user_id: str) -> dict[str, Any]:
+        """Create fresh candidate authority that cannot receive user capabilities."""
+        return create_runner_registration(
+            user_id,
+            name="Managed restore candidate",
+            cloud_provider="fly_sprites",
+            region=self._region,
+            storage_profile="fly_sprites_posix",
+            control_url=self._control_url,
+            runner_kind="managed_restore",
+        )
+
+    async def verify_restore_candidate(
+        self,
+        user_id: str,
+        *,
+        candidate_runner_id: str,
+        candidate_sprite_name: str,
+        expected_public_key: str,
+    ) -> None:
+        """Revalidate candidate identity, attestation, heartbeat, and relay connection."""
+        if not candidate_sprite_name:
+            raise ManagedRuntimeStateError(_STATE_ERROR_MESSAGE)
+        deadline = self._now() + self._readiness_timeout
+        while True:
+            runner = self._get_restore_runner(user_id)
+            if runner is not None:
+                noise_key = runner.get("noise_public_key")
+                if noise_key != expected_public_key:
+                    raise ManagedRuntimeIdentityError(_IDENTITY_ERROR_MESSAGE)
+                if (
+                    runner.get("id") == candidate_runner_id
+                    and runner.get("kind") == "managed_restore"
+                    and runner.get("status") == "online"
+                    and runner.get("noise_key_confirmed") is True
+                    and self._artifact_attestation_matches(runner)
+                    and self._is_runner_connected(candidate_runner_id)
+                ):
+                    return
+            if self._now() >= deadline:
+                raise ManagedRuntimeTimeoutError(_TIMEOUT_ERROR_MESSAGE)
+            await self._sleep(self._poll_interval_seconds)
+
     async def ensure_online(self, user_id: str) -> OnlineManagedRunner:
         """Join one manager-owned wake operation for the user's runtime."""
         if not isinstance(user_id, str) or not user_id:
             raise ManagedRuntimeStateError(_STATE_ERROR_MESSAGE)
+        if managed_backup_operation_is_running(user_id):
+            raise ManagedRuntimeStateError(_MAINTENANCE_ERROR_MESSAGE)
         async with self._online_lock:
             if self._closing:
                 raise ManagedRuntimeStateError(_STATE_ERROR_MESSAGE)
@@ -299,6 +439,8 @@ class ManagedRuntimeManager:
         allow_upgrade: bool = False,
     ) -> ManagedRuntimeStatus:
         """Return observer state without external calls when another caller owns claim."""
+        if managed_backup_operation_is_running(user_id):
+            raise ManagedRuntimeStateError(_MAINTENANCE_ERROR_MESSAGE)
         claim = claim_managed_runtime_provisioning(
             user_id,
             name_prefix=self._name_prefix,

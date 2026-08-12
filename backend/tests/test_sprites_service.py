@@ -218,3 +218,65 @@ async def test_service_response_rejects_unreasonable_returned_values() -> None:
             client = SpritesClient(api_token="provider-token", http_client=http_client)
             with pytest.raises(SpritesProtocolError, match="service"):
                 await client.get_service("yinshi-test-user", service_name="web")
+
+
+@pytest.mark.asyncio
+async def test_stop_service_requires_stopped_and_complete_events() -> None:
+    """Service stop should consume a bounded completed stop stream."""
+    requests: list[httpx.Request] = []
+
+    def handle_request(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            content=(
+                b'{"type":"stopping","timestamp":1}\n'
+                b'{"type":"stopped","exit_code":143,"timestamp":2}\n'
+                b'{"type":"complete","timestamp":3}\n'
+            ),
+            headers={"content-type": "application/x-ndjson"},
+        )
+
+    transport = httpx.MockTransport(handle_request)
+    async with httpx.AsyncClient(
+        base_url="https://api.sprites.dev",
+        transport=transport,
+    ) as http_client:
+        client = SpritesClient(api_token="provider-token", http_client=http_client)
+        await client.stop_service(
+            "yinshi-test-user",
+            service_name="yinshi-runner",
+            timeout_seconds=30,
+        )
+
+    assert requests[0].url.path.endswith("/services/yinshi-runner/stop")
+    assert requests[0].url.params["timeout"] == "30s"
+
+
+@pytest.mark.asyncio
+async def test_start_service_requires_started_and_complete_events() -> None:
+    """Service start should consume a bounded completed start stream."""
+    requests: list[httpx.Request] = []
+
+    def handle_request(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            content=(b'{"type":"started","timestamp":1}\n' b'{"type":"complete","timestamp":2}\n'),
+            headers={"content-type": "application/x-ndjson"},
+        )
+
+    transport = httpx.MockTransport(handle_request)
+    async with httpx.AsyncClient(
+        base_url="https://api.sprites.dev",
+        transport=transport,
+    ) as http_client:
+        client = SpritesClient(api_token="provider-token", http_client=http_client)
+        await client.start_service(
+            "yinshi-test-user",
+            service_name="yinshi-sidecar",
+            monitor_duration=5,
+        )
+
+    assert requests[0].url.path.endswith("/services/yinshi-sidecar/start")
+    assert requests[0].url.params["duration"] == "5s"

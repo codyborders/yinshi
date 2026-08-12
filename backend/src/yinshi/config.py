@@ -223,6 +223,16 @@ class Settings(BaseSettings):
     sprites_wake_timeout_seconds: int = 30
     sprites_operation_stale_seconds: int = 1800
 
+    # Independent encrypted managed guest backups
+    managed_backup_bucket: str = ""
+    managed_backup_endpoint_url: str = ""
+    managed_backup_region: str = ""
+    managed_backup_access_key_id: SecretStr | None = None
+    managed_backup_secret_access_key: SecretStr | None = None
+    managed_backup_prefix: str = "yinshi-managed-v1"
+    managed_backup_part_bytes: int = 16 * 1024 * 1024
+    managed_backup_retention_days: int = 30
+
     model_config = {
         "env_file": ".env",
         "env_file_encoding": "utf-8",
@@ -432,6 +442,37 @@ def _validate_settings(settings: Settings) -> None:
             raise RuntimeError("Fly Sprites mode requires HTTPS enforcement through REQUIRE_HTTPS")
         if settings.control_field_encryption_mode != "required":
             raise RuntimeError("Fly Sprites mode requires CONTROL_FIELD_ENCRYPTION=required")
+        if not settings.managed_backup_bucket:
+            raise RuntimeError("MANAGED_BACKUP_BUCKET is required for Fly Sprites")
+        _require_https_url(
+            settings.managed_backup_endpoint_url,
+            "MANAGED_BACKUP_ENDPOINT_URL",
+            reject_routing_metadata=True,
+        )
+        if not settings.managed_backup_region.strip():
+            raise RuntimeError("MANAGED_BACKUP_REGION is required for Fly Sprites")
+        if (
+            not settings.managed_backup_prefix
+            or len(settings.managed_backup_prefix) > 128
+            or any(
+                character not in "abcdefghijklmnopqrstuvwxyz0123456789-_/"
+                for character in settings.managed_backup_prefix
+            )
+            or ".." in settings.managed_backup_prefix.split("/")
+        ):
+            raise RuntimeError("MANAGED_BACKUP_PREFIX is invalid")
+        if not 5 * 1024 * 1024 <= settings.managed_backup_part_bytes <= 5 * 1024**4:
+            raise RuntimeError("MANAGED_BACKUP_PART_BYTES is outside S3 multipart limits")
+        if not 1 <= settings.managed_backup_retention_days <= 3650:
+            raise RuntimeError("MANAGED_BACKUP_RETENTION_DAYS must be between 1 and 3650")
+        access_key = settings.managed_backup_access_key_id
+        secret_key = settings.managed_backup_secret_access_key
+        if (access_key is None) != (secret_key is None):
+            raise RuntimeError("MANAGED_BACKUP credentials must be configured together")
+        if isinstance(access_key, SecretStr) and not access_key.get_secret_value().strip():
+            raise RuntimeError("MANAGED_BACKUP credentials must not be blank")
+        if isinstance(secret_key, SecretStr) and not secret_key.get_secret_value().strip():
+            raise RuntimeError("MANAGED_BACKUP credentials must not be blank")
         if not isinstance(settings.backup_encryption_key, SecretStr):
             raise RuntimeError("BACKUP_ENCRYPTION_KEY is required for Fly Sprites")
         backup_encryption_key = settings.backup_encryption_key.get_secret_value()

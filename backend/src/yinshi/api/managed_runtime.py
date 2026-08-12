@@ -11,6 +11,10 @@ from yinshi.api.deps import require_tenant
 from yinshi.api.runners import _request_relay_url
 from yinshi.models import RunnerCapabilityCreateIn, RunnerCapabilityOut
 from yinshi.rate_limit import limiter
+from yinshi.services.managed_backups import (
+    get_managed_backup_operation,
+    list_managed_backup_archives,
+)
 from yinshi.services.managed_runners import (
     ManagedRuntimeStatus,
     get_managed_runtime_status,
@@ -27,6 +31,30 @@ from yinshi.services.runner_capabilities import (
 )
 from yinshi.services.runner_relay import store_runner_transfer_grant
 from yinshi.services.runners import get_managed_runner_for_user
+
+
+class ManagedBackupOut(BaseModel):
+    """Safe archive state without storage location or key material."""
+
+    id: str
+    status: str
+    size_bytes: int | None
+    created_at: str
+    completed_at: str | None
+    last_error: str | None
+
+
+class ManagedBackupJobOut(BaseModel):
+    """Safe maintenance progress without worker or provider ownership."""
+
+    id: str
+    archive_id: str
+    operation: str
+    status: str
+    phase: str
+    started_at: str
+    updated_at: str
+    last_error: str | None
 
 
 class ManagedRuntimeOut(BaseModel):
@@ -67,6 +95,106 @@ def _safe_runtime_status(
         artifact_version=runtime.artifact_version,
         last_error=runtime.last_error,
         runner_public_key=runner_public_key,
+    )
+
+
+@router.get("/api/runtime/backups", response_model=list[ManagedBackupOut])
+def list_runtime_backups(request: Request) -> list[ManagedBackupOut]:
+    """Return bounded safe archive states owned by the authenticated tenant."""
+    tenant = require_tenant(request)
+    return [
+        ManagedBackupOut(
+            id=archive.id,
+            status=archive.status,
+            size_bytes=archive.size_bytes,
+            created_at=archive.created_at,
+            completed_at=archive.completed_at,
+            last_error=archive.last_error,
+        )
+        for archive in list_managed_backup_archives(tenant.user_id)
+    ]
+
+
+@router.post(
+    "/api/runtime/backups",
+    response_model=ManagedBackupJobOut,
+    status_code=202,
+)
+@limiter.limit("5/hour")
+def create_runtime_backup(request: Request) -> ManagedBackupJobOut:
+    """Queue one encrypted managed backup for the authenticated tenant."""
+    tenant = require_tenant(request)
+    manager = getattr(request.app.state, "managed_backup_manager", None)
+    if manager is None:
+        raise HTTPException(status_code=503, detail="Managed backups are unavailable")
+    try:
+        job = manager.enqueue_create(tenant.user_id)
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail="Managed backup state is invalid") from error
+    manager.wake()
+    return ManagedBackupJobOut.model_validate(job)
+
+
+def _queue_backup_mutation(
+    request: Request,
+    archive_id: str,
+    method_name: str,
+) -> ManagedBackupJobOut:
+    tenant = require_tenant(request)
+    manager = getattr(request.app.state, "managed_backup_manager", None)
+    if manager is None:
+        raise HTTPException(status_code=503, detail="Managed backups are unavailable")
+    try:
+        job = getattr(manager, method_name)(tenant.user_id, archive_id)
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail="Managed backup was not found") from error
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail="Managed backup state is invalid") from error
+    manager.wake()
+    return ManagedBackupJobOut.model_validate(job)
+
+
+@router.post(
+    "/api/runtime/backups/{archive_id}/restore",
+    response_model=ManagedBackupJobOut,
+    status_code=202,
+)
+@limiter.limit("3/hour")
+def restore_runtime_backup(archive_id: str, request: Request) -> ManagedBackupJobOut:
+    """Queue one tenant-owned replacement restore."""
+    return _queue_backup_mutation(request, archive_id, "enqueue_restore")
+
+
+@router.delete(
+    "/api/runtime/backups/{archive_id}",
+    response_model=ManagedBackupJobOut,
+    status_code=202,
+)
+@limiter.limit("5/hour")
+def delete_runtime_backup(archive_id: str, request: Request) -> ManagedBackupJobOut:
+    """Queue one tenant-owned exact-version archive deletion."""
+    return _queue_backup_mutation(request, archive_id, "enqueue_delete")
+
+
+@router.get(
+    "/api/runtime/backup-jobs/{job_id}",
+    response_model=ManagedBackupJobOut,
+)
+def get_runtime_backup_job(job_id: str, request: Request) -> ManagedBackupJobOut:
+    """Return safe progress for one tenant-owned managed maintenance job."""
+    tenant = require_tenant(request)
+    operation = get_managed_backup_operation(tenant.user_id, job_id)
+    if operation is None:
+        raise HTTPException(status_code=404, detail="Managed backup job was not found")
+    return ManagedBackupJobOut(
+        id=operation.job_id,
+        archive_id=operation.archive_id,
+        operation=operation.operation,
+        status=operation.status,
+        phase=operation.phase,
+        started_at=operation.started_at,
+        updated_at=operation.updated_at,
+        last_error=operation.last_error,
     )
 
 

@@ -223,6 +223,42 @@ def test_runner_agent_accepts_explicit_managed_lifecycle_settings(
 
 
 @pytest.mark.asyncio
+async def test_runner_relay_sends_quiesced_control_acknowledgement() -> None:
+    """Runner should return maintenance acknowledgements over its authenticated socket."""
+
+    class Runtime:
+        active_transfer_ids: tuple[str, ...] = ()
+
+        async def handle_control(self, message: str) -> str | None:
+            assert message == '{"job_id":"job","type":"quiesce"}'
+            return '{"job_id":"job","type":"quiesced"}'
+
+    class WebSocket:
+        def __init__(self) -> None:
+            self.sent: list[str] = []
+
+        async def recv(self) -> str:
+            if not self.sent:
+                return '{"job_id":"job","type":"quiesce"}'
+            raise RuntimeError("stop")
+
+        async def send(self, message: str) -> None:
+            self.sent.append(message)
+
+        async def close(self, *, code: int, reason: str) -> None:
+            return None
+
+    websocket = WebSocket()
+    with pytest.raises(RuntimeError, match="Runner relay protocol rejected"):
+        await runner_agent._consume_runner_relay_messages(
+            Runtime(),  # type: ignore[arg-type]
+            websocket,  # type: ignore[arg-type]
+        )
+
+    assert websocket.sent == ['{"job_id":"job","type":"quiesced"}']
+
+
+@pytest.mark.asyncio
 async def test_runner_relay_messages_expire_while_no_transfer_is_open() -> None:
     """Managed relay consumption returns after its idle limit."""
 

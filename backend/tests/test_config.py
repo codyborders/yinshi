@@ -337,6 +337,11 @@ def test_fly_sprites_accepts_valid_bounded_settings():
         sprites_bootstrap_script_path=str(Path(__file__).resolve()),
         sprites_wake_timeout_seconds=5,
         sprites_operation_stale_seconds=86400,
+        managed_backup_bucket="backup-bucket",
+        managed_backup_endpoint_url="https://storage.example.com",
+        managed_backup_region="us-east-1",
+        managed_backup_access_key_id="backup-access-key",
+        managed_backup_secret_access_key="backup-secret-key",
     )
 
     _validate_settings(settings)
@@ -390,6 +395,11 @@ def test_fly_sprites_rejects_incomplete_security_configuration(field, value, err
         sprites_allowed_domains="registry.npmjs.org,control.example.com",
         sprites_public_control_url="https://control.example.com",
         sprites_bootstrap_script_path=str(Path(__file__).resolve()),
+        managed_backup_bucket="backup-bucket",
+        managed_backup_endpoint_url="https://storage.example.com",
+        managed_backup_region="us-east-1",
+        managed_backup_access_key_id="backup-access-key",
+        managed_backup_secret_access_key="backup-secret-key",
     )
     if field in {"backup_encryption_key", "sprites_name_key"} and isinstance(value, str):
         setattr(settings, field, SecretStr(value))

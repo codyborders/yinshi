@@ -734,7 +734,8 @@ CREATE TABLE IF NOT EXISTS user_runners (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    kind TEXT DEFAULT 'byoc' NOT NULL CHECK (kind IN ('byoc', 'managed')),
+    kind TEXT DEFAULT 'byoc' NOT NULL
+        CHECK (kind IN ('byoc', 'managed', 'managed_restore', 'managed_retired')),
     name TEXT NOT NULL,
     cloud_provider TEXT NOT NULL,
     region TEXT NOT NULL,
@@ -787,6 +788,57 @@ CREATE TABLE IF NOT EXISTS managed_runtimes (
     last_error TEXT CHECK (last_error IS NULL OR length(last_error) <= 1000)
 );
 
+CREATE TABLE IF NOT EXISTS managed_backup_archives (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    runtime_generation INTEGER NOT NULL CHECK (runtime_generation > 0),
+    status TEXT NOT NULL CHECK (
+        status IN ('creating', 'uploaded', 'ready', 'failed', 'deleting', 'deleted')
+    ),
+    object_key TEXT NOT NULL UNIQUE,
+    object_version TEXT,
+    size_bytes INTEGER CHECK (size_bytes IS NULL OR size_bytes > 0),
+    sha256 TEXT CHECK (sha256 IS NULL OR length(sha256) = 64),
+    wrapped_key BLOB NOT NULL,
+    key_id TEXT NOT NULL,
+    owner_digest TEXT NOT NULL CHECK (length(owner_digest) = 64),
+    created_at TEXT NOT NULL,
+    completed_at TEXT,
+    last_error TEXT CHECK (last_error IS NULL OR length(last_error) <= 1000)
+);
+
+CREATE INDEX IF NOT EXISTS idx_managed_backup_archives_user_created
+ON managed_backup_archives(user_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS managed_backup_operations (
+    user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    job_id TEXT NOT NULL UNIQUE,
+    archive_id TEXT NOT NULL REFERENCES managed_backup_archives(id) ON DELETE CASCADE,
+    operation TEXT NOT NULL CHECK (operation IN ('create', 'restore', 'delete')),
+    status TEXT NOT NULL CHECK (status IN ('running', 'failed')),
+    runtime_generation INTEGER NOT NULL CHECK (runtime_generation > 0),
+    phase TEXT NOT NULL DEFAULT 'claimed',
+    lease_owner TEXT,
+    lease_token TEXT,
+    lease_expires_at TEXT,
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at TEXT,
+    source_runner_id TEXT,
+    source_sprite_id TEXT,
+    candidate_runner_id TEXT,
+    candidate_sprite_id TEXT,
+    activation_generation INTEGER,
+    started_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    last_error TEXT CHECK (last_error IS NULL OR length(last_error) <= 1000)
+);
+
+CREATE TABLE IF NOT EXISTS managed_runtime_activation_guards (
+    user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    job_id TEXT NOT NULL UNIQUE,
+    lease_token TEXT NOT NULL
+);
+
 CREATE TRIGGER IF NOT EXISTS validate_managed_runtime_runner_insert
 BEFORE INSERT ON managed_runtimes
 WHEN NOT EXISTS (
@@ -801,12 +853,18 @@ WHEN NOT EXISTS (
     SELECT 1 FROM user_runners
     WHERE id = NEW.runner_id AND user_id = NEW.user_id AND kind = 'managed'
 )
+AND NOT EXISTS (
+    SELECT 1 FROM managed_runtime_activation_guards WHERE user_id = NEW.user_id
+)
 BEGIN SELECT RAISE(ABORT, 'managed runtime must reference matching managed runner'); END;
 
 CREATE TRIGGER IF NOT EXISTS protect_linked_managed_runner_update
 BEFORE UPDATE OF user_id, kind ON user_runners
 WHEN EXISTS (SELECT 1 FROM managed_runtimes WHERE runner_id = OLD.id)
     AND (NEW.user_id != OLD.user_id OR NEW.kind != OLD.kind)
+    AND NOT EXISTS (
+        SELECT 1 FROM managed_runtime_activation_guards WHERE user_id = OLD.user_id
+    )
 BEGIN SELECT RAISE(ABORT, 'cannot change linked managed runtime runner'); END;
 
 CREATE TRIGGER IF NOT EXISTS update_users_updated_at AFTER UPDATE ON users
@@ -986,6 +1044,7 @@ def _migrate_control(conn: sqlite3.Connection) -> None:
         conn.commit()
 
     _migrate_runner_kinds(conn)
+    _migrate_managed_restore_runner_kind(conn)
 
     conn.execute("""
         CREATE TABLE IF NOT EXISTS runner_transfer_grants (
@@ -1016,6 +1075,48 @@ def _migrate_control(conn: sqlite3.Connection) -> None:
             artifact_version TEXT NOT NULL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+            last_error TEXT CHECK (last_error IS NULL OR length(last_error) <= 1000)
+        );
+        CREATE TABLE IF NOT EXISTS managed_backup_archives (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            runtime_generation INTEGER NOT NULL CHECK (runtime_generation > 0),
+            status TEXT NOT NULL CHECK (
+                status IN ('creating', 'uploaded', 'ready', 'failed', 'deleting')
+            ),
+            object_key TEXT NOT NULL UNIQUE,
+            object_version TEXT,
+            size_bytes INTEGER CHECK (size_bytes IS NULL OR size_bytes > 0),
+            sha256 TEXT CHECK (sha256 IS NULL OR length(sha256) = 64),
+            wrapped_key BLOB NOT NULL,
+            key_id TEXT NOT NULL,
+            owner_digest TEXT NOT NULL CHECK (length(owner_digest) = 64),
+            created_at TEXT NOT NULL,
+            completed_at TEXT,
+            last_error TEXT CHECK (last_error IS NULL OR length(last_error) <= 1000)
+        );
+        CREATE INDEX IF NOT EXISTS idx_managed_backup_archives_user_created
+        ON managed_backup_archives(user_id, created_at DESC);
+        CREATE TABLE IF NOT EXISTS managed_backup_operations (
+            user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+            job_id TEXT NOT NULL UNIQUE,
+            archive_id TEXT NOT NULL REFERENCES managed_backup_archives(id) ON DELETE CASCADE,
+            operation TEXT NOT NULL CHECK (operation IN ('create', 'restore', 'delete')),
+            status TEXT NOT NULL CHECK (status IN ('running', 'failed')),
+            runtime_generation INTEGER NOT NULL CHECK (runtime_generation > 0),
+            phase TEXT NOT NULL DEFAULT 'claimed',
+            lease_owner TEXT,
+            lease_token TEXT,
+            lease_expires_at TEXT,
+            attempt_count INTEGER NOT NULL DEFAULT 0,
+            next_attempt_at TEXT,
+            source_runner_id TEXT,
+            source_sprite_id TEXT,
+            candidate_runner_id TEXT,
+            candidate_sprite_id TEXT,
+            activation_generation INTEGER,
+            started_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
             last_error TEXT CHECK (last_error IS NULL OR length(last_error) <= 1000)
         );
         CREATE TRIGGER IF NOT EXISTS validate_managed_runtime_runner_insert
@@ -1050,9 +1151,138 @@ def _migrate_control(conn: sqlite3.Connection) -> None:
             WHERE user_id = NEW.user_id;
         END;
         """)
+    _migrate_managed_runtime_activation_guards(conn)
+    _migrate_managed_backup_archive_statuses(conn)
+    _migrate_managed_backup_operation_columns(conn)
     conn.commit()
 
     _migrate_encrypted_control_fields(conn)
+
+
+def _migrate_managed_runtime_activation_guards(conn: sqlite3.Connection) -> None:
+    """Install the durable guard and replacement-aware integrity triggers."""
+    conn.execute("""CREATE TABLE IF NOT EXISTS managed_runtime_activation_guards (
+               user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+               job_id TEXT NOT NULL UNIQUE,
+               lease_token TEXT NOT NULL
+           )""")
+    conn.execute("DROP TRIGGER IF EXISTS validate_managed_runtime_runner_update")
+    conn.execute("DROP TRIGGER IF EXISTS protect_linked_managed_runner_update")
+    conn.executescript("""CREATE TRIGGER validate_managed_runtime_runner_update
+           BEFORE UPDATE OF user_id, runner_id ON managed_runtimes
+           WHEN NOT EXISTS (
+               SELECT 1 FROM user_runners
+               WHERE id = NEW.runner_id AND user_id = NEW.user_id AND kind = 'managed'
+           )
+           AND NOT EXISTS (
+               SELECT 1 FROM managed_runtime_activation_guards WHERE user_id = NEW.user_id
+           )
+           BEGIN
+               SELECT RAISE(ABORT, 'managed runtime must reference matching managed runner');
+           END;
+           CREATE TRIGGER protect_linked_managed_runner_update
+           BEFORE UPDATE OF user_id, kind ON user_runners
+           WHEN EXISTS (SELECT 1 FROM managed_runtimes WHERE runner_id = OLD.id)
+               AND (NEW.user_id != OLD.user_id OR NEW.kind != OLD.kind)
+               AND NOT EXISTS (
+                   SELECT 1 FROM managed_runtime_activation_guards WHERE user_id = OLD.user_id
+               )
+           BEGIN
+               SELECT RAISE(ABORT, 'cannot change linked managed runtime runner');
+           END;""")
+    conn.commit()
+
+
+def _migrate_managed_backup_archive_statuses(conn: sqlite3.Connection) -> None:
+    """Expand existing archive status checks to include deleted tombstones."""
+    schema_row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' " "AND name = 'managed_backup_archives'"
+    ).fetchone()
+    if schema_row is None or "'deleted'" in str(schema_row["sql"]):
+        return
+    conn.commit()
+    conn.execute("PRAGMA foreign_keys = OFF")
+    conn.execute("PRAGMA legacy_alter_table = ON")
+    try:
+        conn.execute("ALTER TABLE managed_backup_archives RENAME TO managed_backup_archives_old")
+        conn.execute("""CREATE TABLE managed_backup_archives (
+                   id TEXT PRIMARY KEY,
+                   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                   runtime_generation INTEGER NOT NULL CHECK (runtime_generation > 0),
+                   status TEXT NOT NULL CHECK (
+                       status IN (
+                           'creating', 'uploaded', 'ready', 'failed', 'deleting', 'deleted'
+                       )
+                   ),
+                   object_key TEXT NOT NULL UNIQUE,
+                   object_version TEXT,
+                   size_bytes INTEGER CHECK (size_bytes IS NULL OR size_bytes > 0),
+                   sha256 TEXT CHECK (sha256 IS NULL OR length(sha256) = 64),
+                   wrapped_key BLOB NOT NULL,
+                   key_id TEXT NOT NULL,
+                   owner_digest TEXT NOT NULL CHECK (length(owner_digest) = 64),
+                   created_at TEXT NOT NULL,
+                   completed_at TEXT,
+                   last_error TEXT CHECK (last_error IS NULL OR length(last_error) <= 1000)
+               )""")
+        conn.execute("""INSERT INTO managed_backup_archives
+               SELECT * FROM managed_backup_archives_old""")
+        conn.execute("DROP TABLE managed_backup_archives_old")
+        conn.execute(
+            "CREATE INDEX idx_managed_backup_archives_user_created "
+            "ON managed_backup_archives(user_id, created_at DESC)"
+        )
+        violation = conn.execute("PRAGMA foreign_key_check").fetchone()
+        if violation is not None:
+            raise sqlite3.IntegrityError("Managed backup archive migration left an invalid key")
+        conn.commit()
+    except sqlite3.Error:
+        conn.rollback()
+        raise
+    finally:
+        conn.execute("PRAGMA legacy_alter_table = OFF")
+        conn.execute("PRAGMA foreign_keys = ON")
+
+
+def _migrate_managed_backup_operation_columns(conn: sqlite3.Connection) -> None:
+    """Add resumable maintenance fields to existing managed backup tables."""
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(managed_backup_operations)")}
+    if not columns:
+        return
+    migrations = {
+        "phase": "ALTER TABLE managed_backup_operations ADD COLUMN phase TEXT NOT NULL DEFAULT 'claimed'",
+        "lease_owner": "ALTER TABLE managed_backup_operations ADD COLUMN lease_owner TEXT",
+        "lease_token": "ALTER TABLE managed_backup_operations ADD COLUMN lease_token TEXT",
+        "lease_expires_at": (
+            "ALTER TABLE managed_backup_operations ADD COLUMN lease_expires_at TEXT"
+        ),
+        "attempt_count": (
+            "ALTER TABLE managed_backup_operations "
+            "ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0"
+        ),
+        "next_attempt_at": (
+            "ALTER TABLE managed_backup_operations ADD COLUMN next_attempt_at TEXT"
+        ),
+        "source_runner_id": (
+            "ALTER TABLE managed_backup_operations ADD COLUMN source_runner_id TEXT"
+        ),
+        "source_sprite_id": (
+            "ALTER TABLE managed_backup_operations ADD COLUMN source_sprite_id TEXT"
+        ),
+        "candidate_runner_id": (
+            "ALTER TABLE managed_backup_operations ADD COLUMN candidate_runner_id TEXT"
+        ),
+        "candidate_sprite_id": (
+            "ALTER TABLE managed_backup_operations ADD COLUMN candidate_sprite_id TEXT"
+        ),
+        "activation_generation": (
+            "ALTER TABLE managed_backup_operations ADD COLUMN activation_generation INTEGER"
+        ),
+    }
+    for column_name, statement in migrations.items():
+        if column_name not in columns:
+            conn.execute(statement)
+    conn.commit()
 
 
 def _migrate_runner_kinds(conn: sqlite3.Connection) -> None:
@@ -1128,6 +1358,62 @@ def _migrate_runner_kinds(conn: sqlite3.Connection) -> None:
         foreign_key_issue = conn.execute("PRAGMA foreign_key_check").fetchone()
         if foreign_key_issue is not None:
             raise sqlite3.IntegrityError("Runner kind migration left an invalid foreign key")
+        conn.commit()
+    except sqlite3.Error:
+        conn.rollback()
+        raise
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
+
+
+def _migrate_managed_restore_runner_kind(conn: sqlite3.Connection) -> None:
+    """Expand existing runner kinds while preserving rows and foreign keys."""
+    schema_row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'user_runners'"
+    ).fetchone()
+    if schema_row is None or "managed_retired" in str(schema_row["sql"]):
+        return
+    conn.commit()
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("DROP TRIGGER IF EXISTS update_user_runners_updated_at")
+        conn.execute("""CREATE TABLE user_runners_expanded (
+                   id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+                   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+                   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+                   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                   kind TEXT DEFAULT 'byoc' NOT NULL CHECK (
+                       kind IN ('byoc', 'managed', 'managed_restore', 'managed_retired')
+                   ),
+                   name TEXT NOT NULL, cloud_provider TEXT NOT NULL, region TEXT NOT NULL,
+                   status TEXT DEFAULT 'pending' NOT NULL, registration_token_hash TEXT,
+                   registration_token_expires_at TEXT, runner_token_hash TEXT,
+                   registered_at TEXT, last_heartbeat_at TEXT, runner_version TEXT,
+                   capabilities_json TEXT DEFAULT '{}' NOT NULL, data_dir TEXT,
+                   revoked_at TEXT, noise_public_key TEXT,
+                   noise_public_key_confirmed_at TEXT, UNIQUE(user_id, kind)
+               )""")
+        conn.execute("""INSERT INTO user_runners_expanded
+               SELECT * FROM user_runners""")
+        conn.execute("DROP TABLE user_runners")
+        conn.execute("ALTER TABLE user_runners_expanded RENAME TO user_runners")
+        conn.execute("CREATE INDEX idx_user_runners_user ON user_runners(user_id)")
+        conn.execute(
+            "CREATE INDEX idx_user_runners_registration_token "
+            "ON user_runners(registration_token_hash)"
+        )
+        conn.execute(
+            "CREATE INDEX idx_user_runners_runner_token ON user_runners(runner_token_hash)"
+        )
+        conn.execute("""CREATE TRIGGER update_user_runners_updated_at
+               AFTER UPDATE ON user_runners BEGIN
+                   UPDATE user_runners SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id;
+               END""")
+        if conn.execute("PRAGMA foreign_key_check").fetchone() is not None:
+            raise sqlite3.IntegrityError(
+                "Managed restore runner migration left an invalid foreign key"
+            )
         conn.commit()
     except sqlite3.Error:
         conn.rollback()

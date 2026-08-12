@@ -214,6 +214,32 @@ def test_init_control_db_creates_pi_config_tables(tmp_path, monkeypatch):
         get_settings.cache_clear()
 
 
+def test_init_control_db_creates_managed_backup_catalog(tmp_path, monkeypatch):
+    """Control initialization should create durable managed backup tables."""
+    monkeypatch.setenv("CONTROL_DB_PATH", str(tmp_path / "control.db"))
+    monkeypatch.setenv("SECRET_KEY", "test-secret")
+    monkeypatch.setenv("ENCRYPTION_PEPPER", "a" * 64)
+
+    from yinshi.config import get_settings
+    from yinshi.db import get_control_db, init_control_db
+
+    get_settings.cache_clear()
+    try:
+        init_control_db()
+        init_control_db()
+        with get_control_db() as database:
+            table_names = {
+                row["name"]
+                for row in database.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                ).fetchall()
+            }
+        assert "managed_backup_archives" in table_names
+        assert "managed_backup_operations" in table_names
+    finally:
+        get_settings.cache_clear()
+
+
 def test_required_database_encryption_uses_sqlcipher_and_rejects_wrong_key(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
@@ -936,6 +962,63 @@ def test_control_db_migrates_runner_kind_without_losing_grants(
         get_settings.cache_clear()
 
 
+def test_control_db_expands_existing_managed_runner_roles(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Existing managed runners should survive replacement-role migration."""
+    control_path = tmp_path / "control.db"
+    monkeypatch.setenv("CONTROL_DB_PATH", str(control_path))
+    monkeypatch.setenv("SECRET_KEY", "test-secret")
+    monkeypatch.setenv("ENCRYPTION_PEPPER", "a" * 64)
+    monkeypatch.setenv("TENANT_DB_ENCRYPTION", "disabled")
+    connection = sqlite3.connect(control_path)
+    connection.executescript("""
+        CREATE TABLE users (
+            id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE,
+            credit_used_cents INTEGER DEFAULT 0, credit_limit_cents INTEGER DEFAULT 500
+        );
+        CREATE TABLE user_runners (
+            id TEXT PRIMARY KEY,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            kind TEXT DEFAULT 'byoc' NOT NULL CHECK (kind IN ('byoc', 'managed')),
+            name TEXT NOT NULL, cloud_provider TEXT NOT NULL, region TEXT NOT NULL,
+            status TEXT DEFAULT 'pending' NOT NULL, registration_token_hash TEXT,
+            registration_token_expires_at TEXT, runner_token_hash TEXT,
+            registered_at TEXT, last_heartbeat_at TEXT, runner_version TEXT,
+            capabilities_json TEXT DEFAULT '{}' NOT NULL, data_dir TEXT,
+            revoked_at TEXT, noise_public_key TEXT, noise_public_key_confirmed_at TEXT,
+            UNIQUE(user_id, kind)
+        );
+        INSERT INTO users (id, email) VALUES ('user-1', 'runner@example.com');
+        INSERT INTO user_runners (
+            id, user_id, kind, name, cloud_provider, region
+        ) VALUES ('runner-1', 'user-1', 'managed', 'Managed', 'fly_sprites', 'ord');
+        """)
+    connection.commit()
+    connection.close()
+    from yinshi.config import get_settings
+    from yinshi.db import get_control_db, init_control_db
+
+    get_settings.cache_clear()
+    try:
+        init_control_db()
+        with get_control_db() as database:
+            runner = database.execute("SELECT * FROM user_runners WHERE id = 'runner-1'").fetchone()
+            database.execute("""INSERT INTO user_runners (
+                       id, user_id, kind, name, cloud_provider, region
+                   ) VALUES (
+                       'candidate-1', 'user-1', 'managed_restore',
+                       'Candidate', 'fly_sprites', 'ord'
+                   )""")
+        assert runner is not None
+        assert runner["kind"] == "managed"
+    finally:
+        get_settings.cache_clear()
+
+
 def test_runner_kind_migration_rolls_back_invalid_foreign_keys(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1004,6 +1087,308 @@ def test_runner_kind_migration_rolls_back_invalid_foreign_keys(
         with sqlite3.connect(control_path) as database:
             columns = {row[1] for row in database.execute("PRAGMA table_info(user_runners)")}
         assert "kind" not in columns
+    finally:
+        get_settings.cache_clear()
+
+
+def test_managed_backup_operation_schema_tracks_resumable_job_ownership(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Managed maintenance jobs should persist phase, lease, retry, and provider IDs."""
+    monkeypatch.setenv("CONTROL_DB_PATH", str(tmp_path / "control.db"))
+    monkeypatch.setenv("SECRET_KEY", "test-secret")
+    monkeypatch.setenv("ENCRYPTION_PEPPER", "a" * 64)
+    monkeypatch.setenv("TENANT_DB_ENCRYPTION", "disabled")
+
+    from yinshi.config import get_settings
+    from yinshi.db import get_control_db, init_control_db
+
+    get_settings.cache_clear()
+    try:
+        init_control_db()
+        with get_control_db() as database:
+            columns = {
+                row[1] for row in database.execute("PRAGMA table_info(managed_backup_operations)")
+            }
+        assert {
+            "phase",
+            "lease_owner",
+            "lease_token",
+            "lease_expires_at",
+            "attempt_count",
+            "next_attempt_at",
+            "source_runner_id",
+            "source_sprite_id",
+            "candidate_runner_id",
+            "candidate_sprite_id",
+            "activation_generation",
+        } <= columns
+    finally:
+        get_settings.cache_clear()
+
+
+def test_managed_runtime_upgrade_installs_fenced_activation_triggers(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Existing control databases should gain guarded replacement activation."""
+    control_path = tmp_path / "control.db"
+    monkeypatch.setenv("CONTROL_DB_PATH", str(control_path))
+    monkeypatch.setenv("SECRET_KEY", "test-secret")
+    monkeypatch.setenv("ENCRYPTION_PEPPER", "a" * 64)
+    monkeypatch.setenv("TENANT_DB_ENCRYPTION", "disabled")
+
+    from yinshi.config import get_settings
+    from yinshi.db import get_control_db, init_control_db
+
+    get_settings.cache_clear()
+    try:
+        init_control_db()
+        with get_control_db() as database:
+            database.execute("DROP TABLE managed_runtime_activation_guards")
+            database.execute("DROP TRIGGER validate_managed_runtime_runner_update")
+            database.execute("DROP TRIGGER protect_linked_managed_runner_update")
+            database.executescript("""CREATE TRIGGER validate_managed_runtime_runner_update
+                   BEFORE UPDATE OF user_id, runner_id ON managed_runtimes
+                   BEGIN SELECT RAISE(ABORT, 'legacy'); END;
+                   CREATE TRIGGER protect_linked_managed_runner_update
+                   BEFORE UPDATE OF user_id, kind ON user_runners
+                   BEGIN SELECT RAISE(ABORT, 'legacy'); END;""")
+            database.commit()
+        init_control_db()
+        with get_control_db() as database:
+            guard = database.execute(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' "
+                "AND name = 'managed_runtime_activation_guards'"
+            ).fetchone()
+            triggers = {
+                row["name"]: row["sql"]
+                for row in database.execute("""SELECT name, sql FROM sqlite_master
+                       WHERE type = 'trigger' AND name IN (
+                           'validate_managed_runtime_runner_update',
+                           'protect_linked_managed_runner_update'
+                       )""").fetchall()
+            }
+        assert guard is not None
+        assert (
+            "managed_runtime_activation_guards"
+            in triggers["validate_managed_runtime_runner_update"]
+        )
+        assert (
+            "managed_runtime_activation_guards" in triggers["protect_linked_managed_runner_update"]
+        )
+    finally:
+        get_settings.cache_clear()
+
+
+def test_managed_backup_schema_expands_existing_archive_status_constraint(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Hosted upgrades should permit durable deleted archive tombstones."""
+    control_path = tmp_path / "control.db"
+    monkeypatch.setenv("CONTROL_DB_PATH", str(control_path))
+    monkeypatch.setenv("SECRET_KEY", "test-secret")
+    monkeypatch.setenv("ENCRYPTION_PEPPER", "a" * 64)
+    monkeypatch.setenv("TENANT_DB_ENCRYPTION", "disabled")
+    connection = sqlite3.connect(control_path)
+    connection.executescript("""
+        CREATE TABLE users (
+            id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE,
+            credit_used_cents INTEGER DEFAULT 0, credit_limit_cents INTEGER DEFAULT 500
+        );
+        CREATE TABLE managed_backup_archives (
+            id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            runtime_generation INTEGER NOT NULL CHECK (runtime_generation > 0),
+            status TEXT NOT NULL CHECK (
+                status IN ('creating', 'uploaded', 'ready', 'failed', 'deleting')
+            ),
+            object_key TEXT NOT NULL UNIQUE, object_version TEXT, size_bytes INTEGER,
+            sha256 TEXT, wrapped_key BLOB NOT NULL, key_id TEXT NOT NULL,
+            owner_digest TEXT NOT NULL, created_at TEXT NOT NULL, completed_at TEXT,
+            last_error TEXT
+        );
+        CREATE TABLE managed_backup_operations (
+            user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+            job_id TEXT NOT NULL UNIQUE,
+            archive_id TEXT NOT NULL REFERENCES managed_backup_archives(id) ON DELETE CASCADE,
+            operation TEXT NOT NULL, status TEXT NOT NULL, runtime_generation INTEGER NOT NULL,
+            started_at TEXT NOT NULL, updated_at TEXT NOT NULL, last_error TEXT
+        );
+        INSERT INTO users (id, email) VALUES ('user-1', 'backup@example.com');
+        INSERT INTO managed_backup_archives (
+            id, user_id, runtime_generation, status, object_key, object_version,
+            size_bytes, sha256, wrapped_key, key_id, owner_digest, created_at
+        ) VALUES (
+            'archive-1', 'user-1', 1, 'ready', 'managed/archive.enc', 'version-1',
+            10, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+            X'01', 'backup-v1',
+            'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+            '2026-08-12T12:00:00Z'
+        );
+        INSERT INTO managed_backup_operations (
+            user_id, job_id, archive_id, operation, status, runtime_generation,
+            started_at, updated_at
+        ) VALUES (
+            'user-1', 'job-1', 'archive-1', 'restore', 'running', 1,
+            '2026-08-12T12:00:00Z', '2026-08-12T12:00:00Z'
+        );
+        """)
+    connection.commit()
+    connection.close()
+    from yinshi.config import get_settings
+    from yinshi.db import get_control_db, init_control_db
+
+    get_settings.cache_clear()
+    try:
+        init_control_db()
+        with get_control_db() as database:
+            database.execute(
+                "UPDATE managed_backup_archives SET status = 'deleted' WHERE id = 'archive-1'"
+            )
+            database.commit()
+            archive = database.execute(
+                "SELECT status FROM managed_backup_archives WHERE id = 'archive-1'"
+            ).fetchone()
+            reference = database.execute(
+                "PRAGMA foreign_key_list(managed_backup_operations)"
+            ).fetchone()
+            database.execute("DELETE FROM managed_backup_operations WHERE job_id = 'job-1'")
+            database.commit()
+        assert archive is not None
+        assert archive["status"] == "deleted"
+        assert reference is not None
+        assert reference["table"] == "managed_backup_archives"
+    finally:
+        get_settings.cache_clear()
+
+
+def test_managed_backup_schema_adds_job_columns_to_existing_tables(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Hosted upgrades should add resumable fields to an existing backup table."""
+    control_path = tmp_path / "control.db"
+    monkeypatch.setenv("CONTROL_DB_PATH", str(control_path))
+    monkeypatch.setenv("SECRET_KEY", "test-secret")
+    monkeypatch.setenv("ENCRYPTION_PEPPER", "a" * 64)
+    monkeypatch.setenv("TENANT_DB_ENCRYPTION", "disabled")
+    connection = sqlite3.connect(control_path)
+    connection.executescript("""
+        CREATE TABLE users (
+            id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE,
+            credit_used_cents INTEGER DEFAULT 0, credit_limit_cents INTEGER DEFAULT 500
+        );
+        CREATE TABLE managed_backup_archives (
+            id TEXT PRIMARY KEY, user_id TEXT NOT NULL, runtime_generation INTEGER NOT NULL,
+            status TEXT NOT NULL, object_key TEXT NOT NULL UNIQUE, object_version TEXT,
+            size_bytes INTEGER, sha256 TEXT, wrapped_key BLOB NOT NULL, key_id TEXT NOT NULL,
+            owner_digest TEXT NOT NULL, created_at TEXT NOT NULL, completed_at TEXT,
+            last_error TEXT
+        );
+        CREATE TABLE managed_backup_operations (
+            user_id TEXT PRIMARY KEY, job_id TEXT NOT NULL UNIQUE,
+            archive_id TEXT NOT NULL, operation TEXT NOT NULL, status TEXT NOT NULL,
+            runtime_generation INTEGER NOT NULL, started_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL, last_error TEXT
+        );
+        INSERT INTO users (id, email) VALUES ('user-1', 'backup@example.com');
+        INSERT INTO managed_backup_archives (
+            id, user_id, runtime_generation, status, object_key, wrapped_key,
+            key_id, owner_digest, created_at
+        ) VALUES (
+            'archive-1', 'user-1', 1, 'creating', 'managed/archive.enc', X'01',
+            'backup-v1', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+            '2026-08-12T12:00:00Z'
+        );
+        INSERT INTO managed_backup_operations (
+            user_id, job_id, archive_id, operation, status, runtime_generation,
+            started_at, updated_at
+        ) VALUES (
+            'user-1', 'job-1', 'archive-1', 'create', 'running', 1,
+            '2026-08-12T12:00:00Z', '2026-08-12T12:00:00Z'
+        );
+        """)
+    connection.commit()
+    connection.close()
+    from yinshi.config import get_settings
+    from yinshi.db import get_control_db, init_control_db
+
+    get_settings.cache_clear()
+    try:
+        init_control_db()
+        with get_control_db() as database:
+            operation = database.execute(
+                "SELECT * FROM managed_backup_operations WHERE job_id = 'job-1'"
+            ).fetchone()
+        assert operation is not None
+        assert operation["phase"] == "claimed"
+        assert operation["attempt_count"] == 0
+        assert operation["candidate_sprite_id"] is None
+    finally:
+        get_settings.cache_clear()
+
+
+def test_managed_backup_schema_migrates_existing_operation_rows(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Existing create work should gain resumable defaults without losing identity."""
+    control_path = tmp_path / "control.db"
+    monkeypatch.setenv("CONTROL_DB_PATH", str(control_path))
+    monkeypatch.setenv("SECRET_KEY", "test-secret")
+    monkeypatch.setenv("ENCRYPTION_PEPPER", "a" * 64)
+    monkeypatch.setenv("TENANT_DB_ENCRYPTION", "disabled")
+
+    from yinshi.config import get_settings
+    from yinshi.db import get_control_db, init_control_db
+
+    get_settings.cache_clear()
+    try:
+        init_control_db()
+        with get_control_db() as database:
+            database.execute(
+                "INSERT INTO users (id, email) VALUES ('user-1', 'backup@example.com')"
+            )
+            database.execute("""INSERT INTO user_runners (
+                       id, user_id, kind, name, cloud_provider, region
+                   ) VALUES (
+                       'runner-1', 'user-1', 'managed', 'Managed', 'fly_sprites', 'ord'
+                   )""")
+            database.execute("""INSERT INTO managed_runtimes (
+                       user_id, runner_id, provider_name, sprite_external_id,
+                       lifecycle_status, artifact_version
+                   ) VALUES (
+                       'user-1', 'runner-1', 'fly_sprites', 'sprite-1', 'ready', 'v1'
+                   )""")
+            database.execute(
+                """INSERT INTO managed_backup_archives (
+                       id, user_id, runtime_generation, status, object_key,
+                       wrapped_key, key_id, owner_digest, created_at
+                   ) VALUES (
+                       'archive-1', 'user-1', 1, 'creating', 'managed/archive.enc',
+                       X'01', 'backup-v1', ?, '2026-08-12T12:00:00Z'
+                   )""",
+                ("a" * 64,),
+            )
+            database.execute("""INSERT INTO managed_backup_operations (
+                       user_id, job_id, archive_id, operation, status,
+                       runtime_generation, started_at, updated_at
+                   ) VALUES (
+                       'user-1', 'job-1', 'archive-1', 'create', 'running',
+                       1, '2026-08-12T12:00:00Z', '2026-08-12T12:00:00Z'
+                   )""")
+            database.commit()
+        init_control_db()
+        with get_control_db() as database:
+            operation = database.execute(
+                "SELECT * FROM managed_backup_operations WHERE job_id = 'job-1'"
+            ).fetchone()
+        assert operation is not None
+        assert operation["phase"] == "claimed"
+        assert operation["attempt_count"] == 0
+        assert operation["source_runner_id"] is None
     finally:
         get_settings.cache_clear()
 

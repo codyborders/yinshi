@@ -131,6 +131,145 @@ def _runtime_status(row: sqlite3.Row) -> ManagedRuntimeStatus:
     )
 
 
+def activate_managed_restore_candidate(
+    user_id: str,
+    *,
+    source_generation: int,
+    candidate_runner_id: str,
+    candidate_sprite_id: str,
+    artifact_version: str,
+    now: datetime,
+    job_id: str | None = None,
+    lease_token: str | None = None,
+) -> bool:
+    """Atomically promote one replacement runner and revoke old authority."""
+    normalized_user_id = _require_user_id(user_id)
+    if type(source_generation) is not int or source_generation <= 0:
+        raise ValueError("source_generation must be a positive integer")
+    candidate_runner = _required_text(candidate_runner_id, "candidate_runner_id")
+    candidate_sprite = _required_text(candidate_sprite_id, "candidate_sprite_id")
+    artifact = _required_text(artifact_version, "artifact_version")
+    normalized_job_id = None if job_id is None else _required_text(job_id, "job_id")
+    normalized_lease_token = (
+        None if lease_token is None else _required_text(lease_token, "lease_token")
+    )
+    if (normalized_job_id is None) != (normalized_lease_token is None):
+        raise ValueError("job_id and lease_token must be supplied together")
+    now_text = _datetime_to_storage(_normalized_now(now)).replace("+00:00", "Z")
+    with get_control_db() as database:
+        try:
+            database.execute("BEGIN IMMEDIATE")
+            runtime = database.execute(
+                """SELECT runner_id FROM managed_runtimes
+                   WHERE user_id = ? AND generation = ? AND lifecycle_status = 'ready'""",
+                (normalized_user_id, source_generation),
+            ).fetchone()
+            candidate = database.execute(
+                """SELECT id FROM user_runners
+                   WHERE id = ? AND user_id = ? AND kind = 'managed_restore'
+                     AND status = 'online' AND runner_token_hash IS NOT NULL
+                     AND registered_at IS NOT NULL AND last_heartbeat_at IS NOT NULL
+                     AND noise_public_key IS NOT NULL
+                     AND noise_public_key_confirmed_at IS NOT NULL
+                     AND revoked_at IS NULL""",
+                (candidate_runner, normalized_user_id),
+            ).fetchone()
+            if runtime is None or candidate is None:
+                database.rollback()
+                return False
+            if normalized_job_id is not None:
+                operation = database.execute(
+                    """SELECT 1 FROM managed_backup_operations
+                       WHERE user_id = ? AND job_id = ? AND operation = 'restore'
+                         AND status = 'running' AND runtime_generation = ?
+                         AND lease_token = ? AND lease_expires_at > ?""",
+                    (
+                        normalized_user_id,
+                        normalized_job_id,
+                        source_generation,
+                        normalized_lease_token,
+                        now_text,
+                    ),
+                ).fetchone()
+                if operation is None:
+                    database.rollback()
+                    return False
+            old_runner_id = runtime["runner_id"]
+            database.execute(
+                """UPDATE user_runners
+                   SET status = 'revoked', revoked_at = ?, registration_token_hash = NULL,
+                       registration_token_expires_at = NULL, runner_token_hash = NULL
+                   WHERE id = ? AND user_id = ? AND kind = 'managed'""",
+                (now_text, old_runner_id, normalized_user_id),
+            )
+            if normalized_job_id is None or normalized_lease_token is None:
+                database.rollback()
+                return False
+            database.execute(
+                """INSERT INTO managed_runtime_activation_guards (
+                       user_id, job_id, lease_token
+                   ) VALUES (?, ?, ?)""",
+                (normalized_user_id, normalized_job_id, normalized_lease_token),
+            )
+            database.execute(
+                "UPDATE user_runners SET kind = 'managed_retired' WHERE id = ?",
+                (old_runner_id,),
+            )
+            database.execute(
+                "UPDATE user_runners SET kind = 'managed' WHERE id = ?",
+                (candidate_runner,),
+            )
+            result = database.execute(
+                """UPDATE managed_runtimes
+                   SET runner_id = ?, sprite_external_id = ?, generation = ?,
+                       artifact_version = ?, updated_at = ?, last_error = NULL
+                   WHERE user_id = ? AND generation = ? AND lifecycle_status = 'ready'""",
+                (
+                    candidate_runner,
+                    candidate_sprite,
+                    source_generation + 1,
+                    artifact,
+                    now_text,
+                    normalized_user_id,
+                    source_generation,
+                ),
+            )
+            if result.rowcount != 1:
+                database.rollback()
+                return False
+            operation_result = database.execute(
+                """UPDATE managed_backup_operations
+                   SET phase = 'activated', activation_generation = ?, updated_at = ?
+                   WHERE user_id = ? AND job_id = ? AND operation = 'restore'
+                     AND status = 'running' AND runtime_generation = ?
+                     AND lease_token = ? AND lease_expires_at > ?""",
+                (
+                    source_generation + 1,
+                    now_text,
+                    normalized_user_id,
+                    normalized_job_id,
+                    source_generation,
+                    normalized_lease_token,
+                    now_text,
+                ),
+            )
+            if operation_result.rowcount != 1:
+                database.rollback()
+                return False
+            database.execute(
+                "DELETE FROM managed_runtime_activation_guards WHERE user_id = ?",
+                (normalized_user_id,),
+            )
+            database.commit()
+            return True
+        except sqlite3.IntegrityError:
+            database.rollback()
+            return False
+        except Exception:
+            database.rollback()
+            raise
+
+
 def get_managed_runtime_status(user_id: str) -> ManagedRuntimeStatus | None:
     """Return safe persisted state without registration authority."""
     normalized_user_id = _require_user_id(user_id)
@@ -156,6 +295,13 @@ def claim_managed_runtime_deletion(
     with get_control_db() as database:
         try:
             database.execute("BEGIN IMMEDIATE")
+            maintenance = database.execute(
+                """SELECT 1 FROM managed_backup_operations
+                   WHERE user_id = ? AND status = 'running'""",
+                (normalized_user_id,),
+            ).fetchone()
+            if maintenance is not None:
+                raise RuntimeError("managed runtime maintenance is active")
             row = database.execute(
                 """
                 SELECT runtime.*, runner.kind AS runner_kind

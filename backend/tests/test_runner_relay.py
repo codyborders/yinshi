@@ -61,6 +61,43 @@ async def test_relay_reports_current_runner_connection() -> None:
 
 
 @pytest.mark.asyncio
+async def test_relay_requests_exact_runner_quiescence() -> None:
+    """Control plane should wait for one matching runner maintenance acknowledgement."""
+    broker = RunnerRelayBroker()
+    runner = FakeWebSocket()
+    await broker.register_runner("runner-1", runner)
+    job_id = str(uuid.uuid4())
+
+    waiter = asyncio.create_task(
+        broker.quiesce_runner("runner-1", job_id=job_id, timeout_seconds=1.0)
+    )
+    await asyncio.sleep(0)
+    assert runner.text_frames == [f'{{"job_id":"{job_id}","type":"quiesce"}}']
+    await broker.runner_quiesced("runner-1", job_id)
+
+    await waiter
+
+
+@pytest.mark.asyncio
+async def test_relay_releases_exact_runner_maintenance_fence() -> None:
+    """Coordinator recovery should remove only its matching in-memory fence."""
+    broker = RunnerRelayBroker()
+    runner = FakeWebSocket()
+    await broker.register_runner("runner-1", runner)
+    job_id = str(uuid.uuid4())
+    waiter = asyncio.create_task(
+        broker.quiesce_runner("runner-1", job_id=job_id, timeout_seconds=1.0)
+    )
+    await asyncio.sleep(0)
+    await broker.runner_quiesced("runner-1", job_id)
+    await waiter
+
+    await broker.release_maintenance("runner-1", job_id=job_id)
+    client = FakeWebSocket()
+    await broker.attach_client(_grant(), client)
+
+
+@pytest.mark.asyncio
 async def test_relay_routes_only_bounded_ciphertext() -> None:
     """Broker adds only routing UUID and never transforms ciphertext bytes."""
     broker = RunnerRelayBroker()
@@ -133,6 +170,43 @@ async def test_relay_enforces_shared_byte_budget_and_runner_replacement() -> Non
             grant.runner_id,
             uuid.UUID(grant.transfer_id).bytes + b"c",
         )
+
+
+def test_runner_websocket_routes_quiesced_acknowledgement(
+    auth_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Runner WebSocket should route only exact maintenance acknowledgements."""
+    from yinshi.api import runner_relay as runner_relay_api
+
+    async def authenticate(_token: str) -> dict[str, str]:
+        return {"runner_id": "runner-1"}
+
+    acknowledgements: list[tuple[str, str]] = []
+
+    async def runner_quiesced(runner_id: str, job_id: str) -> None:
+        acknowledgements.append((runner_id, job_id))
+
+    monkeypatch.setattr(
+        runner_relay_api,
+        "authenticate_runner_token",
+        lambda _token: {"runner_id": "runner-1"},
+    )
+    monkeypatch.setattr(
+        runner_relay_api.runner_relay_broker,
+        "runner_quiesced",
+        runner_quiesced,
+    )
+    job_id = str(uuid.uuid4())
+
+    with auth_client.websocket_connect(
+        "/runner/relay",
+        headers={"Authorization": "Bearer runner-token"},
+    ) as runner_socket:
+        runner_socket.receive_json()
+        runner_socket.send_json({"job_id": job_id, "type": "quiesced"})
+
+    assert acknowledgements == [("runner-1", job_id)]
 
 
 def test_websocket_relay_authenticates_runner_and_exact_capability(

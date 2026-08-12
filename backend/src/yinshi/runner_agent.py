@@ -704,6 +704,7 @@ def _runner_relay_runtime(
         replay_database_path=config.replay_database_file,
         dispatcher_factory=worker_manager.dispatcher,
         task_lease=task_lease,
+        maintenance_handler=worker_manager.quiesce,
     )
 
 
@@ -727,7 +728,9 @@ async def _consume_runner_relay_messages(
             except TimeoutError:
                 return True
             if isinstance(message, str):
-                await runtime.handle_control(message)
+                acknowledgement = await runtime.handle_control(message)
+                if acknowledgement is not None:
+                    await websocket.send(acknowledgement)
                 continue
             try:
                 response = await runtime.handle_binary(

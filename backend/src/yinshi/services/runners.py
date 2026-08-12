@@ -22,7 +22,7 @@ from yinshi.db import get_control_db
 from yinshi.exceptions import RunnerAuthenticationError, RunnerRegistrationError
 from yinshi.services.runner_capabilities import runner_capability_signing_public_key
 
-RunnerKind = Literal["byoc", "managed"]
+RunnerKind = Literal["byoc", "managed", "managed_restore", "managed_retired"]
 RunnerStorageProfile = Literal[
     "aws_ebs_s3_files",
     "archil_shared_files",
@@ -566,7 +566,7 @@ def _create_runner_registration_in_connection(
     if normalized_kind == "byoc":
         if normalized_provider != "aws":
             raise ValueError("Only AWS runners are supported")
-    elif normalized_kind == "managed":
+    elif normalized_kind in {"managed", "managed_restore"}:
         if normalized_provider != "fly_sprites":
             raise ValueError("Managed runners require fly_sprites")
     else:
@@ -650,6 +650,17 @@ def _create_runner_registration_in_connection(
     }
 
 
+def get_managed_restore_runner_for_user(user_id: str) -> dict[str, Any] | None:
+    """Return the non-active replacement runner for one managed restore."""
+    normalized_user_id = _require_user_id(user_id)
+    with get_control_db() as database:
+        row = database.execute(
+            "SELECT * FROM user_runners WHERE user_id = ? AND kind = 'managed_restore'",
+            (normalized_user_id,),
+        ).fetchone()
+    return _serialize_runner(row) if row is not None else None
+
+
 def create_runner_registration(
     user_id: str,
     *,
@@ -674,6 +685,24 @@ def create_runner_registration(
         )
         db.commit()
     return registration
+
+
+def revoke_managed_restore_runner_for_user(user_id: str) -> bool:
+    """Revoke the non-active replacement runner and all of its credentials."""
+    normalized_user_id = _require_user_id(user_id)
+    revoked_at = _datetime_to_storage(_utc_now())
+    with get_control_db() as database:
+        result = database.execute(
+            """UPDATE user_runners
+               SET status = 'revoked', revoked_at = ?,
+                   registration_token_hash = NULL,
+                   registration_token_expires_at = NULL,
+                   runner_token_hash = NULL
+               WHERE user_id = ? AND kind = 'managed_restore' AND revoked_at IS NULL""",
+            (revoked_at, normalized_user_id),
+        )
+        database.commit()
+    return result.rowcount == 1
 
 
 def revoke_runner_for_user(user_id: str) -> bool:
@@ -734,7 +763,7 @@ def register_runner(
             raise RunnerRegistrationError(_REGISTRATION_TOKEN_EXPIRED)
 
         stored_noise_public_key = row["noise_public_key"]
-        if row["kind"] == "managed" and stored_noise_public_key is not None:
+        if row["kind"] in {"managed", "managed_restore"} and stored_noise_public_key is not None:
             if normalized_noise_public_key is None or not secrets.compare_digest(
                 stored_noise_public_key,
                 normalized_noise_public_key,
@@ -770,7 +799,7 @@ def register_runner(
                 data_dir = ?,
                 noise_public_key = ?,
                 noise_public_key_confirmed_at = CASE
-                    WHEN kind = 'managed' THEN ?
+                    WHEN kind IN ('managed', 'managed_restore') THEN ?
                     WHEN noise_public_key = ? THEN noise_public_key_confirmed_at
                     ELSE NULL
                 END

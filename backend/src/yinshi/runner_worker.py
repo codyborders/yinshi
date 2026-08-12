@@ -9,6 +9,7 @@ import os
 import secrets
 import sqlite3
 import stat
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import Literal
@@ -310,3 +311,29 @@ class RunnerWorkerManager:
         self._account_id = user_id
         self._dispatcher = dispatcher
         return dispatcher
+
+    async def quiesce(self, job_id: str) -> None:
+        """Close worker resources and checkpoint all runner-owned databases."""
+        try:
+            normalized_job_id = str(uuid.UUID(job_id))
+        except (AttributeError, ValueError) as exc:
+            raise ValueError("job_id must be a UUID") from exc
+        if normalized_job_id != job_id:
+            raise ValueError("job_id must be canonical")
+        dispatcher = self._dispatcher
+        if dispatcher is None:
+            return
+        prompt_journal = dispatcher.app.state.prompt_journal
+        terminal_journal = dispatcher.app.state.terminal_journal
+        await prompt_journal.close()
+        await terminal_journal.close_all()
+        from yinshi.db import get_control_db
+
+        for connection_factory in (
+            get_control_db,
+            lambda: get_user_db(dispatcher.tenant),
+        ):
+            with connection_factory() as database:
+                result = database.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+                if result is None or len(result) != 3 or result[0] != 0:
+                    raise RuntimeError("runner database checkpoint failed")

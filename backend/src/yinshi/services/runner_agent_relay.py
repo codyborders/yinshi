@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Protocol
 
@@ -18,6 +19,8 @@ _RELAY_FRAME_BYTES_MAX = 65_535
 _ACTIVE_TRANSFERS_MAX = 32
 _WELCOME_KEYS = {"runner_id", "type"}
 _TRANSFER_CONTROL_KEYS = {"transfer_id", "type"}
+_MAINTENANCE_CONTROL_KEYS = {"job_id", "type"}
+MaintenanceHandler = Callable[[str], Awaitable[None]]
 
 
 class RunnerTaskLease(Protocol):
@@ -64,6 +67,7 @@ class RunnerAgentRelayRuntime:
         replay_database_path: Path,
         dispatcher_factory: DispatcherFactory | None = None,
         task_lease: RunnerTaskLease | None = None,
+        maintenance_handler: MaintenanceHandler | None = None,
     ) -> None:
         if not isinstance(runner_static_private_key, bytes) or len(runner_static_private_key) != 32:
             raise ValueError("runner_static_private_key must contain exactly 32 bytes")
@@ -75,13 +79,17 @@ class RunnerAgentRelayRuntime:
             raise TypeError("replay_database_path must be a pathlib.Path")
         if dispatcher_factory is not None and not callable(dispatcher_factory):
             raise TypeError("dispatcher_factory must be callable or None")
+        if maintenance_handler is not None and not callable(maintenance_handler):
+            raise TypeError("maintenance_handler must be callable or None")
 
         self._runner_static_private_key = bytes(runner_static_private_key)
         self._capability_signing_public_key = bytes(capability_signing_public_key)
         self._replay_store = RunnerCapabilityReplayStore(replay_database_path)
         self._dispatcher_factory = dispatcher_factory
         self._task_lease = task_lease
+        self._maintenance_handler = maintenance_handler
         self._runner_id: str | None = None
+        self._maintenance_job_id: str | None = None
         self._sessions: dict[str, EncryptedRunnerRpcSession] = {}
 
     @property
@@ -97,8 +105,8 @@ class RunnerAgentRelayRuntime:
             for _ in range(reference_count):
                 await self._task_lease.release()
 
-    async def handle_control(self, message: str) -> None:
-        """Apply one exact welcome, open, or close relay control message."""
+    async def handle_control(self, message: str) -> str | None:
+        """Apply one exact welcome, transfer, or maintenance control message."""
         if not isinstance(message, str) or not message or len(message) > 1_024:
             raise ValueError("Runner relay control message has an invalid length")
         try:
@@ -110,10 +118,12 @@ class RunnerAgentRelayRuntime:
         message_type = payload.get("type")
         if message_type == "welcome":
             self._handle_welcome(payload)
-            return
+            return None
         if message_type in {"open", "close"}:
             await self._handle_transfer_control(payload, message_type=message_type)
-            return
+            return None
+        if message_type == "quiesce":
+            return await self._handle_maintenance_control(payload)
         raise ValueError("Runner relay control message type is unsupported")
 
     async def handle_binary(self, frame: bytes, *, current_time: int) -> bytes:
@@ -162,6 +172,8 @@ class RunnerAgentRelayRuntime:
             raise ValueError("Runner relay transfer control has an invalid shape")
         if self._runner_id is None:
             raise ValueError("Runner relay welcome is required before transfers")
+        if self._maintenance_job_id is not None:
+            raise ValueError("Runner relay is in maintenance")
         transfer_id = _canonical_uuid(payload.get("transfer_id"), "transfer_id")
         if message_type == "close":
             if self._sessions.pop(transfer_id, None) is None:
@@ -192,3 +204,31 @@ class RunnerAgentRelayRuntime:
                 await self._task_lease.release()
             raise
         self._sessions[transfer_id] = session
+
+    async def _handle_maintenance_control(self, payload: dict[str, object]) -> str:
+        """Close transfer authority, drain workers, and acknowledge one job."""
+        if set(payload) != _MAINTENANCE_CONTROL_KEYS:
+            raise ValueError("Runner relay maintenance control has an invalid shape")
+        if self._runner_id is None:
+            raise ValueError("Runner relay welcome is required before maintenance")
+        job_id = _canonical_uuid(payload.get("job_id"), "job_id")
+        if self._maintenance_job_id is not None:
+            raise ValueError("Runner relay is already in maintenance")
+        self._maintenance_job_id = job_id
+        try:
+            reference_count = len(self._sessions)
+            self._sessions.clear()
+            if self._task_lease is not None:
+                for _ in range(reference_count):
+                    await self._task_lease.release()
+            if self._maintenance_handler is None:
+                raise ValueError("Runner relay maintenance handler is unavailable")
+            await self._maintenance_handler(job_id)
+        except BaseException:
+            self._maintenance_job_id = None
+            raise
+        return json.dumps(
+            {"job_id": job_id, "type": "quiesced"},
+            separators=(",", ":"),
+            sort_keys=True,
+        )

@@ -45,6 +45,13 @@ from yinshi.config import Settings, get_settings, https_required
 from yinshi.db import init_control_db, init_db
 from yinshi.rate_limit import limiter
 from yinshi.services.encrypted_uploads import EncryptedUploadManager
+from yinshi.services.managed_backup_manager import ManagedBackupManager
+from yinshi.services.managed_backup_store import create_managed_backup_store
+from yinshi.services.managed_backups import (
+    complete_managed_backup_restore,
+    start_managed_backup_deletion,
+    start_managed_backup_restore,
+)
 from yinshi.services.managed_guest_installer import (
     ManagedGuestInstaller as ConcreteManagedGuestInstaller,
 )
@@ -372,6 +379,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     relay_process_lock: RelayProcessLock | None = None
     managed_runtime_manager: ManagedRuntimeManager | None = None
+    managed_backup_manager: ManagedBackupManager | None = None
     provider_http_client: httpx.AsyncClient | None = None
     try:
         if app.state.mode == "hosted":
@@ -380,10 +388,36 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             )
             relay_process_lock.acquire()
         if app.state.mode == "hosted" and app_settings.managed_runtime_provider == "fly_sprites":
+            managed_backup_store = create_managed_backup_store(app_settings)
+            await managed_backup_store.preflight()
             managed_runtime_manager, provider_http_client = await _initialize_managed_runtime(
                 app_settings
             )
             await managed_runtime_manager.reconcile_startup()
+            backup_encryption_key = app_settings.backup_encryption_key
+            sprites_name_key = app_settings.sprites_name_key
+            if backup_encryption_key is None or sprites_name_key is None:
+                raise RuntimeError("Managed backup encryption is unavailable")
+            managed_backup_manager = ManagedBackupManager(
+                provider=managed_runtime_manager.provider,
+                store=managed_backup_store,
+                relay=runner_relay_broker,
+                runtime_service=managed_runtime_manager,
+                restore_name_prefix=(
+                    f"{app_settings.sprites_name_prefix}-restore"[:30].rstrip("-")
+                ),
+                restore_name_key=sprites_name_key.get_secret_value(),
+                complete_restore=complete_managed_backup_restore,
+                start_restore=start_managed_backup_restore,
+                start_deletion=start_managed_backup_deletion,
+                wrapping_key=bytes.fromhex(backup_encryption_key.get_secret_value()),
+                object_prefix=app_settings.managed_backup_prefix,
+                retention_days=app_settings.managed_backup_retention_days,
+                staging_root=Path(app_settings.control_db_path).parent / "managed-backup-staging",
+            )
+            await managed_backup_manager.start()
+            app.state.managed_backup_store = managed_backup_store
+            app.state.managed_backup_manager = managed_backup_manager
             app.state.managed_runtime_manager = managed_runtime_manager
 
         yield
@@ -412,6 +446,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         if container_manager is not None:
             cleanup_error = await _attempt_shutdown_cleanup(
                 container_manager.destroy_all,
+                cleanup_error,
+            )
+        if managed_backup_manager is not None:
+            cleanup_error = await _attempt_shutdown_cleanup(
+                managed_backup_manager.aclose,
                 cleanup_error,
             )
         if managed_runtime_manager is not None:
@@ -618,6 +657,8 @@ def create_app(
     application.state.limiter = limiter
     application.state.mode = mode
     application.state.encrypted_upload_manager = EncryptedUploadManager()
+    application.state.managed_backup_manager = None
+    application.state.managed_backup_store = None
     application.state.managed_runtime_manager = None
     application.state.sprites_public_launch_enabled = False
     application.state.prompt_journal = PromptJournal()

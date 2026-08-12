@@ -34,6 +34,377 @@ def test_managed_sprite_name_is_deterministic_non_pii() -> None:
     )
 
 
+def test_restore_candidate_runner_can_coexist_with_active_managed_runner(auth_client) -> None:
+    """Replacement restore should retain separate candidate registration authority."""
+    from yinshi.services.runners import (
+        create_runner_registration,
+        get_managed_restore_runner_for_user,
+    )
+
+    tenant = getattr(auth_client, "yinshi_tenant")
+    active = create_runner_registration(
+        tenant.user_id,
+        name="Managed Fly Sprite",
+        cloud_provider="fly_sprites",
+        region="ord",
+        storage_profile="fly_sprites_posix",
+        control_url="https://control.example",
+        runner_kind="managed",
+    )
+    candidate = create_runner_registration(
+        tenant.user_id,
+        name="Managed restore candidate",
+        cloud_provider="fly_sprites",
+        region="ord",
+        storage_profile="fly_sprites_posix",
+        control_url="https://control.example",
+        runner_kind="managed_restore",
+    )
+
+    assert active["runner"]["id"] != candidate["runner"]["id"]
+    stored = get_managed_restore_runner_for_user(tenant.user_id)
+    assert stored is not None
+    assert stored["id"] == candidate["runner"]["id"]
+    assert stored["kind"] == "managed_restore"
+
+
+def test_restore_candidate_promotion_rejects_unready_candidate(auth_client) -> None:
+    """An unregistered candidate cannot replace the active managed runtime."""
+    from yinshi.db import get_control_db
+    from yinshi.services.managed_runners import (
+        activate_managed_restore_candidate,
+        get_managed_runtime_status,
+    )
+    from yinshi.services.runners import create_runner_registration
+
+    now = datetime(2026, 8, 12, 12, 0, tzinfo=timezone.utc)
+    tenant, claim = _provisioning_runtime(auth_client, now)
+    candidate = create_runner_registration(
+        tenant.user_id,
+        name="Managed restore candidate",
+        cloud_provider="fly_sprites",
+        region="ord",
+        storage_profile="fly_sprites_posix",
+        control_url="https://control.example",
+        runner_kind="managed_restore",
+    )
+    with get_control_db() as database:
+        database.execute(
+            "UPDATE managed_runtimes SET lifecycle_status = 'ready' WHERE user_id = ?",
+            (tenant.user_id,),
+        )
+        database.commit()
+
+    assert not activate_managed_restore_candidate(
+        tenant.user_id,
+        source_generation=claim.runtime.generation,
+        candidate_runner_id=candidate["runner"]["id"],
+        candidate_sprite_id="candidate-sprite",
+        artifact_version="runner-v1",
+        now=now,
+    )
+    runtime = get_managed_runtime_status(tenant.user_id)
+    assert runtime is not None
+    assert runtime.runner_id == claim.runtime.runner_id
+    assert runtime.generation == claim.runtime.generation
+
+
+def test_restore_candidate_promotion_requires_matching_restore_job_lease(
+    auth_client,
+) -> None:
+    """Only the worker that owns the exact restore job may activate its candidate."""
+    from yinshi.db import get_control_db
+    from yinshi.services.managed_backups import (
+        claim_due_managed_backup_operation,
+        start_managed_backup_restore,
+    )
+    from yinshi.services.managed_runners import activate_managed_restore_candidate
+    from yinshi.services.runners import create_runner_registration
+
+    now = datetime(2026, 8, 12, 12, 0, tzinfo=timezone.utc)
+    tenant, claim = _provisioning_runtime(auth_client, now)
+    archive_id = "018f47a2-9d3a-7f3b-8f0f-1a2b3c4d5e96"
+    job_id = "018f47a2-9d3a-7f3b-8f0f-1a2b3c4d5e97"
+    candidate = create_runner_registration(
+        tenant.user_id,
+        name="Managed restore candidate",
+        cloud_provider="fly_sprites",
+        region="ord",
+        storage_profile="fly_sprites_posix",
+        control_url="https://control.example",
+        runner_kind="managed_restore",
+    )
+    with get_control_db() as database:
+        database.execute(
+            "UPDATE managed_runtimes SET lifecycle_status = 'ready' WHERE user_id = ?",
+            (tenant.user_id,),
+        )
+        database.execute(
+            """UPDATE user_runners
+               SET status = 'online', runner_token_hash = 'candidate-token',
+                   registered_at = ?, last_heartbeat_at = ?,
+                   noise_public_key = ?, noise_public_key_confirmed_at = ?
+               WHERE id = ?""",
+            (
+                now.isoformat(),
+                now.isoformat(),
+                "b" * 43,
+                now.isoformat(),
+                candidate["runner"]["id"],
+            ),
+        )
+        database.execute(
+            """INSERT INTO managed_backup_archives (
+                   id, user_id, runtime_generation, status, object_key,
+                   object_version, size_bytes, sha256, wrapped_key, key_id,
+                   owner_digest, created_at, completed_at
+               ) VALUES (?, ?, 1, 'ready', ?, 'version-1', 1024, ?, ?, ?, ?, ?, ?)""",
+            (
+                archive_id,
+                tenant.user_id,
+                "managed/v1/restore-lease.enc",
+                "d" * 64,
+                b"wrapped-key",
+                "backup-v1",
+                "c" * 64,
+                "2026-08-11T12:00:00Z",
+                "2026-08-11T12:01:00Z",
+            ),
+        )
+        database.commit()
+    start_managed_backup_restore(
+        tenant.user_id,
+        archive_id=archive_id,
+        runtime_generation=claim.runtime.generation,
+        job_id=job_id,
+        now=now,
+    )
+    claimed = claim_due_managed_backup_operation(
+        worker_id="worker-a",
+        lease_token="lease-a",
+        now=now,
+        lease_expires_at=now + timedelta(minutes=2),
+    )
+    assert claimed is not None
+
+    assert not activate_managed_restore_candidate(
+        tenant.user_id,
+        source_generation=claim.runtime.generation,
+        candidate_runner_id=candidate["runner"]["id"],
+        candidate_sprite_id="candidate-sprite",
+        artifact_version="runner-v1",
+        now=now,
+        job_id=job_id,
+        lease_token="stale-lease",
+    )
+
+
+def test_restore_activation_with_lease_completes_job_in_same_transaction(auth_client) -> None:
+    """Cutover should atomically update runtime authority and durable job phase."""
+    from yinshi.db import get_control_db
+    from yinshi.services.managed_backups import (
+        claim_due_managed_backup_operation,
+        get_managed_backup_operation,
+        start_managed_backup_restore,
+    )
+    from yinshi.services.managed_runners import activate_managed_restore_candidate
+    from yinshi.services.runners import create_runner_registration
+
+    now = datetime(2026, 8, 12, 12, 0, tzinfo=timezone.utc)
+    tenant, claim = _provisioning_runtime(auth_client, now)
+    archive_id = "018f47a2-9d3a-7f3b-8f0f-1a2b3c4d5ea2"
+    job_id = "018f47a2-9d3a-7f3b-8f0f-1a2b3c4d5ea3"
+    candidate = create_runner_registration(
+        tenant.user_id,
+        name="Managed restore candidate",
+        cloud_provider="fly_sprites",
+        region="ord",
+        storage_profile="fly_sprites_posix",
+        control_url="https://control.example",
+        runner_kind="managed_restore",
+    )
+    with get_control_db() as database:
+        database.execute(
+            "UPDATE managed_runtimes SET lifecycle_status = 'ready' WHERE user_id = ?",
+            (tenant.user_id,),
+        )
+        database.execute(
+            """UPDATE user_runners
+               SET status = 'online', runner_token_hash = 'candidate-token',
+                   registered_at = ?, last_heartbeat_at = ?,
+                   noise_public_key = ?, noise_public_key_confirmed_at = ?
+               WHERE id = ?""",
+            (
+                now.isoformat(),
+                now.isoformat(),
+                "b" * 43,
+                now.isoformat(),
+                candidate["runner"]["id"],
+            ),
+        )
+        database.execute(
+            """INSERT INTO managed_backup_archives (
+                   id, user_id, runtime_generation, status, object_key,
+                   object_version, size_bytes, sha256, wrapped_key, key_id,
+                   owner_digest, created_at, completed_at
+               ) VALUES (?, ?, 1, 'ready', ?, 'version-1', 1024, ?, ?, ?, ?, ?, ?)""",
+            (
+                archive_id,
+                tenant.user_id,
+                "managed/v1/activation.enc",
+                "d" * 64,
+                b"wrapped-key",
+                "backup-v1",
+                "c" * 64,
+                "2026-08-11T12:00:00Z",
+                "2026-08-11T12:01:00Z",
+            ),
+        )
+        database.commit()
+    start_managed_backup_restore(
+        tenant.user_id,
+        archive_id=archive_id,
+        runtime_generation=claim.runtime.generation,
+        job_id=job_id,
+        now=now,
+    )
+    claimed = claim_due_managed_backup_operation(
+        worker_id="worker-a",
+        lease_token="lease-a",
+        now=now,
+        lease_expires_at=now + timedelta(minutes=2),
+    )
+    assert claimed is not None
+
+    assert activate_managed_restore_candidate(
+        tenant.user_id,
+        source_generation=claim.runtime.generation,
+        candidate_runner_id=candidate["runner"]["id"],
+        candidate_sprite_id="candidate-sprite",
+        artifact_version="runner-v1",
+        now=now,
+        job_id=job_id,
+        lease_token="lease-a",
+    )
+    operation = get_managed_backup_operation(tenant.user_id, job_id)
+    assert operation is not None
+    assert operation.phase == "activated"
+    assert operation.activation_generation == claim.runtime.generation + 1
+
+
+def test_restore_candidate_promotion_atomically_replaces_active_runtime(auth_client) -> None:
+    """Restore activation should promote one candidate and revoke the old runner."""
+    from yinshi.db import get_control_db
+    from yinshi.services.managed_runners import (
+        activate_managed_restore_candidate,
+        get_managed_runtime_status,
+    )
+    from yinshi.services.runners import create_runner_registration
+
+    now = datetime(2026, 8, 12, 12, 0, tzinfo=timezone.utc)
+    tenant, claim = _provisioning_runtime(auth_client, now)
+    candidate = create_runner_registration(
+        tenant.user_id,
+        name="Managed restore candidate",
+        cloud_provider="fly_sprites",
+        region="ord",
+        storage_profile="fly_sprites_posix",
+        control_url="https://control.example",
+        runner_kind="managed_restore",
+    )
+    with get_control_db() as database:
+        database.execute(
+            "UPDATE managed_runtimes SET lifecycle_status = 'ready' WHERE user_id = ?",
+            (tenant.user_id,),
+        )
+        database.execute(
+            """UPDATE user_runners
+               SET status = 'online', runner_token_hash = 'candidate-token',
+                   registered_at = ?, last_heartbeat_at = ?,
+                   noise_public_key = ?, noise_public_key_confirmed_at = ?
+               WHERE id = ?""",
+            (
+                now.isoformat(),
+                now.isoformat(),
+                "b" * 43,
+                now.isoformat(),
+                candidate["runner"]["id"],
+            ),
+        )
+        database.commit()
+
+    archive_id = "018f47a2-9d3a-7f3b-8f0f-1a2b3c4d5ea4"
+    job_id = "018f47a2-9d3a-7f3b-8f0f-1a2b3c4d5ea5"
+    with get_control_db() as database:
+        database.execute(
+            """INSERT INTO managed_backup_archives (
+                   id, user_id, runtime_generation, status, object_key,
+                   object_version, size_bytes, sha256, wrapped_key, key_id,
+                   owner_digest, created_at, completed_at
+               ) VALUES (?, ?, 1, 'ready', ?, 'version-1', 1024, ?, ?, ?, ?, ?, ?)""",
+            (
+                archive_id,
+                tenant.user_id,
+                "managed/v1/legacy-activation.enc",
+                "d" * 64,
+                b"wrapped-key",
+                "backup-v1",
+                "c" * 64,
+                "2026-08-11T12:00:00Z",
+                "2026-08-11T12:01:00Z",
+            ),
+        )
+        database.commit()
+    from yinshi.services.managed_backups import (
+        claim_due_managed_backup_operation,
+        start_managed_backup_restore,
+    )
+
+    start_managed_backup_restore(
+        tenant.user_id,
+        archive_id=archive_id,
+        runtime_generation=claim.runtime.generation,
+        job_id=job_id,
+        now=now,
+    )
+    claimed = claim_due_managed_backup_operation(
+        worker_id="worker-a",
+        lease_token="lease-a",
+        now=now,
+        lease_expires_at=now + timedelta(minutes=2),
+    )
+    assert claimed is not None
+    assert activate_managed_restore_candidate(
+        tenant.user_id,
+        source_generation=claim.runtime.generation,
+        candidate_runner_id=candidate["runner"]["id"],
+        candidate_sprite_id="candidate-sprite",
+        artifact_version="runner-v1",
+        now=now,
+        job_id=job_id,
+        lease_token="lease-a",
+    )
+    runtime = get_managed_runtime_status(tenant.user_id)
+    assert runtime is not None
+    assert runtime.runner_id == candidate["runner"]["id"]
+    assert runtime.sprite_name == "candidate-sprite"
+    assert runtime.generation == claim.runtime.generation + 1
+    with get_control_db() as database:
+        old_runner = database.execute(
+            "SELECT kind, status FROM user_runners WHERE id = ?",
+            (claim.runtime.runner_id,),
+        ).fetchone()
+        promoted = database.execute(
+            "SELECT kind, status FROM user_runners WHERE id = ?",
+            (candidate["runner"]["id"],),
+        ).fetchone()
+    assert old_runner is not None
+    assert old_runner["kind"] == "managed_retired"
+    assert old_runner["status"] == "revoked"
+    assert promoted is not None
+    assert promoted["kind"] == "managed"
+
+
 def test_absent_runtime_status_is_none(auth_client) -> None:
     """Status lookup returns None when no managed runtime exists."""
     from yinshi.services.managed_runners import get_managed_runtime_status
@@ -115,6 +486,41 @@ def _provisioning_runtime(auth_client, now: datetime):
         )
         database.commit()
     return tenant, claim
+
+
+def test_deletion_claim_rejects_active_managed_backup(auth_client) -> None:
+    """Runtime deletion should not revoke authority during managed maintenance."""
+    from yinshi.services.managed_backups import start_managed_backup_creation
+    from yinshi.services.managed_runners import (
+        claim_managed_runtime_deletion,
+        get_managed_runtime_status,
+    )
+
+    now = datetime(2026, 8, 12, 12, 0, tzinfo=timezone.utc)
+    tenant, claim = _provisioning_runtime(auth_client, now)
+    with get_control_db() as database:
+        database.execute(
+            "UPDATE managed_runtimes SET lifecycle_status = 'ready' WHERE user_id = ?",
+            (tenant.user_id,),
+        )
+        database.commit()
+    start_managed_backup_creation(
+        tenant.user_id,
+        runtime_generation=claim.runtime.generation,
+        archive_id="018f47a2-9d3a-7f3b-8f0f-1a2b3c4d5e77",
+        job_id="018f47a2-9d3a-7f3b-8f0f-1a2b3c4d5e78",
+        object_key="managed/v1/deletion-fence.enc",
+        wrapped_key=b"wrapped-key",
+        key_id="backup-v1",
+        owner_digest="c" * 64,
+        now=now,
+    )
+
+    with pytest.raises(RuntimeError, match="maintenance"):
+        claim_managed_runtime_deletion(tenant.user_id, now)
+    runtime = get_managed_runtime_status(tenant.user_id)
+    assert runtime is not None
+    assert runtime.lifecycle_status == "ready"
 
 
 def test_deletion_claim_and_matching_finalize_preserve_byoc(auth_client) -> None:

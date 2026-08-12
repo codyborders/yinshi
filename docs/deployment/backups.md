@@ -4,11 +4,32 @@ Yinshi snapshots the local control database and local tenant databases through S
 
 This guide covers local Podman and bring-your-own-cloud deployments with `MANAGED_RUNTIME_PROVIDER=disabled`.
 
-## Managed Fly limitation
+## Managed Fly backups
 
-The managed Fly control plane has no live tenant databases. Local create and restore commands reject `MANAGED_RUNTIME_PROVIDER=fly_sprites` with `Local backup commands are unavailable in managed Fly mode`. Create rejects before making an archive. Restore rejects before decryption or destination changes.
+The managed Fly control plane has no live tenant databases. Local create and restore commands reject `MANAGED_RUNTIME_PROVIDER=fly_sprites` with `Local backup commands are unavailable in managed Fly mode`.
 
-Control-plane artifacts do not provide backup coverage for tenant data stored in managed Fly guests. Managed guest backup and restore remain unavailable until remote export support exists.
+Managed guests create encrypted archives for `/var/lib/yinshi/sqlite` and `/var/lib/yinshi/files`. Archive bytes are encrypted inside the guest before transfer. The control plane uploads only ciphertext to independent, versioned S3-compatible storage. Runner identity files remain outside the restored roots.
+
+Configure these values for hosted Fly mode:
+
+```dotenv
+MANAGED_BACKUP_BUCKET=yinshi-backups
+MANAGED_BACKUP_ENDPOINT_URL=https://s3.us-east-1.amazonaws.com
+MANAGED_BACKUP_REGION=us-east-1
+MANAGED_BACKUP_ACCESS_KEY_ID=
+MANAGED_BACKUP_SECRET_ACCESS_KEY=
+MANAGED_BACKUP_PREFIX=yinshi-managed-v1
+MANAGED_BACKUP_PART_BYTES=16777216
+MANAGED_BACKUP_RETENTION_DAYS=30
+```
+
+The bucket must have versioning enabled and AES256 default encryption. Startup fails closed when either setting is missing. Explicit access keys must be configured as a pair. Leave both key values empty when the control plane uses an instance role.
+
+Each archive uses a random 32-byte key. The control plane stores only wrapped archive keys. The guest receives runner-bound sealed jobs and never receives object-store credentials.
+
+Managed archive listing is available at `GET /api/runtime/backups`. Responses omit object keys, object versions, checksums, wrapped keys, provider identifiers, and runner identifiers.
+
+Public managed launch remains disabled. Backup creation coordination, replacement-Sprite restore activation, deletion recovery, retention scheduling, and trustworthy Sprite storage-encryption verification must finish before launch.
 
 ## Configuration
 

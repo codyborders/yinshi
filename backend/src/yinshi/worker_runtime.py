@@ -40,6 +40,11 @@ class WorkerHttpDispatcher:
         self._principal = principal
 
     @property
+    def app(self) -> FastAPI:
+        """Return the worker application for runner lifecycle management."""
+        return self._app
+
+    @property
     def user_id(self) -> str:
         """Return the single tenant identity bound to this dispatcher."""
         return self._principal.tenant.user_id

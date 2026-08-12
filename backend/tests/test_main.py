@@ -177,6 +177,7 @@ def test_hosted_fly_lifespan_builds_and_closes_managed_runtime(
         sprites_operation_stale_seconds=901,
         control_db_path=str(tmp_path / "control.db"),
         container_enabled=False,
+        backup_encryption_key="b" * 64,
     )
     provider_http_client = Mock()
     provider_http_client.aclose = AsyncMock()
@@ -187,9 +188,16 @@ def test_hosted_fly_lifespan_builds_and_closes_managed_runtime(
     manager = Mock()
     manager.reconcile_startup = AsyncMock(return_value=0)
     manager.aclose = AsyncMock()
+    manager.provider = provider
+    backup_store = Mock()
+    backup_store.preflight = AsyncMock()
+    backup_manager = Mock()
+    backup_manager.start = AsyncMock()
+    backup_manager.aclose = AsyncMock()
     sprites_constructor = Mock(return_value=provider)
     installer_constructor = Mock(return_value=guest_installer)
     manager_constructor = Mock(return_value=manager)
+    backup_manager_constructor = Mock(return_value=backup_manager)
 
     monkeypatch.setattr(main, "get_settings", lambda: app_settings)
     monkeypatch.setattr(
@@ -205,6 +213,13 @@ def test_hosted_fly_lifespan_builds_and_closes_managed_runtime(
     monkeypatch.setattr(main, "SpritesClient", sprites_constructor)
     monkeypatch.setattr(main, "ConcreteManagedGuestInstaller", installer_constructor)
     monkeypatch.setattr(main, "ManagedRuntimeManager", manager_constructor)
+    monkeypatch.setattr(main, "ManagedBackupManager", backup_manager_constructor)
+    monkeypatch.setattr(
+        main,
+        "create_managed_backup_store",
+        Mock(return_value=backup_store),
+        raising=False,
+    )
 
     application = main.create_app(mode="hosted")
 
@@ -215,6 +230,8 @@ def test_hosted_fly_lifespan_builds_and_closes_managed_runtime(
     manager.reconcile_startup.side_effect = assert_manager_not_published
     with TestClient(application):
         assert application.state.managed_runtime_manager is manager
+        assert application.state.managed_backup_store is backup_store
+        assert application.state.managed_backup_manager is backup_manager
 
     sprites_constructor.assert_called_once_with(
         api_token="provider-token",
@@ -241,7 +258,10 @@ def test_hosted_fly_lifespan_builds_and_closes_managed_runtime(
         is_runner_connected=runner_relay_broker.is_runner_connected,
     )
     assert not Path(app_settings.db_path).exists()
+    backup_store.preflight.assert_awaited_once_with()
     manager.reconcile_startup.assert_awaited_once_with()
+    backup_manager.start.assert_awaited_once_with()
+    backup_manager.aclose.assert_awaited_once_with()
     manager.aclose.assert_awaited_once()
     provider_http_client.aclose.assert_awaited_once()
     artifact_http_client.aclose.assert_not_awaited()
@@ -291,12 +311,25 @@ async def test_lifespan_attempts_every_cleanup_before_raising_first_error(
             raise RuntimeError("container cleanup failed")
 
     class FakeManagedRuntimeManager:
+        provider = object()
+
         async def reconcile_startup(self) -> int:
             return 0
 
         async def aclose(self) -> None:
             cleanup_calls.append("managed manager")
             raise RuntimeError("managed cleanup failed")
+
+    class FakeManagedBackupManager:
+        def __init__(self, **_values) -> None:
+            pass
+
+        async def start(self) -> None:
+            return None
+
+        async def aclose(self) -> None:
+            cleanup_calls.append("backup manager")
+            raise RuntimeError("backup cleanup failed")
 
     class FakeProviderClient:
         async def aclose(self) -> None:
@@ -318,9 +351,13 @@ async def test_lifespan_attempts_every_cleanup_before_raising_first_error(
         managed_runtime_provider="fly_sprites",
         control_db_path=str(tmp_path / "control.db"),
         container_enabled=True,
+        backup_encryption_key="b" * 64,
+        sprites_name_key="n" * 32,
     )
     managed_manager = FakeManagedRuntimeManager()
     provider_client = FakeProviderClient()
+    backup_store = Mock()
+    backup_store.preflight = AsyncMock()
     application = FastAPI()
     application.state.mode = "hosted"
     application.state.prompt_journal = FakePromptJournal()
@@ -333,6 +370,8 @@ async def test_lifespan_attempts_every_cleanup_before_raising_first_error(
     monkeypatch.setattr(main, "TerminalJournal", FakeTerminalJournal)
     monkeypatch.setattr(container_service, "ContainerManager", FakeContainerManager)
     monkeypatch.setattr(main, "RelayProcessLock", FakeRelayProcessLock)
+    monkeypatch.setattr(main, "ManagedBackupManager", FakeManagedBackupManager)
+    monkeypatch.setattr(main, "create_managed_backup_store", lambda _settings: backup_store)
     monkeypatch.setattr(
         main,
         "_initialize_managed_runtime",
@@ -348,6 +387,7 @@ async def test_lifespan_attempts_every_cleanup_before_raising_first_error(
         "terminal journal",
         "reaper",
         "container manager",
+        "backup manager",
         "managed manager",
         "provider client",
         "relay lock",
@@ -374,7 +414,10 @@ def test_hosted_fly_partial_startup_closes_provider_client(
     )
     provider_http_client = Mock()
     provider_http_client.aclose = AsyncMock()
+    backup_store = Mock()
+    backup_store.preflight = AsyncMock()
     monkeypatch.setattr(main, "get_settings", lambda: app_settings)
+    monkeypatch.setattr(main, "create_managed_backup_store", lambda _settings: backup_store)
     monkeypatch.setattr(
         main,
         "_create_provider_http_client",

@@ -61,18 +61,29 @@ async def runner_relay_socket(websocket: WebSocket) -> None:
             if isinstance(control_text, str):
                 try:
                     control = json.loads(control_text)
-                    if (
-                        not isinstance(control, dict)
-                        or set(control) != {"transfer_id", "type"}
-                        or control.get("type") != "close"
-                        or not isinstance(control.get("transfer_id"), str)
-                    ):
+                    if not isinstance(control, dict):
                         raise ValueError("invalid runner relay control")
-                    await runner_relay_broker.runner_closed_transfer(
-                        runner_id,
-                        control["transfer_id"],
-                    )
-                    continue
+                    if (
+                        set(control) == {"transfer_id", "type"}
+                        and control.get("type") == "close"
+                        and isinstance(control.get("transfer_id"), str)
+                    ):
+                        await runner_relay_broker.runner_closed_transfer(
+                            runner_id,
+                            control["transfer_id"],
+                        )
+                        continue
+                    if (
+                        set(control) == {"job_id", "type"}
+                        and control.get("type") == "quiesced"
+                        and isinstance(control.get("job_id"), str)
+                    ):
+                        await runner_relay_broker.runner_quiesced(
+                            runner_id,
+                            control["job_id"],
+                        )
+                        continue
+                    raise ValueError("invalid runner relay control")
                 except (json.JSONDecodeError, RunnerRelayAuthorizationError, ValueError):
                     await websocket.close(code=4400, reason="Runner relay control was rejected")
                     break

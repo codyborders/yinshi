@@ -242,11 +242,14 @@ async def test_install_writes_private_inputs_then_configures_private_services() 
 
     assert [service["service_name"] for service in client.services] == [
         "yinshi-bootstrap",
+        "yinshi-maintenance",
         "yinshi-sidecar",
         "yinshi-runner",
     ]
     assert all(service["http_port"] is None for service in client.services)
-    bootstrap, sidecar, runner = client.services
+    bootstrap, maintenance, sidecar, runner = client.services
+    assert maintenance["command"] == "/opt/yinshi/current/venv/bin/python"
+    assert maintenance["args"] == ("-m", "yinshi.managed_backup_guest")
     assert bootstrap["args"] == (
         "/home/sprite/.config/yinshi/bootstrap.sh",
         "/home/sprite/.config/yinshi/artifact.tar.gz",

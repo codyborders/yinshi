@@ -45,6 +45,36 @@ async def test_runner_worker_manager_reuses_one_encrypted_tenant(
     assert Path(first.database_path).stat().st_mode & 0o777 == 0o600
 
 
+@pytest.mark.asyncio
+async def test_runner_worker_manager_quiesces_application_resources(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    db: sqlite3.Connection,
+) -> None:
+    """Maintenance should close journals and checkpoint runner databases."""
+    manager = RunnerWorkerManager(
+        data_directory=tmp_path / "runner",
+        runner_static_private_key=b"r" * 32,
+        environment_setter=monkeypatch.setenv,
+    )
+    dispatcher = manager.dispatcher("account-1")
+    calls: list[str] = []
+
+    async def close_prompts() -> None:
+        calls.append("prompts")
+
+    async def close_terminals() -> None:
+        calls.append("terminals")
+
+    dispatcher.app.state.prompt_journal.close = close_prompts
+    dispatcher.app.state.terminal_journal.close_all = close_terminals
+
+    await manager.quiesce(str(__import__("uuid").uuid4()))
+
+    assert calls == ["prompts", "terminals"]
+    assert manager.dispatcher("account-1") is dispatcher
+
+
 def test_runner_worker_manager_separates_sqlite_and_shared_storage(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

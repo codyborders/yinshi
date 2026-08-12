@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import ipaddress
 import json
+import os
 import re
-from collections.abc import Iterator, Mapping
+from collections.abc import AsyncIterator, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from math import isfinite
+from pathlib import Path
 from typing import Literal, cast
 
 import httpx
@@ -47,21 +50,31 @@ _MAX_CHECKPOINT_COMMENT_LENGTH = 4096
 _MAX_MONITOR_DURATION_SECONDS = 86400.0
 _MAX_STATE_STARTED_AT_LENGTH = 128
 _MAX_STATE_ERROR_LENGTH = 4096
+_FILE_TRANSFER_CHUNK_BYTES = 4 * 1024 * 1024
+_FILE_TRANSFER_BYTES_MAX = 200 * 1024 * 1024 * 1024
+_CONTENT_RANGE_PATTERN = re.compile(r"bytes ([0-9]+)-([0-9]+)/([0-9]+)\Z")
 
 
-async def _read_bounded_response(response: httpx.Response, description: str) -> bytes:
+async def _read_bounded_response(
+    response: httpx.Response,
+    description: str,
+    *,
+    max_bytes: int = _MAX_STREAM_RESPONSE_BYTES,
+) -> bytes:
     """Read one provider response without exceeding its byte limit."""
+    if type(max_bytes) is not int or not 1 <= max_bytes <= _MAX_STREAM_RESPONSE_BYTES:
+        raise ValueError("max_bytes is outside the provider response limit")
     content_length = response.headers.get("Content-Length")
     if content_length is not None:
         try:
             declared_length = int(content_length)
         except ValueError:
             declared_length = 0
-        if declared_length > _MAX_STREAM_RESPONSE_BYTES:
+        if declared_length > max_bytes:
             raise SpritesProtocolError(f"{description} exceeds size limit")
     body = bytearray()
     async for chunk in response.aiter_bytes():
-        if len(body) + len(chunk) > _MAX_STREAM_RESPONSE_BYTES:
+        if len(body) + len(chunk) > max_bytes:
             raise SpritesProtocolError(f"{description} exceeds size limit")
         body.extend(chunk)
     return bytes(body)
@@ -243,6 +256,14 @@ def _translate_transport_errors(operation: str) -> Iterator[None]:
         yield
     except (httpx.RequestError, TimeoutError):
         raise SpritesProviderError(f"Fly could not {operation}") from None
+
+
+@dataclass(frozen=True, slots=True)
+class SpriteFileTransfer:
+    """Validated metadata for one completed Sprite file transfer."""
+
+    size_bytes: int
+    sha256: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -553,6 +574,226 @@ class SpritesClient:
                 f"Fly could not write Sprite file (status {status_code})"
             ) from None
 
+    async def read_file(
+        self,
+        name: str,
+        *,
+        path: str,
+        max_bytes: int,
+    ) -> bytes:
+        """Read one small guest file under an explicit byte limit."""
+        name = _validate_sprite_name(name)
+        path = _validate_file_path(path, field="File path", allow_root=False)
+        if type(max_bytes) is not int or not 1 <= max_bytes <= _MAX_FILE_CONTENT_BYTES:
+            raise ValueError("max_bytes is outside the small-file limit")
+        with _translate_transport_errors("read Sprite file"):
+            async with asyncio.timeout(_STANDARD_OPERATION_TIMEOUT_SECONDS):
+                async with self._http_client.stream(
+                    "GET",
+                    f"/v1/sprites/{name}/fs/read",
+                    headers={"Authorization": f"Bearer {self._api_token}"},
+                    params={"path": path, "workingDir": "/"},
+                    timeout=_STANDARD_OPERATION_TIMEOUT_SECONDS,
+                ) as response:
+                    body = await _read_bounded_response(
+                        response,
+                        "Sprite file read response",
+                        max_bytes=max_bytes,
+                    )
+                    status_code = response.status_code
+        if not 200 <= status_code < 300:
+            raise SpritesProviderError(
+                f"Fly could not read Sprite file (status {status_code})"
+            ) from None
+        return body
+
+    async def delete_file(
+        self,
+        name: str,
+        *,
+        path: str,
+    ) -> None:
+        """Delete one exact guest file without recursive behavior."""
+        name = _validate_sprite_name(name)
+        path = _validate_file_path(path, field="File path", allow_root=False)
+        with _translate_transport_errors("delete Sprite file"):
+            async with asyncio.timeout(_STANDARD_OPERATION_TIMEOUT_SECONDS):
+                async with self._http_client.stream(
+                    "DELETE",
+                    f"/v1/sprites/{name}/fs/delete",
+                    headers={"Authorization": f"Bearer {self._api_token}"},
+                    params={"path": path, "workingDir": "/", "recursive": "false"},
+                    timeout=_STANDARD_OPERATION_TIMEOUT_SECONDS,
+                ) as response:
+                    await _read_bounded_response(response, "Sprite file delete response")
+                    status_code = response.status_code
+        if status_code == 404:
+            return
+        if not 200 <= status_code < 300:
+            raise SpritesProviderError(
+                f"Fly could not delete Sprite file (status {status_code})"
+            ) from None
+
+    async def upload_file(
+        self,
+        name: str,
+        *,
+        source_path: Path,
+        path: str,
+        expected_size: int,
+        expected_sha256: str,
+        mode: str,
+    ) -> SpriteFileTransfer:
+        """Upload one verified ciphertext file without loading it into memory."""
+        name = _validate_sprite_name(name)
+        path = _validate_file_path(path, field="File path", allow_root=False)
+        if (
+            not isinstance(source_path, Path)
+            or not source_path.is_file()
+            or source_path.is_symlink()
+        ):
+            raise ValueError("source_path must be a regular pathlib.Path")
+        if type(expected_size) is not int or not 1 <= expected_size <= _FILE_TRANSFER_BYTES_MAX:
+            raise ValueError("expected_size is outside the transfer limit")
+        if source_path.stat().st_size != expected_size:
+            raise ValueError("source file size does not match expected_size")
+        if (
+            not isinstance(expected_sha256, str)
+            or len(expected_sha256) != 64
+            or any(character not in "0123456789abcdef" for character in expected_sha256)
+        ):
+            raise ValueError("expected_sha256 must be 64 lowercase hexadecimal characters")
+        if not isinstance(mode, str) or _FILE_MODE_PATTERN.fullmatch(mode) is None:
+            raise ValueError("File mode must be a four-digit octal permission string")
+        digest = hashlib.sha256()
+
+        async def content() -> AsyncIterator[bytes]:
+            source_flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+            descriptor = os.open(source_path, source_flags)
+            try:
+                with os.fdopen(descriptor, "rb", closefd=False) as source:
+                    while chunk := await asyncio.to_thread(source.read, _FILE_TRANSFER_CHUNK_BYTES):
+                        digest.update(chunk)
+                        yield chunk
+            finally:
+                os.close(descriptor)
+
+        with _translate_transport_errors("write Sprite file"):
+            async with asyncio.timeout(_LONG_OPERATION_TIMEOUT_SECONDS):
+                async with self._http_client.stream(
+                    "PUT",
+                    f"/v1/sprites/{name}/fs/write",
+                    headers={
+                        "Authorization": f"Bearer {self._api_token}",
+                        "Content-Type": "application/octet-stream",
+                    },
+                    params={
+                        "path": path,
+                        "workingDir": "/",
+                        "mode": mode,
+                        "mkdir": "true",
+                    },
+                    content=content(),
+                    timeout=_LONG_OPERATION_TIMEOUT_SECONDS,
+                ) as response:
+                    await _read_bounded_response(response, "Sprite file write response")
+                    status_code = response.status_code
+        if not 200 <= status_code < 300:
+            raise SpritesProviderError(
+                f"Fly could not write Sprite file (status {status_code})"
+            ) from None
+        actual_sha256 = digest.hexdigest()
+        if actual_sha256 != expected_sha256:
+            raise SpritesProtocolError("Sprite upload source checksum did not match")
+        return SpriteFileTransfer(size_bytes=expected_size, sha256=actual_sha256)
+
+    async def download_file(
+        self,
+        name: str,
+        *,
+        path: str,
+        target_path: Path,
+        expected_size: int,
+        expected_sha256: str,
+    ) -> SpriteFileTransfer:
+        """Download one guest ciphertext file through validated byte ranges."""
+        name = _validate_sprite_name(name)
+        path = _validate_file_path(path, field="File path", allow_root=False)
+        if not isinstance(target_path, Path) or not target_path.is_absolute():
+            raise ValueError("target_path must be an absolute pathlib.Path")
+        if target_path.exists() or target_path.is_symlink():
+            raise FileExistsError(target_path)
+        if type(expected_size) is not int or not 1 <= expected_size <= _FILE_TRANSFER_BYTES_MAX:
+            raise ValueError("expected_size is outside the transfer limit")
+        if (
+            not isinstance(expected_sha256, str)
+            or len(expected_sha256) != 64
+            or any(character not in "0123456789abcdef" for character in expected_sha256)
+        ):
+            raise ValueError("expected_sha256 must be 64 lowercase hexadecimal characters")
+        target_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        descriptor = os.open(target_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        digest = hashlib.sha256()
+        written = 0
+        try:
+            with os.fdopen(descriptor, "wb", closefd=False) as output:
+                while written < expected_size:
+                    end = min(written + _FILE_TRANSFER_CHUNK_BYTES, expected_size) - 1
+                    with _translate_transport_errors("read Sprite file"):
+                        async with asyncio.timeout(_LONG_OPERATION_TIMEOUT_SECONDS):
+                            async with self._http_client.stream(
+                                "GET",
+                                f"/v1/sprites/{name}/fs/read",
+                                headers={
+                                    "Authorization": f"Bearer {self._api_token}",
+                                    "Range": f"bytes={written}-{end}",
+                                },
+                                params={"path": path, "workingDir": "/"},
+                                timeout=_LONG_OPERATION_TIMEOUT_SECONDS,
+                            ) as response:
+                                if response.status_code != 206:
+                                    raise SpritesProtocolError(
+                                        "Sprite file read did not honor the byte range"
+                                    )
+                                content_range = response.headers.get("Content-Range", "")
+                                match = _CONTENT_RANGE_PATTERN.fullmatch(content_range)
+                                if (
+                                    match is None
+                                    or int(match.group(1)) != written
+                                    or int(match.group(2)) != end
+                                    or int(match.group(3)) != expected_size
+                                ):
+                                    raise SpritesProtocolError(
+                                        "Sprite file read returned an invalid content range"
+                                    )
+                                range_bytes = 0
+                                async for chunk in response.aiter_bytes():
+                                    range_bytes += len(chunk)
+                                    if range_bytes > end - written + 1:
+                                        raise SpritesProtocolError(
+                                            "Sprite file read exceeded the requested range"
+                                        )
+                                    output.write(chunk)
+                                    digest.update(chunk)
+                                if range_bytes != end - written + 1:
+                                    raise SpritesProtocolError(
+                                        "Sprite file read returned an incomplete range"
+                                    )
+                    written = end + 1
+                output.flush()
+                os.fsync(output.fileno())
+        except BaseException:
+            target_path.unlink(missing_ok=True)
+            raise
+        finally:
+            os.close(descriptor)
+        actual_sha256 = digest.hexdigest()
+        if actual_sha256 != expected_sha256:
+            target_path.unlink(missing_ok=True)
+            raise SpritesProtocolError("Sprite file checksum did not match")
+        os.chmod(target_path, 0o600)
+        return SpriteFileTransfer(size_bytes=written, sha256=actual_sha256)
+
     async def configure_service(
         self,
         name: str,
@@ -620,6 +861,78 @@ class SpritesClient:
             httpx.Response(200, content=bytes(body)),
             stream_operation,
         )
+
+    async def start_service(
+        self,
+        name: str,
+        *,
+        service_name: str,
+        monitor_duration: float | None,
+    ) -> None:
+        """Start one service and require started plus complete progress events."""
+        name = _validate_sprite_name(name)
+        service_name = _validate_service_name(service_name)
+        monitor_duration = _validate_monitor_duration(monitor_duration)
+        params = None
+        if monitor_duration is not None:
+            params = {"duration": f"{monitor_duration:g}s"}
+        stream_timeout = _service_stream_timeout(monitor_duration)
+        with _translate_transport_errors("start service"):
+            async with asyncio.timeout(stream_timeout):
+                async with self._http_client.stream(
+                    "POST",
+                    f"/v1/sprites/{name}/services/{service_name}/start",
+                    headers={"Authorization": f"Bearer {self._api_token}"},
+                    params=params,
+                    timeout=stream_timeout,
+                ) as response:
+                    try:
+                        response.raise_for_status()
+                    except httpx.HTTPStatusError:
+                        raise SpritesProviderError(
+                            f"Fly could not start service (status {response.status_code})"
+                        ) from None
+                    body = await _read_bounded_response(response, "Sprite service start response")
+        parsed = httpx.Response(200, content=body)
+        _raise_for_stream_error(parsed, "service start")
+        events = [json.loads(line) for line in parsed.text.splitlines() if line.strip()]
+        if not any(isinstance(event, dict) and event.get("type") == "started" for event in events):
+            raise SpritesProtocolError("Sprite service start response did not start")
+
+    async def stop_service(
+        self,
+        name: str,
+        *,
+        service_name: str,
+        timeout_seconds: int,
+    ) -> None:
+        """Stop one service and require stopped plus complete progress events."""
+        name = _validate_sprite_name(name)
+        service_name = _validate_service_name(service_name)
+        if type(timeout_seconds) is not int or not 1 <= timeout_seconds <= 300:
+            raise ValueError("timeout_seconds must be between 1 and 300")
+        stream_timeout = float(timeout_seconds + 15)
+        with _translate_transport_errors("stop service"):
+            async with asyncio.timeout(stream_timeout):
+                async with self._http_client.stream(
+                    "POST",
+                    f"/v1/sprites/{name}/services/{service_name}/stop",
+                    headers={"Authorization": f"Bearer {self._api_token}"},
+                    params={"timeout": f"{timeout_seconds}s"},
+                    timeout=stream_timeout,
+                ) as response:
+                    try:
+                        response.raise_for_status()
+                    except httpx.HTTPStatusError:
+                        raise SpritesProviderError(
+                            f"Fly could not stop service (status {response.status_code})"
+                        ) from None
+                    body = await _read_bounded_response(response, "Sprite service stop response")
+        parsed = httpx.Response(200, content=body)
+        _raise_for_stream_error(parsed, "service stop")
+        events = [json.loads(line) for line in parsed.text.splitlines() if line.strip()]
+        if not any(isinstance(event, dict) and event.get("type") == "stopped" for event in events):
+            raise SpritesProtocolError("Sprite service stop response did not stop")
 
     async def restart_service(
         self,

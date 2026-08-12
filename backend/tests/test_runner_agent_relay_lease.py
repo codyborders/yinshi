@@ -32,6 +32,37 @@ class RecordingTaskLease:
 
 
 @pytest.mark.asyncio
+async def test_runner_relay_quiesces_worker_and_blocks_new_transfers(tmp_path: Path) -> None:
+    """Maintenance control should drain current authority before acknowledgement."""
+    task_lease = RecordingTaskLease()
+    quiesced: list[str] = []
+
+    async def quiesce(job_id: str) -> None:
+        quiesced.append(job_id)
+
+    runtime = RunnerAgentRelayRuntime(
+        runner_static_private_key=_RUNNER_PRIVATE_KEY,
+        capability_signing_public_key=b"s" * 32,
+        replay_database_path=tmp_path / "runner-replay.sqlite3",
+        task_lease=task_lease,
+        maintenance_handler=quiesce,
+    )
+    transfer_id = str(uuid.uuid4())
+    job_id = str(uuid.uuid4())
+    await runtime.handle_control(json.dumps({"runner_id": "runner-1", "type": "welcome"}))
+    await runtime.handle_control(json.dumps({"transfer_id": transfer_id, "type": "open"}))
+
+    response = await runtime.handle_control(json.dumps({"job_id": job_id, "type": "quiesce"}))
+
+    assert json.loads(response or "") == {"job_id": job_id, "type": "quiesced"}
+    assert quiesced == [job_id]
+    assert runtime.active_transfer_ids == ()
+    assert task_lease.operations == ["acquire", "release"]
+    with pytest.raises(ValueError, match="maintenance"):
+        await runtime.handle_control(json.dumps({"transfer_id": str(uuid.uuid4()), "type": "open"}))
+
+
+@pytest.mark.asyncio
 async def test_runner_relay_holds_task_during_transfer(tmp_path: Path) -> None:
     """Managed transfer holds one task reference from open through close."""
     task_lease = RecordingTaskLease()

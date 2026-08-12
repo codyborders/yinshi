@@ -85,6 +85,181 @@ def _runtime_client(
     limiter.reset()
 
 
+def test_managed_backup_list_returns_only_safe_catalog_fields(
+    auth_client: TestClient,
+) -> None:
+    """Authenticated backup listing should omit object and key metadata."""
+    from datetime import datetime, timezone
+
+    from yinshi.db import get_control_db
+    from yinshi.services.managed_backups import start_managed_backup_creation
+    from yinshi.services.managed_runners import claim_managed_runtime_provisioning
+
+    tenant = getattr(auth_client, "yinshi_tenant")
+    now = datetime(2026, 8, 12, 12, 0, tzinfo=timezone.utc)
+    claim_managed_runtime_provisioning(
+        tenant.user_id,
+        name_prefix="yinshi",
+        name_key="secret-name-key",
+        artifact_version="runner-v1",
+        region="ord",
+        control_url="https://control.example",
+        now=now,
+    )
+    with get_control_db() as database:
+        database.execute(
+            "UPDATE managed_runtimes SET lifecycle_status = 'ready' WHERE user_id = ?",
+            (tenant.user_id,),
+        )
+        database.commit()
+    start_managed_backup_creation(
+        tenant.user_id,
+        runtime_generation=1,
+        archive_id="018f47a2-9d3a-7f3b-8f0f-1a2b3c4d5e8f",
+        job_id="018f47a2-9d3a-7f3b-8f0f-1a2b3c4d5e90",
+        object_key="managed/v1/private.enc",
+        wrapped_key=b"wrapped-key",
+        key_id="backup-v1",
+        owner_digest="a" * 64,
+        now=now,
+    )
+
+    response = auth_client.get("/api/runtime/backups")
+
+    assert response.status_code == 200
+    assert response.json() == [
+        {
+            "id": "018f47a2-9d3a-7f3b-8f0f-1a2b3c4d5e8f",
+            "status": "creating",
+            "size_bytes": None,
+            "created_at": "2026-08-12T12:00:00Z",
+            "completed_at": None,
+            "last_error": None,
+        }
+    ]
+
+
+def test_managed_backup_create_returns_safe_accepted_job(
+    auth_client: TestClient,
+) -> None:
+    """Authenticated tenants can queue one encrypted managed backup."""
+    from datetime import datetime, timezone
+    from unittest.mock import Mock
+
+    from yinshi.db import get_control_db
+    from yinshi.services.managed_runners import claim_managed_runtime_provisioning
+
+    tenant = getattr(auth_client, "yinshi_tenant")
+    now = datetime(2026, 8, 12, 12, 0, tzinfo=timezone.utc)
+    claim_managed_runtime_provisioning(
+        tenant.user_id,
+        name_prefix="yinshi",
+        name_key="secret-name-key",
+        artifact_version="runner-v1",
+        region="ord",
+        control_url="https://control.example",
+        now=now,
+    )
+    with get_control_db() as database:
+        database.execute(
+            "UPDATE managed_runtimes SET lifecycle_status = 'ready' WHERE user_id = ?",
+            (tenant.user_id,),
+        )
+        database.commit()
+    manager = Mock()
+    manager.enqueue_create = Mock(
+        return_value={
+            "id": "018f47a2-9d3a-7f3b-8f0f-1a2b3c4d5e91",
+            "archive_id": "018f47a2-9d3a-7f3b-8f0f-1a2b3c4d5e92",
+            "operation": "create",
+            "status": "running",
+            "phase": "claimed",
+            "started_at": "2026-08-12T12:00:00Z",
+            "updated_at": "2026-08-12T12:00:00Z",
+            "last_error": None,
+        }
+    )
+    manager.wake = Mock()
+    auth_client.app.state.managed_backup_manager = manager
+
+    response = auth_client.post("/api/runtime/backups")
+
+    assert response.status_code == 202
+    assert response.json() == manager.enqueue_create.return_value
+    manager.enqueue_create.assert_called_once_with(tenant.user_id)
+    manager.wake.assert_called_once_with()
+
+
+def test_managed_backup_job_status_omits_lease_and_provider_fields(
+    auth_client: TestClient,
+) -> None:
+    """Job status should expose progress without worker ownership or provider IDs."""
+    from datetime import datetime, timezone
+
+    from yinshi.db import get_control_db
+    from yinshi.services.managed_backups import start_managed_backup_creation
+    from yinshi.services.managed_runners import claim_managed_runtime_provisioning
+
+    tenant = getattr(auth_client, "yinshi_tenant")
+    now = datetime(2026, 8, 12, 12, 0, tzinfo=timezone.utc)
+    claim_managed_runtime_provisioning(
+        tenant.user_id,
+        name_prefix="yinshi",
+        name_key="secret-name-key",
+        artifact_version="runner-v1",
+        region="ord",
+        control_url="https://control.example",
+        now=now,
+    )
+    with get_control_db() as database:
+        database.execute(
+            "UPDATE managed_runtimes SET lifecycle_status = 'ready' WHERE user_id = ?",
+            (tenant.user_id,),
+        )
+        database.commit()
+    start_managed_backup_creation(
+        tenant.user_id,
+        runtime_generation=1,
+        archive_id="018f47a2-9d3a-7f3b-8f0f-1a2b3c4d5e93",
+        job_id="018f47a2-9d3a-7f3b-8f0f-1a2b3c4d5e94",
+        object_key="managed/v1/job.enc",
+        wrapped_key=b"wrapped-key",
+        key_id="backup-v1",
+        owner_digest="a" * 64,
+        now=now,
+    )
+
+    response = auth_client.get("/api/runtime/backup-jobs/018f47a2-9d3a-7f3b-8f0f-1a2b3c4d5e94")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "id": "018f47a2-9d3a-7f3b-8f0f-1a2b3c4d5e94",
+        "archive_id": "018f47a2-9d3a-7f3b-8f0f-1a2b3c4d5e93",
+        "operation": "create",
+        "status": "running",
+        "phase": "claimed",
+        "started_at": "2026-08-12T12:00:00Z",
+        "updated_at": "2026-08-12T12:00:00Z",
+        "last_error": None,
+    }
+
+
+def test_managed_backup_mutation_cross_tenant_archive_returns_not_found(
+    auth_client: TestClient,
+) -> None:
+    """Mutation APIs should conceal archives owned by another tenant."""
+    from unittest.mock import Mock
+
+    manager = Mock()
+    manager.enqueue_restore = Mock(side_effect=LookupError("other tenant"))
+    auth_client.app.state.managed_backup_manager = manager
+
+    response = auth_client.post("/api/runtime/backups/private-archive/restore")
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Managed backup was not found"}
+
+
 def test_get_runtime_returns_local_compatibility_status(auth_client: TestClient) -> None:
     """An app without a manager reports the compatible local runtime."""
     tenant = getattr(auth_client, "yinshi_tenant")
