@@ -214,6 +214,31 @@ async def test_list_sprites_follows_pagination_without_detail_requests() -> None
 
 
 @pytest.mark.asyncio
+async def test_list_sprites_accepts_empty_filtered_terminal_page() -> None:
+    """Provider empty prefix results may omit a continuation token despite has_more."""
+    from yinshi.services.sprites import SpritesClient
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "has_more": True,
+                "next_continuation_token": None,
+                "sprites": [],
+            },
+        )
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="https://api.sprites.dev"
+    ) as http_client:
+        client = SpritesClient(api_token="secret", http_client=http_client)
+
+        records = await client.list_sprites(prefix="yinshi-staging")
+
+    assert records == ()
+
+
+@pytest.mark.asyncio
 async def test_list_sprites_rejects_repeated_continuation_token() -> None:
     """Incomplete cyclic pagination must never become an inventory snapshot."""
 

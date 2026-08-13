@@ -513,6 +513,7 @@ class SpritesClient:
                 raise SpritesProtocolError("Sprite inventory response is invalid")
             entries = payload.get("sprites")
             has_more = payload.get("has_more")
+            has_next_token_field = "next_continuation_token" in payload
             next_token = payload.get("next_continuation_token")
             if not isinstance(entries, list) or len(entries) > 50 or type(has_more) is not bool:
                 raise SpritesProtocolError("Sprite inventory response is invalid")
@@ -530,8 +531,8 @@ class SpritesClient:
             if len(names) > _MAX_SPRITE_INVENTORY_ITEMS:
                 raise SpritesProtocolError("Sprite inventory exceeds item limit")
             records.extend(SpriteInventoryRecord(name=name) for name in page_names)
-            if not has_more:
-                if next_token is not None:
+            if not has_more or (not entries and has_next_token_field and next_token is None):
+                if not has_more and next_token is not None:
                     raise SpritesProtocolError("Sprite inventory continuation is invalid")
                 return tuple(records)
             if (
