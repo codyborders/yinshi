@@ -153,16 +153,31 @@ def test_archive_with_empty_shared_root_remains_restorable(tmp_path: Path) -> No
     assert list(target_files.iterdir()) == []
 
 
-def test_run_create_job_writes_fixed_private_result(tmp_path: Path) -> None:
-    """A sealed create job should produce ciphertext and exact result metadata."""
+def test_run_create_job_writes_fixed_private_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A sealed create job should publish ciphertext and durable result metadata."""
     import base64
     import json
+    import os
+    import stat
 
     from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 
     from yinshi.managed_backup_guest import run_managed_backup_job
     from yinshi.services.managed_backup_crypto import seal_managed_backup_job
 
+    synchronized_directories = 0
+    original_fsync = os.fsync
+
+    def record_directory_sync(descriptor: int) -> None:
+        nonlocal synchronized_directories
+        if stat.S_ISDIR(os.fstat(descriptor).st_mode):
+            synchronized_directories += 1
+        original_fsync(descriptor)
+
+    monkeypatch.setattr(os, "fsync", record_directory_sync)
     state_root = tmp_path / "state"
     sqlite_root = state_root / "sqlite"
     files_root = state_root / "files"
@@ -217,6 +232,7 @@ def test_run_create_job_writes_fixed_private_result(tmp_path: Path) -> None:
     assert len(result["sha256"]) == 64
     assert (maintenance_root / f"{job_id}.archive.enc").is_file()
     assert result_path.stat().st_mode & 0o777 == 0o600
+    assert synchronized_directories == 1
 
 
 def test_run_create_job_reuses_valid_existing_result(tmp_path: Path) -> None:

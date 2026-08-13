@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://yinshi.invalid/schemas/managed-recovery-evidence.schema.json",
-  "title": "Managed source-loss recovery evidence",
+  "$id": "https://yinshi.invalid/schemas/managed-recovery-result.schema.json",
+  "title": "Managed source-loss recovery result",
   "type": "object",
   "additionalProperties": false,
   "required": [

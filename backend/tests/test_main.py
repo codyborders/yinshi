@@ -456,6 +456,37 @@ async def test_lifespan_attempts_every_cleanup_before_raising_first_error(
     ]
 
 
+def test_hosted_fly_storage_preflight_logs_stable_alert_code(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Hosted storage failure must emit the monitoring alert code."""
+    _configure_startup_env(monkeypatch, tmp_path, container_enabled=False)
+
+    import yinshi.main as main
+    from yinshi.config import Settings
+
+    app_settings = Settings(
+        managed_runtime_provider="fly_sprites",
+        control_db_path=str(tmp_path / "control.db"),
+        container_enabled=False,
+    )
+    backup_store = Mock()
+    backup_store.preflight = AsyncMock(side_effect=RuntimeError("storage unavailable"))
+    initialize_runtime = AsyncMock()
+    monkeypatch.setattr(main, "get_settings", lambda: app_settings)
+    monkeypatch.setattr(main, "create_managed_backup_store", lambda _settings: backup_store)
+    monkeypatch.setattr(main, "_initialize_managed_runtime", initialize_runtime)
+
+    with pytest.raises(RuntimeError, match="storage unavailable"):
+        with TestClient(main.create_app(mode="hosted")):
+            pass
+
+    initialize_runtime.assert_not_awaited()
+    assert "managed_storage_preflight_failed" in caplog.text
+
+
 def test_hosted_fly_partial_startup_closes_provider_client(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,

@@ -29,7 +29,9 @@ python -m yinshi.managed_operations_check \
 
 Exit code `0` means no critical finding. Exit code `2` means one or more alert classes need action. Output contains counts and oldest ages only.
 
-The checker reports `managed_backup_stale`, `managed_operation_stuck`, and `managed_operation_lease_expired`. It also reports `managed_restore_failed`, `managed_sprite_reconciliation_failed`, `managed_storage_preflight_failed`, and `managed_deletion_failed`.
+The checker reports `managed_backup_stale`, `managed_operation_stuck`, `managed_operation_lease_expired`, `managed_restore_failed`, and `managed_deletion_failed`.
+
+Hosted monitoring must also collect `managed_sprite_reconciliation_failed` and `managed_storage_preflight_failed` from structured service logs. Missing routing for either class blocks launch approval.
 
 ## State interpretation
 

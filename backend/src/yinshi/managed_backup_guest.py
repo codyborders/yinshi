@@ -36,6 +36,7 @@ _MEMBER_BYTES_MAX = 64 * 1024 * 1024 * 1024
 _EXPANDED_BYTES_MAX = 200 * 1024 * 1024 * 1024
 _STATE_ROOT = Path("/var/lib/yinshi")
 _RESTORE_TRANSACTION_NAME = ".yinshi-restore-active"
+_RESTORE_CLEANUP_NAME = ".yinshi-restore-cleanup"
 _JOB_ID_PATTERN = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z")
 
 
@@ -363,6 +364,38 @@ def _write_restore_state(transaction_root: Path, phase: str) -> None:
     _sync_directory(transaction_root)
 
 
+def _publish_restore_transaction(state_root: Path) -> Path:
+    """Publish a complete prepared journal before changing live roots."""
+    transaction_root = state_root / _RESTORE_TRANSACTION_NAME
+    if transaction_root.exists() or transaction_root.is_symlink():
+        raise FileExistsError(transaction_root)
+    preparation_root = Path(tempfile.mkdtemp(prefix=".yinshi-restore-prepare-", dir=state_root))
+    try:
+        (preparation_root / "rollback").mkdir(mode=0o700)
+        _write_restore_state(preparation_root, "prepared")
+        _sync_directory(preparation_root)
+        os.replace(preparation_root, transaction_root)
+        _sync_directory(state_root)
+    except BaseException:
+        if preparation_root.exists() and not preparation_root.is_symlink():
+            shutil.rmtree(preparation_root)
+        raise
+    if not transaction_root.is_dir() or transaction_root.is_symlink():
+        raise RuntimeError("managed restore transaction was not published")
+    return transaction_root
+
+
+def _remove_restore_cleanup(state_root: Path) -> None:
+    """Finish removal of a committed restore journal."""
+    cleanup_root = state_root / _RESTORE_CLEANUP_NAME
+    if not cleanup_root.exists() and not cleanup_root.is_symlink():
+        return
+    if cleanup_root.is_symlink() or not cleanup_root.is_dir():
+        raise ValueError("managed restore cleanup path is unsafe")
+    shutil.rmtree(cleanup_root)
+    _sync_directory(state_root)
+
+
 def _recover_restore_transaction(sqlite_root: Path, files_root: Path) -> None:
     """Recover old roots from one interrupted pre-commit replacement."""
     transaction_root = sqlite_root.parent / _RESTORE_TRANSACTION_NAME
@@ -419,6 +452,7 @@ def restore_managed_backup_archive(
     state_root = sqlite_root.parent
     if not state_root.is_dir() or state_root.is_symlink():
         raise ValueError("managed restore state root must be a real directory")
+    _remove_restore_cleanup(state_root)
     _recover_restore_transaction(sqlite_root, files_root)
     for root in (sqlite_root, files_root):
         if root.is_symlink() or not root.is_dir():
@@ -437,13 +471,10 @@ def restore_managed_backup_archive(
         _extract_validated_tar(tar_path, extracted_root)
         if not staged_sqlite.is_dir() or not staged_files.is_dir():
             raise ValueError("managed backup is missing required data roots")
-        transaction_root = state_root / _RESTORE_TRANSACTION_NAME
-        transaction_root.mkdir(mode=0o700)
+        transaction_root = _publish_restore_transaction(state_root)
         rollback_root = transaction_root / "rollback"
-        rollback_root.mkdir(mode=0o700)
         rollback_sqlite = rollback_root / "sqlite"
         rollback_files = rollback_root / "files"
-        _write_restore_state(transaction_root, "prepared")
         try:
             os.replace(sqlite_root, rollback_sqlite)
             _sync_directory(state_root)
@@ -460,8 +491,12 @@ def restore_managed_backup_archive(
             _recover_restore_transaction(sqlite_root, files_root)
             raise
         else:
-            shutil.rmtree(transaction_root)
+            cleanup_root = state_root / _RESTORE_CLEANUP_NAME
+            if cleanup_root.exists() or cleanup_root.is_symlink():
+                raise FileExistsError(cleanup_root)
+            os.replace(transaction_root, cleanup_root)
             _sync_directory(state_root)
+            _remove_restore_cleanup(state_root)
 
 
 def _decode_archive_key(value: object) -> bytes:
@@ -560,6 +595,7 @@ def _write_job_result(path: Path, payload: dict[str, object]) -> None:
             os.fsync(output.fileno())
         os.chmod(temporary_path, 0o600)
         os.replace(temporary_path, path)
+        _sync_directory(path.parent)
     finally:
         temporary_path.unlink(missing_ok=True)
 

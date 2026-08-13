@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -11,7 +12,9 @@ from typing import Protocol
 from yinshi.db import get_control_db
 from yinshi.services.managed_runners import managed_sprite_name
 from yinshi.services.runners import revoke_managed_restore_runner_for_job
-from yinshi.services.sprites import SpriteRecord, SpritesProtocolError, SpritesProviderError
+from yinshi.services.sprites import SpriteRecord
+
+logger = logging.getLogger(__name__)
 
 
 class ManagedSpriteInventoryProvider(Protocol):
@@ -59,6 +62,9 @@ def _managed_sprite_references(
                FROM managed_backup_operations WHERE status = ?""",
             ("running",),
         ).fetchall()
+        restore_runner_rows = database.execute("""SELECT user_id, restore_job_id FROM user_runners
+               WHERE kind = 'managed_restore' AND restore_job_id IS NOT NULL
+                 AND revoked_at IS NULL""").fetchall()
     names.update(row["sprite_external_id"] for row in runtime_rows)
     for row in operation_rows:
         source_name = row["source_sprite_id"]
@@ -77,6 +83,13 @@ def _managed_sprite_references(
             )
             names.add(deterministic_name)
             restore_jobs[deterministic_name] = (row["user_id"], row["job_id"])
+    for row in restore_runner_rows:
+        deterministic_name = managed_sprite_name(
+            f"{row['user_id']}:{row['restore_job_id']}",
+            prefix=restore_name_prefix,
+            secret_key=restore_name_key,
+        )
+        restore_jobs[deterministic_name] = (row["user_id"], row["restore_job_id"])
     return _ManagedSpriteReferences(frozenset(names), restore_jobs)
 
 
@@ -137,7 +150,7 @@ class ManagedSpriteReconciler:
             if name in current.names:
                 retained += 1
                 continue
-            restore_job = references.restore_jobs_by_name.get(name)
+            restore_job = current.restore_jobs_by_name.get(name)
             if restore_job is not None:
                 revoke_managed_restore_runner_for_job(*restore_job)
             await self._provider.delete_sprite(name)
@@ -157,8 +170,8 @@ class ManagedSpriteReconciler:
             await self._sleep(interval_seconds)
             try:
                 await self.reconcile_once()
-            except (SpritesProviderError, SpritesProtocolError):
-                continue
+            except Exception:
+                logger.exception("managed_sprite_reconciliation_failed")
 
     def _inventory_prefixes(self) -> tuple[str, ...]:
         """Return distinct provider query prefixes including delimiter."""

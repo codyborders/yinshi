@@ -44,17 +44,17 @@ jobs:
           STAGING_BACKUP_ENCRYPTION_KEY: ${{ secrets.STAGING_BACKUP_ENCRYPTION_KEY }}
         run: |
           set +e
-          python -c 'import sys; from yinshi.managed_source_loss_recovery import configuration_check_main; sys.exit(configuration_check_main())' > managed-recovery-evidence.json
+          python -c 'import sys; from yinshi.managed_source_loss_recovery import configuration_check_main; sys.exit(configuration_check_main())' > managed-recovery-result.json
           status=$?
           set -e
           test "$status" -eq 3
-          python -c 'import json; payload=json.load(open("managed-recovery-evidence.json", encoding="utf-8")); assert payload["status"] == "pending_live_staging_integration"'
+          python -c 'import json; payload=json.load(open("managed-recovery-result.json", encoding="utf-8")); assert payload["status"] == "pending_live_staging_integration"'
       - name: Upload sanitized pending receipt
         if: always()
         uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
         with:
-          name: managed-recovery-evidence-${{ github.run_id }}
-          path: backend/managed-recovery-evidence.json
+          name: managed-recovery-result-${{ github.run_id }}
+          path: backend/managed-recovery-result.json
           if-no-files-found: error
           retention-days: 14
       - name: Block false recovery success

@@ -392,7 +392,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             relay_process_lock.acquire()
         if app.state.mode == "hosted" and app_settings.managed_runtime_provider == "fly_sprites":
             managed_backup_store = create_managed_backup_store(app_settings)
-            await managed_backup_store.preflight()
+            try:
+                await managed_backup_store.preflight()
+            except Exception:
+                logger.exception("managed_storage_preflight_failed")
+                raise
             managed_runtime_manager, provider_http_client = await _initialize_managed_runtime(
                 app_settings
             )

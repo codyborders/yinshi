@@ -120,6 +120,70 @@ async def test_reconcile_retains_durable_references_and_deletes_old_orphan(
 
 
 @pytest.mark.asyncio
+async def test_reconcile_revokes_orphan_restore_authority_before_delete(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Deleting an orphan candidate must revoke its remaining runner authority."""
+    from yinshi.config import get_settings
+    from yinshi.db import get_control_db, init_control_db
+    from yinshi.services.managed_runners import managed_sprite_name
+    from yinshi.services.managed_sprite_reconciliation import ManagedSpriteReconciler
+
+    monkeypatch.setenv("CONTROL_DB_PATH", str(tmp_path / "control.db"))
+    monkeypatch.setenv("CONTROL_FIELD_ENCRYPTION", "disabled")
+    monkeypatch.setenv("ENCRYPTION_PEPPER", "a" * 64)
+    monkeypatch.setenv("SECRET_KEY", "test-session-secret-0123456789abcdef")
+    monkeypatch.setenv("DISABLE_AUTH", "true")
+    monkeypatch.setenv("CONTAINER_ENABLED", "false")
+    get_settings.cache_clear()
+    init_control_db()
+
+    restore_prefix = "yinshi-restore"
+    restore_key = "sprite-name-key"
+    candidate_name = managed_sprite_name(
+        "user-1:job-orphan",
+        prefix=restore_prefix,
+        secret_key=restore_key,
+    )
+    with get_control_db() as database:
+        database.execute(
+            "INSERT INTO users (id, email, display_name) VALUES (?, ?, ?)",
+            ("user-1", "user@example.com", "User"),
+        )
+        database.execute(
+            """INSERT INTO user_runners
+               (id, user_id, kind, name, cloud_provider, region, status, restore_job_id)
+               VALUES (?, ?, 'managed_restore', ?, 'fly_sprites', 'ord', 'online', ?)""",
+            ("runner-orphan", "user-1", "Restore", "job-orphan"),
+        )
+        database.commit()
+
+    old = datetime(2026, 8, 12, tzinfo=timezone.utc)
+    provider = FakeProvider((SpriteRecord("candidate", candidate_name, "cold", old),))
+    reconciler = ManagedSpriteReconciler(
+        provider=provider,
+        name_prefix="yinshi",
+        restore_name_prefix=restore_prefix,
+        restore_name_key=restore_key,
+        grace=timedelta(hours=1),
+        clock=lambda: datetime(2026, 8, 13, tzinfo=timezone.utc),
+    )
+
+    await reconciler.reconcile_once()
+
+    with get_control_db() as database:
+        runner = database.execute(
+            "SELECT status, revoked_at FROM user_runners WHERE id = ?",
+            ("runner-orphan",),
+        ).fetchone()
+    assert provider.deleted == [candidate_name]
+    assert runner["status"] == "revoked"
+    assert runner["revoked_at"] is not None
+    get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
 async def test_reconcile_defers_young_orphan_and_rechecks_before_delete(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -177,12 +241,12 @@ async def test_reconcile_defers_young_orphan_and_rechecks_before_delete(
 
 
 @pytest.mark.asyncio
-async def test_recurring_reconcile_retries_provider_failure(
+async def test_recurring_reconcile_retries_unexpected_failure(
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """A provider failure must not stop later recurring inventory passes."""
+    """An unexpected pass failure must not stop later inventory passes."""
     import yinshi.services.managed_sprite_reconciliation as reconciliation
-    from yinshi.services.sprites import SpritesProviderError
 
     reconciler = reconciliation.ManagedSpriteReconciler(
         provider=FakeProvider(()),
@@ -193,7 +257,7 @@ async def test_recurring_reconcile_retries_provider_failure(
     )
     reconcile_once = AsyncMock(
         side_effect=[
-            SpritesProviderError("unavailable"),
+            RuntimeError("unexpected database failure"),
             reconciliation.ManagedSpriteReconciliationResult(0, 0, (), 0),
         ]
     )
@@ -212,3 +276,4 @@ async def test_recurring_reconcile_retries_provider_failure(
         await reconciler.run(interval_seconds=60)
 
     assert reconcile_once.await_count == 2
+    assert "managed_sprite_reconciliation_failed" in caplog.text
