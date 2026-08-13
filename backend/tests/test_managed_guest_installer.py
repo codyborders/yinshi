@@ -157,6 +157,7 @@ class FakeSpritesClient:
         ("bootstrap_timeout_seconds", 86400.1),
         ("bootstrap_timeout_seconds", "600"),
         ("bootstrap_timeout_seconds", 10**1000),
+        ("storage_encryption_confirmed", False),
         ("clock", None),
         ("clock", 1),
         ("sleep", None),
@@ -178,6 +179,7 @@ def test_constructor_rejects_invalid_local_configuration(
         "bootstrap_script": b"#!/bin/bash\n",
         "relay_idle_timeout_seconds": 300.0,
         "bootstrap_timeout_seconds": 600.0,
+        "storage_encryption_confirmed": True,
         "clock": lambda: 0.0,
         "sleep": no_sleep,
     }
@@ -203,6 +205,7 @@ def _installer(
         bootstrap_script=b"#!/bin/bash\n",
         relay_idle_timeout_seconds=300.0,
         bootstrap_timeout_seconds=600.0,
+        storage_encryption_confirmed=True,
         clock=clock,
         sleep=sleep or no_sleep,
     )
@@ -222,11 +225,13 @@ async def test_install_writes_private_inputs_then_configures_private_services() 
     )
 
     assert [(item.path, item.mode) for item in client.files] == [
+        ("/var/lib/yinshi/.yinshi-encrypted-storage", "0600"),
         ("/home/sprite/.config/yinshi/artifact.tar.gz", "0600"),
         ("/home/sprite/.config/yinshi/bootstrap.sh", "0700"),
         ("/home/sprite/.config/yinshi/runner.env", "0600"),
     ]
-    env_text = client.files[2].content.decode("utf-8")
+    assert client.files[0].content == b"fly-sprites-encrypted-storage\n"
+    env_text = client.files[3].content.decode("utf-8")
     assert "YINSHI_REGISTRATION_TOKEN=" in env_text
     assert "YINSHI_RUNNER_STORAGE_PROFILE=fly_sprites_posix\n" in env_text
     assert "YINSHI_RUNNER_DATA_DIR=/var/lib/yinshi\n" in env_text

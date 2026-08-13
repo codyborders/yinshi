@@ -259,6 +259,7 @@ def test_hosted_fly_lifespan_builds_and_closes_managed_runtime(
     assert installer_kwargs["client"] is provider
     assert installer_kwargs["bootstrap_script"] == b"#!/bin/sh\nexit 0\n"
     assert installer_kwargs["relay_idle_timeout_seconds"] == 20.0
+    assert installer_kwargs["storage_encryption_confirmed"] is True
     assert installer_kwargs["bootstrap_timeout_seconds"] == 901
     manager_constructor.assert_called_once_with(
         provider=provider,

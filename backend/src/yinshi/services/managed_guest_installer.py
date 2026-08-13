@@ -14,6 +14,7 @@ _CONFIG_ROOT = "/home/sprite/.config/yinshi"
 _ARTIFACT_PATH = f"{_CONFIG_ROOT}/artifact.tar.gz"
 _BOOTSTRAP_PATH = f"{_CONFIG_ROOT}/bootstrap.sh"
 _RUNNER_ENV_PATH = f"{_CONFIG_ROOT}/runner.env"
+_STORAGE_ENCRYPTION_MARKER_PATH = "/var/lib/yinshi/.yinshi-encrypted-storage"
 _ARTIFACT_ATTESTATION_PATH = "/opt/yinshi/current/.artifact-sha256"
 _MAX_FILE_BYTES = 10 * 1024 * 1024
 _MAX_ENVIRONMENT_VALUE_CHARS = 4096
@@ -75,6 +76,7 @@ class ManagedGuestInstaller:
         bootstrap_script: bytes,
         relay_idle_timeout_seconds: float,
         bootstrap_timeout_seconds: float,
+        storage_encryption_confirmed: bool,
         clock: Callable[[], float],
         sleep: Callable[[float], Awaitable[None]],
     ) -> None:
@@ -109,6 +111,8 @@ class ManagedGuestInstaller:
             <= _MAX_BOOTSTRAP_TIMEOUT_SECONDS
         ):
             raise ValueError("bootstrap_timeout_seconds must be between 600 and 86400")
+        if storage_encryption_confirmed is not True:
+            raise ValueError("storage_encryption_confirmed must be explicitly true")
         if not callable(clock):
             raise ValueError("clock must be callable")
         if not callable(sleep):
@@ -145,6 +149,15 @@ class ManagedGuestInstaller:
         if not hmac.compare_digest(actual_sha256, artifact_sha256):
             raise ValueError("artifact does not match artifact_sha256")
         _validate_claim_environment(environment)
+        await _provider_call(
+            lambda: self._client.write_file(
+                sprite_name,
+                path=_STORAGE_ENCRYPTION_MARKER_PATH,
+                content=b"fly-sprites-encrypted-storage\n",
+                mode="0600",
+                mkdir=True,
+            )
+        )
         await _provider_call(
             lambda: self._client.write_file(
                 sprite_name,

@@ -16,7 +16,9 @@ The API documents `GET /v1/sprites`, pagination, filtering, and `created_at` on 
 
 ## Provider confirmation
 
-Launch review needs a written provider statement. It must confirm whether every Sprite filesystem is encrypted at rest. It must identify any customer, organization, API, or support control that can disable encryption.
+The project owner confirmed on 2026-08-13 that Fly Sprite filesystems are encrypted at rest. This confirmation permits the isolated staging drill to create the fail-closed guest marker before installation. It does not enable public managed launch.
+
+Launch review still needs the protected provider record. It must confirm whether every Sprite filesystem is encrypted at rest. It must identify any customer, organization, API, or support control that can disable encryption.
 
 The statement must identify the cryptographic boundary and its immutable storage identifier. It must explain how operators can audit encryption after creation and during reconciliation. It must also describe key and block handling after Sprite deletion.
 
