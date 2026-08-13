@@ -126,9 +126,12 @@ class ManagedBackupManager:
         enqueue_retention: Callable[[str, str], Any] | None = None,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         monotonic: Callable[[], float] = time.monotonic,
+        create_result_timeout_seconds: float = 240.0,
     ) -> None:
         if interval_seconds <= 0:
             raise ValueError("interval_seconds must be positive")
+        if create_result_timeout_seconds <= 0:
+            raise ValueError("create_result_timeout_seconds must be positive")
         if wrapping_key is not None and len(wrapping_key) != 32:
             raise ValueError("wrapping_key must contain exactly 32 bytes")
         if not key_id or not object_prefix:
@@ -149,6 +152,7 @@ class ManagedBackupManager:
         self._provider = provider
         self._sleep = sleep
         self._monotonic = monotonic
+        self._create_result_timeout_seconds = create_result_timeout_seconds
         self._store = store
         self._relay = relay
         self._worker_id = worker_id
@@ -1032,19 +1036,30 @@ class ManagedBackupManager:
     ) -> dict[str, Any]:
         """Wait a bounded interval for one valid maintenance result file."""
         assert self._provider is not None
-        deadline = self._monotonic() + 240.0
+        deadline = self._monotonic() + self._create_result_timeout_seconds
         while True:
+            remaining = deadline - self._monotonic()
+            if remaining <= 0:
+                raise TimeoutError("managed backup result timed out") from None
             try:
-                payload = await self._provider.read_file(
-                    sprite_name,
-                    path=f"{root}.result",
-                    max_bytes=_RESULT_BYTES_MAX,
-                )
+                async with asyncio.timeout(remaining):
+                    payload = await self._provider.read_file(
+                        sprite_name,
+                        path=f"{root}.result",
+                        max_bytes=_RESULT_BYTES_MAX,
+                    )
                 return self._parse_create_result(payload, job_id)
+            except TimeoutError:
+                raise TimeoutError("managed backup result timed out") from None
             except SpritesProviderError:
-                if self._monotonic() >= deadline:
+                remaining = deadline - self._monotonic()
+                if remaining <= 0:
                     raise TimeoutError("managed backup result timed out") from None
-                await self._sleep(1.0)
+                try:
+                    async with asyncio.timeout(remaining):
+                        await self._sleep(min(1.0, remaining))
+                except TimeoutError:
+                    raise TimeoutError("managed backup result timed out") from None
 
     async def _upload_preserved_create(
         self,

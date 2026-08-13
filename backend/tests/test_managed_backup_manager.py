@@ -1148,6 +1148,30 @@ async def test_manager_create_result_wait_has_a_bounded_deadline() -> None:
 
 
 @pytest.mark.asyncio
+async def test_manager_create_result_wait_bounds_a_stalled_provider_read() -> None:
+    """Create result readiness should bound each provider read by its deadline."""
+    import asyncio
+
+    from yinshi.services.managed_backup_manager import ManagedBackupManager
+
+    class Provider:
+        async def read_file(self, *_args, **_values) -> bytes:
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+    manager = ManagedBackupManager(
+        provider=Provider(),
+        create_result_timeout_seconds=0.01,
+    )
+
+    with pytest.raises(TimeoutError, match="managed backup result timed out"):
+        await asyncio.wait_for(
+            manager._wait_for_create_result("sprite-1", "root", "job-1"),
+            timeout=0.1,
+        )
+
+
+@pytest.mark.asyncio
 async def test_manager_create_result_rejects_malformed_content_without_retry() -> None:
     """A successful malformed result read should fail without sleeping."""
     from yinshi.services.managed_backup_manager import ManagedBackupManager
