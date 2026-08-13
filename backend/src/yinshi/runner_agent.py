@@ -388,7 +388,10 @@ def _probe_writable_directory(directory: Path, label: str) -> None:
     except OSError:
         raise RuntimeError(f"Runner {label} path is not a directory: {directory}") from None
     probe_name = f".yinshi-runner-write-check.{secrets.token_hex(16)}"
+    failure_message = f"Runner {label} directory failed read-after-write check"
     probe_descriptor: int | None = None
+    primary_error: BaseException | None = None
+    cleanup_failed = False
     try:
         metadata = os.fstat(directory_descriptor)
         if not stat.S_ISDIR(metadata.st_mode):
@@ -406,21 +409,33 @@ def _probe_writable_directory(directory: Path, label: str) -> None:
         )
         expected = b"ok\n"
         if os.write(probe_descriptor, expected) != len(expected):
-            raise RuntimeError(f"Runner {label} directory failed read-after-write check")
+            raise RuntimeError(failure_message)
         os.fsync(probe_descriptor)
         os.lseek(probe_descriptor, 0, os.SEEK_SET)
         if os.read(probe_descriptor, len(expected) + 1) != expected:
-            raise RuntimeError(f"Runner {label} directory failed read-after-write check")
+            raise RuntimeError(failure_message)
     except OSError:
-        raise RuntimeError(f"Runner {label} directory failed read-after-write check") from None
+        primary_error = RuntimeError(failure_message)
+    except BaseException as error:
+        primary_error = error
     finally:
         if probe_descriptor is not None:
-            os.close(probe_descriptor)
+            try:
+                os.close(probe_descriptor)
+            except OSError:
+                cleanup_failed = True
             try:
                 os.unlink(probe_name, dir_fd=directory_descriptor)
             except OSError:
-                pass
-        os.close(directory_descriptor)
+                cleanup_failed = True
+        try:
+            os.close(directory_descriptor)
+        except OSError:
+            cleanup_failed = True
+    if primary_error is not None:
+        raise primary_error from None
+    if cleanup_failed:
+        raise RuntimeError(failure_message)
 
 
 def _shared_files_storage(shared_files_dir: Path) -> str:

@@ -58,6 +58,62 @@ def test_managed_capability_preparation_enforces_owner_only_storage(
     assert planted_probe.is_symlink()
 
 
+def test_managed_capability_preparation_rejects_probe_unlink_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Capability preparation rejects storage where its write probe cannot be removed."""
+    _set_runner_agent_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("YINSHI_RUNNER_STORAGE_PROFILE", "fly_sprites_posix")
+
+    def fail_unlink(path: object, *, dir_fd: int | None = None) -> None:
+        raise OSError("diagnostic unlink failure")
+
+    monkeypatch.setattr(runner_agent.os, "unlink", fail_unlink)
+
+    with pytest.raises(
+        RuntimeError,
+        match="Runner data directory failed read-after-write check",
+    ):
+        runner_agent._capabilities(runner_agent.load_config())
+
+
+def test_managed_capability_preparation_preserves_primary_probe_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Primary probe failure survives cleanup failures while every descriptor closes."""
+    _set_runner_agent_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("YINSHI_RUNNER_STORAGE_PROFILE", "fly_sprites_posix")
+    config = runner_agent.load_config()
+    original_close = runner_agent.os.close
+    cleanup_calls: list[str] = []
+
+    def fail_write(descriptor: int, value: bytes) -> int:
+        raise OSError("diagnostic write failure")
+
+    def fail_unlink(path: object, *, dir_fd: int | None = None) -> None:
+        cleanup_calls.append("unlink")
+        raise OSError("diagnostic unlink failure")
+
+    def close_then_fail(descriptor: int) -> None:
+        cleanup_calls.append("close")
+        original_close(descriptor)
+        raise OSError("diagnostic close failure")
+
+    monkeypatch.setattr(runner_agent.os, "write", fail_write)
+    monkeypatch.setattr(runner_agent.os, "unlink", fail_unlink)
+    monkeypatch.setattr(runner_agent.os, "close", close_then_fail)
+
+    with pytest.raises(
+        RuntimeError,
+        match="Runner data directory failed read-after-write check",
+    ):
+        runner_agent._capabilities(config)
+
+    assert cleanup_calls == ["close", "unlink", "close"]
+
+
 def test_managed_capability_preparation_rejects_replaced_directory(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
