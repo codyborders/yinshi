@@ -3,7 +3,7 @@
   "checkpoint_id": "f71f2783a828",
   "strategy": "manual-commit",
   "branch": "main",
-  "checkpoints_count": 6,
+  "checkpoints_count": 7,
   "files_touched": [
     ".github/workflows/managed-source-loss-recovery.yml",
     "backend/src/yinshi/managed_operations_check.py",
@@ -43,13 +43,20 @@
       "compact_transcript": "/f7/1f2783a828/3/transcript.jsonl",
       "content_hash": "/f7/1f2783a828/3/content_hash.txt",
       "prompt": "/f7/1f2783a828/3/prompt.txt"
+    },
+    {
+      "metadata": "/f7/1f2783a828/4/metadata.json",
+      "transcript": "/f7/1f2783a828/4/full.jsonl",
+      "compact_transcript": "/f7/1f2783a828/4/transcript.jsonl",
+      "content_hash": "/f7/1f2783a828/4/content_hash.txt",
+      "prompt": "/f7/1f2783a828/4/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 17417343,
+    "input_tokens": 17797373,
     "cache_creation_tokens": 0,
-    "cache_read_tokens": 963589120,
-    "output_tokens": 1654092,
-    "api_call_count": 4880
+    "cache_read_tokens": 964523520,
+    "output_tokens": 1666513,
+    "api_call_count": 4905
   }
 }
