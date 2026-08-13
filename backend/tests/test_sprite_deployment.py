@@ -56,7 +56,8 @@ def test_sprite_example_allows_required_package_hosts() -> None:
 
     assert (
         "SPRITES_ALLOWED_DOMAINS="
-        "registry.npmjs.org,pypi.org,files.pythonhosted.org,control.example.com\n" in example
+        "registry.npmjs.org,nodejs.org,pypi.org,files.pythonhosted.org,control.example.com\n"
+        in example
     )
 
 
