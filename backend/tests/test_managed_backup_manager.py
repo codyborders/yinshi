@@ -977,7 +977,10 @@ async def test_manager_create_uploads_before_release_and_publishes_after_recover
             events.append(f"stop:{values['service_name']}")
 
         async def start_service(self, _name: str, **values) -> None:
-            events.append(f"start:{values['service_name']}")
+            service_name = values["service_name"]
+            events.append(f"start:{service_name}")
+            if service_name == "yinshi-maintenance":
+                assert values["monitor_duration"] == 5
 
         async def read_file(self, _name: str, **_values) -> bytes:
             events.append("result")

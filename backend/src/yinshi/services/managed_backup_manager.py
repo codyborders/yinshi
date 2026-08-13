@@ -938,7 +938,7 @@ class ManagedBackupManager:
             await self._provider.start_service(
                 runtime.sprite_name,
                 service_name="yinshi-maintenance",
-                monitor_duration=300,
+                monitor_duration=5,
             )
             result = self._parse_create_result(
                 await self._provider.read_file(
