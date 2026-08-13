@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import tempfile
+import time
 import uuid
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
@@ -53,6 +54,7 @@ from yinshi.services.runners import (
     get_managed_runner_for_user,
     revoke_managed_restore_runner_for_job,
 )
+from yinshi.services.sprites import SpritesProviderError
 
 _MAINTENANCE_ROOT = "/var/lib/yinshi/maintenance"
 _RESULT_BYTES_MAX = 4096
@@ -122,6 +124,8 @@ class ManagedBackupManager:
             list_managed_backup_retention_candidates
         ),
         enqueue_retention: Callable[[str, str], Any] | None = None,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         if interval_seconds <= 0:
             raise ValueError("interval_seconds must be positive")
@@ -143,6 +147,8 @@ class ManagedBackupManager:
         self._now = now or (lambda: datetime.now(timezone.utc))
         self._new_id = new_id or (lambda: str(uuid.uuid4()))
         self._provider = provider
+        self._sleep = sleep
+        self._monotonic = monotonic
         self._store = store
         self._relay = relay
         self._worker_id = worker_id
@@ -940,12 +946,9 @@ class ManagedBackupManager:
                 service_name="yinshi-maintenance",
                 monitor_duration=5,
             )
-            result = self._parse_create_result(
-                await self._provider.read_file(
-                    runtime.sprite_name,
-                    path=f"{root}.result",
-                    max_bytes=_RESULT_BYTES_MAX,
-                ),
+            result = await self._wait_for_create_result(
+                runtime.sprite_name,
+                root,
                 operation.job_id,
             )
         except BaseException:
@@ -1020,6 +1023,28 @@ class ManagedBackupManager:
         )
         for suffix in (".job", ".result", ".archive.enc", ".release"):
             await self._provider.delete_file(runtime.sprite_name, path=f"{root}{suffix}")
+
+    async def _wait_for_create_result(
+        self,
+        sprite_name: str,
+        root: str,
+        job_id: str,
+    ) -> dict[str, Any]:
+        """Wait a bounded interval for one valid maintenance result file."""
+        assert self._provider is not None
+        deadline = self._monotonic() + 240.0
+        while True:
+            try:
+                payload = await self._provider.read_file(
+                    sprite_name,
+                    path=f"{root}.result",
+                    max_bytes=_RESULT_BYTES_MAX,
+                )
+                return self._parse_create_result(payload, job_id)
+            except SpritesProviderError:
+                if self._monotonic() >= deadline:
+                    raise TimeoutError("managed backup result timed out") from None
+                await self._sleep(1.0)
 
     async def _upload_preserved_create(
         self,
@@ -1104,6 +1129,12 @@ class ManagedBackupManager:
         """Restore source access without changing durable guest backup output."""
         assert self._provider is not None
         assert self._relay is not None
+        with suppress(Exception):
+            await self._provider.stop_service(
+                runtime.sprite_name,
+                service_name="yinshi-maintenance",
+                timeout_seconds=30,
+            )
         for service in ("yinshi-sidecar", "yinshi-runner"):
             with suppress(Exception):
                 await self._provider.start_service(

@@ -1082,6 +1082,93 @@ async def test_manager_create_uploads_before_release_and_publishes_after_recover
 
 
 @pytest.mark.asyncio
+async def test_manager_waits_for_delayed_create_result() -> None:
+    """Create result readiness should retry provider read failures."""
+    import json
+
+    from yinshi.services.managed_backup_manager import ManagedBackupManager
+    from yinshi.services.sprites import SpritesProviderError
+
+    expected = {
+        "job_id": "job-1",
+        "sha256": "d" * 64,
+        "size_bytes": 17,
+        "status": "ready",
+    }
+    responses: list[bytes | Exception] = [
+        SpritesProviderError("missing"),
+        json.dumps(expected).encode(),
+    ]
+    sleeps: list[float] = []
+
+    class Provider:
+        async def read_file(self, *_args, **_values) -> bytes:
+            value = responses.pop(0)
+            if isinstance(value, Exception):
+                raise value
+            return value
+
+    async def sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    manager = ManagedBackupManager(
+        provider=Provider(),
+        sleep=sleep,
+        monotonic=lambda: 0.0,
+    )
+
+    assert await manager._wait_for_create_result("sprite-1", "root", "job-1") == expected
+    assert sleeps == [1.0]
+
+
+@pytest.mark.asyncio
+async def test_manager_create_result_wait_has_a_bounded_deadline() -> None:
+    """Create result readiness should fail after its monotonic deadline."""
+    from yinshi.services.managed_backup_manager import ManagedBackupManager
+    from yinshi.services.sprites import SpritesProviderError
+
+    clock = 0.0
+
+    class Provider:
+        async def read_file(self, *_args, **_values) -> bytes:
+            raise SpritesProviderError("missing")
+
+    async def sleep(_seconds: float) -> None:
+        nonlocal clock
+        clock = 240.0
+
+    manager = ManagedBackupManager(
+        provider=Provider(),
+        sleep=sleep,
+        monotonic=lambda: clock,
+    )
+
+    with pytest.raises(TimeoutError, match="managed backup result timed out"):
+        await manager._wait_for_create_result("sprite-1", "root", "job-1")
+
+
+@pytest.mark.asyncio
+async def test_manager_create_result_rejects_malformed_content_without_retry() -> None:
+    """A successful malformed result read should fail without sleeping."""
+    from yinshi.services.managed_backup_manager import ManagedBackupManager
+
+    sleeps: list[float] = []
+
+    class Provider:
+        async def read_file(self, *_args, **_values) -> bytes:
+            return b"malformed"
+
+    async def sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    manager = ManagedBackupManager(provider=Provider(), sleep=sleep)
+
+    with pytest.raises(ValueError, match="managed backup guest result is invalid"):
+        await manager._wait_for_create_result("sprite-1", "root", "job-1")
+    assert sleeps == []
+
+
+@pytest.mark.asyncio
 async def test_manager_restore_executes_download_guest_restore_and_activation(tmp_path) -> None:
     """Restore should verify exact ciphertext before candidate activation and source deletion."""
     import hashlib
@@ -1898,7 +1985,8 @@ async def test_manager_recovers_source_when_create_fails_before_upload(
     with pytest.raises(RuntimeError):
         await manager.run_once()
 
-    assert events.index("stop:yinshi-runner") < events.index("start:yinshi-sidecar")
+    assert events.index("stop:yinshi-runner") < events.index("stop:yinshi-maintenance")
+    assert events.index("stop:yinshi-maintenance") < events.index("start:yinshi-sidecar")
     if failure_stage != "runner-stop":
         assert events.index("stop:yinshi-runner") < events.index("stop:yinshi-sidecar")
     assert events.index("start:yinshi-sidecar") < events.index("start:yinshi-runner")
