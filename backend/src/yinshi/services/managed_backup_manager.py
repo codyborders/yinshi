@@ -41,6 +41,7 @@ from yinshi.services.managed_backups import (
     renew_managed_backup_operation_lease,
     start_managed_backup_creation,
 )
+from yinshi.services.managed_operation_failures import fail_managed_backup_operation
 from yinshi.services.managed_runners import (
     ManagedRuntimeStatus,
     activate_managed_restore_candidate,
@@ -84,6 +85,7 @@ class ManagedBackupManager:
             ..., ManagedBackupOperation | None
         ] = claim_due_managed_backup_operation,
         renew_lease: Callable[..., bool] = renew_managed_backup_operation_lease,
+        fail_operation: Callable[..., bool] = fail_managed_backup_operation,
         lease_renew_interval_seconds: float = 60.0,
         get_archive: Callable[[str, str], ManagedBackupArchive | None] = get_managed_backup_archive,
         unwrap_key: Callable[..., bytes] = unwrap_managed_archive_key,
@@ -137,6 +139,7 @@ class ManagedBackupManager:
         if lease_renew_interval_seconds <= 0:
             raise ValueError("lease_renew_interval_seconds must be positive")
         self._renew_lease = renew_lease
+        self._fail_operation = fail_operation
         self._lease_renew_interval_seconds = lease_renew_interval_seconds
         self._get_archive = get_archive
         self._unwrap_key = unwrap_key
@@ -356,12 +359,22 @@ class ManagedBackupManager:
         """Dispatch one leased operation while the caller supervises ownership."""
         archive = self._get_archive(operation.user_id, operation.archive_id)
         if operation.operation == "delete":
-            if archive is not None:
-                await self._coordinate_delete(operation, archive)
+            try:
+                if archive is not None:
+                    await self._coordinate_delete(operation, archive)
+            except Exception:
+                with suppress(Exception):
+                    self._persist_operation_failure(operation, "deletion_failed")
+                raise
             return True
         if operation.operation == "restore":
-            if archive is not None and self._coordinate_restore_job is not None:
-                await self._coordinate_restore_job(operation, archive)
+            try:
+                if archive is not None and self._coordinate_restore_job is not None:
+                    await self._coordinate_restore_job(operation, archive)
+            except Exception:
+                with suppress(Exception):
+                    self._persist_operation_failure(operation, "restore_failed")
+                raise
             return True
         if operation.operation != "create":
             return True
@@ -374,6 +387,22 @@ class ManagedBackupManager:
             return True
         await self._coordinate_create(operation, archive, runtime, runner)
         return True
+
+    def _persist_operation_failure(
+        self,
+        operation: ManagedBackupOperation,
+        failure_class: str,
+    ) -> None:
+        """Persist a sanitized semantic class at the dispatch boundary."""
+        self._fail_operation(
+            job_id=operation.job_id,
+            runtime_generation=operation.runtime_generation,
+            lease_owner=operation.lease_owner,
+            lease_token=operation.lease_token,
+            failure_class=failure_class,
+            error_code=f"{operation.operation}_coordination_failed",
+            now=self._now(),
+        )
 
     async def _renew_operation_lease(self, operation: ManagedBackupOperation) -> None:
         """Keep exact job ownership alive while external work remains active."""
@@ -661,7 +690,12 @@ class ManagedBackupManager:
             result = json.loads(payload.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError):
             raise ValueError("managed restore guest result is invalid") from None
-        if result != {"job_id": job_id, "status": "restored"}:
+        current_result = {
+            "cleanup_pending": False,
+            "job_id": job_id,
+            "status": "restored",
+        }
+        if result != current_result:
             raise ValueError("managed restore guest result is invalid")
 
     async def _coordinate_delete(

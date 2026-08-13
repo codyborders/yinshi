@@ -125,6 +125,7 @@ async def test_restore_candidate_provisioning_uses_private_non_active_runner() -
         clock=lambda: datetime(2026, 8, 12, 12, 0, tzinfo=timezone.utc),
         sleep=lambda _seconds: asyncio.sleep(0),
     )
+    manager._register_sprite_identity = Mock()
     manager._fetch_restore_artifact = AsyncMock(return_value=b"artifact")
     manager._create_restore_registration = Mock(
         return_value={

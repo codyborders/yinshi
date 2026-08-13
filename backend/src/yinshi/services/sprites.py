@@ -271,6 +271,13 @@ class SpriteFileTransfer:
 
 
 @dataclass(frozen=True, slots=True)
+class SpriteInventoryRecord:
+    """Minimal provider inventory identity from the list endpoint."""
+
+    name: str
+
+
+@dataclass(frozen=True, slots=True)
 class SpriteRecord:
     """Provider identity and lifecycle state for one Sprite."""
 
@@ -471,13 +478,12 @@ class SpritesClient:
         self._api_token = api_token
         self._http_client = http_client
 
-    async def list_sprites(self, *, prefix: str) -> tuple[SpriteRecord, ...]:
+    async def list_sprites(self, *, prefix: str) -> tuple[SpriteInventoryRecord, ...]:
         """Return complete provider inventory for one exact managed prefix."""
         if not isinstance(prefix, str) or not prefix or len(prefix) > 63:
             raise ValueError("prefix must be bounded non-empty text")
-        records: list[SpriteRecord] = []
+        records: list[SpriteInventoryRecord] = []
         names: set[str] = set()
-        identifiers: set[str] = set()
         tokens: set[str] = set()
         continuation_token: str | None = None
         for _ in range(_MAX_SPRITE_INVENTORY_PAGES):
@@ -523,14 +529,7 @@ class SpritesClient:
                 page_names.append(name)
             if len(names) > _MAX_SPRITE_INVENTORY_ITEMS:
                 raise SpritesProtocolError("Sprite inventory exceeds item limit")
-            for name in page_names:
-                record = await self.get_sprite(name)
-                if record is None:
-                    raise SpritesProtocolError("Sprite inventory changed during listing")
-                if record.id in identifiers:
-                    raise SpritesProtocolError("Sprite inventory record is invalid")
-                identifiers.add(record.id)
-                records.append(record)
+            records.extend(SpriteInventoryRecord(name=name) for name in page_names)
             if not has_more:
                 if next_token is not None:
                     raise SpritesProtocolError("Sprite inventory continuation is invalid")

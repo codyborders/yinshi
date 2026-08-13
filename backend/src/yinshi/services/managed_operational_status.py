@@ -165,8 +165,8 @@ def collect_managed_operational_status(
 
     restore_rows = database.execute(
         """SELECT updated_at FROM managed_backup_operations
-           WHERE operation = ? AND status = ?""",
-        ("restore", "failed"),
+           WHERE failure_class = ? AND status = ?""",
+        ("restore_failed", "failed"),
     ).fetchall()
     _append_alert(
         alerts,
@@ -177,11 +177,8 @@ def collect_managed_operational_status(
 
     deletion_rows = database.execute(
         """SELECT updated_at AS finding_at FROM managed_backup_operations
-           WHERE operation = ? AND status = ?
-           UNION ALL
-           SELECT completed_at AS finding_at FROM managed_backup_archives
-           WHERE status = ? AND last_error IS NOT NULL""",
-        ("delete", "failed", "failed"),
+           WHERE failure_class = ? AND status = ?""",
+        ("deletion_failed", "failed"),
     ).fetchall()
     _append_alert(
         alerts,

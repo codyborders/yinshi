@@ -38,7 +38,8 @@ def _database() -> sqlite3.Connection:
             lease_expires_at TEXT,
             attempt_count INTEGER NOT NULL,
             updated_at TEXT NOT NULL,
-            last_error TEXT
+            last_error TEXT,
+            failure_class TEXT
         );
         """)
     return database
@@ -53,7 +54,7 @@ def test_status_aggregates_critical_alerts_without_identifiers() -> None:
         ("secret-archive", "secret-user", "failed", None, "secret provider path"),
     )
     database.execute(
-        "INSERT INTO managed_backup_operations VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO managed_backup_operations VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             "secret-job",
             "restore",
@@ -64,6 +65,7 @@ def test_status_aggregates_critical_alerts_without_identifiers() -> None:
             3,
             "2026-08-12T08:00:00Z",
             "secret error",
+            "restore_failed",
         ),
     )
     database.commit()
@@ -81,7 +83,6 @@ def test_status_aggregates_critical_alerts_without_identifiers() -> None:
     assert {alert["alert_class"] for alert in payload["alerts"]} == {
         ManagedAlertClass.BACKUP_STALE.value,
         ManagedAlertClass.RESTORE_FAILED.value,
-        ManagedAlertClass.DELETION_FAILED.value,
     }
     assert "secret-user" not in serialized
     assert "secret-job" not in serialized
@@ -105,7 +106,8 @@ def test_checker_returns_nonzero_with_sanitized_json(
         );
         CREATE TABLE managed_backup_operations (
             job_id TEXT, operation TEXT, status TEXT, phase TEXT, lease_token TEXT,
-            lease_expires_at TEXT, attempt_count INTEGER, updated_at TEXT, last_error TEXT
+            lease_expires_at TEXT, attempt_count INTEGER, updated_at TEXT, last_error TEXT,
+            failure_class TEXT
         );
         INSERT INTO managed_runtimes VALUES ('private-user', 'ready');
         """)

@@ -23,6 +23,7 @@ from yinshi.services.managed_runners import (
     reconcile_managed_runtime_provisioning,
     refresh_managed_runtime_provisioning,
 )
+from yinshi.services.managed_sprite_registry import register_managed_sprite_identity
 from yinshi.services.runners import (
     _HEARTBEAT_ONLINE_WINDOW_SECONDS,
     _datetime_from_storage,
@@ -73,8 +74,6 @@ class OnlineManagedRunner:
 
 class ManagedRuntimeProvider(Protocol):
     """Provider operations needed during provisioning and wake."""
-
-    async def list_sprites(self, *, prefix: str) -> tuple[SpriteRecord, ...]: ...
 
     async def get_sprite(self, name: str) -> SpriteRecord | None: ...
 
@@ -143,6 +142,7 @@ class ManagedRuntimeManager:
         clock: Callable[[], datetime] | None = None,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         heartbeat_sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        register_sprite_identity: Callable[..., None] = register_managed_sprite_identity,
     ) -> None:
         self._provider = provider
         self._guest_installer = guest_installer
@@ -165,6 +165,7 @@ class ManagedRuntimeManager:
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._sleep = sleep
         self._heartbeat_sleep = heartbeat_sleep
+        self._register_sprite_identity = register_sprite_identity
         self._fetch_restore_artifact: Callable[[], Awaitable[bytes]] = (
             lambda: fetch_pinned_artifact(
                 self._http_client,
@@ -182,11 +183,6 @@ class ManagedRuntimeManager:
         self._online_lock = asyncio.Lock()
         self._online_tasks: dict[str, asyncio.Task[OnlineManagedRunner]] = {}
         self._closing = False
-
-    @property
-    def provider(self) -> ManagedRuntimeProvider:
-        """Return the provider authority for control-plane maintenance services."""
-        return self._provider
 
     @property
     def artifact_version(self) -> str:
@@ -265,6 +261,14 @@ class ManagedRuntimeManager:
             raise ManagedRuntimeStateError(_STATE_ERROR_MESSAGE)
         artifact = await self._fetch_restore_artifact()
         if sprite is None:
+            self._register_sprite_identity(
+                sprite_name=candidate_sprite_name,
+                identity_kind="restore_candidate",
+                user_id=user_id,
+                job_id=job_id,
+                lifecycle_status="creating",
+                now=self._now(),
+            )
             sprite = await self._provider.create_sprite(candidate_sprite_name)
         if sprite.name != candidate_sprite_name:
             raise ManagedRuntimeProviderError(_PROVIDER_ERROR_MESSAGE)
@@ -560,6 +564,14 @@ class ManagedRuntimeManager:
             return self._fail(user_id, generation, "artifact_invalid", claim.runtime)
 
         try:
+            self._register_sprite_identity(
+                sprite_name=claim.runtime.sprite_name,
+                identity_kind="runtime",
+                user_id=user_id,
+                job_id=None,
+                lifecycle_status="creating",
+                now=self._now(),
+            )
             sprite = await self._await_owned(
                 self._provider.get_sprite(claim.runtime.sprite_name),
                 user_id,
@@ -668,6 +680,14 @@ class ManagedRuntimeManager:
                     claim.runtime.generation,
                     now,
                 ):
+                    self._register_sprite_identity(
+                        sprite_name=claim.runtime.sprite_name,
+                        identity_kind="runtime",
+                        user_id=user_id,
+                        job_id=None,
+                        lifecycle_status="active",
+                        now=now,
+                    )
                     status = get_managed_runtime_status(user_id)
                     assert status is not None
                     return status

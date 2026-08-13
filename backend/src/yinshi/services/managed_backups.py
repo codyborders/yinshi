@@ -13,6 +13,7 @@ from yinshi.services.runners import _require_user_id
 ArchiveStatus = Literal["creating", "uploaded", "ready", "failed", "deleting", "deleted"]
 OperationStatus = Literal["running", "failed"]
 OperationKind = Literal["create", "restore", "delete"]
+ManagedOperationFailureClass = Literal["restore_failed", "deletion_failed"]
 
 
 class ManagedBackupConflictError(RuntimeError):
@@ -59,6 +60,7 @@ class ManagedBackupOperation:
     candidate_runner_id: str | None = None
     candidate_sprite_id: str | None = None
     activation_generation: int | None = None
+    failure_class: ManagedOperationFailureClass | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,6 +119,7 @@ def _operation(row: sqlite3.Row) -> ManagedBackupOperation:
         candidate_runner_id=row["candidate_runner_id"],
         candidate_sprite_id=row["candidate_sprite_id"],
         activation_generation=row["activation_generation"],
+        failure_class=cast(ManagedOperationFailureClass | None, row["failure_class"]),
     )
 
 

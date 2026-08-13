@@ -389,7 +389,11 @@ def test_run_restore_job_replaces_data_and_writes_private_result(tmp_path: Path)
     assert (sqlite_root / "control.db").read_bytes() == b"restored-database"
     assert (files_root / "workspace.txt").read_bytes() == b"restored-files"
     result = json.loads(result_path.read_text(encoding="utf-8"))
-    assert result == {"job_id": job_id, "status": "restored"}
+    assert result == {
+        "cleanup_pending": False,
+        "job_id": job_id,
+        "status": "restored",
+    }
     assert result_path.stat().st_mode & 0o777 == 0o600
 
 

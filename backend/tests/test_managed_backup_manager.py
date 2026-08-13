@@ -1176,7 +1176,7 @@ async def test_manager_restore_executes_download_guest_restore_and_activation(tm
 
         async def read_file(self, name: str, **_values) -> bytes:
             events.append(f"result:{name}")
-            return b'{"job_id":"job-restore","status":"restored"}'
+            return b'{"cleanup_pending":false,"job_id":"job-restore","status":"restored"}'
 
         async def delete_sprite(self, name: str) -> None:
             events.append(f"delete:{name}")
@@ -1611,6 +1611,69 @@ async def test_manager_restore_starts_replacement_execution(tmp_path) -> None:
 
     assert await manager.run_once()
     assert calls == [(operation, archive)]
+
+
+@pytest.mark.asyncio
+async def test_manager_classifies_restore_coordination_failure(tmp_path) -> None:
+    """A failed restore coordinator must persist the restore failure class."""
+    from datetime import datetime, timedelta, timezone
+
+    from yinshi.services.managed_backup_manager import ManagedBackupManager
+    from yinshi.services.managed_backups import ManagedBackupArchive, ManagedBackupOperation
+
+    now = datetime(2026, 8, 12, 12, 0, tzinfo=timezone.utc)
+    operation = ManagedBackupOperation(
+        user_id="user-1",
+        job_id="job-restore-failure",
+        archive_id="archive-1",
+        operation="restore",
+        status="running",
+        runtime_generation=7,
+        started_at=now.isoformat(),
+        updated_at=now.isoformat(),
+        last_error=None,
+        lease_owner="worker-1",
+        lease_token="lease-1",
+        lease_expires_at=(now + timedelta(minutes=2)).isoformat(),
+    )
+    archive = ManagedBackupArchive(
+        id="archive-1",
+        user_id="user-1",
+        runtime_generation=7,
+        status="ready",
+        object_key="private/archive.enc",
+        object_version="version-1",
+        size_bytes=17,
+        sha256="d" * 64,
+        wrapped_key=b"wrapped-key",
+        key_id="backup-v1",
+        owner_digest="c" * 64,
+        created_at=now.isoformat(),
+        completed_at=now.isoformat(),
+        last_error=None,
+    )
+    failures: list[str] = []
+
+    async def coordinate_restore(*_values: object) -> None:
+        raise RuntimeError("provider details")
+
+    manager = ManagedBackupManager(
+        provider=object(),
+        store=object(),
+        relay=object(),
+        wrapping_key=b"w" * 32,
+        claim_operation=lambda **_values: operation,
+        get_archive=lambda _user_id, _archive_id: archive,
+        coordinate_restore=coordinate_restore,
+        fail_operation=lambda **values: failures.append(values["failure_class"]) or True,
+        now=lambda: now,
+        new_lease_token=lambda: "lease-1",
+        staging_root=tmp_path,
+    )
+
+    with pytest.raises(RuntimeError, match="provider details"):
+        await manager.run_once()
+    assert failures == ["restore_failed"]
 
 
 @pytest.mark.asyncio

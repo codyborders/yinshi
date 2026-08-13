@@ -83,7 +83,7 @@ async def test_restore_post_activation_delete_failure_preserves_candidate(tmp_pa
             return None
 
         async def read_file(self, *_args, **_values) -> bytes:
-            return b'{"job_id":"job-restore","status":"restored"}'
+            return b'{"cleanup_pending":false,"job_id":"job-restore","status":"restored"}'
 
         async def delete_sprite(self, name: str) -> None:
             deleted.append(name)

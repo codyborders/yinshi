@@ -201,7 +201,7 @@ def test_hosted_fly_lifespan_builds_and_closes_managed_runtime(
     manager_constructor = Mock(return_value=manager)
     backup_manager_constructor = Mock(return_value=backup_manager)
     reconciler = Mock()
-    reconciler.reconcile_once = AsyncMock()
+    reconciler.reconcile_classified = AsyncMock()
     reconciler.run = AsyncMock()
 
     monkeypatch.setattr(main, "get_settings", lambda: app_settings)
@@ -266,7 +266,7 @@ def test_hosted_fly_lifespan_builds_and_closes_managed_runtime(
     assert not Path(app_settings.db_path).exists()
     backup_store.preflight.assert_awaited_once_with()
     manager.reconcile_startup.assert_awaited_once_with()
-    reconciler.reconcile_once.assert_awaited_once_with()
+    reconciler.reconcile_classified.assert_awaited_once_with(raise_on_failure=True)
     assert reconciler.run.await_args.kwargs["interval_seconds"] == 601
     backup_manager.start.assert_awaited_once_with()
     backup_manager.aclose.assert_awaited_once_with()
@@ -303,15 +303,23 @@ def test_hosted_fly_startup_reconciles_provider_inventory_before_serving(
     backup.start = AsyncMock(side_effect=lambda: events.append("backup"))
     backup.aclose = AsyncMock()
     reconciler = Mock()
-    reconciler.reconcile_once = AsyncMock(side_effect=lambda: events.append("inventory"))
+    reconciler.reconcile_classified = AsyncMock(
+        side_effect=lambda **_values: events.append("inventory")
+    )
     reconciler.run = AsyncMock()
 
     monkeypatch.setattr(main, "get_settings", lambda: settings)
     monkeypatch.setattr(main, "create_managed_backup_store", lambda _settings: store)
+    managed_runtime = main.HostedManagedRuntime(
+        runtime_manager=runtime,
+        backup_provider=runtime.provider,
+        inventory_provider=runtime.provider,
+        provider_http_client=provider_client,
+    )
     monkeypatch.setattr(
         main,
         "_initialize_managed_runtime",
-        AsyncMock(return_value=(runtime, provider_client)),
+        AsyncMock(return_value=managed_runtime),
     )
     monkeypatch.setattr(main, "ManagedBackupManager", Mock(return_value=backup))
     monkeypatch.setattr(main, "ManagedSpriteReconciler", Mock(return_value=reconciler))
@@ -430,14 +438,20 @@ async def test_lifespan_attempts_every_cleanup_before_raising_first_error(
     monkeypatch.setattr(main, "RelayProcessLock", FakeRelayProcessLock)
     monkeypatch.setattr(main, "ManagedBackupManager", FakeManagedBackupManager)
     reconciler = Mock()
-    reconciler.reconcile_once = AsyncMock()
+    reconciler.reconcile_classified = AsyncMock()
     reconciler.run = AsyncMock()
     monkeypatch.setattr(main, "ManagedSpriteReconciler", Mock(return_value=reconciler))
     monkeypatch.setattr(main, "create_managed_backup_store", lambda _settings: backup_store)
+    managed_runtime = main.HostedManagedRuntime(
+        runtime_manager=managed_manager,
+        backup_provider=managed_manager.provider,
+        inventory_provider=managed_manager.provider,
+        provider_http_client=provider_client,
+    )
     monkeypatch.setattr(
         main,
         "_initialize_managed_runtime",
-        AsyncMock(return_value=(managed_manager, provider_client)),
+        AsyncMock(return_value=managed_runtime),
     )
 
     with pytest.raises(RuntimeError, match="prompt cleanup failed"):

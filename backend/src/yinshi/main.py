@@ -56,6 +56,7 @@ from yinshi.services.managed_backups import (
 from yinshi.services.managed_guest_installer import (
     ManagedGuestInstaller as ConcreteManagedGuestInstaller,
 )
+from yinshi.services.managed_hosted_runtime import HostedManagedRuntime
 from yinshi.services.managed_runtime_manager import ManagedRuntimeManager
 from yinshi.services.managed_sprite_reconciliation import ManagedSpriteReconciler
 from yinshi.services.prompt_journal import PromptJournal
@@ -285,7 +286,7 @@ def _read_bounded_bootstrap_script(path: Path) -> bytes:
 
 async def _initialize_managed_runtime(
     app_settings: Settings,
-) -> tuple[ManagedRuntimeManager, httpx.AsyncClient]:
+) -> HostedManagedRuntime:
     """Build managed Fly services and close resources after partial failures."""
     bootstrap_script = await asyncio.to_thread(
         _read_bounded_bootstrap_script,
@@ -328,7 +329,12 @@ async def _initialize_managed_runtime(
             readiness_timeout_seconds=app_settings.sprites_wake_timeout_seconds,
             is_runner_connected=runner_relay_broker.is_runner_connected,
         )
-        return manager, provider_http_client
+        return HostedManagedRuntime(
+            runtime_manager=manager,
+            backup_provider=provider,
+            inventory_provider=provider,
+            provider_http_client=provider_http_client,
+        )
     except BaseException:
         try:
             if manager is not None:
@@ -397,28 +403,28 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             except Exception:
                 logger.exception("managed_storage_preflight_failed")
                 raise
-            managed_runtime_manager, provider_http_client = await _initialize_managed_runtime(
-                app_settings
-            )
+            managed_runtime = await _initialize_managed_runtime(app_settings)
+            managed_runtime_manager = managed_runtime.runtime_manager
+            provider_http_client = managed_runtime.provider_http_client
             await managed_runtime_manager.reconcile_startup()
             sprites_name_key = app_settings.sprites_name_key
             if sprites_name_key is None:
                 raise RuntimeError("Managed Sprite naming is unavailable")
             restore_name_prefix = f"{app_settings.sprites_name_prefix}-restore"[:30].rstrip("-")
             managed_sprite_reconciler = ManagedSpriteReconciler(
-                provider=managed_runtime_manager.provider,
+                provider=managed_runtime.inventory_provider,
                 name_prefix=app_settings.sprites_name_prefix,
                 restore_name_prefix=restore_name_prefix,
                 restore_name_key=sprites_name_key.get_secret_value(),
                 grace=timedelta(seconds=app_settings.sprites_reconcile_grace_seconds),
             )
-            await managed_sprite_reconciler.reconcile_once()
+            await managed_sprite_reconciler.reconcile_classified(raise_on_failure=True)
             backup_encryption_key = app_settings.backup_encryption_key
             sprites_name_key = app_settings.sprites_name_key
             if backup_encryption_key is None or sprites_name_key is None:
                 raise RuntimeError("Managed backup encryption is unavailable")
             managed_backup_manager = ManagedBackupManager(
-                provider=managed_runtime_manager.provider,
+                provider=managed_runtime.backup_provider,
                 store=managed_backup_store,
                 relay=runner_relay_broker,
                 runtime_service=managed_runtime_manager,

@@ -29,6 +29,43 @@ def _ready_runtime(auth_client, *, generation: int):
     return tenant
 
 
+def test_fail_operation_persists_semantic_failure_class(auth_client) -> None:
+    """Failure persistence must retain operation meaning for monitoring."""
+    from yinshi.db import get_control_db
+    from yinshi.services.managed_backups import start_managed_backup_creation
+    from yinshi.services.managed_operation_failures import fail_managed_backup_operation
+
+    tenant = _ready_runtime(auth_client, generation=4)
+    claim = start_managed_backup_creation(
+        tenant.user_id,
+        archive_id="archive-failure-class",
+        runtime_generation=4,
+        job_id="job-failure-class",
+        wrapped_key=b"wrapped",
+        key_id="backup-v1",
+        owner_digest="a" * 64,
+        object_key="objects/failure-class",
+        now=datetime(2026, 8, 13, tzinfo=timezone.utc),
+    )
+
+    assert fail_managed_backup_operation(
+        job_id=claim.operation.job_id,
+        runtime_generation=4,
+        lease_owner=None,
+        lease_token=None,
+        failure_class="restore_failed",
+        error_code="restore_coordination_failed",
+        now=datetime(2026, 8, 13, 1, tzinfo=timezone.utc),
+    )
+
+    with get_control_db() as database:
+        stored = database.execute(
+            "SELECT status, failure_class FROM managed_backup_operations WHERE job_id = ?",
+            (claim.operation.job_id,),
+        ).fetchone()
+    assert tuple(stored) == ("failed", "restore_failed")
+
+
 def test_start_backup_creation_claims_one_active_operation(auth_client) -> None:
     """Concurrent creation attempts should share one durable user-level exclusion."""
     from yinshi.db import get_control_db

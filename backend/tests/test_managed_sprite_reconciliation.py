@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from yinshi.services.sprites import SpriteRecord
+from yinshi.services.sprites import SpriteInventoryRecord, SpriteRecord
 
 
 class FakeProvider:
@@ -20,14 +20,55 @@ class FakeProvider:
         self.records = records
         self.deleted: list[str] = []
 
-    async def list_sprites(self, *, prefix: str) -> tuple[SpriteRecord, ...]:
-        return tuple(record for record in self.records if record.name.startswith(prefix))
+    async def list_sprites(self, *, prefix: str) -> tuple[SpriteInventoryRecord, ...]:
+        return tuple(
+            SpriteInventoryRecord(record.name)
+            for record in self.records
+            if record.name.startswith(prefix)
+        )
 
     async def get_sprite(self, name: str) -> SpriteRecord | None:
         return next((record for record in self.records if record.name == name), None)
 
     async def delete_sprite(self, name: str) -> None:
         self.deleted.append(name)
+
+
+@pytest.mark.asyncio
+async def test_reconcile_ignores_unregistered_matching_prefix(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Provider names never establish deployment ownership by themselves."""
+    from yinshi.config import get_settings
+    from yinshi.db import init_control_db
+    from yinshi.services.managed_sprite_reconciliation import ManagedSpriteReconciler
+
+    monkeypatch.setenv("CONTROL_DB_PATH", str(tmp_path / "control.db"))
+    monkeypatch.setenv("CONTROL_FIELD_ENCRYPTION", "disabled")
+    monkeypatch.setenv("ENCRYPTION_PEPPER", "a" * 64)
+    monkeypatch.setenv("SECRET_KEY", "test-session-secret-0123456789abcdef")
+    monkeypatch.setenv("DISABLE_AUTH", "true")
+    monkeypatch.setenv("CONTAINER_ENABLED", "false")
+    get_settings.cache_clear()
+    init_control_db()
+
+    old = datetime(2026, 8, 12, tzinfo=timezone.utc)
+    provider = FakeProvider((SpriteRecord("foreign", "yinshi-foreign", "cold", old),))
+    reconciler = ManagedSpriteReconciler(
+        provider=provider,
+        name_prefix="yinshi",
+        restore_name_prefix="yinshi-restore",
+        restore_name_key="sprite-name-key",
+        grace=timedelta(hours=1),
+        clock=lambda: datetime(2026, 8, 13, tzinfo=timezone.utc),
+    )
+
+    result = await reconciler.reconcile_once()
+
+    assert result.deleted == ()
+    assert provider.deleted == []
+    get_settings.cache_clear()
 
 
 @pytest.mark.asyncio
@@ -40,6 +81,7 @@ async def test_reconcile_retains_durable_references_and_deletes_old_orphan(
     from yinshi.db import get_control_db, init_control_db
     from yinshi.services.managed_runners import managed_sprite_name
     from yinshi.services.managed_sprite_reconciliation import ManagedSpriteReconciler
+    from yinshi.services.managed_sprite_registry import register_managed_sprite_identity
 
     monkeypatch.setenv("CONTROL_DB_PATH", str(tmp_path / "control.db"))
     monkeypatch.setenv("CONTROL_FIELD_ENCRYPTION", "disabled")
@@ -95,6 +137,20 @@ async def test_reconcile_retains_durable_references_and_deletes_old_orphan(
         database.commit()
 
     old = datetime(2026, 8, 12, tzinfo=timezone.utc)
+    for sprite_name, identity_kind, job_id, lifecycle_status in (
+        ("yinshi-runtime", "runtime", None, "active"),
+        ("yinshi-source", "runtime", None, "retired"),
+        (candidate_name, "restore_candidate", "job-1", "creating"),
+        ("yinshi-orphan", "runtime", None, "retired"),
+    ):
+        register_managed_sprite_identity(
+            sprite_name=sprite_name,
+            identity_kind=identity_kind,
+            user_id="user-1",
+            job_id=job_id,
+            lifecycle_status=lifecycle_status,
+            now=old,
+        )
     provider = FakeProvider(
         (
             SpriteRecord("runtime", "yinshi-runtime", "cold", old),
@@ -129,6 +185,7 @@ async def test_reconcile_revokes_orphan_restore_authority_before_delete(
     from yinshi.db import get_control_db, init_control_db
     from yinshi.services.managed_runners import managed_sprite_name
     from yinshi.services.managed_sprite_reconciliation import ManagedSpriteReconciler
+    from yinshi.services.managed_sprite_registry import register_managed_sprite_identity
 
     monkeypatch.setenv("CONTROL_DB_PATH", str(tmp_path / "control.db"))
     monkeypatch.setenv("CONTROL_FIELD_ENCRYPTION", "disabled")
@@ -160,6 +217,14 @@ async def test_reconcile_revokes_orphan_restore_authority_before_delete(
         database.commit()
 
     old = datetime(2026, 8, 12, tzinfo=timezone.utc)
+    register_managed_sprite_identity(
+        sprite_name=candidate_name,
+        identity_kind="restore_candidate",
+        user_id="user-1",
+        job_id="job-orphan",
+        lifecycle_status="retired",
+        now=old,
+    )
     provider = FakeProvider((SpriteRecord("candidate", candidate_name, "cold", old),))
     reconciler = ManagedSpriteReconciler(
         provider=provider,
@@ -191,7 +256,8 @@ async def test_reconcile_defers_young_orphan_and_rechecks_before_delete(
     """Grace and immediate durable ownership checks must prevent unsafe deletion."""
     import yinshi.services.managed_sprite_reconciliation as reconciliation
     from yinshi.config import get_settings
-    from yinshi.db import init_control_db
+    from yinshi.db import get_control_db, init_control_db
+    from yinshi.services.managed_sprite_registry import register_managed_sprite_identity
 
     monkeypatch.setenv("CONTROL_DB_PATH", str(tmp_path / "control.db"))
     monkeypatch.setenv("CONTROL_FIELD_ENCRYPTION", "disabled")
@@ -202,7 +268,25 @@ async def test_reconcile_defers_young_orphan_and_rechecks_before_delete(
     get_settings.cache_clear()
     init_control_db()
 
+    with get_control_db() as database:
+        database.execute(
+            "INSERT INTO users (id, email, display_name) VALUES (?, ?, ?)",
+            ("user-1", "user@example.com", "User"),
+        )
+        database.commit()
     now = datetime(2026, 8, 13, tzinfo=timezone.utc)
+    for sprite_name, created_at in (
+        ("yinshi-young", now - timedelta(minutes=5)),
+        ("yinshi-concurrent", now - timedelta(days=1)),
+    ):
+        register_managed_sprite_identity(
+            sprite_name=sprite_name,
+            identity_kind="runtime",
+            user_id="user-1",
+            job_id=None,
+            lifecycle_status="retired",
+            now=created_at,
+        )
     provider = FakeProvider(
         (
             SpriteRecord("young", "yinshi-young", "cold", now - timedelta(minutes=5)),
@@ -238,6 +322,32 @@ async def test_reconcile_defers_young_orphan_and_rechecks_before_delete(
     assert result.retained == 1
     assert provider.deleted == []
     get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_classified_reconcile_logs_and_reraises_startup_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Startup and recurring callers must share one failure classification."""
+    import yinshi.services.managed_sprite_reconciliation as reconciliation
+
+    reconciler = reconciliation.ManagedSpriteReconciler(
+        provider=FakeProvider(()),
+        name_prefix="yinshi",
+        restore_name_prefix="yinshi-restore",
+        restore_name_key="sprite-name-key",
+        grace=timedelta(hours=1),
+    )
+    monkeypatch.setattr(
+        reconciler,
+        "reconcile_once",
+        AsyncMock(side_effect=RuntimeError("database details")),
+    )
+
+    with pytest.raises(RuntimeError, match="database details"):
+        await reconciler.reconcile_classified(raise_on_failure=True)
+    assert "managed_sprite_reconciliation_failed" in caplog.text
 
 
 @pytest.mark.asyncio

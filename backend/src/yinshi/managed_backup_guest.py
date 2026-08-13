@@ -58,6 +58,14 @@ class ManagedArchiveRecord:
     sha256: str
 
 
+@dataclass(frozen=True, slots=True)
+class ManagedRestoreResult:
+    """Durable restore commit outcome with independent cleanup state."""
+
+    committed: bool
+    cleanup_pending: bool
+
+
 def _require_context(context: ManagedArchiveContext) -> None:
     """Validate bounded archive context before writing authenticated metadata."""
     if not isinstance(context, ManagedArchiveContext):
@@ -346,6 +354,26 @@ def _sync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
+def _sync_directory_tree(root: Path) -> None:
+    """Persist a validated directory tree from leaves through its root."""
+    if root.is_symlink() or not root.is_dir():
+        raise ValueError("managed restore staging root must be a real directory")
+    directories: list[Path] = []
+    for directory_name, child_names, file_names in os.walk(root, followlinks=False):
+        directory = Path(directory_name)
+        for child_name in child_names:
+            child = directory / child_name
+            if child.is_symlink() or not child.is_dir():
+                raise ValueError("managed restore staging contains unsafe directory")
+        for file_name in file_names:
+            file_path = directory / file_name
+            if file_path.is_symlink() or not file_path.is_file():
+                raise ValueError("managed restore staging contains unsafe file")
+        directories.append(directory)
+    for directory in reversed(directories):
+        _sync_directory(directory)
+
+
 def _write_restore_state(transaction_root: Path, phase: str) -> None:
     """Persist one exact restore phase inside the fixed transaction directory."""
     state_path = transaction_root / "state.json"
@@ -443,7 +471,7 @@ def restore_managed_backup_archive(
     expected_context: ManagedArchiveContext,
     sqlite_root: Path,
     files_root: Path,
-) -> None:
+) -> ManagedRestoreResult:
     """Replace both guest data roots after full authentication and staging."""
     _require_context(expected_context)
     key = _require_key(archive_key)
@@ -471,6 +499,9 @@ def restore_managed_backup_archive(
         _extract_validated_tar(tar_path, extracted_root)
         if not staged_sqlite.is_dir() or not staged_files.is_dir():
             raise ValueError("managed backup is missing required data roots")
+        _sync_directory_tree(staged_sqlite)
+        _sync_directory_tree(staged_files)
+        _sync_directory(extracted_root)
         transaction_root = _publish_restore_transaction(state_root)
         rollback_root = transaction_root / "rollback"
         rollback_sqlite = rollback_root / "sqlite"
@@ -496,7 +527,11 @@ def restore_managed_backup_archive(
                 raise FileExistsError(cleanup_root)
             os.replace(transaction_root, cleanup_root)
             _sync_directory(state_root)
-            _remove_restore_cleanup(state_root)
+            try:
+                _remove_restore_cleanup(state_root)
+            except OSError:
+                return ManagedRestoreResult(committed=True, cleanup_pending=True)
+    return ManagedRestoreResult(committed=True, cleanup_pending=False)
 
 
 def _decode_archive_key(value: object) -> bytes:
@@ -553,7 +588,11 @@ def _read_existing_job_result(
     except (UnicodeDecodeError, json.JSONDecodeError):
         raise ValueError("managed backup result is invalid") from None
     if operation == "restore":
-        if result != {"job_id": job_id, "status": "restored"}:
+        if result != {
+            "cleanup_pending": False,
+            "job_id": job_id,
+            "status": "restored",
+        }:
             raise ValueError("managed backup result is invalid")
         return True
     if (
@@ -660,14 +699,18 @@ def run_managed_backup_job(
             "status": "ready",
         }
     else:
-        restore_managed_backup_archive(
+        restore_result = restore_managed_backup_archive(
             archive_path,
             archive_key=archive_key,
             expected_context=context,
             sqlite_root=sqlite_root,
             files_root=files_root,
         )
-        result = {"job_id": expected_job_id, "status": "restored"}
+        result = {
+            "cleanup_pending": restore_result.cleanup_pending,
+            "job_id": expected_job_id,
+            "status": "restored",
+        }
     _write_job_result(result_path, result)
 
 

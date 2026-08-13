@@ -44,6 +44,44 @@ def _create_restore_fixture(tmp_path: Path) -> tuple[object, Path, Path, Path, b
     return context, archive_path, sqlite_root, files_root, archive_key
 
 
+def test_restore_syncs_staged_directories_before_live_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every staged directory must sync before the first live-root replacement."""
+    import os
+
+    import yinshi.managed_backup_guest as guest
+
+    context, archive_path, sqlite_root, files_root, archive_key = _create_restore_fixture(tmp_path)
+    original_replace = os.replace
+    original_sync = guest._sync_directory
+    synchronized_names: list[str] = []
+
+    def record_sync(path: Path) -> None:
+        synchronized_names.append(path.name)
+        original_sync(path)
+
+    def check_publication(source: object, target: object) -> None:
+        target_path = Path(target)
+        if target_path == sqlite_root:
+            assert "sqlite" in synchronized_names
+            assert "files" in synchronized_names
+            assert "extracted" in synchronized_names
+        original_replace(source, target)
+
+    monkeypatch.setattr(guest, "_sync_directory", record_sync)
+    monkeypatch.setattr(os, "replace", check_publication)
+
+    guest.restore_managed_backup_archive(
+        archive_path,
+        archive_key=archive_key,
+        expected_context=context,
+        sqlite_root=sqlite_root,
+        files_root=files_root,
+    )
+
+
 def test_restore_publishes_prepared_journal_atomically(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -116,20 +154,7 @@ def test_restore_recovers_interrupted_journal_cleanup(
         original_rmtree(path, *args, **kwargs)
 
     monkeypatch.setattr(shutil, "rmtree", interrupt_cleanup)
-    with pytest.raises(OSError, match="cleanup crash"):
-        guest.restore_managed_backup_archive(
-            archive_path,
-            archive_key=archive_key,
-            expected_context=context,
-            sqlite_root=sqlite_root,
-            files_root=files_root,
-        )
-
-    assert (sqlite_root / "value").read_text(encoding="utf-8") == "new-sqlite"
-    assert (files_root / "value").read_text(encoding="utf-8") == "new-files"
-
-    monkeypatch.setattr(shutil, "rmtree", original_rmtree)
-    guest.restore_managed_backup_archive(
+    result = guest.restore_managed_backup_archive(
         archive_path,
         archive_key=archive_key,
         expected_context=context,
@@ -137,6 +162,22 @@ def test_restore_recovers_interrupted_journal_cleanup(
         files_root=files_root,
     )
 
+    assert result.committed is True
+    assert result.cleanup_pending is True
+    assert (sqlite_root / "value").read_text(encoding="utf-8") == "new-sqlite"
+    assert (files_root / "value").read_text(encoding="utf-8") == "new-files"
+
+    monkeypatch.setattr(shutil, "rmtree", original_rmtree)
+    retry_result = guest.restore_managed_backup_archive(
+        archive_path,
+        archive_key=archive_key,
+        expected_context=context,
+        sqlite_root=sqlite_root,
+        files_root=files_root,
+    )
+
+    assert retry_result.committed is True
+    assert retry_result.cleanup_pending is False
     assert (sqlite_root / "value").read_text(encoding="utf-8") == "new-sqlite"
     assert (files_root / "value").read_text(encoding="utf-8") == "new-files"
     assert not (sqlite_root.parent / ".yinshi-restore-active").exists()

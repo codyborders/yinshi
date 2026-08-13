@@ -11,8 +11,12 @@ from typing import Protocol
 
 from yinshi.db import get_control_db
 from yinshi.services.managed_runners import managed_sprite_name
+from yinshi.services.managed_sprite_registry import (
+    list_managed_sprite_identities,
+    remove_managed_sprite_identity,
+)
 from yinshi.services.runners import revoke_managed_restore_runner_for_job
-from yinshi.services.sprites import SpriteRecord
+from yinshi.services.sprites import SpriteInventoryRecord, SpriteRecord
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +24,7 @@ logger = logging.getLogger(__name__)
 class ManagedSpriteInventoryProvider(Protocol):
     """Provider operations required for inventory reconciliation."""
 
-    async def list_sprites(self, *, prefix: str) -> tuple[SpriteRecord, ...]: ...
+    async def list_sprites(self, *, prefix: str) -> tuple[SpriteInventoryRecord, ...]: ...
 
     async def get_sprite(self, name: str) -> SpriteRecord | None: ...
 
@@ -122,23 +126,27 @@ class ManagedSpriteReconciler:
 
     async def reconcile_once(self) -> ManagedSpriteReconciliationResult:
         """Reconcile one fully validated provider inventory."""
-        records_by_name: dict[str, SpriteRecord] = {}
+        inventory_names: set[str] = set()
         for prefix in self._inventory_prefixes():
-            for record in await self._provider.list_sprites(prefix=prefix):
-                records_by_name[record.name] = record
+            for inventory_record in await self._provider.list_sprites(prefix=prefix):
+                inventory_names.add(inventory_record.name)
         references = _managed_sprite_references(
             restore_name_prefix=self._restore_name_prefix,
             restore_name_key=self._restore_name_key,
         )
+        registered_names = {identity.sprite_name for identity in list_managed_sprite_identities()}
+        candidate_names = inventory_names & registered_names
         now = self._clock().astimezone(timezone.utc)
         deleted: list[str] = []
         retained = 0
         deferred = 0
-        for name, record in sorted(records_by_name.items()):
-            if not self._owns_name(name):
-                continue
+        for name in sorted(candidate_names):
             if name in references.names:
                 retained += 1
+                continue
+            record = await self._provider.get_sprite(name)
+            if record is None:
+                remove_managed_sprite_identity(name)
                 continue
             if record.created_at is None or now - record.created_at < self._grace:
                 deferred += 1
@@ -154,13 +162,30 @@ class ManagedSpriteReconciler:
             if restore_job is not None:
                 revoke_managed_restore_runner_for_job(*restore_job)
             await self._provider.delete_sprite(name)
+            remove_managed_sprite_identity(name)
             deleted.append(name)
         return ManagedSpriteReconciliationResult(
-            examined=len(records_by_name),
+            examined=len(inventory_names),
             retained=retained,
             deleted=tuple(deleted),
             deferred=deferred,
         )
+
+    async def reconcile_classified(
+        self,
+        *,
+        raise_on_failure: bool,
+    ) -> ManagedSpriteReconciliationResult | None:
+        """Run one pass with the same stable failure classification for every caller."""
+        try:
+            return await self.reconcile_once()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("managed_sprite_reconciliation_failed")
+            if raise_on_failure:
+                raise
+            return None
 
     async def run(self, *, interval_seconds: float) -> None:
         """Run recurring passes until cancelled."""
@@ -168,10 +193,7 @@ class ManagedSpriteReconciler:
             raise ValueError("interval_seconds must be positive")
         while True:
             await self._sleep(interval_seconds)
-            try:
-                await self.reconcile_once()
-            except Exception:
-                logger.exception("managed_sprite_reconciliation_failed")
+            await self.reconcile_classified(raise_on_failure=False)
 
     def _inventory_prefixes(self) -> tuple[str, ...]:
         """Return distinct provider query prefixes including delimiter."""

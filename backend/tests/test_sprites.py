@@ -167,8 +167,8 @@ async def test_create_sprite_rejects_invalid_json() -> None:
 
 
 @pytest.mark.asyncio
-async def test_list_sprites_follows_pagination_and_fetches_creation_time() -> None:
-    """Inventory should be complete and contain trustworthy creation timestamps."""
+async def test_list_sprites_follows_pagination_without_detail_requests() -> None:
+    """Inventory should paginate without hydrating every listed Sprite."""
     requests: list[httpx.Request] = []
 
     def handle_request(request: httpx.Request) -> httpx.Response:
@@ -192,16 +192,7 @@ async def test_list_sprites_follows_pagination_and_fetches_creation_time() -> No
                     "has_more": False,
                 },
             )
-        name = request.url.path.rsplit("/", 1)[-1]
-        return httpx.Response(
-            200,
-            json={
-                "id": f"id-{name}",
-                "name": name,
-                "status": "cold",
-                "created_at": "2026-08-11T10:00:00Z",
-            },
-        )
+        raise AssertionError("detail request was not expected")
 
     transport = httpx.MockTransport(handle_request)
     async with httpx.AsyncClient(
@@ -212,7 +203,7 @@ async def test_list_sprites_follows_pagination_and_fetches_creation_time() -> No
         records = await client.list_sprites(prefix="yinshi-")
 
     assert [record.name for record in records] == ["yinshi-first", "yinshi-second"]
-    assert all(record.created_at is not None for record in records)
+    assert len(requests) == 2
     list_requests = [request for request in requests if request.url.path == "/v1/sprites"]
     assert dict(list_requests[0].url.params) == {"prefix": "yinshi-", "max_results": "50"}
     assert dict(list_requests[1].url.params) == {

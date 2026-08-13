@@ -13,6 +13,7 @@ _REQUIRED_ENVIRONMENT_NAMES = (
     "STAGING_CONTROL_URL",
     "STAGING_OPERATOR_TOKEN",
     "STAGING_SPRITES_API_TOKEN",
+    "STAGING_SPRITES_NAME_KEY",
     "STAGING_BACKUP_BUCKET",
     "STAGING_BACKUP_ENDPOINT_URL",
     "STAGING_BACKUP_REGION",
@@ -36,16 +37,70 @@ _CHECK_NAMES = _COUNT_CHECK_NAMES + _BOOLEAN_CHECK_NAMES
 
 
 @dataclass(frozen=True, slots=True)
-class ManagedSourceLossConfiguration:
-    """Staging settings kept outside drill output."""
+class ManagedRecoveryControl:
+    """Control-plane capability used by the staging drill."""
 
-    values: dict[str, str]
+    url: str
+    operator_token: str
+
+
+@dataclass(frozen=True, slots=True)
+class ManagedRecoveryProvider:
+    """Sprite provider capability used by the staging drill."""
+
+    api_token: str
+    name_key: str
+
+
+@dataclass(frozen=True, slots=True)
+class ManagedRecoveryStorage:
+    """Versioned backup-store capability used by the staging drill."""
+
+    bucket: str
+    endpoint_url: str
+    region: str
+    access_key_id: str
+    secret_access_key: str
+    encryption_key: str
+
+
+@dataclass(frozen=True, slots=True)
+class ManagedSourceLossConfiguration:
+    """Complete typed capabilities kept outside drill output."""
+
+    control: ManagedRecoveryControl
+    provider: ManagedRecoveryProvider
+    storage: ManagedRecoveryStorage
+
+
+@dataclass(frozen=True, slots=True)
+class ManagedSourceLossReceipt:
+    """Typed aggregate checks returned after destructive cleanup."""
+
+    archive_version_count: int
+    cleanup_verified: bool
+    data_verified: bool
+    multipart_upload_count: int
+    replacement_authority_verified: bool
+
+    def __post_init__(self) -> None:
+        if type(self.archive_version_count) is not int or self.archive_version_count < 0:
+            raise ValueError("archive_version_count must be a nonnegative integer")
+        if type(self.multipart_upload_count) is not int or self.multipart_upload_count < 0:
+            raise ValueError("multipart_upload_count must be a nonnegative integer")
+        for name in (
+            "cleanup_verified",
+            "data_verified",
+            "replacement_authority_verified",
+        ):
+            if type(getattr(self, name)) is not bool:
+                raise TypeError(f"{name} must be Boolean")
 
 
 class ManagedSourceLossBoundary(Protocol):
     """Run provider-specific destructive drill actions."""
 
-    def run(self, *, control_url: str, bucket: str) -> dict[str, object]:
+    def run(self, configuration: ManagedSourceLossConfiguration) -> ManagedSourceLossReceipt:
         """Return required verification fields after cleanup."""
         ...
 
@@ -86,14 +141,31 @@ def load_drill_configuration(
         if not value:
             raise DrillConfigurationError(f"missing required staging setting: {name}")
         values[name] = value
-    return ManagedSourceLossConfiguration(values=values)
+    return ManagedSourceLossConfiguration(
+        control=ManagedRecoveryControl(
+            url=values["STAGING_CONTROL_URL"],
+            operator_token=values["STAGING_OPERATOR_TOKEN"],
+        ),
+        provider=ManagedRecoveryProvider(
+            api_token=values["STAGING_SPRITES_API_TOKEN"],
+            name_key=values["STAGING_SPRITES_NAME_KEY"],
+        ),
+        storage=ManagedRecoveryStorage(
+            bucket=values["STAGING_BACKUP_BUCKET"],
+            endpoint_url=values["STAGING_BACKUP_ENDPOINT_URL"],
+            region=values["STAGING_BACKUP_REGION"],
+            access_key_id=values["STAGING_BACKUP_ACCESS_KEY_ID"],
+            secret_access_key=values["STAGING_BACKUP_SECRET_ACCESS_KEY"],
+            encryption_key=values["STAGING_BACKUP_ENCRYPTION_KEY"],
+        ),
+    )
 
 
 def sanitized_configuration_status(
     configuration: ManagedSourceLossConfiguration,
 ) -> dict[str, bool | int | str]:
     """Describe workflow readiness without exposing configured values."""
-    if len(configuration.values) != len(_REQUIRED_ENVIRONMENT_NAMES):
+    if not configuration.control.url or not configuration.storage.bucket:
         raise ValueError("configuration is incomplete")
     return {
         "schema_version": 1,
@@ -124,13 +196,10 @@ class ManagedSourceLossDrill:
         commit_sha: str,
     ) -> ManagedSourceLossResult:
         """Run staging boundary and retain only aggregate checks."""
-        receipt = self._boundary.run(
-            control_url=configuration.values["STAGING_CONTROL_URL"],
-            bucket=configuration.values["STAGING_BACKUP_BUCKET"],
-        )
+        receipt = self._boundary.run(configuration)
         checks: dict[str, bool | int] = {}
         for name in _CHECK_NAMES:
-            value = receipt[name]
+            value = getattr(receipt, name)
             if name in _COUNT_CHECK_NAMES:
                 if type(value) is not int or value < 0:
                     raise RuntimeError(f"drill boundary returned invalid check: {name}")

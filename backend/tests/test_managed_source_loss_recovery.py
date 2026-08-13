@@ -9,6 +9,7 @@ import pytest
 from yinshi.managed_source_loss_recovery import (
     DrillConfigurationError,
     ManagedSourceLossDrill,
+    ManagedSourceLossReceipt,
     configuration_check_main,
     load_drill_configuration,
     sanitized_configuration_status,
@@ -16,20 +17,25 @@ from yinshi.managed_source_loss_recovery import (
 
 
 class FakeDrillBoundary:
-    """Return a complete fake drill receipt containing sensitive provider data."""
+    """Return a complete fake drill receipt after checking typed capabilities."""
 
-    def run(self, *, control_url: str, bucket: str) -> dict[str, object]:
-        assert control_url == "https://staging.example.com"
-        assert bucket == "staging-backups"
-        return {
-            "archive_version_count": 1,
-            "cleanup_verified": True,
-            "data_verified": True,
-            "multipart_upload_count": 0,
-            "replacement_authority_verified": True,
-            "secret_sprite_name": "yinshi-secret-sprite",
-            "tenant_path": "/var/lib/yinshi/users/private-user",
-        }
+    def run(self, configuration: object) -> ManagedSourceLossReceipt:
+        control = configuration.control
+        provider = configuration.provider
+        storage = configuration.storage
+        assert control.url == "https://staging.example.com"
+        assert control.operator_token == "operator-secret"
+        assert provider.api_token == "sprites-secret"
+        assert provider.name_key == "name-secret"
+        assert storage.bucket == "staging-backups"
+        assert storage.endpoint_url == "https://objects.example.com"
+        return ManagedSourceLossReceipt(
+            archive_version_count=1,
+            cleanup_verified=True,
+            data_verified=True,
+            multipart_upload_count=0,
+            replacement_authority_verified=True,
+        )
 
 
 def test_drill_emits_only_sanitized_verification_results() -> None:
@@ -38,6 +44,7 @@ def test_drill_emits_only_sanitized_verification_results() -> None:
         "STAGING_CONTROL_URL": "https://staging.example.com",
         "STAGING_OPERATOR_TOKEN": "operator-secret",
         "STAGING_SPRITES_API_TOKEN": "sprites-secret",
+        "STAGING_SPRITES_NAME_KEY": "name-secret",
         "STAGING_BACKUP_BUCKET": "staging-backups",
         "STAGING_BACKUP_ENDPOINT_URL": "https://objects.example.com",
         "STAGING_BACKUP_REGION": "test-region",
@@ -74,6 +81,7 @@ def test_drill_rejects_boolean_count_fields() -> None:
         "STAGING_CONTROL_URL": "https://staging.example.com",
         "STAGING_OPERATOR_TOKEN": "operator-secret",
         "STAGING_SPRITES_API_TOKEN": "sprites-secret",
+        "STAGING_SPRITES_NAME_KEY": "name-secret",
         "STAGING_BACKUP_BUCKET": "staging-backups",
         "STAGING_BACKUP_ENDPOINT_URL": "https://objects.example.com",
         "STAGING_BACKUP_REGION": "test-region",
@@ -83,16 +91,16 @@ def test_drill_rejects_boolean_count_fields() -> None:
     }
 
     class InvalidCountBoundary:
-        def run(self, *, control_url: str, bucket: str) -> dict[str, object]:
-            return {
-                "archive_version_count": True,
-                "cleanup_verified": True,
-                "data_verified": True,
-                "multipart_upload_count": False,
-                "replacement_authority_verified": True,
-            }
+        def run(self, configuration: object) -> ManagedSourceLossReceipt:
+            return ManagedSourceLossReceipt(
+                archive_version_count=True,
+                cleanup_verified=True,
+                data_verified=True,
+                multipart_upload_count=False,
+                replacement_authority_verified=True,
+            )
 
-    with pytest.raises(RuntimeError, match="archive_version_count"):
+    with pytest.raises(ValueError, match="archive_version_count"):
         ManagedSourceLossDrill(InvalidCountBoundary()).run(
             load_drill_configuration(environment),
             commit_sha="1" * 40,
@@ -116,6 +124,7 @@ def test_configuration_status_contains_no_secret_values() -> None:
         "STAGING_CONTROL_URL": "https://staging.example.com",
         "STAGING_OPERATOR_TOKEN": "operator-secret",
         "STAGING_SPRITES_API_TOKEN": "sprites-secret",
+        "STAGING_SPRITES_NAME_KEY": "name-secret",
         "STAGING_BACKUP_BUCKET": "staging-backups",
         "STAGING_BACKUP_ENDPOINT_URL": "https://objects.example.com",
         "STAGING_BACKUP_REGION": "test-region",
@@ -146,6 +155,7 @@ def test_configuration_check_command_emits_pending_status(
         "STAGING_CONTROL_URL": "https://staging.example.com",
         "STAGING_OPERATOR_TOKEN": "operator-secret",
         "STAGING_SPRITES_API_TOKEN": "sprites-secret",
+        "STAGING_SPRITES_NAME_KEY": "name-secret",
         "STAGING_BACKUP_BUCKET": "staging-backups",
         "STAGING_BACKUP_ENDPOINT_URL": "https://objects.example.com",
         "STAGING_BACKUP_REGION": "test-region",

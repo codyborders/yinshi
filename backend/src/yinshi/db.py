@@ -789,6 +789,23 @@ CREATE TABLE IF NOT EXISTS managed_runtimes (
     last_error TEXT CHECK (last_error IS NULL OR length(last_error) <= 1000)
 );
 
+CREATE TABLE IF NOT EXISTS managed_sprite_identities (
+    sprite_name TEXT PRIMARY KEY,
+    provider_name TEXT NOT NULL CHECK (provider_name = 'fly_sprites'),
+    identity_kind TEXT NOT NULL CHECK (identity_kind IN ('runtime', 'restore_candidate')),
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    job_id TEXT,
+    lifecycle_status TEXT NOT NULL CHECK (
+        lifecycle_status IN ('creating', 'active', 'retired', 'deleting')
+    ),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    CHECK (
+        (identity_kind = 'runtime' AND job_id IS NULL)
+        OR (identity_kind = 'restore_candidate' AND job_id IS NOT NULL)
+    )
+);
+
 CREATE TABLE IF NOT EXISTS managed_backup_archives (
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -831,7 +848,10 @@ CREATE TABLE IF NOT EXISTS managed_backup_operations (
     activation_generation INTEGER,
     started_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
-    last_error TEXT CHECK (last_error IS NULL OR length(last_error) <= 1000)
+    last_error TEXT CHECK (last_error IS NULL OR length(last_error) <= 1000),
+    failure_class TEXT CHECK (
+        failure_class IS NULL OR failure_class IN ('restore_failed', 'deletion_failed')
+    )
 );
 
 CREATE TABLE IF NOT EXISTS managed_runtime_activation_guards (
@@ -1123,7 +1143,10 @@ def _migrate_control(conn: sqlite3.Connection) -> None:
             activation_generation INTEGER,
             started_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
-            last_error TEXT CHECK (last_error IS NULL OR length(last_error) <= 1000)
+            last_error TEXT CHECK (last_error IS NULL OR length(last_error) <= 1000),
+            failure_class TEXT CHECK (
+                failure_class IS NULL OR failure_class IN ('restore_failed', 'deletion_failed')
+            )
         );
         CREATE TRIGGER IF NOT EXISTS validate_managed_runtime_runner_insert
         BEFORE INSERT ON managed_runtimes
@@ -1160,6 +1183,7 @@ def _migrate_control(conn: sqlite3.Connection) -> None:
     _migrate_managed_runtime_activation_guards(conn)
     _migrate_managed_backup_archive_statuses(conn)
     _migrate_managed_backup_operation_columns(conn)
+    _backfill_managed_sprite_identities(conn)
     conn.commit()
 
     _migrate_encrypted_control_fields(conn)
@@ -1284,6 +1308,7 @@ def _migrate_managed_backup_operation_columns(conn: sqlite3.Connection) -> None:
         "activation_generation": (
             "ALTER TABLE managed_backup_operations ADD COLUMN activation_generation INTEGER"
         ),
+        "failure_class": "ALTER TABLE managed_backup_operations ADD COLUMN failure_class TEXT",
     }
     for column_name, statement in migrations.items():
         if column_name not in columns:
@@ -1313,6 +1338,25 @@ def _migrate_managed_backup_operation_columns(conn: sqlite3.Connection) -> None:
           )
         """)
     conn.commit()
+
+
+def _backfill_managed_sprite_identities(conn: sqlite3.Connection) -> None:
+    """Register only provider identities already bound to durable control state."""
+    conn.execute("""INSERT OR IGNORE INTO managed_sprite_identities
+           (sprite_name, provider_name, identity_kind, user_id, job_id,
+            lifecycle_status, created_at, updated_at)
+           SELECT sprite_external_id, provider_name, 'runtime', user_id, NULL,
+                  CASE WHEN lifecycle_status = 'ready' THEN 'active' ELSE 'creating' END,
+                  created_at, updated_at
+           FROM managed_runtimes WHERE provider_name = 'fly_sprites'""")
+    conn.execute("""INSERT OR IGNORE INTO managed_sprite_identities
+           (sprite_name, provider_name, identity_kind, user_id, job_id,
+            lifecycle_status, created_at, updated_at)
+           SELECT candidate_sprite_id, 'fly_sprites', 'restore_candidate', user_id, job_id,
+                  'creating', started_at, updated_at
+           FROM managed_backup_operations
+           WHERE operation = 'restore' AND status = 'running'
+             AND candidate_sprite_id IS NOT NULL""")
 
 
 def _migrate_runner_kinds(conn: sqlite3.Connection) -> None:

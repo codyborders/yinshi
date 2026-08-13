@@ -295,6 +295,12 @@ async def test_owner_provisions_sprite_and_marks_linked_runner_ready(
     assert status.lifecycle_status == "ready"
     assert status.last_error is None
     assert [call[0] for call in provider.calls] == ["get", "create", "policy"]
+    from yinshi.services.managed_sprite_registry import list_managed_sprite_identities
+
+    identities = list_managed_sprite_identities()
+    assert [(identity.sprite_name, identity.lifecycle_status) for identity in identities] == [
+        (status.sprite_name, "active")
+    ]
     assert provider.sprite is not None
     assert installer.calls == [
         {

@@ -214,6 +214,106 @@ def test_init_control_db_creates_pi_config_tables(tmp_path, monkeypatch):
         get_settings.cache_clear()
 
 
+def test_init_control_db_adds_typed_managed_operation_failure_class(tmp_path, monkeypatch):
+    """Managed operation failures must retain their semantic alert class."""
+    monkeypatch.setenv("CONTROL_DB_PATH", str(tmp_path / "control.db"))
+    monkeypatch.setenv("CONTROL_FIELD_ENCRYPTION", "disabled")
+    monkeypatch.setenv("ENCRYPTION_PEPPER", "a" * 64)
+    monkeypatch.setenv("SECRET_KEY", "test-session-secret-0123456789abcdef")
+    monkeypatch.setenv("DISABLE_AUTH", "true")
+    monkeypatch.setenv("CONTAINER_ENABLED", "false")
+
+    from yinshi.config import get_settings
+    from yinshi.db import get_control_db, init_control_db
+
+    get_settings.cache_clear()
+    init_control_db()
+    with get_control_db() as database:
+        columns = {
+            row["name"]
+            for row in database.execute("PRAGMA table_info(managed_backup_operations)").fetchall()
+        }
+
+    assert "failure_class" in columns
+    get_settings.cache_clear()
+
+
+def test_init_control_db_backfills_durable_managed_sprite_ownership(tmp_path, monkeypatch):
+    """Migration must register existing runtime ownership without claiming inventory."""
+    monkeypatch.setenv("CONTROL_DB_PATH", str(tmp_path / "control.db"))
+    monkeypatch.setenv("CONTROL_FIELD_ENCRYPTION", "disabled")
+    monkeypatch.setenv("ENCRYPTION_PEPPER", "a" * 64)
+    monkeypatch.setenv("SECRET_KEY", "test-session-secret-0123456789abcdef")
+    monkeypatch.setenv("DISABLE_AUTH", "true")
+    monkeypatch.setenv("CONTAINER_ENABLED", "false")
+
+    from yinshi.config import get_settings
+    from yinshi.db import get_control_db, init_control_db
+
+    get_settings.cache_clear()
+    init_control_db()
+    with get_control_db() as database:
+        database.execute(
+            "INSERT INTO users (id, email, display_name) VALUES (?, ?, ?)",
+            ("user-1", "user@example.com", "User"),
+        )
+        database.execute(
+            """INSERT INTO user_runners
+               (id, user_id, kind, name, cloud_provider, region, status)
+               VALUES (?, ?, 'managed', ?, 'fly_sprites', 'ord', 'online')""",
+            ("runner-1", "user-1", "Managed"),
+        )
+        database.execute(
+            """INSERT INTO managed_runtimes
+               (user_id, runner_id, provider_name, sprite_external_id,
+                lifecycle_status, generation, artifact_version)
+               VALUES (?, ?, 'fly_sprites', ?, 'ready', 1, 'version')""",
+            ("user-1", "runner-1", "yinshi-existing"),
+        )
+        database.commit()
+    init_control_db()
+
+    with get_control_db() as database:
+        rows = database.execute(
+            "SELECT sprite_name, lifecycle_status FROM managed_sprite_identities"
+        ).fetchall()
+    assert [tuple(row) for row in rows] == [("yinshi-existing", "active")]
+    get_settings.cache_clear()
+
+
+def test_init_control_db_creates_managed_sprite_identity_registry(tmp_path, monkeypatch):
+    """Control initialization must persist deployment-owned Sprite identities."""
+    monkeypatch.setenv("CONTROL_DB_PATH", str(tmp_path / "control.db"))
+    monkeypatch.setenv("CONTROL_FIELD_ENCRYPTION", "disabled")
+    monkeypatch.setenv("ENCRYPTION_PEPPER", "a" * 64)
+    monkeypatch.setenv("SECRET_KEY", "test-session-secret-0123456789abcdef")
+    monkeypatch.setenv("DISABLE_AUTH", "true")
+    monkeypatch.setenv("CONTAINER_ENABLED", "false")
+
+    from yinshi.config import get_settings
+    from yinshi.db import get_control_db, init_control_db
+
+    get_settings.cache_clear()
+    init_control_db()
+    with get_control_db() as database:
+        columns = {
+            row["name"]
+            for row in database.execute("PRAGMA table_info(managed_sprite_identities)").fetchall()
+        }
+
+    assert columns == {
+        "sprite_name",
+        "provider_name",
+        "identity_kind",
+        "user_id",
+        "job_id",
+        "lifecycle_status",
+        "created_at",
+        "updated_at",
+    }
+    get_settings.cache_clear()
+
+
 def test_init_control_db_creates_managed_backup_catalog(tmp_path, monkeypatch):
     """Control initialization should create durable managed backup tables."""
     monkeypatch.setenv("CONTROL_DB_PATH", str(tmp_path / "control.db"))
