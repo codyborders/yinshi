@@ -3,8 +3,32 @@
   "checkpoint_id": "c308b92f689f",
   "strategy": "manual-commit",
   "branch": "main",
-  "checkpoints_count": 5,
+  "checkpoints_count": 9,
   "files_touched": [
+    "backend/src/yinshi/db.py",
+    "backend/src/yinshi/main.py",
+    "backend/src/yinshi/managed_backup_guest.py",
+    "backend/src/yinshi/managed_source_loss_recovery.py",
+    "backend/src/yinshi/services/managed_backup_manager.py",
+    "backend/src/yinshi/services/managed_backups.py",
+    "backend/src/yinshi/services/managed_hosted_runtime.py",
+    "backend/src/yinshi/services/managed_operation_failures.py",
+    "backend/src/yinshi/services/managed_operational_status.py",
+    "backend/src/yinshi/services/managed_runtime_manager.py",
+    "backend/src/yinshi/services/managed_sprite_reconciliation.py",
+    "backend/src/yinshi/services/managed_sprite_registry.py",
+    "backend/src/yinshi/services/sprites.py",
+    "backend/tests/test_db.py",
+    "backend/tests/test_main.py",
+    "backend/tests/test_managed_backup_manager.py",
+    "backend/tests/test_managed_backups.py",
+    "backend/tests/test_managed_hosted_runtime.py",
+    "backend/tests/test_managed_operational_status.py",
+    "backend/tests/test_managed_restore_crash_recovery.py",
+    "backend/tests/test_managed_runtime_manager.py",
+    "backend/tests/test_managed_source_loss_recovery.py",
+    "backend/tests/test_managed_sprite_reconciliation.py",
+    "backend/tests/test_managed_sprite_registry.py",
     "backend/tests/test_sprites.py"
   ],
   "sessions": [
@@ -28,13 +52,20 @@
       "compact_transcript": "/c3/08b92f689f/2/transcript.jsonl",
       "content_hash": "/c3/08b92f689f/2/content_hash.txt",
       "prompt": "/c3/08b92f689f/2/prompt.txt"
+    },
+    {
+      "metadata": "/c3/08b92f689f/3/metadata.json",
+      "transcript": "/c3/08b92f689f/3/full.jsonl",
+      "compact_transcript": "/c3/08b92f689f/3/transcript.jsonl",
+      "content_hash": "/c3/08b92f689f/3/content_hash.txt",
+      "prompt": "/c3/08b92f689f/3/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 16847594,
+    "input_tokens": 17499753,
     "cache_creation_tokens": 0,
-    "cache_read_tokens": 951079936,
-    "output_tokens": 1621897,
-    "api_call_count": 4748
+    "cache_read_tokens": 1032182784,
+    "output_tokens": 1693278,
+    "api_call_count": 5088
   }
 }
