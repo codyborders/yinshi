@@ -79,7 +79,7 @@ async def _provider_call(
     try:
         return await call()
     except Exception:
-        logger.error("managed_sprite_installation_failed", extra={"stage": stage})
+        logger.error("managed_sprite_installation_failed stage=%s", stage)
         raise RuntimeError(_PROVIDER_ERROR) from None
 
 

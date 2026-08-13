@@ -360,8 +360,8 @@ async def test_install_maps_provider_failures_to_fixed_local_error(
 
     assert str(raised.value) == "Managed Sprite installation failed"
     assert raised.value.__cause__ is None
-    assert [(record.message, record.stage) for record in caplog.records] == [
-        ("managed_sprite_installation_failed", stage)
+    assert [record.getMessage() for record in caplog.records] == [
+        f"managed_sprite_installation_failed stage={stage}"
     ]
 
 
