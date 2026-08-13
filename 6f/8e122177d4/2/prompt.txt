@@ -11,3 +11,7 @@ Continue
 ---
 
 Go do those, commit, and run /skill:software-design on the commits
+
+---
+
+go
