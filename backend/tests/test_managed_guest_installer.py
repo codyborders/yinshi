@@ -329,19 +329,22 @@ async def test_install_preserves_provider_cancellation() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("operation", "call_number"),
+    ("operation", "call_number", "stage"),
     [
-        ("write_file", 1),
-        ("write_file", 2),
-        ("write_file", 3),
-        ("configure_service", 1),
-        ("configure_service", 2),
-        ("configure_service", 3),
+        ("write_file", 1, "write_storage_marker"),
+        ("write_file", 2, "write_artifact"),
+        ("write_file", 3, "write_bootstrap"),
+        ("write_file", 4, "write_runner_environment"),
+        ("configure_service", 1, "configure_bootstrap"),
+        ("configure_service", 2, "configure_sidecar"),
+        ("configure_service", 3, "configure_runner"),
     ],
 )
 async def test_install_maps_provider_failures_to_fixed_local_error(
     operation: str,
     call_number: int,
+    stage: str,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Provider failures must not expose provider response text."""
     client = FakeSpritesClient(fail_operation=operation, fail_call=call_number)
@@ -357,6 +360,9 @@ async def test_install_maps_provider_failures_to_fixed_local_error(
 
     assert str(raised.value) == "Managed Sprite installation failed"
     assert raised.value.__cause__ is None
+    assert [(record.message, record.stage) for record in caplog.records] == [
+        ("managed_sprite_installation_failed", stage)
+    ]
 
 
 @pytest.mark.asyncio

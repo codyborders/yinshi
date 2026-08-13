@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import logging
 import re
 import shlex
 from collections.abc import Awaitable, Callable
 from math import isfinite
-from typing import Any, TypeVar
+from typing import Any, Literal, TypeVar
 
 _CONFIG_ROOT = "/home/sprite/.config/yinshi"
 _ARTIFACT_PATH = f"{_CONFIG_ROOT}/artifact.tar.gz"
@@ -39,7 +40,18 @@ _FIXED_CLAIM_ENVIRONMENT = {
 }
 _CLAIM_KEYS = _VARIABLE_CLAIM_KEYS | _FIXED_CLAIM_ENVIRONMENT.keys()
 _PROVIDER_ERROR = "Managed Sprite installation failed"
+_ProviderStage = Literal[
+    "write_storage_marker",
+    "write_artifact",
+    "write_bootstrap",
+    "write_runner_environment",
+    "configure_bootstrap",
+    "configure_sidecar",
+    "configure_runner",
+]
 _Result = TypeVar("_Result")
+
+logger = logging.getLogger(__name__)
 
 
 def _validate_claim_environment(environment: dict[str, str]) -> None:
@@ -58,11 +70,16 @@ def _validate_claim_environment(environment: dict[str, str]) -> None:
         raise ValueError("environment fixed values do not match the managed runner profile")
 
 
-async def _provider_call(call: Callable[[], Awaitable[_Result]]) -> _Result:
-    """Run one provider call without exposing provider failure details."""
+async def _provider_call(
+    call: Callable[[], Awaitable[_Result]],
+    *,
+    stage: _ProviderStage,
+) -> _Result:
+    """Run one provider call and log only its fixed stage on failure."""
     try:
         return await call()
     except Exception:
+        logger.error("managed_sprite_installation_failed", extra={"stage": stage})
         raise RuntimeError(_PROVIDER_ERROR) from None
 
 
@@ -156,7 +173,8 @@ class ManagedGuestInstaller:
                 content=b"fly-sprites-encrypted-storage\n",
                 mode="0600",
                 mkdir=True,
-            )
+            ),
+            stage="write_storage_marker",
         )
         await _provider_call(
             lambda: self._client.write_file(
@@ -165,7 +183,8 @@ class ManagedGuestInstaller:
                 content=artifact,
                 mode="0600",
                 mkdir=True,
-            )
+            ),
+            stage="write_artifact",
         )
         await _provider_call(
             lambda: self._client.write_file(
@@ -174,7 +193,8 @@ class ManagedGuestInstaller:
                 content=self._bootstrap_script,
                 mode="0700",
                 mkdir=True,
-            )
+            ),
+            stage="write_bootstrap",
         )
         runner_environment = dict(environment)
         runner_environment.update(
@@ -202,7 +222,8 @@ class ManagedGuestInstaller:
                 content=runner_env,
                 mode="0600",
                 mkdir=True,
-            )
+            ),
+            stage="write_runner_environment",
         )
         await _provider_call(
             lambda: self._client.configure_service(
@@ -220,7 +241,8 @@ class ManagedGuestInstaller:
                 needs=(),
                 http_port=None,
                 monitor_duration=self._bootstrap_timeout_seconds,
-            )
+            ),
+            stage="configure_bootstrap",
         )
         await _provider_call(
             lambda: self._client.configure_service(
@@ -233,7 +255,8 @@ class ManagedGuestInstaller:
                 needs=(),
                 http_port=None,
                 monitor_duration=None,
-            )
+            ),
+            stage="configure_sidecar",
         )
         runner_command = (
             "set -a; . /home/sprite/.config/yinshi/runner.env; set +a; "
@@ -253,5 +276,6 @@ class ManagedGuestInstaller:
                 needs=("yinshi-sidecar",),
                 http_port=None,
                 monitor_duration=None,
-            )
+            ),
+            stage="configure_runner",
         )
