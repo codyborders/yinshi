@@ -4,6 +4,7 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from datetime import timedelta
 from pathlib import Path
 from typing import Any, Literal, cast
 
@@ -56,6 +57,7 @@ from yinshi.services.managed_guest_installer import (
     ManagedGuestInstaller as ConcreteManagedGuestInstaller,
 )
 from yinshi.services.managed_runtime_manager import ManagedRuntimeManager
+from yinshi.services.managed_sprite_reconciliation import ManagedSpriteReconciler
 from yinshi.services.prompt_journal import PromptJournal
 from yinshi.services.relay_process_lock import RelayProcessLock
 from yinshi.services.runner_relay import runner_relay_broker
@@ -380,6 +382,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     relay_process_lock: RelayProcessLock | None = None
     managed_runtime_manager: ManagedRuntimeManager | None = None
     managed_backup_manager: ManagedBackupManager | None = None
+    managed_sprite_reconciler_task: asyncio.Task[None] | None = None
     provider_http_client: httpx.AsyncClient | None = None
     try:
         if app.state.mode == "hosted":
@@ -394,6 +397,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 app_settings
             )
             await managed_runtime_manager.reconcile_startup()
+            sprites_name_key = app_settings.sprites_name_key
+            if sprites_name_key is None:
+                raise RuntimeError("Managed Sprite naming is unavailable")
+            restore_name_prefix = f"{app_settings.sprites_name_prefix}-restore"[:30].rstrip("-")
+            managed_sprite_reconciler = ManagedSpriteReconciler(
+                provider=managed_runtime_manager.provider,
+                name_prefix=app_settings.sprites_name_prefix,
+                restore_name_prefix=restore_name_prefix,
+                restore_name_key=sprites_name_key.get_secret_value(),
+                grace=timedelta(seconds=app_settings.sprites_reconcile_grace_seconds),
+            )
+            await managed_sprite_reconciler.reconcile_once()
             backup_encryption_key = app_settings.backup_encryption_key
             sprites_name_key = app_settings.sprites_name_key
             if backup_encryption_key is None or sprites_name_key is None:
@@ -403,9 +418,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 store=managed_backup_store,
                 relay=runner_relay_broker,
                 runtime_service=managed_runtime_manager,
-                restore_name_prefix=(
-                    f"{app_settings.sprites_name_prefix}-restore"[:30].rstrip("-")
-                ),
+                restore_name_prefix=restore_name_prefix,
                 restore_name_key=sprites_name_key.get_secret_value(),
                 complete_restore=complete_managed_backup_restore,
                 start_restore=start_managed_backup_restore,
@@ -416,6 +429,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 staging_root=Path(app_settings.control_db_path).parent / "managed-backup-staging",
             )
             await managed_backup_manager.start()
+            managed_sprite_reconciler_task = asyncio.create_task(
+                managed_sprite_reconciler.run(
+                    interval_seconds=app_settings.sprites_reconcile_interval_seconds
+                )
+            )
             app.state.managed_backup_store = managed_backup_store
             app.state.managed_backup_manager = managed_backup_manager
             app.state.managed_runtime_manager = managed_runtime_manager
@@ -446,6 +464,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         if container_manager is not None:
             cleanup_error = await _attempt_shutdown_cleanup(
                 container_manager.destroy_all,
+                cleanup_error,
+            )
+        if managed_sprite_reconciler_task is not None:
+
+            async def stop_managed_sprite_reconciler() -> None:
+                managed_sprite_reconciler_task.cancel()
+                await asyncio.gather(managed_sprite_reconciler_task, return_exceptions=True)
+
+            cleanup_error = await _attempt_shutdown_cleanup(
+                stop_managed_sprite_reconciler,
                 cleanup_error,
             )
         if managed_backup_manager is not None:

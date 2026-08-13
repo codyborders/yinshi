@@ -222,6 +222,8 @@ class Settings(BaseSettings):
     sprites_bootstrap_script_path: str = ""
     sprites_wake_timeout_seconds: int = 30
     sprites_operation_stale_seconds: int = 1800
+    sprites_reconcile_interval_seconds: int = 900
+    sprites_reconcile_grace_seconds: int = 3600
 
     # Independent encrypted managed guest backups
     managed_backup_bucket: str = ""
@@ -418,6 +420,10 @@ def _validate_settings(settings: Settings) -> None:
             raise RuntimeError("SPRITES_WAKE_TIMEOUT_SECONDS must be between 5 and 120")
         if not 600 <= settings.sprites_operation_stale_seconds <= 86400:
             raise RuntimeError("SPRITES_OPERATION_STALE_SECONDS must be between 600 and 86400")
+        if not 60 <= settings.sprites_reconcile_interval_seconds <= 86400:
+            raise RuntimeError("SPRITES_RECONCILE_INTERVAL_SECONDS must be between 60 and 86400")
+        if not 300 <= settings.sprites_reconcile_grace_seconds <= 604800:
+            raise RuntimeError("SPRITES_RECONCILE_GRACE_SECONDS must be between 300 and 604800")
         if (
             not isinstance(settings.sprites_api_token, SecretStr)
             or not settings.sprites_api_token.get_secret_value().strip()

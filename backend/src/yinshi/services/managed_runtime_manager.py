@@ -74,9 +74,13 @@ class OnlineManagedRunner:
 class ManagedRuntimeProvider(Protocol):
     """Provider operations needed during provisioning and wake."""
 
+    async def list_sprites(self, *, prefix: str) -> tuple[SpriteRecord, ...]: ...
+
     async def get_sprite(self, name: str) -> SpriteRecord | None: ...
 
     async def create_sprite(self, name: str) -> SpriteRecord: ...
+
+    async def delete_sprite(self, name: str) -> None: ...
 
     async def set_network_policy(
         self,

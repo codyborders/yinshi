@@ -11,6 +11,7 @@ import re
 from collections.abc import AsyncIterator, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from math import isfinite
 from pathlib import Path
 from typing import Literal, cast
@@ -41,6 +42,9 @@ _MAX_PATH_LENGTH = 4096
 _MAX_FILE_CONTENT_BYTES = 10 * 1024 * 1024
 _MAX_SPRITE_ID_LENGTH = 256
 _MAX_SPRITE_STATUS_LENGTH = 64
+_MAX_SPRITE_INVENTORY_PAGES = 100
+_MAX_SPRITE_INVENTORY_ITEMS = 5000
+_MAX_CONTINUATION_TOKEN_LENGTH = 4096
 _MAX_SERVICE_COMMAND_LENGTH = 4096
 _MAX_SERVICE_LIST_ITEMS = 256
 _MAX_SERVICE_VALUE_LENGTH = 4096
@@ -273,6 +277,7 @@ class SpriteRecord:
     id: str
     name: str
     status: str
+    created_at: datetime | None = None
 
 
 ServiceStatus = Literal["stopped", "starting", "running", "stopping", "failed"]
@@ -338,6 +343,21 @@ def _parse_sprite_response(
     return _parse_sprite_record(payload, expected_name)
 
 
+def _parse_provider_timestamp(value: object) -> datetime | None:
+    """Parse one optional provider timestamp into an aware UTC value."""
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value or len(value) > 128:
+        raise SpritesProtocolError("Sprite response creation timestamp is invalid")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        raise SpritesProtocolError("Sprite response creation timestamp is invalid") from None
+    if parsed.tzinfo is None:
+        raise SpritesProtocolError("Sprite response creation timestamp is invalid")
+    return parsed.astimezone(timezone.utc)
+
+
 def _parse_sprite_record(payload: object, expected_name: str) -> SpriteRecord:
     """Validate one provider Sprite record."""
     if not isinstance(payload, dict):
@@ -356,6 +376,7 @@ def _parse_sprite_record(payload: object, expected_name: str) -> SpriteRecord:
         id=payload["id"],
         name=payload["name"],
         status=payload["status"],
+        created_at=_parse_provider_timestamp(payload.get("created_at")),
     )
 
 
@@ -449,6 +470,81 @@ class SpritesClient:
             raise ValueError("api_token must be a non-empty string")
         self._api_token = api_token
         self._http_client = http_client
+
+    async def list_sprites(self, *, prefix: str) -> tuple[SpriteRecord, ...]:
+        """Return complete provider inventory for one exact managed prefix."""
+        if not isinstance(prefix, str) or not prefix or len(prefix) > 63:
+            raise ValueError("prefix must be bounded non-empty text")
+        records: list[SpriteRecord] = []
+        names: set[str] = set()
+        identifiers: set[str] = set()
+        tokens: set[str] = set()
+        continuation_token: str | None = None
+        for _ in range(_MAX_SPRITE_INVENTORY_PAGES):
+            params = {"prefix": prefix, "max_results": "50"}
+            if continuation_token is not None:
+                params["continuation_token"] = continuation_token
+            with _translate_transport_errors("list Sprites"):
+                async with asyncio.timeout(_STANDARD_OPERATION_TIMEOUT_SECONDS):
+                    async with self._http_client.stream(
+                        "GET",
+                        "/v1/sprites",
+                        headers={"Authorization": f"Bearer {self._api_token}"},
+                        params=params,
+                        timeout=_STANDARD_OPERATION_TIMEOUT_SECONDS,
+                    ) as response:
+                        body = await _read_bounded_response(response, "Sprite inventory response")
+                        status_code = response.status_code
+            if not 200 <= status_code < 300:
+                raise SpritesProviderError(
+                    f"Fly could not list Sprites (status {status_code})"
+                ) from None
+            try:
+                payload = json.loads(body)
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                raise SpritesProtocolError("Sprite inventory response is not valid JSON") from None
+            if not isinstance(payload, dict):
+                raise SpritesProtocolError("Sprite inventory response is invalid")
+            entries = payload.get("sprites")
+            has_more = payload.get("has_more")
+            next_token = payload.get("next_continuation_token")
+            if not isinstance(entries, list) or len(entries) > 50 or type(has_more) is not bool:
+                raise SpritesProtocolError("Sprite inventory response is invalid")
+            page_names: list[str] = []
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    raise SpritesProtocolError("Sprite inventory record is invalid")
+                name = entry.get("name")
+                if not isinstance(name, str) or _SPRITE_NAME_PATTERN.fullmatch(name) is None:
+                    raise SpritesProtocolError("Sprite inventory record is invalid")
+                if not name.startswith(prefix) or name in names:
+                    raise SpritesProtocolError("Sprite inventory record is invalid")
+                names.add(name)
+                page_names.append(name)
+            if len(names) > _MAX_SPRITE_INVENTORY_ITEMS:
+                raise SpritesProtocolError("Sprite inventory exceeds item limit")
+            for name in page_names:
+                record = await self.get_sprite(name)
+                if record is None:
+                    raise SpritesProtocolError("Sprite inventory changed during listing")
+                if record.id in identifiers:
+                    raise SpritesProtocolError("Sprite inventory record is invalid")
+                identifiers.add(record.id)
+                records.append(record)
+            if not has_more:
+                if next_token is not None:
+                    raise SpritesProtocolError("Sprite inventory continuation is invalid")
+                return tuple(records)
+            if (
+                not isinstance(next_token, str)
+                or not next_token
+                or len(next_token) > _MAX_CONTINUATION_TOKEN_LENGTH
+                or next_token in tokens
+            ):
+                raise SpritesProtocolError("Sprite inventory continuation is invalid")
+            tokens.add(next_token)
+            continuation_token = next_token
+        raise SpritesProtocolError("Sprite inventory exceeds page limit")
 
     async def create_sprite(self, name: str) -> SpriteRecord:
         """Create one private Sprite and return its validated provider record."""

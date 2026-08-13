@@ -167,6 +167,88 @@ async def test_create_sprite_rejects_invalid_json() -> None:
 
 
 @pytest.mark.asyncio
+async def test_list_sprites_follows_pagination_and_fetches_creation_time() -> None:
+    """Inventory should be complete and contain trustworthy creation timestamps."""
+    requests: list[httpx.Request] = []
+
+    def handle_request(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path == "/v1/sprites":
+            continuation = request.url.params.get("continuation_token")
+            if continuation is None:
+                return httpx.Response(
+                    200,
+                    json={
+                        "sprites": [{"name": "yinshi-first", "org_slug": "org"}],
+                        "has_more": True,
+                        "next_continuation_token": "next-page",
+                    },
+                )
+            assert continuation == "next-page"
+            return httpx.Response(
+                200,
+                json={
+                    "sprites": [{"name": "yinshi-second", "org_slug": "org"}],
+                    "has_more": False,
+                },
+            )
+        name = request.url.path.rsplit("/", 1)[-1]
+        return httpx.Response(
+            200,
+            json={
+                "id": f"id-{name}",
+                "name": name,
+                "status": "cold",
+                "created_at": "2026-08-11T10:00:00Z",
+            },
+        )
+
+    transport = httpx.MockTransport(handle_request)
+    async with httpx.AsyncClient(
+        base_url="https://api.sprites.dev",
+        transport=transport,
+    ) as http_client:
+        client = SpritesClient(api_token="provider-token", http_client=http_client)
+        records = await client.list_sprites(prefix="yinshi-")
+
+    assert [record.name for record in records] == ["yinshi-first", "yinshi-second"]
+    assert all(record.created_at is not None for record in records)
+    list_requests = [request for request in requests if request.url.path == "/v1/sprites"]
+    assert dict(list_requests[0].url.params) == {"prefix": "yinshi-", "max_results": "50"}
+    assert dict(list_requests[1].url.params) == {
+        "prefix": "yinshi-",
+        "max_results": "50",
+        "continuation_token": "next-page",
+    }
+
+
+@pytest.mark.asyncio
+async def test_list_sprites_rejects_repeated_continuation_token() -> None:
+    """Incomplete cyclic pagination must never become an inventory snapshot."""
+
+    def handle_request(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/sprites":
+            return httpx.Response(
+                200,
+                json={
+                    "sprites": [],
+                    "has_more": True,
+                    "next_continuation_token": "same-token",
+                },
+            )
+        raise AssertionError("record fetch was not expected")
+
+    transport = httpx.MockTransport(handle_request)
+    async with httpx.AsyncClient(
+        base_url="https://api.sprites.dev",
+        transport=transport,
+    ) as http_client:
+        client = SpritesClient(api_token="provider-token", http_client=http_client)
+        with pytest.raises(SpritesProtocolError, match="continuation"):
+            await client.list_sprites(prefix="yinshi-")
+
+
+@pytest.mark.asyncio
 async def test_get_sprite_returns_validated_provider_record() -> None:
     """Successful lookup should return the requested Sprite record."""
     requests: list[httpx.Request] = []

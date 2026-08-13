@@ -175,6 +175,8 @@ def test_hosted_fly_lifespan_builds_and_closes_managed_runtime(
         sprites_bootstrap_script_path=str(bootstrap_path),
         sprites_wake_timeout_seconds=17,
         sprites_operation_stale_seconds=901,
+        sprites_reconcile_interval_seconds=601,
+        sprites_reconcile_grace_seconds=1801,
         control_db_path=str(tmp_path / "control.db"),
         container_enabled=False,
         backup_encryption_key="b" * 64,
@@ -198,6 +200,9 @@ def test_hosted_fly_lifespan_builds_and_closes_managed_runtime(
     installer_constructor = Mock(return_value=guest_installer)
     manager_constructor = Mock(return_value=manager)
     backup_manager_constructor = Mock(return_value=backup_manager)
+    reconciler = Mock()
+    reconciler.reconcile_once = AsyncMock()
+    reconciler.run = AsyncMock()
 
     monkeypatch.setattr(main, "get_settings", lambda: app_settings)
     monkeypatch.setattr(
@@ -214,6 +219,7 @@ def test_hosted_fly_lifespan_builds_and_closes_managed_runtime(
     monkeypatch.setattr(main, "ConcreteManagedGuestInstaller", installer_constructor)
     monkeypatch.setattr(main, "ManagedRuntimeManager", manager_constructor)
     monkeypatch.setattr(main, "ManagedBackupManager", backup_manager_constructor)
+    monkeypatch.setattr(main, "ManagedSpriteReconciler", Mock(return_value=reconciler))
     monkeypatch.setattr(
         main,
         "create_managed_backup_store",
@@ -260,11 +266,63 @@ def test_hosted_fly_lifespan_builds_and_closes_managed_runtime(
     assert not Path(app_settings.db_path).exists()
     backup_store.preflight.assert_awaited_once_with()
     manager.reconcile_startup.assert_awaited_once_with()
+    reconciler.reconcile_once.assert_awaited_once_with()
+    assert reconciler.run.await_args.kwargs["interval_seconds"] == 601
     backup_manager.start.assert_awaited_once_with()
     backup_manager.aclose.assert_awaited_once_with()
     manager.aclose.assert_awaited_once()
     provider_http_client.aclose.assert_awaited_once()
     artifact_http_client.aclose.assert_not_awaited()
+
+
+def test_hosted_fly_startup_reconciles_provider_inventory_before_serving(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Hosted Fly startup must complete Sprite inventory cleanup before serving."""
+    _configure_startup_env(monkeypatch, tmp_path, container_enabled=False)
+    import yinshi.main as main
+    from yinshi.config import Settings
+
+    events: list[str] = []
+    settings = Settings(
+        managed_runtime_provider="fly_sprites",
+        control_db_path=str(tmp_path / "control.db"),
+        container_enabled=False,
+        backup_encryption_key="b" * 64,
+        sprites_name_key="n" * 32,
+    )
+    runtime = Mock(provider=object())
+    runtime.reconcile_startup = AsyncMock(side_effect=lambda: events.append("runtime"))
+    runtime.aclose = AsyncMock()
+    provider_client = Mock()
+    provider_client.aclose = AsyncMock()
+    store = Mock()
+    store.preflight = AsyncMock()
+    backup = Mock()
+    backup.start = AsyncMock(side_effect=lambda: events.append("backup"))
+    backup.aclose = AsyncMock()
+    reconciler = Mock()
+    reconciler.reconcile_once = AsyncMock(side_effect=lambda: events.append("inventory"))
+    reconciler.run = AsyncMock()
+
+    monkeypatch.setattr(main, "get_settings", lambda: settings)
+    monkeypatch.setattr(main, "create_managed_backup_store", lambda _settings: store)
+    monkeypatch.setattr(
+        main,
+        "_initialize_managed_runtime",
+        AsyncMock(return_value=(runtime, provider_client)),
+    )
+    monkeypatch.setattr(main, "ManagedBackupManager", Mock(return_value=backup))
+    monkeypatch.setattr(main, "ManagedSpriteReconciler", Mock(return_value=reconciler))
+
+    application = main.create_app(mode="hosted")
+    with TestClient(application):
+        events.append("serving")
+
+    assert events[:4] == ["runtime", "inventory", "backup", "serving"]
+    assert reconciler.run.await_count == 1
+    assert reconciler.run.await_args.kwargs["interval_seconds"] == 900
 
 
 @pytest.mark.asyncio
@@ -371,6 +429,10 @@ async def test_lifespan_attempts_every_cleanup_before_raising_first_error(
     monkeypatch.setattr(container_service, "ContainerManager", FakeContainerManager)
     monkeypatch.setattr(main, "RelayProcessLock", FakeRelayProcessLock)
     monkeypatch.setattr(main, "ManagedBackupManager", FakeManagedBackupManager)
+    reconciler = Mock()
+    reconciler.reconcile_once = AsyncMock()
+    reconciler.run = AsyncMock()
+    monkeypatch.setattr(main, "ManagedSpriteReconciler", Mock(return_value=reconciler))
     monkeypatch.setattr(main, "create_managed_backup_store", lambda _settings: backup_store)
     monkeypatch.setattr(
         main,
