@@ -142,6 +142,7 @@ def test_runner_agent_managed_lifecycle_defaults_are_disabled(
 
     assert config.relay_idle_timeout_seconds is None
     assert config.sprite_task_lease is False
+    assert config.data_protection_key_file == config.sqlite_dir / ".yinshi-data-protection-key"
 
 
 def test_runner_agent_startup_log_excludes_private_paths(

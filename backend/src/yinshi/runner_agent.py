@@ -32,6 +32,7 @@ from yinshi.services.runner_agent_relay import (
     RunnerAgentRelayRuntime,
     RunnerRelaySessionError,
 )
+from yinshi.services.runner_data_key import load_or_create_runner_data_key
 from yinshi.services.runner_noise import load_or_create_runner_noise_keypair
 from yinshi.services.sprite_task_lease import SpriteTaskLease
 
@@ -153,6 +154,7 @@ class RunnerAgentConfig:
     registration_token: str | None
     runner_token_file: Path
     noise_private_key_file: Path
+    data_protection_key_file: Path
     capability_signing_key_file: Path
     replay_database_file: Path
     data_dir: Path
@@ -324,6 +326,14 @@ def load_config() -> RunnerAgentConfig:
         str(data_dir / "runner-capability-replay.sqlite3"),
     )
     sqlite_dir = _env_path("YINSHI_RUNNER_SQLITE_DIR", profile.default_sqlite_dir)
+    data_protection_key_file = _env_path(
+        "YINSHI_RUNNER_DATA_PROTECTION_KEY_FILE",
+        str(sqlite_dir / ".yinshi-data-protection-key"),
+    )
+    if data_protection_key_file.parent != sqlite_dir:
+        raise RuntimeError(
+            "YINSHI_RUNNER_DATA_PROTECTION_KEY_FILE must be inside YINSHI_RUNNER_SQLITE_DIR"
+        )
     shared_files_dir = _env_path(
         "YINSHI_RUNNER_SHARED_FILES_DIR",
         profile.default_shared_files_dir,
@@ -357,6 +367,7 @@ def load_config() -> RunnerAgentConfig:
         registration_token=_env_text("YINSHI_REGISTRATION_TOKEN"),
         runner_token_file=runner_token_file,
         noise_private_key_file=noise_private_key_file,
+        data_protection_key_file=data_protection_key_file,
         capability_signing_key_file=capability_signing_key_file,
         replay_database_file=replay_database_file,
         data_dir=data_dir,
@@ -835,11 +846,16 @@ async def _runner_relay_loop(config: RunnerAgentConfig, runner_token: str) -> No
     task_lease = SpriteTaskLease() if config.sprite_task_lease else None
     try:
         noise_keypair = load_or_create_runner_noise_keypair(config.noise_private_key_file)
+        data_protection_key = load_or_create_runner_data_key(
+            config.data_protection_key_file,
+            config.sqlite_dir,
+            noise_keypair.private_key,
+        )
         worker_manager = RunnerWorkerManager(
             data_directory=config.data_dir / "worker-runtime",
             database_directory=config.sqlite_dir,
             user_data_directory=config.shared_files_dir / "users",
-            runner_static_private_key=noise_keypair.private_key,
+            data_protection_key=data_protection_key,
             user_data_encryption=config.user_data_encryption,
         )
         reconnect_delay_seconds = 1.0

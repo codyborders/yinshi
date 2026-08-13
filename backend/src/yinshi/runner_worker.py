@@ -40,18 +40,18 @@ def validate_user_data_encryption_mode(
     raise ValueError("user_data_encryption must be disabled or required")
 
 
-def _derive_worker_secrets(runner_static_private_key: bytes) -> tuple[str, str]:
+def _derive_worker_secrets(data_protection_key: bytes) -> tuple[str, str]:
     """Derive stable domain-separated application and field-encryption secrets."""
-    if not isinstance(runner_static_private_key, bytes):
-        raise TypeError("runner_static_private_key must be bytes")
-    if len(runner_static_private_key) != _X25519_PRIVATE_KEY_LENGTH:
-        raise ValueError("runner_static_private_key must contain exactly 32 bytes")
+    if not isinstance(data_protection_key, bytes):
+        raise TypeError("data_protection_key must be bytes")
+    if len(data_protection_key) != _X25519_PRIVATE_KEY_LENGTH:
+        raise ValueError("data_protection_key must contain exactly 32 bytes")
     key_material = HKDF(
         algorithm=hashes.SHA256(),
         length=64,
         salt=b"yinshi-runner-worker-storage-v1",
         info=b"runner-local database and field keys",
-    ).derive(runner_static_private_key)
+    ).derive(data_protection_key)
     secret_key = base64.urlsafe_b64encode(key_material[:32]).decode("ascii")
     encryption_pepper = key_material[32:].hex()
     assert len(secret_key) >= 32
@@ -59,16 +59,16 @@ def _derive_worker_secrets(runner_static_private_key: bytes) -> tuple[str, str]:
     return secret_key, encryption_pepper
 
 
-def _derive_worker_bearer_root(runner_static_private_key: bytes) -> bytes:
-    """Derive a domain-separated root without retaining the Noise private key."""
-    if len(runner_static_private_key) != _X25519_PRIVATE_KEY_LENGTH:
-        raise ValueError("runner_static_private_key must contain exactly 32 bytes")
+def _derive_worker_bearer_root(data_protection_key: bytes) -> bytes:
+    """Derive a domain-separated root from the persistent storage key."""
+    if len(data_protection_key) != _X25519_PRIVATE_KEY_LENGTH:
+        raise ValueError("data_protection_key must contain exactly 32 bytes")
     bearer_root = HKDF(
         algorithm=hashes.SHA256(),
         length=32,
         salt=b"yinshi-runner-worker-bearer-root-v1",
         info=b"runner-local account bearer derivation",
-    ).derive(runner_static_private_key)
+    ).derive(data_protection_key)
     assert len(bearer_root) == 32
     return bearer_root
 
@@ -166,7 +166,7 @@ class RunnerWorkerManager:
         self,
         *,
         data_directory: Path,
-        runner_static_private_key: bytes,
+        data_protection_key: bytes,
         database_directory: Path | None = None,
         user_data_directory: Path | None = None,
         user_data_encryption: RunnerUserDataEncryptionMode = "disabled",
@@ -177,8 +177,8 @@ class RunnerWorkerManager:
         if not data_directory.is_absolute():
             raise ValueError("runner worker data directory must be absolute")
         validated_user_data_encryption = validate_user_data_encryption_mode(user_data_encryption)
-        static_private_key = bytes(runner_static_private_key)
-        secret_key, encryption_pepper = _derive_worker_secrets(static_private_key)
+        storage_key = bytes(data_protection_key)
+        secret_key, encryption_pepper = _derive_worker_secrets(storage_key)
         set_environment = environment_setter or os.environ.__setitem__
         if not callable(set_environment):
             raise TypeError("environment_setter must be callable")
@@ -233,7 +233,7 @@ class RunnerWorkerManager:
         self._database_directory = selected_database_directory
         self._user_data_directory = selected_user_data_directory
         self._account_binding_path = data_directory / "account.binding"
-        self._bearer_root = _derive_worker_bearer_root(static_private_key)
+        self._bearer_root = _derive_worker_bearer_root(storage_key)
         self._account_id: str | None = None
         self._dispatcher: WorkerHttpDispatcher | None = None
 

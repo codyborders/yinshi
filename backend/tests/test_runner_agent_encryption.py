@@ -160,6 +160,11 @@ async def test_runner_agent_passes_required_user_storage_mode_to_worker(
         "load_or_create_runner_noise_keypair",
         lambda path: NoiseKeypair(),
     )
+    monkeypatch.setattr(
+        runner_agent,
+        "load_or_create_runner_data_key",
+        lambda key_path, database_root, legacy_key: b"d" * 32,
+    )
     monkeypatch.setattr(runner_agent, "RunnerWorkerManager", WorkerManager)
     monkeypatch.setattr(runner_agent, "_serve_runner_relay_connection", stop_relay)
 
@@ -169,3 +174,5 @@ async def test_runner_agent_passes_required_user_storage_mode_to_worker(
 
     assert config.user_data_encryption == "required"
     assert manager_arguments["user_data_encryption"] == "required"
+    assert manager_arguments["data_protection_key"] == b"d" * 32
+    assert "runner_static_private_key" not in manager_arguments

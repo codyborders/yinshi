@@ -27,7 +27,7 @@ async def test_runner_worker_manager_reuses_one_encrypted_tenant(
     monkeypatch.setenv("GOOGLE_CLIENT_ID", "stale-hosted-setting")
     manager = RunnerWorkerManager(
         data_directory=tmp_path / "runner",
-        runner_static_private_key=b"r" * 32,
+        data_protection_key=b"r" * 32,
         environment_setter=monkeypatch.setenv,
     )
 
@@ -54,7 +54,7 @@ async def test_runner_worker_manager_quiesces_application_resources(
     """Maintenance should close journals and checkpoint runner databases."""
     manager = RunnerWorkerManager(
         data_directory=tmp_path / "runner",
-        runner_static_private_key=b"r" * 32,
+        data_protection_key=b"r" * 32,
         environment_setter=monkeypatch.setenv,
     )
     dispatcher = manager.dispatcher("account-1")
@@ -75,6 +75,21 @@ async def test_runner_worker_manager_quiesces_application_resources(
     assert manager.dispatcher("account-1") is dispatcher
 
 
+def test_runner_worker_manager_accepts_portable_data_protection_key(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    db: sqlite3.Connection,
+) -> None:
+    """Worker storage secrets accept a transport-independent key."""
+    manager = RunnerWorkerManager(
+        data_directory=tmp_path / "portable",
+        data_protection_key=b"d" * 32,
+        environment_setter=monkeypatch.setenv,
+    )
+
+    assert manager.dispatcher("account-1").user_id == "account-1"
+
+
 def test_runner_worker_manager_separates_sqlite_and_shared_storage(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -85,7 +100,7 @@ def test_runner_worker_manager_separates_sqlite_and_shared_storage(
         data_directory=tmp_path / "state",
         database_directory=tmp_path / "sqlite",
         user_data_directory=tmp_path / "shared" / "users",
-        runner_static_private_key=b"r" * 32,
+        data_protection_key=b"r" * 32,
         environment_setter=monkeypatch.setenv,
     )
 
@@ -105,14 +120,14 @@ def test_runner_worker_manager_persists_account_binding_across_restart(
     data_directory = tmp_path / "runner"
     first_manager = RunnerWorkerManager(
         data_directory=data_directory,
-        runner_static_private_key=b"r" * 32,
+        data_protection_key=b"r" * 32,
         environment_setter=monkeypatch.setenv,
     )
     first_manager.dispatcher("account-1")
 
     restarted_manager = RunnerWorkerManager(
         data_directory=data_directory,
-        runner_static_private_key=b"r" * 32,
+        data_protection_key=b"r" * 32,
         environment_setter=monkeypatch.setenv,
     )
     restarted_dispatcher = restarted_manager.dispatcher("account-1")
@@ -124,7 +139,7 @@ def test_runner_worker_manager_persists_account_binding_across_restart(
     with pytest.raises(ValueError, match="different account"):
         RunnerWorkerManager(
             data_directory=data_directory,
-            runner_static_private_key=b"r" * 32,
+            data_protection_key=b"r" * 32,
             environment_setter=monkeypatch.setenv,
         ).dispatcher("account-2")
 
@@ -140,7 +155,7 @@ def test_runner_worker_manager_recovers_interrupted_prompt_runs(
     data_directory = tmp_path / "runner-recovery"
     manager = RunnerWorkerManager(
         data_directory=data_directory,
-        runner_static_private_key=b"r" * 32,
+        data_protection_key=b"r" * 32,
         environment_setter=monkeypatch.setenv,
     )
     dispatcher = manager.dispatcher("account-1")
@@ -173,7 +188,7 @@ def test_runner_worker_manager_recovers_interrupted_prompt_runs(
 
     restarted_manager = RunnerWorkerManager(
         data_directory=data_directory,
-        runner_static_private_key=b"r" * 32,
+        data_protection_key=b"r" * 32,
         environment_setter=monkeypatch.setenv,
     )
     restarted_dispatcher = restarted_manager.dispatcher("account-1")
@@ -205,7 +220,7 @@ def test_runner_worker_manager_rejects_a_second_account(
     """One registered runner cannot be multiplexed across account identities."""
     manager = RunnerWorkerManager(
         data_directory=tmp_path / "runner",
-        runner_static_private_key=b"r" * 32,
+        data_protection_key=b"r" * 32,
         environment_setter=monkeypatch.setenv,
     )
     manager.dispatcher("account-1")
@@ -226,7 +241,7 @@ def test_runner_worker_manager_rejects_unsafe_user_storage_modes(
     with pytest.raises(ValueError, match="must be disabled or required"):
         RunnerWorkerManager(
             data_directory=data_directory,
-            runner_static_private_key=b"r" * 32,
+            data_protection_key=b"r" * 32,
             user_data_encryption=mode,  # type: ignore[arg-type]
             environment_setter=monkeypatch.setenv,
         )
@@ -260,7 +275,7 @@ def test_runner_worker_manager_verifies_effective_user_storage_mode(
     with pytest.raises(RuntimeError, match="user data encryption configuration did not apply"):
         RunnerWorkerManager(
             data_directory=tmp_path / "managed-runner",
-            runner_static_private_key=b"r" * 32,
+            data_protection_key=b"r" * 32,
             user_data_encryption="required",
             environment_setter=change_environment,
         )
@@ -296,7 +311,7 @@ def test_runner_worker_manager_requires_managed_user_storage_marker(
     monkeypatch.setattr(database_module, "get_control_db", fake_control_database)
     manager = RunnerWorkerManager(
         data_directory=tmp_path / "managed-runner",
-        runner_static_private_key=b"r" * 32,
+        data_protection_key=b"r" * 32,
         user_data_encryption="required",
         environment_setter=monkeypatch.setenv,
     )
@@ -321,7 +336,7 @@ def test_runner_worker_manager_accepts_external_encrypted_storage_marker(
     manager = RunnerWorkerManager(
         data_directory=tmp_path / "managed-runner",
         user_data_directory=encrypted_volume / "users",
-        runner_static_private_key=b"r" * 32,
+        data_protection_key=b"r" * 32,
         user_data_encryption="required",
         environment_setter=monkeypatch.setenv,
     )

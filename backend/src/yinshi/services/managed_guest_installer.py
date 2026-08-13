@@ -31,6 +31,9 @@ _FIXED_CLAIM_ENVIRONMENT = {
     "YINSHI_RUNNER_SHARED_FILES_STORAGE": "local_posix",
     "YINSHI_RUNNER_DATA_DIR": "/var/lib/yinshi",
     "YINSHI_RUNNER_SQLITE_DIR": "/var/lib/yinshi/sqlite",
+    "YINSHI_RUNNER_DATA_PROTECTION_KEY_FILE": (
+        "/var/lib/yinshi/sqlite/.yinshi-data-protection-key"
+    ),
     "YINSHI_RUNNER_SHARED_FILES_DIR": "/var/lib/yinshi/files",
     "YINSHI_RUNNER_TOKEN_FILE": "/var/lib/yinshi/runner-token",
     "YINSHI_RUNNER_NOISE_KEY_FILE": "/var/lib/yinshi/runner-noise.key",
