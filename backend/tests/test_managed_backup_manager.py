@@ -973,8 +973,8 @@ async def test_manager_create_uploads_before_release_and_publishes_after_recover
                 "300",
             )
 
-        async def stop_service(self, _name: str, **_values) -> None:
-            events.append("stop-sidecar")
+        async def stop_service(self, _name: str, **values) -> None:
+            events.append(f"stop:{values['service_name']}")
 
         async def start_service(self, _name: str, **values) -> None:
             events.append(f"start:{values['service_name']}")
@@ -1067,8 +1067,12 @@ async def test_manager_create_uploads_before_release_and_publishes_after_recover
 
     assert await manager.run_once()
     assert upload_intent_recorded
+    assert events.index("quiesce") < events.index("stop:yinshi-runner")
+    assert events.index("stop:yinshi-runner") < events.index("stop:yinshi-sidecar")
+    assert events.index("stop:yinshi-sidecar") < events.index("configure")
     assert events.index("upload") < events.index("record-upload")
     assert events.index("record-upload") < events.index("write:.release")
+    assert events.index("start:yinshi-sidecar") < events.index("start:yinshi-runner")
     assert events.index("start:yinshi-sidecar") < events.index("publish")
     assert events.index("relay-release") < events.index("publish")
     assert not tuple(tmp_path.iterdir())
@@ -1778,8 +1782,15 @@ async def test_manager_recovers_uploaded_archive_without_second_upload(tmp_path)
     assert events.index("relay-release") < events.index("publish")
 
 
+@pytest.mark.parametrize(
+    "failure_stage",
+    ["runner-stop", "sidecar-stop", "guest-result"],
+)
 @pytest.mark.asyncio
-async def test_manager_recovers_source_when_create_fails_before_upload(tmp_path) -> None:
+async def test_manager_recovers_source_when_create_fails_before_upload(
+    tmp_path,
+    failure_stage: str,
+) -> None:
     """A pre-upload failure should restart services and release exact maintenance."""
     from datetime import datetime, timedelta, timezone
 
@@ -1833,8 +1844,11 @@ async def test_manager_recovers_source_when_create_fails_before_upload(tmp_path)
     )
 
     class Provider:
-        async def stop_service(self, *_args, **_values) -> None:
-            events.append("stop")
+        async def stop_service(self, *_args, **values) -> None:
+            service = values["service_name"]
+            events.append(f"stop:{service}")
+            if failure_stage == f"{service.removeprefix('yinshi-')}-stop":
+                raise RuntimeError(f"{service} stop unavailable")
 
         async def write_file(self, *_args, **_values) -> None:
             events.append("write")
@@ -1846,7 +1860,9 @@ async def test_manager_recovers_source_when_create_fails_before_upload(tmp_path)
             events.append(f"start:{values['service_name']}")
 
         async def read_file(self, *_args, **_values) -> bytes:
-            raise RuntimeError("guest result unavailable")
+            if failure_stage == "guest-result":
+                raise RuntimeError("guest result unavailable")
+            raise AssertionError("backup should not read a result after a stop failure")
 
         async def delete_file(self, *_args, **_values) -> None:
             events.append("cleanup")
@@ -1876,10 +1892,12 @@ async def test_manager_recovers_source_when_create_fails_before_upload(tmp_path)
         staging_root=tmp_path,
     )
 
-    with pytest.raises(RuntimeError, match="guest result unavailable"):
+    with pytest.raises(RuntimeError):
         await manager.run_once()
 
-    assert "start:yinshi-sidecar" in events
-    assert "start:yinshi-runner" in events
+    assert events.index("stop:yinshi-runner") < events.index("start:yinshi-sidecar")
+    if failure_stage != "runner-stop":
+        assert events.index("stop:yinshi-runner") < events.index("stop:yinshi-sidecar")
+    assert events.index("start:yinshi-sidecar") < events.index("start:yinshi-runner")
     assert "relay-release" in events
     assert "cleanup" in events

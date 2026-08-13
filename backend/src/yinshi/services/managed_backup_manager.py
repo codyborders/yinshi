@@ -903,9 +903,12 @@ class ManagedBackupManager:
                 runtime.runner_id, job_id=operation.job_id, timeout_seconds=30
             )
             maintenance_started = True
-            await self._provider.stop_service(
-                runtime.sprite_name, service_name="yinshi-sidecar", timeout_seconds=30
-            )
+            for service in ("yinshi-runner", "yinshi-sidecar"):
+                await self._provider.stop_service(
+                    runtime.sprite_name,
+                    service_name=service,
+                    timeout_seconds=30,
+                )
             await self._provider.write_file(
                 runtime.sprite_name,
                 path=f"{root}.job",
