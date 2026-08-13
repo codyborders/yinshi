@@ -146,7 +146,7 @@ class ManagedSpriteReconciler:
                 continue
             record = await self._provider.get_sprite(name)
             if record is None:
-                remove_managed_sprite_identity(name)
+                deferred += 1
                 continue
             if record.created_at is None or now - record.created_at < self._grace:
                 deferred += 1

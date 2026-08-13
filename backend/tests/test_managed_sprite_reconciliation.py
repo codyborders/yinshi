@@ -325,6 +325,70 @@ async def test_reconcile_defers_young_orphan_and_rechecks_before_delete(
 
 
 @pytest.mark.asyncio
+async def test_reconcile_retains_identity_after_inconsistent_provider_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One list/get inconsistency must not erase durable provider ownership."""
+    from yinshi.config import get_settings
+    from yinshi.db import get_control_db, init_control_db
+    from yinshi.services.managed_sprite_reconciliation import ManagedSpriteReconciler
+    from yinshi.services.managed_sprite_registry import (
+        list_managed_sprite_identities,
+        register_managed_sprite_identity,
+    )
+
+    monkeypatch.setenv("CONTROL_DB_PATH", str(tmp_path / "control.db"))
+    monkeypatch.setenv("CONTROL_FIELD_ENCRYPTION", "disabled")
+    monkeypatch.setenv("ENCRYPTION_PEPPER", "a" * 64)
+    monkeypatch.setenv("SECRET_KEY", "test-session-secret-0123456789abcdef")
+    monkeypatch.setenv("DISABLE_AUTH", "true")
+    monkeypatch.setenv("CONTAINER_ENABLED", "false")
+    get_settings.cache_clear()
+    init_control_db()
+    with get_control_db() as database:
+        database.execute(
+            "INSERT INTO users (id, email, display_name) VALUES (?, ?, ?)",
+            ("user-1", "user@example.com", "User"),
+        )
+        database.commit()
+    old = datetime(2026, 8, 12, tzinfo=timezone.utc)
+    register_managed_sprite_identity(
+        sprite_name="yinshi-inconsistent",
+        identity_kind="runtime",
+        user_id="user-1",
+        job_id=None,
+        lifecycle_status="retired",
+        now=old,
+    )
+
+    class InconsistentProvider(FakeProvider):
+        async def list_sprites(self, *, prefix: str) -> tuple[SpriteInventoryRecord, ...]:
+            if "yinshi-inconsistent".startswith(prefix):
+                return (SpriteInventoryRecord("yinshi-inconsistent"),)
+            return ()
+
+        async def get_sprite(self, name: str) -> SpriteRecord | None:
+            return None
+
+    reconciler = ManagedSpriteReconciler(
+        provider=InconsistentProvider(()),
+        name_prefix="yinshi",
+        restore_name_prefix="yinshi-restore",
+        restore_name_key="sprite-name-key",
+        grace=timedelta(hours=1),
+        clock=lambda: datetime(2026, 8, 13, tzinfo=timezone.utc),
+    )
+
+    await reconciler.reconcile_once()
+
+    assert [identity.sprite_name for identity in list_managed_sprite_identities()] == [
+        "yinshi-inconsistent"
+    ]
+    get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
 async def test_classified_reconcile_logs_and_reraises_startup_failure(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,

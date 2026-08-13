@@ -44,6 +44,12 @@ def test_registry_persists_and_removes_one_owned_identity(tmp_path, monkeypatch)
     assert [(identity.sprite_name, identity.lifecycle_status) for identity in identities] == [
         ("yinshi-owned", "creating")
     ]
+    with get_control_db() as database:
+        database.execute("DELETE FROM users WHERE id = ?", ("user-1",))
+        database.commit()
+    assert [identity.sprite_name for identity in list_managed_sprite_identities()] == [
+        "yinshi-owned"
+    ]
     assert remove_managed_sprite_identity("yinshi-owned") is True
     assert list_managed_sprite_identities() == ()
     get_settings.cache_clear()

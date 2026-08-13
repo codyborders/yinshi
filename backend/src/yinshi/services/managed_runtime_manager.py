@@ -236,6 +236,14 @@ class ManagedRuntimeManager:
         """Install a fresh candidate or resume one exact persisted replacement."""
         if not user_id or not job_id or not candidate_sprite_name:
             raise ManagedRuntimeStateError(_STATE_ERROR_MESSAGE)
+        self._register_sprite_identity(
+            sprite_name=candidate_sprite_name,
+            identity_kind="restore_candidate",
+            user_id=user_id,
+            job_id=job_id,
+            lifecycle_status="creating",
+            now=self._now(),
+        )
         sprite = await self._provider.get_sprite(candidate_sprite_name)
         if candidate_runner_id is not None:
             runner = self._get_restore_runner(user_id, job_id)
@@ -261,14 +269,6 @@ class ManagedRuntimeManager:
             raise ManagedRuntimeStateError(_STATE_ERROR_MESSAGE)
         artifact = await self._fetch_restore_artifact()
         if sprite is None:
-            self._register_sprite_identity(
-                sprite_name=candidate_sprite_name,
-                identity_kind="restore_candidate",
-                user_id=user_id,
-                job_id=job_id,
-                lifecycle_status="creating",
-                now=self._now(),
-            )
             sprite = await self._provider.create_sprite(candidate_sprite_name)
         if sprite.name != candidate_sprite_name:
             raise ManagedRuntimeProviderError(_PROVIDER_ERROR_MESSAGE)

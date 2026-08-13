@@ -36,6 +36,7 @@ async def test_restore_candidate_provisioning_reuses_persisted_candidate_authori
         is_runner_connected=lambda runner_id: runner_id == "candidate-runner",
         clock=lambda: datetime(2026, 8, 12, 12, 0, tzinfo=timezone.utc),
         sleep=lambda _seconds: asyncio.sleep(0),
+        register_sprite_identity=lambda **_values: None,
     )
     manager._create_restore_registration = Mock(side_effect=AssertionError("rotated authority"))
     manager._get_restore_runner = Mock(
@@ -62,6 +63,76 @@ async def test_restore_candidate_provisioning_reuses_persisted_candidate_authori
     manager._get_restore_runner.assert_called_once_with("user-1", "job-1")
     manager._create_restore_registration.assert_not_called()
     installer.install.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_existing_restore_candidate_adoption_registers_exact_owner(
+    tmp_path, monkeypatch
+) -> None:
+    """Successful adoption must leave exact durable ownership for reconciliation."""
+    from yinshi.config import get_settings
+    from yinshi.db import get_control_db, init_control_db
+    from yinshi.services.managed_runtime_manager import ManagedRuntimeManager
+    from yinshi.services.managed_sprite_registry import list_managed_sprite_identities
+
+    monkeypatch.setenv("CONTROL_DB_PATH", str(tmp_path / "control.db"))
+    monkeypatch.setenv("CONTROL_FIELD_ENCRYPTION", "disabled")
+    monkeypatch.setenv("ENCRYPTION_PEPPER", "a" * 64)
+    monkeypatch.setenv("SECRET_KEY", "test-session-secret-0123456789abcdef")
+    monkeypatch.setenv("DISABLE_AUTH", "true")
+    monkeypatch.setenv("CONTAINER_ENABLED", "false")
+    get_settings.cache_clear()
+    init_control_db()
+    with get_control_db() as database:
+        database.execute(
+            "INSERT INTO users (id, email, display_name) VALUES (?, ?, ?)",
+            ("user-1", "user@example.com", "User"),
+        )
+        database.commit()
+
+    provider = Mock()
+    provider.get_sprite = AsyncMock(return_value=SimpleNamespace(name="candidate-sprite"))
+    manager = ManagedRuntimeManager(
+        provider=provider,
+        guest_installer=Mock(),
+        http_client=Mock(),
+        name_prefix="managed",
+        name_key="secret",
+        artifact_url="https://artifact.invalid/runner.tar.gz",
+        artifact_sha256="a" * 64,
+        artifact_version="runner-v1",
+        allowed_domains=("control.example",),
+        region="ord",
+        control_url="https://control.example",
+        readiness_timeout_seconds=5,
+        is_runner_connected=lambda runner_id: runner_id == "candidate-runner",
+        clock=lambda: datetime(2026, 8, 12, 12, 0, tzinfo=timezone.utc),
+        sleep=lambda _seconds: asyncio.sleep(0),
+    )
+    manager._get_restore_runner = Mock(
+        return_value={
+            "id": "candidate-runner",
+            "kind": "managed_restore",
+            "status": "online",
+            "registered_at": "2026-08-12T12:00:00Z",
+            "noise_public_key": "candidate-key",
+            "noise_key_confirmed": True,
+            "capabilities": {"artifact_sha256": "a" * 64},
+        }
+    )
+
+    await manager.provision_restore_candidate(
+        "user-1",
+        job_id="job-1",
+        candidate_sprite_name="candidate-sprite",
+        candidate_runner_id="candidate-runner",
+    )
+
+    identities = list_managed_sprite_identities()
+    assert [
+        (identity.sprite_name, identity.user_id, identity.job_id) for identity in identities
+    ] == [("candidate-sprite", "user-1", "job-1")]
+    get_settings.cache_clear()
 
 
 @pytest.mark.asyncio

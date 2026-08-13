@@ -793,7 +793,7 @@ CREATE TABLE IF NOT EXISTS managed_sprite_identities (
     sprite_name TEXT PRIMARY KEY,
     provider_name TEXT NOT NULL CHECK (provider_name = 'fly_sprites'),
     identity_kind TEXT NOT NULL CHECK (identity_kind IN ('runtime', 'restore_candidate')),
-    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL,
     job_id TEXT,
     lifecycle_status TEXT NOT NULL CHECK (
         lifecycle_status IN ('creating', 'active', 'retired', 'deleting')
@@ -1183,6 +1183,7 @@ def _migrate_control(conn: sqlite3.Connection) -> None:
     _migrate_managed_runtime_activation_guards(conn)
     _migrate_managed_backup_archive_statuses(conn)
     _migrate_managed_backup_operation_columns(conn)
+    _migrate_managed_sprite_identity_ownership(conn)
     _backfill_managed_sprite_identities(conn)
     conn.commit()
 
@@ -1338,6 +1339,51 @@ def _migrate_managed_backup_operation_columns(conn: sqlite3.Connection) -> None:
           )
         """)
     conn.commit()
+
+
+def _migrate_managed_sprite_identity_ownership(conn: sqlite3.Connection) -> None:
+    """Keep provider ownership after the related user row is removed."""
+    foreign_keys = conn.execute("PRAGMA foreign_key_list(managed_sprite_identities)").fetchall()
+    if not foreign_keys:
+        return
+    conn.commit()
+    conn.execute("PRAGMA foreign_keys = OFF")
+    conn.execute("PRAGMA legacy_alter_table = ON")
+    try:
+        conn.execute(
+            "ALTER TABLE managed_sprite_identities " "RENAME TO managed_sprite_identities_old"
+        )
+        conn.execute("""CREATE TABLE managed_sprite_identities (
+                   sprite_name TEXT PRIMARY KEY,
+                   provider_name TEXT NOT NULL CHECK (provider_name = 'fly_sprites'),
+                   identity_kind TEXT NOT NULL CHECK (
+                       identity_kind IN ('runtime', 'restore_candidate')
+                   ),
+                   user_id TEXT NOT NULL,
+                   job_id TEXT,
+                   lifecycle_status TEXT NOT NULL CHECK (
+                       lifecycle_status IN ('creating', 'active', 'retired', 'deleting')
+                   ),
+                   created_at TEXT NOT NULL,
+                   updated_at TEXT NOT NULL,
+                   CHECK (
+                       (identity_kind = 'runtime' AND job_id IS NULL)
+                       OR (identity_kind = 'restore_candidate' AND job_id IS NOT NULL)
+                   )
+               )""")
+        conn.execute("""INSERT INTO managed_sprite_identities
+               SELECT * FROM managed_sprite_identities_old""")
+        conn.execute("DROP TABLE managed_sprite_identities_old")
+        violation = conn.execute("PRAGMA foreign_key_check").fetchone()
+        if violation is not None:
+            raise sqlite3.IntegrityError("Managed Sprite identity migration left an invalid key")
+        conn.commit()
+    except sqlite3.Error:
+        conn.rollback()
+        raise
+    finally:
+        conn.execute("PRAGMA legacy_alter_table = OFF")
+        conn.execute("PRAGMA foreign_keys = ON")
 
 
 def _backfill_managed_sprite_identities(conn: sqlite3.Connection) -> None:
