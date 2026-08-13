@@ -227,7 +227,11 @@ def _bootstrap_environment(tmp_path: Path) -> tuple[dict[str, str], Path, Path]:
     npm.chmod(0o700)
     sprite_env = tools / "sprite-env"
     sprite_env.write_text(
-        '#!/usr/bin/env bash\nprintf \'sprite-env:%s\\n\' "$*" >> "$PACKAGE_LOG"\n',
+        '#!/usr/bin/env bash\nprintf \'sprite-env:%s\\n\' "$*" >> "$PACKAGE_LOG"\n'
+        'if [[ "${FAKE_SPRITE_STOP_SIGNAL:-0}" == "1" '
+        '&& "$*" == "services stop yinshi-bootstrap" ]]; then\n'
+        '    kill -TERM "$PPID"\n'
+        "fi\n",
         encoding="utf-8",
     )
     sprite_env.chmod(0o700)
@@ -453,8 +457,9 @@ def test_bootstrap_preserves_current_and_cleans_staging_on_install_failure(
 
 
 def test_bootstrap_installs_release_and_switches_current(tmp_path: Path) -> None:
-    """Bootstrap validates, installs, switches, removes upload, and stops its unit."""
+    """Bootstrap validates, installs, switches, removes upload, and exits cleanly."""
     env, install_root, log = _bootstrap_environment(tmp_path)
+    env["FAKE_SPRITE_STOP_SIGNAL"] = "1"
     artifact = tmp_path / "release.tar.gz"
     digest = _valid_artifact(artifact)
 
@@ -479,4 +484,4 @@ def test_bootstrap_installs_release_and_switches_current(tmp_path: Path) -> None
     assert package_calls[1].endswith("/backend")
     assert "base.txt" not in calls
     assert "npm:ci --omit=dev" in calls
-    assert "sprite-env:services stop yinshi-bootstrap" in calls
+    assert "sprite-env:services stop yinshi-bootstrap" not in calls

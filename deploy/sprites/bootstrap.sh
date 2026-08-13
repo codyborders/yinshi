@@ -286,4 +286,3 @@ candidate=""
 rm -f -- "$artifact"
 trap - EXIT HUP INT TERM
 printf 'Installed managed Sprite release %s\n' "$release_id"
-sprite-env services stop yinshi-bootstrap
