@@ -31,6 +31,8 @@ _CHUNK_BYTES = 1024 * 1024
 _NONCE_BYTES = 12
 _TAG_BYTES = 16
 _MANIFEST_NAME = "manifest.json"
+_PORTABLE_DATA_KEY_MEMBER = "sqlite/.yinshi-data-protection-key"
+_PORTABLE_DATA_KEY_ERROR = "managed backup portable data-protection key is invalid"
 _MEMBER_COUNT_MAX = 200_000
 _MEMBER_BYTES_MAX = 64 * 1024 * 1024 * 1024
 _EXPANDED_BYTES_MAX = 200 * 1024 * 1024 * 1024
@@ -115,13 +117,35 @@ def _regular_files(root: Path, archive_root: str) -> list[tuple[Path, str]]:
     return sorted(files, key=lambda item: item[1])
 
 
+def _validate_portable_data_key(source_path: Path) -> None:
+    """Require exact portable storage-key metadata without following links."""
+    try:
+        descriptor = os.open(source_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except OSError as exc:
+        raise ValueError(_PORTABLE_DATA_KEY_ERROR) from exc
+    try:
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != os.geteuid()
+            or metadata.st_nlink != 1
+            or stat.S_IMODE(metadata.st_mode) != 0o600
+            or metadata.st_size != 32
+        ):
+            raise ValueError(_PORTABLE_DATA_KEY_ERROR)
+        if len(os.read(descriptor, 33)) != 32:
+            raise ValueError(_PORTABLE_DATA_KEY_ERROR)
+    finally:
+        os.close(descriptor)
+
+
 def _manifest(context: ManagedArchiveContext, member_names: tuple[str, ...]) -> bytes:
     """Serialize exact authenticated archive metadata."""
     return (
         json.dumps(
             {
                 "context": asdict(context),
-                "format": "yinshi-managed-backup-v1",
+                "format": "yinshi-managed-backup-v2",
                 "members": list(member_names),
             },
             separators=(",", ":"),
@@ -144,10 +168,18 @@ def _write_tar(
         manifest_member.mtime = 0
         archive.addfile(manifest_member, io.BytesIO(manifest))
         for source_path, member_name in files:
+            listed_metadata = source_path.lstat()
             descriptor = os.open(source_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
             try:
                 source_metadata = os.fstat(descriptor)
-                if not stat.S_ISREG(source_metadata.st_mode):
+                if (
+                    not stat.S_ISREG(source_metadata.st_mode)
+                    or source_metadata.st_dev != listed_metadata.st_dev
+                    or source_metadata.st_ino != listed_metadata.st_ino
+                    or source_metadata.st_size != listed_metadata.st_size
+                    or stat.S_IMODE(source_metadata.st_mode)
+                    != stat.S_IMODE(listed_metadata.st_mode)
+                ):
                     raise ValueError("managed backup source changed during creation")
                 member = tarfile.TarInfo(member_name)
                 member.size = source_metadata.st_size
@@ -197,6 +229,14 @@ def create_managed_backup_archive(
     _require_context(context)
     key = _require_key(archive_key)
     sqlite_files = _regular_files(sqlite_root, "sqlite")
+    portable_keys = [
+        source_path
+        for source_path, member_name in sqlite_files
+        if member_name == _PORTABLE_DATA_KEY_MEMBER
+    ]
+    if len(portable_keys) != 1:
+        raise ValueError(_PORTABLE_DATA_KEY_ERROR)
+    _validate_portable_data_key(portable_keys[0])
     shared_files = _regular_files(files_root, "files")
     files = sorted(sqlite_files + shared_files, key=lambda item: item[1])
     member_names = tuple(member_name for _path, member_name in files)
@@ -287,13 +327,18 @@ def _inspect_tar(tar_path: Path, expected_context: ManagedArchiveContext) -> tup
             manifest = json.loads(manifest_source.read().decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError):
             raise ValueError("managed backup manifest is invalid") from None
+    if isinstance(manifest, dict) and manifest.get("format") == "yinshi-managed-backup-v1":
+        raise ValueError("managed backup archive predates portable data-key support")
     expected_manifest = {
         "context": asdict(expected_context),
-        "format": "yinshi-managed-backup-v1",
+        "format": "yinshi-managed-backup-v2",
         "members": sorted(members),
     }
     if manifest != expected_manifest:
         raise ValueError("managed backup manifest does not match expected context")
+    portable_key = members.get(_PORTABLE_DATA_KEY_MEMBER)
+    if portable_key is None or portable_key.size != 32 or stat.S_IMODE(portable_key.mode) != 0o600:
+        raise ValueError(_PORTABLE_DATA_KEY_ERROR)
     for name in members:
         root = PurePosixPath(name).parts[0]
         if root not in {"sqlite", "files"}:
@@ -499,6 +544,7 @@ def restore_managed_backup_archive(
         _extract_validated_tar(tar_path, extracted_root)
         if not staged_sqlite.is_dir() or not staged_files.is_dir():
             raise ValueError("managed backup is missing required data roots")
+        _validate_portable_data_key(staged_sqlite / ".yinshi-data-protection-key")
         _sync_directory_tree(staged_sqlite)
         _sync_directory_tree(staged_files)
         _sync_directory(extracted_root)

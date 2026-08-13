@@ -7,6 +7,12 @@ from pathlib import Path
 import pytest
 
 
+def _write_data_key(sqlite_root: Path) -> None:
+    key_path = sqlite_root / ".yinshi-data-protection-key"
+    key_path.write_bytes(b"s" * 32)
+    key_path.chmod(0o600)
+
+
 def _create_restore_fixture(tmp_path: Path) -> tuple[object, Path, Path, Path, bytes]:
     """Create old roots plus one authenticated replacement archive."""
     import yinshi.managed_backup_guest as guest
@@ -34,6 +40,7 @@ def _create_restore_fixture(tmp_path: Path) -> tuple[object, Path, Path, Path, b
     )
     archive_path = tmp_path / "archive.enc"
     archive_key = b"k" * 32
+    _write_data_key(source_sqlite)
     guest.create_managed_backup_archive(
         sqlite_root=source_sqlite,
         files_root=source_files,
@@ -205,6 +212,7 @@ def test_restore_recovers_interrupted_root_replacement(tmp_path: Path) -> None:
     source_sqlite.mkdir(parents=True)
     source_files.mkdir()
     (source_sqlite / "value").write_text("new-sqlite", encoding="utf-8")
+    _write_data_key(source_sqlite)
     (source_files / "value").write_text("new-files", encoding="utf-8")
     context = guest.ManagedArchiveContext(
         archive_id="archive-1",

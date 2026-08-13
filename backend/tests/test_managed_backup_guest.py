@@ -7,6 +7,13 @@ from pathlib import Path
 import pytest
 
 
+def _write_data_key(sqlite_root: Path, value: bytes = b"d" * 32) -> Path:
+    key_path = sqlite_root / ".yinshi-data-protection-key"
+    key_path.write_bytes(value)
+    key_path.chmod(0o600)
+    return key_path
+
+
 def test_create_archive_encrypts_both_guest_data_roots(tmp_path: Path) -> None:
     """Backup creation should emit ciphertext for SQLite and shared files."""
     from yinshi.managed_backup_guest import (
@@ -21,6 +28,7 @@ def test_create_archive_encrypts_both_guest_data_roots(tmp_path: Path) -> None:
     sqlite_root.mkdir(parents=True)
     files_root.mkdir()
     (sqlite_root / "control.db").write_bytes(b"sqlite-control-secret")
+    _write_data_key(sqlite_root)
     (files_root / "workspace.txt").write_text("workspace-secret", encoding="utf-8")
     archive_path = state_root / "maintenance" / "archive.enc"
     context = ManagedArchiveContext(
@@ -47,7 +55,131 @@ def test_create_archive_encrypts_both_guest_data_roots(tmp_path: Path) -> None:
         archive_path,
         archive_key=b"k" * 32,
         expected_context=context,
-    ) == ("files/workspace.txt", "sqlite/control.db")
+    ) == (
+        "files/workspace.txt",
+        "sqlite/.yinshi-data-protection-key",
+        "sqlite/control.db",
+    )
+
+
+def test_create_archive_requires_portable_data_key(tmp_path: Path) -> None:
+    """Backup creation should reject roots without portable key material."""
+    from yinshi.managed_backup_guest import (
+        ManagedArchiveContext,
+        create_managed_backup_archive,
+    )
+
+    sqlite_root = tmp_path / "sqlite"
+    files_root = tmp_path / "files"
+    sqlite_root.mkdir()
+    files_root.mkdir()
+
+    with pytest.raises(ValueError, match="portable data-protection key"):
+        create_managed_backup_archive(
+            sqlite_root=sqlite_root,
+            files_root=files_root,
+            archive_path=tmp_path / "archive.enc",
+            archive_key=b"k" * 32,
+            context=ManagedArchiveContext(
+                archive_id="archive",
+                created_at="2026-08-13T00:00:00+00:00",
+                owner_digest="a" * 64,
+                runtime_generation=1,
+            ),
+        )
+
+
+@pytest.mark.parametrize(
+    ("key_value", "mode"),
+    [(b"short", 0o600), (b"d" * 32, 0o644)],
+)
+def test_create_archive_rejects_invalid_portable_data_key(
+    tmp_path: Path,
+    key_value: bytes,
+    mode: int,
+) -> None:
+    """Backup creation should reject malformed or permissive portable keys."""
+    from yinshi.managed_backup_guest import (
+        ManagedArchiveContext,
+        create_managed_backup_archive,
+    )
+
+    sqlite_root = tmp_path / "sqlite"
+    files_root = tmp_path / "files"
+    sqlite_root.mkdir()
+    files_root.mkdir()
+    key_path = _write_data_key(sqlite_root, key_value)
+    key_path.chmod(mode)
+
+    with pytest.raises(ValueError, match="portable data-protection key"):
+        create_managed_backup_archive(
+            sqlite_root=sqlite_root,
+            files_root=files_root,
+            archive_path=tmp_path / "archive.enc",
+            archive_key=b"k" * 32,
+            context=ManagedArchiveContext(
+                archive_id="archive",
+                created_at="2026-08-13T00:00:00+00:00",
+                owner_digest="a" * 64,
+                runtime_generation=1,
+            ),
+        )
+
+
+def test_source_loss_inspection_rejects_legacy_v1_archive(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Source-loss restore should reject archives without portable-key format."""
+    import json
+
+    import yinshi.managed_backup_guest as guest
+
+    sqlite_root = tmp_path / "sqlite"
+    files_root = tmp_path / "files"
+    sqlite_root.mkdir()
+    files_root.mkdir()
+    _write_data_key(sqlite_root)
+    context = guest.ManagedArchiveContext(
+        archive_id="archive",
+        created_at="2026-08-13T00:00:00+00:00",
+        owner_digest="a" * 64,
+        runtime_generation=1,
+    )
+
+    def legacy_manifest(
+        supplied_context: guest.ManagedArchiveContext,
+        member_names: tuple[str, ...],
+    ) -> bytes:
+        return (
+            json.dumps(
+                {
+                    "context": guest.asdict(supplied_context),
+                    "format": "yinshi-managed-backup-v1",
+                    "members": list(member_names),
+                },
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+            + "\n"
+        ).encode()
+
+    monkeypatch.setattr(guest, "_manifest", legacy_manifest)
+    archive_path = tmp_path / "legacy.enc"
+    guest.create_managed_backup_archive(
+        sqlite_root=sqlite_root,
+        files_root=files_root,
+        archive_path=archive_path,
+        archive_key=b"k" * 32,
+        context=context,
+    )
+
+    with pytest.raises(ValueError, match="portable data-key support"):
+        guest.inspect_managed_backup_archive(
+            archive_path,
+            archive_key=b"k" * 32,
+            expected_context=context,
+        )
 
 
 def test_restore_archive_replaces_both_roots_and_preserves_runner_identity(
@@ -66,6 +198,7 @@ def test_restore_archive_replaces_both_roots_and_preserves_runner_identity(
     source_sqlite.mkdir(parents=True)
     source_files.mkdir()
     (source_sqlite / "control.db").write_bytes(b"original-database")
+    _write_data_key(source_sqlite, b"s" * 32)
     (source_files / "repo.txt").write_text("original-workspace", encoding="utf-8")
     context = ManagedArchiveContext(
         archive_id="018f47a2-9d3a-7f3b-8f0f-1a2b3c4d5e6f",
@@ -120,6 +253,7 @@ def test_archive_with_empty_shared_root_remains_restorable(tmp_path: Path) -> No
     source_sqlite.mkdir(parents=True)
     source_files.mkdir()
     (source_sqlite / "control.db").write_bytes(b"database")
+    _write_data_key(source_sqlite)
     context = ManagedArchiveContext(
         archive_id="018f47a2-9d3a-7f3b-8f0f-1a2b3c4d5e6f",
         created_at="2026-08-12T12:00:00+00:00",
@@ -185,6 +319,7 @@ def test_run_create_job_writes_fixed_private_result(
     sqlite_root.mkdir(parents=True)
     files_root.mkdir()
     (sqlite_root / "control.db").write_bytes(b"database")
+    _write_data_key(sqlite_root)
     runner_key = X25519PrivateKey.generate()
     job_id = "018f47a2-9d3a-7f3b-8f0f-1a2b3c4d5e70"
     context = {
@@ -253,6 +388,7 @@ def test_run_create_job_reuses_valid_existing_result(tmp_path: Path) -> None:
     files_root.mkdir()
     maintenance_root.mkdir()
     (sqlite_root / "control.db").write_bytes(b"database")
+    _write_data_key(sqlite_root)
     runner_key = X25519PrivateKey.generate()
     job_id = "018f47a2-9d3a-7f3b-8f0f-1a2b3c4d5e80"
     envelope = seal_managed_backup_job(
@@ -325,6 +461,7 @@ def test_run_restore_job_replaces_data_and_writes_private_result(tmp_path: Path)
     source_sqlite.mkdir(parents=True)
     source_files.mkdir()
     (source_sqlite / "control.db").write_bytes(b"restored-database")
+    _write_data_key(source_sqlite)
     (source_files / "workspace.txt").write_bytes(b"restored-files")
     job_id = "018f47a2-9d3a-7f3b-8f0f-1a2b3c4d5e79"
     context = ManagedArchiveContext(
@@ -417,6 +554,7 @@ def test_guest_command_uses_fixed_managed_paths(
     files_root.mkdir()
     maintenance_root.mkdir(mode=0o700)
     (sqlite_root / "control.db").write_bytes(b"database")
+    _write_data_key(sqlite_root)
     runner_key = X25519PrivateKey.generate()
     runner_key_path = state_root / "runner-noise.key"
     runner_key_path.write_bytes(runner_key.private_bytes_raw())
