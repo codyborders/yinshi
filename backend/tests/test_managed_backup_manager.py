@@ -8,6 +8,294 @@ import pytest
 
 
 @pytest.mark.asyncio
+async def test_reconciliation_failure_restores_source_runtime(tmp_path) -> None:
+    """A failed upload recovery pass must restore source services and relay access."""
+    from datetime import datetime, timedelta, timezone
+
+    from yinshi.services.managed_backup_manager import ManagedBackupManager
+    from yinshi.services.managed_backups import ManagedBackupArchive, ManagedBackupOperation
+    from yinshi.services.managed_runners import ManagedRuntimeStatus
+
+    now = datetime(2026, 8, 12, 12, 0, tzinfo=timezone.utc)
+    operation = ManagedBackupOperation(
+        user_id="user-1",
+        job_id="job-create",
+        archive_id="archive-1",
+        operation="create",
+        status="running",
+        runtime_generation=7,
+        started_at=now.isoformat(),
+        updated_at=now.isoformat(),
+        last_error=None,
+        phase="object_uploading",
+        lease_owner="worker-1",
+        lease_token="lease-1",
+        lease_expires_at=(now + timedelta(minutes=2)).isoformat(),
+    )
+    archive = ManagedBackupArchive(
+        id="archive-1",
+        user_id="user-1",
+        runtime_generation=7,
+        status="creating",
+        object_key="managed/v1/archive.enc",
+        object_version=None,
+        size_bytes=17,
+        sha256="d" * 64,
+        wrapped_key=b"wrapped-key",
+        key_id="backup-v1",
+        owner_digest="c" * 64,
+        created_at=now.isoformat(),
+        completed_at=None,
+        last_error=None,
+    )
+    runtime = ManagedRuntimeStatus(
+        user_id="user-1",
+        runner_id="runner-1",
+        provider_name="fly_sprites",
+        sprite_name="sprite-1",
+        lifecycle_status="ready",
+        generation=7,
+        artifact_version="runner-v1",
+        created_at=now.isoformat(),
+        updated_at=now.isoformat(),
+        last_error=None,
+    )
+    events: list[str] = []
+
+    class Provider:
+        async def start_service(self, _name, **values) -> None:
+            events.append(f"start:{values['service_name']}")
+
+    class Store:
+        async def reconcile_upload(self, **_values):
+            raise RuntimeError("storage unavailable")
+
+    class Relay:
+        async def release_maintenance(self, *_args, **_values) -> None:
+            events.append("relay-release")
+
+    manager = ManagedBackupManager(
+        provider=Provider(),
+        store=Store(),
+        relay=Relay(),
+        wrapping_key=b"w" * 32,
+        claim_operation=lambda **_values: operation,
+        get_archive=lambda _user_id, _archive_id: archive,
+        get_runtime=lambda _user_id: runtime,
+        get_runner=lambda _user_id: {"id": "runner-1"},
+        now=lambda: now,
+        new_lease_token=lambda: "lease-1",
+        staging_root=tmp_path,
+    )
+
+    with pytest.raises(RuntimeError, match="storage unavailable"):
+        await manager.run_once()
+
+    assert events == ["start:yinshi-sidecar", "start:yinshi-runner", "relay-release"]
+
+
+@pytest.mark.asyncio
+async def test_preserved_upload_download_failure_restores_source_runtime(tmp_path) -> None:
+    """A failed guest download must restore source services and relay access."""
+    from datetime import datetime, timedelta, timezone
+
+    from yinshi.services.managed_backup_manager import ManagedBackupManager
+    from yinshi.services.managed_backups import ManagedBackupArchive, ManagedBackupOperation
+    from yinshi.services.managed_runners import ManagedRuntimeStatus
+
+    now = datetime(2026, 8, 12, 12, 0, tzinfo=timezone.utc)
+    operation = ManagedBackupOperation(
+        user_id="user-1",
+        job_id="job-create",
+        archive_id="archive-1",
+        operation="create",
+        status="running",
+        runtime_generation=7,
+        started_at=now.isoformat(),
+        updated_at=now.isoformat(),
+        last_error=None,
+        phase="object_uploading",
+        lease_owner="worker-1",
+        lease_token="lease-1",
+        lease_expires_at=(now + timedelta(minutes=2)).isoformat(),
+    )
+    archive = ManagedBackupArchive(
+        id="archive-1",
+        user_id="user-1",
+        runtime_generation=7,
+        status="creating",
+        object_key="managed/v1/archive.enc",
+        object_version=None,
+        size_bytes=17,
+        sha256="d" * 64,
+        wrapped_key=b"wrapped-key",
+        key_id="backup-v1",
+        owner_digest="c" * 64,
+        created_at=now.isoformat(),
+        completed_at=None,
+        last_error=None,
+    )
+    runtime = ManagedRuntimeStatus(
+        user_id="user-1",
+        runner_id="runner-1",
+        provider_name="fly_sprites",
+        sprite_name="sprite-1",
+        lifecycle_status="ready",
+        generation=7,
+        artifact_version="runner-v1",
+        created_at=now.isoformat(),
+        updated_at=now.isoformat(),
+        last_error=None,
+    )
+    events: list[str] = []
+
+    class Provider:
+        async def download_file(self, *_args, **_values) -> None:
+            raise RuntimeError("guest download unavailable")
+
+        async def start_service(self, _name, **values) -> None:
+            events.append(f"start:{values['service_name']}")
+
+    class Store:
+        async def reconcile_upload(self, **_values):
+            return None
+
+    class Relay:
+        async def release_maintenance(self, *_args, **_values) -> None:
+            events.append("relay-release")
+
+    manager = ManagedBackupManager(
+        provider=Provider(),
+        store=Store(),
+        relay=Relay(),
+        wrapping_key=b"w" * 32,
+        claim_operation=lambda **_values: operation,
+        get_archive=lambda _user_id, _archive_id: archive,
+        get_runtime=lambda _user_id: runtime,
+        get_runner=lambda _user_id: {"id": "runner-1"},
+        now=lambda: now,
+        new_lease_token=lambda: "lease-1",
+        staging_root=tmp_path,
+    )
+
+    with pytest.raises(RuntimeError, match="guest download unavailable"):
+        await manager.run_once()
+
+    assert events == ["start:yinshi-sidecar", "start:yinshi-runner", "relay-release"]
+
+
+@pytest.mark.parametrize("cancel_stage", ["reconcile", "abort", "download"])
+@pytest.mark.asyncio
+async def test_cancelled_reconciliation_restores_runtime_only_with_current_lease(
+    tmp_path,
+    cancel_stage: str,
+) -> None:
+    """Cancellation should restore source access only while exact ownership remains."""
+    from datetime import datetime, timedelta, timezone
+
+    from yinshi.services.managed_backup_manager import ManagedBackupManager
+    from yinshi.services.managed_backup_store import PendingManagedBackupUploads
+    from yinshi.services.managed_backups import ManagedBackupArchive, ManagedBackupOperation
+    from yinshi.services.managed_runners import ManagedRuntimeStatus
+
+    now = datetime(2026, 8, 12, 12, 0, tzinfo=timezone.utc)
+    operation = ManagedBackupOperation(
+        user_id="user-1",
+        job_id="job-create",
+        archive_id="archive-1",
+        operation="create",
+        status="running",
+        runtime_generation=7,
+        started_at=now.isoformat(),
+        updated_at=now.isoformat(),
+        last_error=None,
+        phase="object_uploading",
+        lease_owner="worker-1",
+        lease_token="lease-1",
+        lease_expires_at=(now + timedelta(minutes=2)).isoformat(),
+    )
+    archive = ManagedBackupArchive(
+        id="archive-1",
+        user_id="user-1",
+        runtime_generation=7,
+        status="creating",
+        object_key="managed/v1/archive.enc",
+        object_version=None,
+        size_bytes=17,
+        sha256="d" * 64,
+        wrapped_key=b"wrapped-key",
+        key_id="backup-v1",
+        owner_digest="c" * 64,
+        created_at=now.isoformat(),
+        completed_at=None,
+        last_error=None,
+    )
+    runtime = ManagedRuntimeStatus(
+        user_id="user-1",
+        runner_id="runner-1",
+        provider_name="fly_sprites",
+        sprite_name="sprite-1",
+        lifecycle_status="ready",
+        generation=7,
+        artifact_version="runner-v1",
+        created_at=now.isoformat(),
+        updated_at=now.isoformat(),
+        last_error=None,
+    )
+    recovery_started = asyncio.Event()
+    events: list[str] = []
+
+    class Provider:
+        async def download_file(self, *_args, **_values) -> None:
+            if cancel_stage == "download":
+                recovery_started.set()
+                await asyncio.Event().wait()
+
+        async def start_service(self, *_args, **_values) -> None:
+            events.append("start")
+
+    class Store:
+        async def reconcile_upload(self, **_values):
+            if cancel_stage == "reconcile":
+                recovery_started.set()
+                await asyncio.Event().wait()
+            if cancel_stage == "abort":
+                return PendingManagedBackupUploads(("old-upload",))
+            return None
+
+        async def abort_uploads(self, **_values) -> None:
+            recovery_started.set()
+            await asyncio.Event().wait()
+
+    class Relay:
+        async def release_maintenance(self, *_args, **_values) -> None:
+            events.append("relay-release")
+
+    manager = ManagedBackupManager(
+        provider=Provider(),
+        store=Store(),
+        relay=Relay(),
+        wrapping_key=b"w" * 32,
+        claim_operation=lambda **_values: operation,
+        renew_lease=lambda **_values: True,
+        get_archive=lambda _user_id, _archive_id: archive,
+        get_runtime=lambda _user_id: runtime,
+        get_runner=lambda _user_id: {"id": "runner-1"},
+        now=lambda: now,
+        new_lease_token=lambda: "lease-1",
+        staging_root=tmp_path,
+    )
+
+    task = asyncio.create_task(manager.run_once())
+    await asyncio.wait_for(recovery_started.wait(), timeout=1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert events == ["start", "start", "relay-release"]
+
+
+@pytest.mark.asyncio
 async def test_manager_periodically_schedules_retention_when_idle() -> None:
     """Idle background cadence should enqueue bounded retention work."""
     from yinshi.services.managed_backup_manager import ManagedBackupManager
@@ -186,6 +474,41 @@ async def test_manager_reconciles_after_start_and_wake() -> None:
         await asyncio.sleep(0)
     manager.wake()
     await asyncio.wait_for(reconciled.wait(), timeout=1)
+    await manager.aclose()
+
+    assert calls == 2
+
+
+@pytest.mark.asyncio
+async def test_manager_preserves_wake_received_during_reconciliation() -> None:
+    """Work accepted during an active pass should prompt another pass immediately."""
+    from yinshi.services.managed_backup_manager import ManagedBackupManager
+
+    calls = 0
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+    second_started = asyncio.Event()
+
+    async def reconcile_once() -> bool:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            first_started.set()
+            await release_first.wait()
+        if calls == 2:
+            second_started.set()
+        return False
+
+    manager = ManagedBackupManager(
+        reconcile_once=reconcile_once,
+        interval_seconds=60,
+        list_retention=lambda **_values: (),
+    )
+    await manager.start()
+    await asyncio.wait_for(first_started.wait(), timeout=1)
+    manager.wake()
+    release_first.set()
+    await asyncio.wait_for(second_started.wait(), timeout=1)
     await manager.aclose()
 
     assert calls == 2
@@ -701,10 +1024,10 @@ async def test_manager_create_uploads_before_release_and_publishes_after_recover
         def is_runner_connected(self, runner_id: str) -> bool:
             return runner_id == "runner-1"
 
-    def advance_operation(**values) -> bool:
+    def record_upload_intent(**values) -> bool:
         nonlocal upload_intent_recorded
-        assert values["expected_phase"] == "claimed"
-        assert values["next_phase"] == "object_uploading"
+        assert values["size_bytes"] == len(ciphertext)
+        assert values["sha256"] == digest
         upload_intent_recorded = True
         return True
 
@@ -734,8 +1057,8 @@ async def test_manager_create_uploads_before_release_and_publishes_after_recover
             "noise_public_key": "MeAwP9ZBjS-MDni5HyLoyu0Pvkhlbc9HZ-SDT3Abj2I",
         },
         unwrap_key=lambda **_values: b"k" * 32,
+        record_upload_intent=record_upload_intent,
         record_upload=record_upload,
-        advance_operation=advance_operation,
         complete_creation=complete,
         now=lambda: now,
         new_lease_token=lambda: "lease-1",
@@ -878,7 +1201,7 @@ async def test_manager_restore_executes_download_guest_restore_and_activation(tm
         get_runtime=lambda _user_id: runtime,
         unwrap_key=lambda **_values: b"k" * 32,
         record_candidate=lambda **_values: True,
-        advance_operation=lambda **_values: True,
+        record_upload_intent=lambda **_values: True,
         activate_candidate=lambda *_args, **values: (
             events.append(f"activate:{values['artifact_version']}") or True
         ),

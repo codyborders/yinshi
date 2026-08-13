@@ -361,6 +361,70 @@ def advance_managed_backup_operation(
     return result.rowcount == 1
 
 
+def record_managed_backup_upload_intent(
+    *,
+    job_id: str,
+    lease_token: str,
+    runtime_generation: int,
+    size_bytes: int,
+    sha256: str,
+    now: datetime,
+) -> bool:
+    """Persist trusted guest metadata before immutable object publication."""
+    for value, name in ((job_id, "job_id"), (lease_token, "lease_token")):
+        if not isinstance(value, str) or not value or len(value) > 128:
+            raise ValueError(f"{name} must be bounded non-empty text")
+    if type(runtime_generation) is not int or runtime_generation <= 0:
+        raise ValueError("runtime_generation must be a positive integer")
+    if type(size_bytes) is not int or size_bytes <= 0:
+        raise ValueError("size_bytes must be a positive integer")
+    if len(sha256) != 64 or any(character not in "0123456789abcdef" for character in sha256):
+        raise ValueError("sha256 must be 64 lowercase hexadecimal characters")
+    timestamp = _timestamp(now)
+    with get_control_db() as database:
+        try:
+            database.execute("BEGIN IMMEDIATE")
+            operation = database.execute(
+                """SELECT archive_id FROM managed_backup_operations
+                   WHERE job_id = ? AND lease_token = ? AND operation = 'create'
+                     AND status = 'running' AND runtime_generation = ?
+                     AND phase = 'claimed' AND lease_expires_at > ?""",
+                (job_id, lease_token, runtime_generation, timestamp),
+            ).fetchone()
+            if operation is None:
+                database.rollback()
+                return False
+            archive_result = database.execute(
+                """UPDATE managed_backup_archives
+                   SET size_bytes = ?, sha256 = ?, last_error = NULL
+                   WHERE id = ? AND status = 'creating'
+                     AND runtime_generation = ? AND object_version IS NULL""",
+                (size_bytes, sha256, operation["archive_id"], runtime_generation),
+            )
+            operation_result = database.execute(
+                """UPDATE managed_backup_operations
+                   SET phase = 'object_uploading', updated_at = ?
+                   WHERE job_id = ? AND lease_token = ? AND operation = 'create'
+                     AND status = 'running' AND runtime_generation = ?
+                     AND phase = 'claimed' AND lease_expires_at > ?""",
+                (
+                    timestamp,
+                    job_id,
+                    lease_token,
+                    runtime_generation,
+                    timestamp,
+                ),
+            )
+            if archive_result.rowcount != 1 or operation_result.rowcount != 1:
+                database.rollback()
+                return False
+            database.commit()
+            return True
+        except Exception:
+            database.rollback()
+            raise
+
+
 def complete_managed_backup_restore(
     *,
     job_id: str,

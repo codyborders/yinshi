@@ -25,11 +25,13 @@ MANAGED_BACKUP_RETENTION_DAYS=30
 
 The bucket must have versioning enabled and AES256 default encryption. Startup fails closed when either setting is missing. Explicit access keys must be configured as a pair. Leave both key values empty when the control plane uses an instance role.
 
+The storage identity needs object upload, read, exact-version delete, version listing, multipart listing, and multipart abort permissions for the configured prefix. These permissions let the coordinator recover a lost upload response without creating another immutable version.
+
 Each archive uses a random 32-byte key. The control plane stores only wrapped archive keys. The guest receives runner-bound sealed jobs and never receives object-store credentials.
 
 Managed archive listing is available at `GET /api/runtime/backups`. Responses omit object keys, object versions, checksums, wrapped keys, provider identifiers, and runner identifiers.
 
-Public managed launch remains disabled. Backup creation coordination, replacement-Sprite restore activation, deletion recovery, retention scheduling, and trustworthy Sprite storage-encryption verification must finish before launch.
+Public managed launch remains disabled. Remaining orphan cleanup, restore crash coverage, live recovery drills, and trustworthy Sprite storage-encryption verification must finish before launch.
 
 ## Configuration
 

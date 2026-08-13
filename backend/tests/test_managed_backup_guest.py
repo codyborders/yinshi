@@ -478,6 +478,91 @@ async def test_held_guest_job_keeps_task_until_release(
     assert not (maintenance_root / f"{job_id}.release").exists()
 
 
+@pytest.mark.asyncio
+async def test_held_guest_job_removes_incomplete_output_after_job_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed guest job must remove partial output that cannot be reconciled."""
+    import yinshi.managed_backup_guest as guest
+
+    job_id = "018f47a2-9d3a-7f3b-8f0f-1a2b3c4d5e76"
+    maintenance_root = tmp_path / "maintenance"
+    maintenance_root.mkdir()
+    paths = [
+        maintenance_root / f"{job_id}.job",
+        maintenance_root / f"{job_id}.result",
+        maintenance_root / f"{job_id}.archive.enc",
+    ]
+    paths[0].write_bytes(b"job")
+
+    class Lease:
+        async def acquire(self) -> None:
+            return None
+
+        async def aclose(self) -> None:
+            return None
+
+    def fail_job() -> None:
+        paths[2].write_bytes(b"partial")
+        raise RuntimeError("guest archive failed")
+
+    monkeypatch.setattr(guest, "SpriteTaskLease", Lease)
+
+    with pytest.raises(RuntimeError, match="guest archive failed"):
+        await guest.hold_managed_backup_job(
+            job_id=job_id,
+            maintenance_root=maintenance_root,
+            run_job=fail_job,
+            timeout_seconds=5,
+        )
+
+    assert not any(path.exists() for path in paths)
+
+
+@pytest.mark.asyncio
+async def test_held_guest_job_preserves_completed_output_without_release(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A lost controller must not erase completed output before reconciliation."""
+    import yinshi.managed_backup_guest as guest
+
+    job_id = "018f47a2-9d3a-7f3b-8f0f-1a2b3c4d5e75"
+    maintenance_root = tmp_path / "maintenance"
+    maintenance_root.mkdir()
+    paths = [
+        maintenance_root / f"{job_id}.job",
+        maintenance_root / f"{job_id}.result",
+        maintenance_root / f"{job_id}.archive.enc",
+    ]
+    for path in paths:
+        path.write_bytes(b"value")
+
+    class Lease:
+        async def acquire(self) -> None:
+            return None
+
+        async def aclose(self) -> None:
+            return None
+
+    async def lose_controller(_delay: float) -> None:
+        raise TimeoutError("controller unavailable")
+
+    monkeypatch.setattr(guest, "SpriteTaskLease", Lease)
+    monkeypatch.setattr(guest.asyncio, "sleep", lose_controller)
+
+    with pytest.raises(TimeoutError, match="controller unavailable"):
+        await guest.hold_managed_backup_job(
+            job_id=job_id,
+            maintenance_root=maintenance_root,
+            run_job=lambda: None,
+            timeout_seconds=5,
+        )
+
+    assert all(path.is_file() for path in paths)
+
+
 def test_guest_cli_holds_create_job_until_release(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

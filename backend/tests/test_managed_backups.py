@@ -272,6 +272,55 @@ def test_advance_operation_requires_current_lease_phase_and_generation(
     )
 
 
+def test_upload_intent_persists_trusted_guest_metadata(auth_client) -> None:
+    """Upload reconciliation should retain guest size and digest before storage work."""
+    from yinshi.services.managed_backups import (
+        claim_due_managed_backup_operation,
+        get_managed_backup_archive,
+        get_managed_backup_operation,
+        record_managed_backup_upload_intent,
+        start_managed_backup_creation,
+    )
+
+    tenant = _ready_runtime(auth_client, generation=2)
+    now = datetime(2026, 8, 12, 12, 0, tzinfo=timezone.utc)
+    creation = start_managed_backup_creation(
+        tenant.user_id,
+        runtime_generation=2,
+        archive_id="018f47a2-9d3a-7f3b-8f0f-1a2b3c4d5e9f",
+        job_id="018f47a2-9d3a-7f3b-8f0f-1a2b3c4d5ea0",
+        object_key="managed/v1/intent.enc",
+        wrapped_key=b"wrapped-key",
+        key_id="backup-v1",
+        owner_digest="a" * 64,
+        now=now,
+    )
+    claim_due_managed_backup_operation(
+        worker_id="worker-a",
+        lease_token="lease-a",
+        now=now,
+        lease_expires_at=now + timedelta(minutes=2),
+    )
+
+    assert record_managed_backup_upload_intent(
+        job_id=creation.operation.job_id,
+        lease_token="lease-a",
+        runtime_generation=2,
+        size_bytes=23,
+        sha256="d" * 64,
+        now=now,
+    )
+    operation = get_managed_backup_operation(tenant.user_id, creation.operation.job_id)
+    archive = get_managed_backup_archive(tenant.user_id, creation.archive.id)
+
+    assert operation is not None
+    assert operation.phase == "object_uploading"
+    assert archive is not None
+    assert archive.status == "creating"
+    assert archive.size_bytes == 23
+    assert archive.sha256 == "d" * 64
+
+
 def test_expired_operation_lease_can_be_reclaimed(auth_client) -> None:
     """A crashed worker should lose job ownership after the exact lease deadline."""
     from datetime import timedelta

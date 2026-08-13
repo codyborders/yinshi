@@ -17,6 +17,7 @@ _SHA256_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
 _PART_BYTES_MIN = 5 * 1024 * 1024
 _PART_BYTES_MAX = 5 * 1024 * 1024 * 1024
 _OBJECT_BYTES_MAX = 200 * 1024 * 1024 * 1024
+_RECONCILIATION_PAGES_MAX = 8
 
 
 def create_managed_backup_store(settings: Any) -> "S3ManagedBackupStore":
@@ -59,6 +60,8 @@ class S3Client(Protocol):
     def complete_multipart_upload(self, **request: Any) -> dict[str, Any]: ...
     def abort_multipart_upload(self, **request: Any) -> dict[str, Any]: ...
     def head_object(self, **request: Any) -> dict[str, Any]: ...
+    def list_object_versions(self, **request: Any) -> dict[str, Any]: ...
+    def list_multipart_uploads(self, **request: Any) -> dict[str, Any]: ...
     def get_object(self, **request: Any) -> dict[str, Any]: ...
     def delete_object(self, **request: Any) -> dict[str, Any]: ...
     def get_bucket_versioning(self, **request: Any) -> dict[str, Any]: ...
@@ -72,6 +75,13 @@ class StoredManagedBackup:
     version: str
     size_bytes: int
     sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class PendingManagedBackupUploads:
+    """Exact unfinished upload IDs found during read-only reconciliation."""
+
+    upload_ids: tuple[str, ...]
 
 
 class S3ManagedBackupStore:
@@ -243,6 +253,173 @@ class S3ManagedBackupStore:
         return StoredManagedBackup(
             version=version, size_bytes=expected_size, sha256=expected_sha256
         )
+
+    async def reconcile_upload(
+        self,
+        *,
+        object_key: str,
+        archive_id: str,
+        expected_size: int,
+        expected_sha256: str,
+    ) -> StoredManagedBackup | PendingManagedBackupUploads | None:
+        """Recover one exact version, pending uploads, or confirmed absence."""
+        key = self._object_key(object_key)
+        self._expected(expected_size, expected_sha256)
+        if not isinstance(archive_id, str) or not archive_id or len(archive_id) > 128:
+            raise ValueError("archive_id must be bounded non-empty text")
+        matching_versions, matching_markers = await self._list_exact_versions(key)
+        if not matching_versions and not matching_markers:
+            matching_uploads = await self._list_exact_uploads(key)
+            if matching_uploads:
+                return PendingManagedBackupUploads(tuple(matching_uploads))
+            matching_versions, matching_markers = await self._list_exact_versions(key)
+            if not matching_versions and not matching_markers:
+                matching_uploads = await self._list_exact_uploads(key)
+                if matching_uploads:
+                    return PendingManagedBackupUploads(tuple(matching_uploads))
+                matching_versions, matching_markers = await self._list_exact_versions(key)
+                if not matching_versions and not matching_markers:
+                    return None
+        if len(matching_versions) != 1 or matching_markers:
+            raise RuntimeError("backup upload reconciliation was ambiguous")
+        version = matching_versions[0]
+        head = await asyncio.to_thread(
+            self._client.head_object,
+            Bucket=self._bucket,
+            Key=key,
+            VersionId=version,
+        )
+        metadata = head.get("Metadata")
+        size_bytes = head.get("ContentLength")
+        if (
+            size_bytes != expected_size
+            or not isinstance(metadata, dict)
+            or metadata.get("archive-id") != archive_id
+            or metadata.get("format") != "yinshi-managed-backup-v1"
+            or metadata.get("sha256") != expected_sha256
+            or head.get("ServerSideEncryption") != self._server_side_encryption
+            or head.get("VersionId") != version
+        ):
+            raise RuntimeError("backup upload reconciliation validation failed")
+        return StoredManagedBackup(
+            version=version,
+            size_bytes=size_bytes,
+            sha256=expected_sha256,
+        )
+
+    async def _list_exact_versions(self, key: str) -> tuple[list[str], list[dict[str, Any]]]:
+        request: dict[str, Any] = {
+            "Bucket": self._bucket,
+            "Prefix": key,
+            "MaxKeys": 3,
+        }
+        matching_versions: list[str] = []
+        matching_markers: list[dict[str, Any]] = []
+        for _page in range(_RECONCILIATION_PAGES_MAX):
+            response = await asyncio.to_thread(
+                self._client.list_object_versions,
+                **request,
+            )
+            versions = response.get("Versions")
+            markers = response.get("DeleteMarkers")
+            version_entries = versions if isinstance(versions, list) else []
+            marker_entries = markers if isinstance(markers, list) else []
+            matching_versions.extend(
+                str(version["VersionId"])
+                for version in version_entries
+                if isinstance(version, dict)
+                and version.get("Key") == key
+                and isinstance(version.get("VersionId"), str)
+                and version.get("VersionId")
+            )
+            matching_markers.extend(
+                marker
+                for marker in marker_entries
+                if isinstance(marker, dict) and marker.get("Key") == key
+            )
+            returned_keys = [
+                str(entry["Key"])
+                for entry in (*version_entries, *marker_entries)
+                if isinstance(entry, dict) and isinstance(entry.get("Key"), str)
+            ]
+            if any(returned_key > key for returned_key in returned_keys):
+                return matching_versions, matching_markers
+            if response.get("IsTruncated") is not True:
+                return matching_versions, matching_markers
+            next_key = response.get("NextKeyMarker")
+            next_version = response.get("NextVersionIdMarker")
+            if next_key != key or not isinstance(next_version, str) or not next_version:
+                raise RuntimeError("backup upload reconciliation was ambiguous")
+            request["KeyMarker"] = next_key
+            request["VersionIdMarker"] = next_version
+        raise RuntimeError("backup upload reconciliation was ambiguous")
+
+    async def _list_exact_uploads(self, key: str) -> list[str]:
+        request: dict[str, Any] = {
+            "Bucket": self._bucket,
+            "Prefix": key,
+            "MaxUploads": 2,
+        }
+        matching_uploads: list[str] = []
+        for _page in range(_RECONCILIATION_PAGES_MAX):
+            response = await asyncio.to_thread(
+                self._client.list_multipart_uploads,
+                **request,
+            )
+            uploads = response.get("Uploads")
+            upload_entries = uploads if isinstance(uploads, list) else []
+            matching_uploads.extend(
+                str(upload["UploadId"])
+                for upload in upload_entries
+                if isinstance(upload, dict)
+                and upload.get("Key") == key
+                and isinstance(upload.get("UploadId"), str)
+                and upload.get("UploadId")
+            )
+            returned_keys = [
+                str(upload["Key"])
+                for upload in upload_entries
+                if isinstance(upload, dict) and isinstance(upload.get("Key"), str)
+            ]
+            if any(returned_key > key for returned_key in returned_keys):
+                return matching_uploads
+            if response.get("IsTruncated") is not True:
+                return matching_uploads
+            next_key = response.get("NextKeyMarker")
+            next_upload = response.get("NextUploadIdMarker")
+            if next_key != key or not isinstance(next_upload, str) or not next_upload:
+                raise RuntimeError("backup upload reconciliation was ambiguous")
+            request["KeyMarker"] = next_key
+            request["UploadIdMarker"] = next_upload
+        raise RuntimeError("backup upload reconciliation was ambiguous")
+
+    async def abort_uploads(
+        self,
+        *,
+        object_key: str,
+        upload_ids: tuple[str, ...],
+    ) -> None:
+        """Abort a bounded set of exact multipart upload IDs."""
+        key = self._object_key(object_key)
+        if (
+            not isinstance(upload_ids, tuple)
+            or not upload_ids
+            or len(upload_ids) > _RECONCILIATION_PAGES_MAX * 2
+            or len(set(upload_ids)) != len(upload_ids)
+        ):
+            raise ValueError("upload_ids must be a bounded unique tuple")
+        if any(
+            not isinstance(upload_id, str) or not upload_id or len(upload_id) > 2048
+            for upload_id in upload_ids
+        ):
+            raise ValueError("upload_ids contain invalid text")
+        for upload_id in upload_ids:
+            await asyncio.to_thread(
+                self._client.abort_multipart_upload,
+                Bucket=self._bucket,
+                Key=key,
+                UploadId=upload_id,
+            )
 
     async def delete_file(
         self,

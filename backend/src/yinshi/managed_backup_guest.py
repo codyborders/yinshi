@@ -660,18 +660,23 @@ async def hold_managed_backup_job(
     )
     lease = SpriteTaskLease()
     await lease.acquire()
+    released = False
+    job_completed = False
     try:
         await asyncio.to_thread(run_job)
+        job_completed = True
         deadline = asyncio.get_running_loop().time() + timeout_seconds
         while not release_path.is_file() or release_path.is_symlink():
             if asyncio.get_running_loop().time() >= deadline:
                 raise TimeoutError("managed backup release timed out")
             await asyncio.sleep(1.0)
+        released = True
     finally:
         await lease.aclose()
-        for path in tracked_paths:
-            if path.is_file() and not path.is_symlink():
-                path.unlink(missing_ok=True)
+        if released or not job_completed:
+            for path in tracked_paths:
+                if path.is_file() and not path.is_symlink():
+                    path.unlink(missing_ok=True)
 
 
 def main(argv: list[str] | None = None) -> int:
