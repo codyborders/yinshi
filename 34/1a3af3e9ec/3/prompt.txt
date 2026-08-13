@@ -1,0 +1,1894 @@
+Task: [Read from: /Users/user/projects/yinshi/plan.md, /Users/user/projects/yinshi/progress.md]
+
+In /Users/user/projects/yinshi, review the current dirty worktree for the managed backup goal. Focus only on missing end-to-end coordinator, authenticated mutation/status APIs, retention/deletion, replacement restore/crash recovery, startup/shutdown wiring, migrations, and launch gate. Do not edit. Identify concrete callable primitives already present, exact missing behavior, likely defects, and a prioritized implementation path with file and symbol references. Never include secret values.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```ewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/plan.md, /Users/user/projects/yinshi/progress.md]
+
+You are reviving a previous subagent conversation.
+
+Original run: 3c1b6fd2
+Original agent: reviewer
+Original session file: /Users/user/.pi/agent/sessions/--Users-user-projects-yinshi--/2026-08-11T08-53-10-387Z_019ff006-9273-7e80-9303-0b30d84e3102/3c1b6fd2/run-0/session.jsonl
+
+Use the stored session context as background. Answer the orchestrator's follow-up below. Do not assume the original child process is still alive.
+
+Follow-up:
+Restate your confirmed commit-specific software design findings only. Under 500 words. Include severity, exact file lines, red flag, change-amplification consequence, and concise redesign. No tools.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/plan.md, /Users/user/projects/yinshi/progress.md]
+
+Read-only software-design review of commit e4746a3 versus parent in /Users/user/projects/yinshi. Scope only managed runtime manager/API, runner_rpc.py, frontend runtimeTransport.ts, and encryptedRunnerClient.ts. Use APOSD red flags. Return exactly three strongest commit-specific findings in compact JSON fields severity,fileLines,redFlag,consequence,redesign. No prose outside JSON. No tools beyond file and git reads. Do not edit.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/plan.md, /Users/user/projects/yinshi/progress.md]
+
+Read-only software-design review of commit e4746a3 versus parent in /Users/user/projects/yinshi. Scope only db.py, tenant.py, backup.py, repository_lifecycle.py, repos.py, and workspace.py. Use APOSD red flags. Return exactly four strongest commit-specific design findings in compact JSON fields severity,fileLines,redFlag,consequence,redesign. Do not report correctness bugs. No prose outside JSON. Do not edit.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/plan.md, /Users/user/projects/yinshi/progress.md]
+
+Read-only design review. Compare commit e4746a30342f914f4b78ae98ebd8de3992eebe60 against its parent in /Users/user/projects/yinshi. Scope strictly runner relay/RPC and frontend managed-runtime transport. Find at most 3 design-debt items introduced or materially worsened by this commit, using APOSD red flags, not ordinary correctness bugs. For each, provide severity, exact current line ranges, red flag, consequence, practical redesign, and why commit-specific. Do not edit files.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```w"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/plan.md, /Users/user/projects/yinshi/progress.md]
+
+Read-only implementation planning in /Users/user/projects/yinshi. Scope M5: centralize/document runner RPC fragmentation contract and reduce duplicated codec logic or provide shared generated conformance data. Find existing docs/build patterns. Propose practical changes that genuinely fix information duplication across Python and TS, with TDD sequence and exact files. Do not edit.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/plan.md, /Users/user/projects/yinshi/progress.md]
+
+Review current uncommitted diff in /Users/user/projects/yinshi against the five earlier design findings. Confirm whether each is fixed. Identify remaining high or medium design/correctness concerns with exact lines. Do not edit.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/plan.md, /Users/user/projects/yinshi/progress.md]
+
+Review current uncommitted diff in /Users/user/projects/yinshi for correctness and security. Focus managed connection reuse, runtime readiness coalescing, explicit provisioning split, and RPC codec extraction. Report only blocker/high/medium defects introduced by diff with exact lines and fixes. Do not edit.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/plan.md, /Users/user/projects/yinshi/progress.md]
+
+Final read-only review of current uncommitted diff in /Users/user/projects/yinshi. Earlier issues: managed pooled connection expiry race, transport owners not closing, readiness policy duplication, wake coalescing, hidden provisioning, RPC codec duplication. Report only blocker/high/medium defects still present. Verify current lines and tests. If none, say none and list residual low risks. Do not edit.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/plan.md, /Users/user/projects/yinshi/progress.md]
+
+Read-only inspect current uncommitted diff in /Users/user/projects/yinshi. Check only prior residual findings: Sidebar transport cleanup, rejected expiry replacement eviction, queued expiry work after close. Also scan changed code for any blocker/high/medium defect. Use current filesystem, not stale output. Return terse result. Do not edit.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/plan.md, /Users/user/projects/yinshi/progress.md]
+
+Read-only final last look at current uncommitted diff in /Users/user/projects/yinshi. Verify no blocker/high/medium defects remain in changed code. Pay special attention to RuntimeTransport close, expiry renewal, Sidebar/Settings ownership, managed wake coalescing, explicit provisioning, RPC codecs. Return only findings or `none`. Do not edit.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/plan.md, /Users/user/projects/yinshi/progress.md]
+
+Read-only current diff review in /Users/user/projects/yinshi. Check for blocker/high/medium defects only. Prior items now addressed: UI provision button, transport close rejection, renewal races, owner cleanup. Return `none` if clean. Do not edit. Keep under 250 words.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: Research current official documentation for secure off-provider backups from Fly Sprites. Compare generic S3-compatible presigned requests, Backblaze B2, Cloudflare R2, and AWS S3. Focus client-side encryption, multipart limits, checksum support, retention, restore flow, and short-lived access. Return concise source links and recommendation. Do not access repository.
+
+---
+**Output:**
+Write your findings to exactly this path: /Users/user/projects/yinshi/.pi-subagents/artifacts/outputs/330b2389/research.md
+This path is authoritative for this run.
+Ignore any other output filename or output path mentioned elsewhere, including output destinations in the base agent prompt, system prompt, or task instructions.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/plan.md, /Users/user/projects/yinshi/progress.md]
+
+Review only current uncommitted files in /Users/user/projects/yinshi for correctness and security. Focus managed_backup_crypto.py, managed_backup_guest.py, managed_backups.py, db.py, and tests. Find blocker/high defects. Do not edit. Return under 500 words.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/plan.md, /Users/user/projects/yinshi/progress.md]
+
+In /Users/user/projects/yinshi, conduct a focused security/correctness review of the uncommitted managed backup and replacement-runner changes. Do not edit. Check tenant authorization, lease/generation/job fencing, object version handling, cleanup after partial failure, trigger/migration safety, candidate capability isolation, logging privacy, and whether public launch is correctly blocked. Report only actionable findings with file and symbol references.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/plan.md, /Users/user/projects/yinshi/progress.md]
+
+In /Users/user/projects/yinshi, review all dirty managed-backup/runtime changes for release blockers. Do not edit. Check schema upgrades, storage exact-version semantics, startup/shutdown ordering, local/BYOC regressions, public launch gate, logging privacy, API status mappings, dependency integrity, and incomplete placeholder behavior. Return concise actionable findings with file/symbol references and severity.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/plan.md, /Users/user/projects/yinshi/progress.md]
+
+In /Users/user/projects/yinshi, perform a final read-only review of the staged diff for managed encrypted backups and replacement restore. Do not edit. Tests currently pass. Identify only blocker/high correctness or security defects that should prevent a local commit. Focus on candidate authority isolation, lease/generation fencing, exact-version store semantics, migration safety, crash recovery, API tenant privacy, logging privacy, local/BYOC regressions, and fail-closed launch. Return concise findings with file and symbol references; say none if no blocker/high defects.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/plan.md, /Users/user/projects/yinshi/progress.md]
+
+In /Users/user/projects/yinshi, read-only recheck the staged diff after fixes. Previous blockers were archive migration foreign-key corruption and two-minute operation leases. Confirm those exact issues are fixed. Then report only any remaining blocker/high defect that should prevent a local commit, with concise file/symbol references. Do not edit.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/plan.md, /Users/user/projects/yinshi/progress.md]
+
+Review commit 958a612030b0236c0e4667f49c02ce1ac2f2e92b in /Users/user/projects/yinshi for production correctness and crash/concurrency safety. Inspect managed backup create, restore, delete, retention, candidate activation, lease ownership, recovery, storage exact-version operations, service quiescence, cleanup, and migration behavior. Report only reproducible blocker/high/medium defects with file and line/symbol plus failure scenario and smallest fix. Do not modify project files.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/plan.md, /Users/user/projects/yinshi/progress.md]
+
+Review commit 958a612030b0236c0e4667f49c02ce1ac2f2e92b in /Users/user/projects/yinshi for missing behavioral tests and mismatches between tests and production contracts. Focus on externally observable failure paths, crash recovery, exact fencing, cleanup, configuration, migrations, and API safety. Report only gaps that correspond to a plausible production defect, with severity, file and line/symbol, expected test, and likely fix. Do not modify project files.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/plan.md, /Users/user/projects/yinshi/progress.md]
+
+Review commit 958a612030b0236c0e4667f49c02ce1ac2f2e92b in /Users/user/projects/yinshi using A Philosophy of Software Design principles. Scope the commit diff only, while reading adjacent code as needed. Focus on deep modules, information hiding, temporal decomposition, pass-through layers, conjoined methods, repeated policy, and nonobvious lifecycle behavior. Report only concrete defects or high-value design issues that warrant fixes now. For each finding give severity, exact file and line/symbol, runtime or maintenance impact, and smallest coherent fix. Do not modify project files.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/plan.md, /Users/user/projects/yinshi/progress.md]
+
+Review commit 958a612030b0236c0e4667f49c02ce1ac2f2e92b in /Users/user/projects/yinshi for security and privacy defects. Inspect trust boundaries, archive encryption and parsing, sealed job binding, runner authority, maintenance fencing, candidate cleanup, object-store credentials and metadata, HTTP exposure, paths, logs, and fail-closed behavior. Report concrete exploitable or authority-lifetime issues only, with severity, file and line/symbol, scenario, and smallest fix. Do not modify project files.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/plan.md, /Users/user/projects/yinshi/progress.md]
+
+You are reviving a previous subagent conversation.
+
+Original run: 66968e57
+Original agent: reviewer
+Original session file: /Users/user/.pi/agent/sessions/--Users-user-projects-yinshi--/2026-08-11T08-53-10-387Z_019ff006-9273-7e80-9303-0b30d84e3102/66968e57/run-0/session.jsonl
+
+Use the stored session context as background. Answer the orchestrator's follow-up below. Do not assume the original child process is still alive.
+
+Follow-up:
+Return your concrete findings now from work already completed. Do not use more tools. Keep each finding to severity, file/symbol, impact, and smallest fix.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/plan.md, /Users/user/projects/yinshi/progress.md]
+
+Read-only review current unstaged diff in /Users/user/projects/yinshi against commit 958a612. Check whether prior software-design findings are fully fixed: post-activation rollback, manager exception survival, create recovery and unrecorded object cleanup, exact lease renewal and cancellation, candidate provisioning cleanup and crash reuse, second restore, guest crash recovery, retention wiring/cadence, deletion without runtime, multipart bound, missing archive 404, successful restore file cleanup, migration atomicity, relay maintenance reconnect. Report only remaining blocker/high/medium defects in changed code, with exact file/symbol and smallest fix. Do not edit.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/plan.md, /Users/user/projects/yinshi/progress.md]
+
+Read-only final review of current unstaged diff in /Users/user/projects/yinshi against commit 958a612. User requested software-design review fixes and tests. Check correctness, security, concurrency, crash recovery, migration safety, API contracts, and test quality. Focus on changed code. Confirm prior findings: post-activation behavior, repeated restore, lease renewal and cancellation, create recovery, upload publication uncertainty, guest restore journal, manager loop survival, multipart bound, missing archive mapping, candidate cleanup/job binding/reuse, retention/deletion, successful restore cleanup, relay maintenance across unregister/reconnect/process restart, S3 metadata privacy, required activation fencing, deleted status typing. Report only blocker/high/medium concrete defects with exact file and smallest correction. Mention validation gaps separately. Do not edit files.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/plan.md, /Users/user/projects/yinshi/progress.md]
+
+You are reviving a previous subagent conversation.
+
+Original run: 67262446
+Original agent: reviewer
+Original session file: /Users/user/.pi/agent/sessions/--Users-user-projects-yinshi--/2026-08-11T08-53-10-387Z_019ff006-9273-7e80-9303-0b30d84e3102/67262446/run-0/session.jsonl
+
+Use the stored session context as background. Answer the orchestrator's follow-up below. Do not assume the original child process is still alive.
+
+Follow-up:
+Return final review in under 180 words. Use short sentences. List only blocker, high, or medium defects. Include exact file and smallest correction. If none exist, say none. Add separate validation gaps. Do not edit files.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/plan.md, /Users/user/projects/yinshi/progress.md]
+
+Review current uncommitted diff against HEAD 958a612 after fixes.
+Read only. Focus on correctness and safety regressions in managed backup, restore, relay restart, migrations, storage, and APIs.
+Report only blocker, high, or medium concrete defects with file paths.
+Do not flag known launch gates: orphan upload reconciliation, live independent-storage drills, or Sprite storage-encryption verification.
+If no such defects remain, state none.
+Also verify tests match behavior. Do not edit files.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/plan.md, /Users/user/projects/yinshi/progress.md]
+
+Re-review current uncommitted diff against HEAD 958a612 after latest fixes.
+Read only. Check only prior findings and nearby managed backup or relay correctness.
+Prior fixes now include idempotent duplicate quiesced acknowledgments, lookup-before-registration, legacy running-operation source identity fill, welcome ordering, candidate cleanup ordering, source identity creation, and HTTP 409 mapping.
+Report only blocker, high, or medium concrete defects with file paths.
+Exclude known launch gates: uncertain immutable upload reconciliation, live independent-storage drills, and Sprite storage-encryption verification.
+If no material defects remain, state none. Do not edit files.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/plan.md, /Users/user/projects/yinshi/progress.md]
+
+Review current six-file uncommitted implementation for durable S3 upload reconciliation.
+Read only. Inspect managed_backup_store.py, managed_backup_manager.py, managed_backups.py and matching changed tests.
+Goal: after an uncertain CompleteMultipartUpload response, recover exactly one validated version or confirm no version and no multipart upload before lease-fenced retry. Never create duplicate versions or delete an uncertain completed version.
+Check S3 list semantics, races, pagination, delete markers, metadata trust, lease loss, guest artifact retention, relay recovery, and test realism.
+Report only blocker/high/medium concrete defects with smallest fix. Do not edit.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/plan.md, /Users/user/projects/yinshi/progress.md]
+
+Review current uncommitted diff against HEAD ede04e8.
+Read only. Focus on automatic recovery after uncertain S3 multipart completion.
+Check exact-key version and multipart pagination, stable absence checks, conditional re-upload, persisted guest size and digest, lease fencing, guest output retention, runtime restoration, manager wake concurrency, privacy, and test realism.
+Report only blocker, high, or medium concrete defects with file paths.
+Exclude known launch gates outside this change: remaining orphan cleanup, restore crash coverage, live recovery drills, and Sprite storage-encryption verification.
+If no material defects remain, state none. Do not edit files.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/plan.md, /Users/user/projects/yinshi/progress.md]
+
+Re-review current uncommitted diff against HEAD ede04e8 after latest fixes.
+Read only. Confirm prior high findings are resolved: stale workers cannot abort replacement multipart uploads, and reconciliation or preserved-output failures restore source access.
+Check exact-key pagination, stable absence, conditional completion, pending-upload handling, lease renewal before abort, cancellation timing, manager wake concurrency, guest output retention, metadata validation, and tests.
+Report only blocker, high, or medium concrete defects with file paths.
+Exclude known launch gates outside this change: remaining orphan cleanup, restore crash coverage, live recovery drills, and Sprite storage-encryption verification.
+If no material defects remain, state none. Do not edit files.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/plan.md, /Users/user/projects/yinshi/progress.md]
+
+Final read-only review of current uncommitted diff against HEAD ede04e8.
+Verify prior findings are resolved: storage reconciliation never aborts uploads; manager renews exact lease before aborting exact reported upload IDs; lease loss prevents abort; cancellation during reconcile, abort, or preserved download restores source access only after current lease renewal; normal failures restore source access; prefix pagination and stable absence remain correct.
+Report only blocker, high, or medium concrete defects with file paths.
+Exclude known launch gates outside this change. If none remain, state none. Do not edit.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
