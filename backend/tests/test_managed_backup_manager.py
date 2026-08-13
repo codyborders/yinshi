@@ -3,8 +3,61 @@
 from __future__ import annotations
 
 import asyncio
+import stat
+from pathlib import Path
 
 import pytest
+
+
+def test_manager_creates_missing_staging_root_with_owner_only_mode(tmp_path: Path) -> None:
+    """A configured local ciphertext root should be ready before first work."""
+    from yinshi.services.managed_backup_manager import ManagedBackupManager
+
+    staging_root = tmp_path / "control" / "managed-backup-staging"
+
+    manager = ManagedBackupManager(staging_root=staging_root)
+
+    assert manager._staging_root == staging_root
+    assert stat.S_IMODE(staging_root.stat().st_mode) == 0o700
+
+
+def test_manager_corrects_permissive_staging_root_mode(tmp_path: Path) -> None:
+    """An existing owned ciphertext root should become owner-only."""
+    staging_root = tmp_path / "managed-backup-staging"
+    staging_root.mkdir(mode=0o755)
+    staging_root.chmod(0o755)
+
+    from yinshi.services.managed_backup_manager import ManagedBackupManager
+
+    ManagedBackupManager(staging_root=staging_root)
+
+    assert stat.S_IMODE(staging_root.stat().st_mode) == 0o700
+
+
+@pytest.mark.parametrize("path_kind", ["file", "symlink"])
+def test_manager_rejects_unsafe_staging_root(tmp_path: Path, path_kind: str) -> None:
+    """A ciphertext root must be a real owned directory."""
+    from yinshi.services.managed_backup_manager import ManagedBackupManager
+
+    staging_root = tmp_path / "managed-backup-staging"
+    if path_kind == "file":
+        staging_root.write_text("not a directory", encoding="utf-8")
+    else:
+        target = tmp_path / "target"
+        target.mkdir()
+        staging_root.symlink_to(target, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="managed backup staging root is invalid"):
+        ManagedBackupManager(staging_root=staging_root)
+
+
+def test_manager_without_staging_root_preserves_system_temporary_directory() -> None:
+    """An omitted ciphertext root should retain tempfile default behavior."""
+    from yinshi.services.managed_backup_manager import ManagedBackupManager
+
+    manager = ManagedBackupManager(staging_root=None)
+
+    assert manager._staging_root is None
 
 
 @pytest.mark.asyncio

@@ -8,6 +8,7 @@ import hashlib
 import json
 import logging
 import os
+import stat
 import tempfile
 import time
 import uuid
@@ -60,6 +61,26 @@ _MAINTENANCE_ROOT = "/var/lib/yinshi/maintenance"
 _RESULT_BYTES_MAX = 4096
 
 logger = logging.getLogger(__name__)
+
+
+def _prepare_staging_root(staging_root: Path | None) -> Path | None:
+    """Create and validate one owner-only local ciphertext staging directory."""
+    if staging_root is None:
+        return None
+    try:
+        staging_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        metadata = staging_root.lstat()
+    except OSError:
+        raise ValueError("managed backup staging root is invalid") from None
+    if not stat.S_ISDIR(metadata.st_mode):
+        raise ValueError("managed backup staging root is invalid")
+    if hasattr(os, "geteuid") and metadata.st_uid != os.geteuid():
+        raise ValueError("managed backup staging root is invalid")
+    try:
+        staging_root.chmod(0o700)
+    except OSError:
+        raise ValueError("managed backup staging root is invalid") from None
+    return staging_root
 
 
 class ManagedBackupReservation(NamedTuple):
@@ -180,7 +201,7 @@ class ManagedBackupManager:
         self._new_lease_token = new_lease_token or (lambda: uuid.uuid4().hex)
         if not 1 <= retention_days <= 3650 or not 1 <= retention_batch_size <= 100:
             raise ValueError("managed backup retention bounds are invalid")
-        self._staging_root = staging_root
+        self._staging_root = _prepare_staging_root(staging_root)
         self._retention_days = retention_days
         self._retention_batch_size = retention_batch_size
         self._list_retention = list_retention
