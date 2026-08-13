@@ -60,6 +60,14 @@ def test_sprite_example_allows_required_package_hosts() -> None:
     )
 
 
+def test_sidecar_docker_disables_other_install_scripts() -> None:
+    """Container installation should rebuild only the approved native module."""
+    dockerfile = (REPO_ROOT / "sidecar" / "Dockerfile").read_text(encoding="utf-8")
+
+    assert "npm ci --omit=dev --ignore-scripts" in dockerfile
+    assert "npm rebuild node-pty --foreground-scripts" in dockerfile
+
+
 def test_sidecar_allows_only_pinned_terminal_native_install_script() -> None:
     """Managed installation should build only the audited node-pty native module."""
     package = json.loads((REPO_ROOT / "sidecar" / "package.json").read_text(encoding="utf-8"))
@@ -459,7 +467,8 @@ def test_bootstrap_preserves_current_and_cleans_staging_on_install_failure(
     assert not list((install_root / "releases").glob(".*.staging.*"))
     assert not list(Path(env["YINSHI_STATE_ROOT"]).glob(".yinshi-artifact.*"))
     calls = log.read_text(encoding="utf-8")
-    assert "npm:ci --omit=dev" in calls
+    assert "npm:ci --omit=dev --ignore-scripts" in calls
+    assert "npm:rebuild node-pty --foreground-scripts" not in calls
     assert "sprite-env:" not in calls
 
 
@@ -490,5 +499,6 @@ def test_bootstrap_installs_release_and_switches_current(tmp_path: Path) -> None
     assert package_calls[1].startswith("pip:install --no-build-isolation --no-deps ")
     assert package_calls[1].endswith("/backend")
     assert "base.txt" not in calls
-    assert "npm:ci --omit=dev" in calls
+    assert "npm:ci --omit=dev --ignore-scripts" in calls
+    assert "npm:rebuild node-pty --foreground-scripts" in calls
     assert "sprite-env:services stop yinshi-bootstrap" not in calls

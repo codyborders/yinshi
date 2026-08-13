@@ -270,7 +270,8 @@ python3 -m venv "$staging/venv"
 "$staging/venv/bin/pip" install --no-build-isolation --no-deps "$staging/backend"
 (
     cd "$staging/sidecar"
-    npm ci --omit=dev
+    npm ci --omit=dev --ignore-scripts
+    npm rebuild node-pty --foreground-scripts
 )
 chmod -R go-rwx "$staging"
 mv -- "$staging" "$release"

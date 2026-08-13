@@ -26,7 +26,8 @@ RUN chmod 0755 /usr/local/bin/git && useradd -m -s /bin/bash agent
 
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN npm ci --omit=dev
+RUN npm ci --omit=dev --ignore-scripts && \
+    npm rebuild node-pty --foreground-scripts
 COPY src/ ./src/
 
 USER agent
