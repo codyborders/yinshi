@@ -3,8 +3,18 @@
   "checkpoint_id": "f71f2783a828",
   "strategy": "manual-commit",
   "branch": "main",
-  "checkpoints_count": 5,
-  "files_touched": null,
+  "checkpoints_count": 6,
+  "files_touched": [
+    ".github/workflows/managed-source-loss-recovery.yml",
+    "backend/src/yinshi/managed_operations_check.py",
+    "backend/src/yinshi/managed_source_loss_recovery.py",
+    "backend/src/yinshi/services/managed_operational_status.py",
+    "backend/tests/test_managed_operational_status.py",
+    "backend/tests/test_managed_source_loss_recovery.py",
+    "docs/operations/managed-recovery-evidence.schema.json",
+    "docs/operations/managed-runtime-recovery.md",
+    "docs/operations/managed-source-loss-recovery.md"
+  ],
   "sessions": [
     {
       "metadata": "/f7/1f2783a828/0/metadata.json",
@@ -26,13 +36,20 @@
       "compact_transcript": "/f7/1f2783a828/2/transcript.jsonl",
       "content_hash": "/f7/1f2783a828/2/content_hash.txt",
       "prompt": "/f7/1f2783a828/2/prompt.txt"
+    },
+    {
+      "metadata": "/f7/1f2783a828/3/metadata.json",
+      "transcript": "/f7/1f2783a828/3/full.jsonl",
+      "compact_transcript": "/f7/1f2783a828/3/transcript.jsonl",
+      "content_hash": "/f7/1f2783a828/3/content_hash.txt",
+      "prompt": "/f7/1f2783a828/3/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 16847594,
+    "input_tokens": 17417343,
     "cache_creation_tokens": 0,
-    "cache_read_tokens": 951079936,
-    "output_tokens": 1621897,
-    "api_call_count": 4748
+    "cache_read_tokens": 963589120,
+    "output_tokens": 1654092,
+    "api_call_count": 4880
   }
 }
