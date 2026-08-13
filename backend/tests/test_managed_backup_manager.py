@@ -1333,8 +1333,21 @@ async def test_manager_restore_executes_download_guest_restore_and_activation(tm
             target_path.write_bytes(payload)
 
     class Provider:
-        async def upload_file(self, name: str, **values) -> None:
-            events.append(f"upload:{name}:{values['path']}")
+        async def upload_file(
+            self,
+            name: str,
+            *,
+            source_path: Path,
+            path: str,
+            expected_size: int,
+            expected_sha256: str,
+            mode: str,
+        ) -> None:
+            assert source_path.read_bytes() == payload
+            assert expected_size == len(payload)
+            assert expected_sha256 == digest
+            assert mode == "0600"
+            events.append(f"upload:{name}:{path}")
 
         async def write_file(self, name: str, **values) -> None:
             events.append(f"write:{name}:{values['path']}")

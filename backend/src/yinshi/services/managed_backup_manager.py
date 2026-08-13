@@ -618,7 +618,6 @@ class ManagedBackupManager:
                 expected_size=archive.size_bytes,
                 expected_sha256=archive.sha256,
                 mode="0600",
-                mkdir=True,
             )
         archive_key = self._unwrap_key(
             envelope=archive.wrapped_key,
