@@ -15,6 +15,7 @@ from pydantic_settings import BaseSettings
 
 _SECURITY_MODE_VALUES = {"auto", "disabled", "enabled", "required"}
 _MANAGED_RUNTIME_PROVIDER_VALUES = {"disabled", "fly_sprites"}
+_MANAGED_BACKUP_PROVIDER_VALUES = {"aws_s3", "digitalocean_spaces"}
 _DNS_LABEL_PATTERN = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\Z")
 _SPRITE_PREFIX_PATTERN = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,28}[a-z0-9])?\Z")
 _SHA256_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
@@ -226,6 +227,7 @@ class Settings(BaseSettings):
     sprites_reconcile_grace_seconds: int = 3600
 
     # Independent encrypted managed guest backups
+    managed_backup_provider: str = "aws_s3"
     managed_backup_bucket: str = ""
     managed_backup_endpoint_url: str = ""
     managed_backup_region: str = ""
@@ -395,6 +397,15 @@ def _validate_settings(settings: Settings) -> None:
     if settings.managed_runtime_provider not in _MANAGED_RUNTIME_PROVIDER_VALUES:
         allowed_values = ", ".join(sorted(_MANAGED_RUNTIME_PROVIDER_VALUES))
         raise RuntimeError(f"MANAGED_RUNTIME_PROVIDER must be one of: {allowed_values}")
+    if settings.managed_backup_provider not in _MANAGED_BACKUP_PROVIDER_VALUES:
+        allowed_values = ", ".join(sorted(_MANAGED_BACKUP_PROVIDER_VALUES))
+        raise RuntimeError(f"MANAGED_BACKUP_PROVIDER must be one of: {allowed_values}")
+    if settings.managed_backup_provider == "digitalocean_spaces":
+        expected_endpoint = f"https://{settings.managed_backup_region}.digitaloceanspaces.com"
+        if settings.managed_backup_endpoint_url != expected_endpoint:
+            raise RuntimeError(
+                "MANAGED_BACKUP_ENDPOINT_URL must be the DigitalOcean Spaces regional endpoint"
+            )
     if settings.managed_runtime_provider == "fly_sprites":
         _require_https_url(
             settings.sprites_api_url,

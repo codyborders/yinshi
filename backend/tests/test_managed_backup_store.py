@@ -109,6 +109,163 @@ async def test_s3_store_roundtrips_a_versioned_encrypted_object(tmp_path: Path) 
 
 
 @pytest.mark.asyncio
+async def test_spaces_roundtrip_accepts_etag_when_part_checksum_is_not_returned(
+    tmp_path: Path,
+) -> None:
+    """Spaces should verify final ciphertext when part responses omit checksums."""
+    from yinshi.services.managed_backup_store import S3ManagedBackupStore
+
+    class SpacesClient(FakeS3Client):
+        def upload_part(self, **request):
+            uploaded = super().upload_part(**request)
+            uploaded.pop("ChecksumSHA256")
+            return uploaded
+
+    payload = bytes(range(251)) * 50_000
+    source = tmp_path / "archive.enc"
+    source.write_bytes(payload)
+    digest = hashlib.sha256(payload).hexdigest()
+    store = S3ManagedBackupStore(
+        client=SpacesClient(),
+        bucket="backup-bucket",
+        server_side_encryption="AES256",
+        require_part_checksum_confirmation=False,
+        part_bytes=5 * 1024 * 1024,
+    )
+
+    stored = await store.put_file(
+        source,
+        object_key="managed/v1/owner/archive.enc",
+        expected_size=len(payload),
+        expected_sha256=digest,
+        archive_id="archive-1",
+    )
+
+    assert stored.sha256 == digest
+
+
+@pytest.mark.asyncio
+async def test_spaces_roundtrip_verifies_remote_digest_without_encryption_metadata(
+    tmp_path: Path,
+) -> None:
+    """Spaces should confirm exact remote ciphertext when encryption metadata is absent."""
+    from yinshi.services.managed_backup_store import S3ManagedBackupStore
+
+    class SpacesClient(FakeS3Client):
+        def head_object(self, **request):
+            response = super().head_object(**request)
+            response.pop("ServerSideEncryption")
+            return response
+
+    payload = bytes(range(251)) * 50_000
+    source = tmp_path / "archive.enc"
+    source.write_bytes(payload)
+    digest = hashlib.sha256(payload).hexdigest()
+    store = S3ManagedBackupStore(
+        client=SpacesClient(),
+        bucket="backup-bucket",
+        server_side_encryption="AES256",
+        require_object_encryption_confirmation=False,
+        part_bytes=5 * 1024 * 1024,
+    )
+
+    stored = await store.put_file(
+        source,
+        object_key="managed/v1/owner/archive.enc",
+        expected_size=len(payload),
+        expected_sha256=digest,
+        archive_id="archive-1",
+    )
+
+    assert stored.sha256 == digest
+
+
+@pytest.mark.asyncio
+async def test_spaces_upload_rejects_corrupted_remote_ciphertext(tmp_path: Path) -> None:
+    """Spaces upload must verify the exact remote ciphertext digest."""
+    from yinshi.services.managed_backup_store import S3ManagedBackupStore
+
+    class CorruptSpacesClient(FakeS3Client):
+        def complete_multipart_upload(self, **request):
+            response = super().complete_multipart_upload(**request)
+            self.object = b"x" + self.object[1:]
+            return response
+
+        def head_object(self, **request):
+            response = super().head_object(**request)
+            response.pop("ServerSideEncryption")
+            return response
+
+    payload = bytes(range(251)) * 50_000
+    source = tmp_path / "archive.enc"
+    source.write_bytes(payload)
+    digest = hashlib.sha256(payload).hexdigest()
+    store = S3ManagedBackupStore(
+        client=CorruptSpacesClient(),
+        bucket="backup-bucket",
+        server_side_encryption="AES256",
+        require_object_encryption_confirmation=False,
+        part_bytes=5 * 1024 * 1024,
+    )
+
+    with pytest.raises(RuntimeError, match="checksum"):
+        await store.put_file(
+            source,
+            object_key="managed/v1/owner/archive.enc",
+            expected_size=len(payload),
+            expected_sha256=digest,
+            archive_id="archive-1",
+        )
+
+
+@pytest.mark.asyncio
+async def test_spaces_upload_closes_invalid_remote_response_body(tmp_path: Path) -> None:
+    """Rejected Spaces responses must release their network body."""
+    from yinshi.services.managed_backup_store import S3ManagedBackupStore
+
+    class Body(io.BytesIO):
+        was_closed = False
+
+        def close(self) -> None:
+            self.was_closed = True
+            super().close()
+
+    body = Body(b"ciphertext")
+
+    class Client(FakeS3Client):
+        def head_object(self, **request):
+            response = super().head_object(**request)
+            response.pop("ServerSideEncryption")
+            return response
+
+        def get_object(self, **request):
+            return {"Body": body, "ContentLength": 1}
+
+    payload = bytes(range(251)) * 50_000
+    source = tmp_path / "archive.enc"
+    source.write_bytes(payload)
+    digest = hashlib.sha256(payload).hexdigest()
+    store = S3ManagedBackupStore(
+        client=Client(),
+        bucket="backup-bucket",
+        server_side_encryption="AES256",
+        require_object_encryption_confirmation=False,
+        part_bytes=5 * 1024 * 1024,
+    )
+
+    with pytest.raises(RuntimeError, match="could not be confirmed"):
+        await store.put_file(
+            source,
+            object_key="managed/v1/owner/archive.enc",
+            expected_size=len(payload),
+            expected_sha256=digest,
+            archive_id="archive-1",
+        )
+
+    assert body.was_closed
+
+
+@pytest.mark.asyncio
 async def test_s3_store_recovers_exact_version_after_lost_completion_response() -> None:
     """Reconciliation should recover one fully validated completed object version."""
     from yinshi.services.managed_backup_store import S3ManagedBackupStore
@@ -159,6 +316,59 @@ async def test_s3_store_recovers_exact_version_after_lost_completion_response() 
     assert stored is not None
     assert stored.version == "version-1"
     assert stored.size_bytes == len(payload)
+    assert stored.sha256 == digest
+
+
+@pytest.mark.asyncio
+async def test_spaces_recovers_lost_completion_with_remote_digest() -> None:
+    """Spaces reconciliation should verify ciphertext without encryption metadata."""
+    from yinshi.services.managed_backup_store import S3ManagedBackupStore
+
+    payload = b"encrypted managed archive"
+    digest = hashlib.sha256(payload).hexdigest()
+
+    class SpacesClient(FakeS3Client):
+        def list_object_versions(self, **request):
+            return {
+                "DeleteMarkers": [],
+                "IsTruncated": False,
+                "Versions": [
+                    {
+                        "IsLatest": True,
+                        "Key": "managed/v1/owner/archive.enc",
+                        "VersionId": "version-1",
+                    }
+                ],
+            }
+
+        def head_object(self, **request):
+            response = super().head_object(**request)
+            response.pop("ServerSideEncryption")
+            return response
+
+    client = SpacesClient()
+    client.object = payload
+    client.metadata = {
+        "archive-id": "archive-1",
+        "format": "yinshi-managed-backup-v1",
+        "sha256": digest,
+    }
+    store = S3ManagedBackupStore(
+        client=client,
+        bucket="backup-bucket",
+        server_side_encryption="AES256",
+        require_object_encryption_confirmation=False,
+        part_bytes=5 * 1024 * 1024,
+    )
+
+    stored = await store.reconcile_upload(
+        object_key="managed/v1/owner/archive.enc",
+        archive_id="archive-1",
+        expected_size=len(payload),
+        expected_sha256=digest,
+    )
+
+    assert stored is not None
     assert stored.sha256 == digest
 
 
@@ -889,6 +1099,29 @@ async def test_s3_store_preflight_rejects_missing_bucket_encryption() -> None:
 
     with pytest.raises(RuntimeError, match="encryption"):
         await store.preflight()
+
+
+@pytest.mark.asyncio
+async def test_spaces_preflight_requires_versioning_without_bucket_encryption_api() -> None:
+    """Spaces preflight should accept versioning without unsupported bucket defaults."""
+    from yinshi.services.managed_backup_store import S3ManagedBackupStore
+
+    class Client(FakeS3Client):
+        def get_bucket_versioning(self, **request):
+            return {"Status": "Enabled"}
+
+        def get_bucket_encryption(self, **request):
+            raise AssertionError("Spaces does not implement bucket encryption settings")
+
+    store = S3ManagedBackupStore(
+        client=Client(),
+        bucket="backup-bucket",
+        server_side_encryption="AES256",
+        require_bucket_default_encryption=False,
+        part_bytes=5 * 1024 * 1024,
+    )
+
+    await store.preflight()
 
 
 @pytest.mark.asyncio

@@ -13,6 +13,7 @@ Managed guests create encrypted archives for `/var/lib/yinshi/sqlite` and `/var/
 Configure these values for hosted Fly mode:
 
 ```dotenv
+MANAGED_BACKUP_PROVIDER=aws_s3
 MANAGED_BACKUP_BUCKET=yinshi-backups
 MANAGED_BACKUP_ENDPOINT_URL=https://s3.us-east-1.amazonaws.com
 MANAGED_BACKUP_REGION=us-east-1
@@ -23,7 +24,17 @@ MANAGED_BACKUP_PART_BYTES=16777216
 MANAGED_BACKUP_RETENTION_DAYS=30
 ```
 
-The bucket must have versioning enabled and AES256 default encryption. Startup fails closed when either setting is missing. Explicit access keys must be configured as a pair. Leave both key values empty when the control plane uses an instance role.
+The `aws_s3` profile requires versioning and AES256 default encryption. Startup fails closed when either setting is missing. Explicit access keys must be configured as a pair. Leave both key values empty when the control plane uses an instance role.
+
+DigitalOcean Spaces uses this profile:
+
+```dotenv
+MANAGED_BACKUP_PROVIDER=digitalocean_spaces
+MANAGED_BACKUP_ENDPOINT_URL=https://sfo3.digitaloceanspaces.com
+MANAGED_BACKUP_REGION=sfo3
+```
+
+Spaces must have versioning enabled. Spaces does not expose bucket-default encryption or returned object-encryption metadata through its S3 API. Yinshi still requests `AES256` during multipart creation. It also downloads each completed immutable version and verifies its ciphertext digest before accepting the upload. Guest-side AES-256-GCM encryption remains mandatory for every provider.
 
 The storage identity needs object upload, read, exact-version delete, version listing, multipart listing, and multipart abort permissions for the configured prefix. These permissions let the coordinator recover a lost upload response without creating another immutable version.
 

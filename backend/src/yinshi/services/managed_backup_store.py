@@ -50,6 +50,9 @@ def create_managed_backup_store(settings: Any) -> "S3ManagedBackupStore":
         client=client,
         bucket=settings.managed_backup_bucket,
         server_side_encryption="AES256",
+        require_bucket_default_encryption=(settings.managed_backup_provider == "aws_s3"),
+        require_part_checksum_confirmation=(settings.managed_backup_provider == "aws_s3"),
+        require_object_encryption_confirmation=(settings.managed_backup_provider == "aws_s3"),
         part_bytes=settings.managed_backup_part_bytes,
     )
 
@@ -93,17 +96,29 @@ class S3ManagedBackupStore:
         client: S3Client,
         bucket: str,
         server_side_encryption: str,
+        require_bucket_default_encryption: bool = True,
+        require_part_checksum_confirmation: bool = True,
+        require_object_encryption_confirmation: bool = True,
         part_bytes: int = 16 * 1024 * 1024,
     ) -> None:
         if _BUCKET_PATTERN.fullmatch(bucket) is None:
             raise ValueError("bucket must be a valid S3 bucket name")
         if server_side_encryption != "AES256":
             raise ValueError("server_side_encryption must be AES256")
+        if type(require_bucket_default_encryption) is not bool:
+            raise TypeError("require_bucket_default_encryption must be Boolean")
+        if type(require_part_checksum_confirmation) is not bool:
+            raise TypeError("require_part_checksum_confirmation must be Boolean")
+        if type(require_object_encryption_confirmation) is not bool:
+            raise TypeError("require_object_encryption_confirmation must be Boolean")
         if type(part_bytes) is not int or not _PART_BYTES_MIN <= part_bytes <= _PART_BYTES_MAX:
             raise ValueError("part_bytes is outside S3 multipart limits")
         self._client = client
         self._bucket = bucket
         self._server_side_encryption = server_side_encryption
+        self._require_bucket_default_encryption = require_bucket_default_encryption
+        self._require_part_checksum_confirmation = require_part_checksum_confirmation
+        self._require_object_encryption_confirmation = require_object_encryption_confirmation
         self._part_bytes = part_bytes
 
     @staticmethod
@@ -127,6 +142,8 @@ class S3ManagedBackupStore:
         )
         if versioning.get("Status") != "Enabled":
             raise RuntimeError("managed backup bucket versioning is not enabled")
+        if not self._require_bucket_default_encryption:
+            return
         encryption = await asyncio.to_thread(
             self._client.get_bucket_encryption,
             Bucket=self._bucket,
@@ -196,9 +213,11 @@ class S3ManagedBackupStore:
                         ContentLength=len(chunk),
                         ChecksumSHA256=checksum,
                     )
+                    if not isinstance(uploaded.get("ETag"), str):
+                        raise RuntimeError("backup object part ETag was not returned")
                     if (
-                        not isinstance(uploaded.get("ETag"), str)
-                        or uploaded.get("ChecksumSHA256") != checksum
+                        self._require_part_checksum_confirmation
+                        and uploaded.get("ChecksumSHA256") != checksum
                     ):
                         raise RuntimeError("backup object part checksum was not confirmed")
                     completed_parts.append(
@@ -240,19 +259,69 @@ class S3ManagedBackupStore:
         if (
             head.get("ContentLength") != expected_size
             or head.get("Metadata") != metadata
-            or head.get("ServerSideEncryption") != self._server_side_encryption
+            or (
+                self._require_object_encryption_confirmation
+                and head.get("ServerSideEncryption") != self._server_side_encryption
+            )
             or head.get("VersionId") != version
         ):
-            await asyncio.to_thread(
-                self._client.delete_object,
-                Bucket=self._bucket,
-                Key=key,
-                VersionId=version,
-            )
+            await self._delete_invalid_version(key, version)
             raise RuntimeError("backup object metadata validation failed")
+        if not self._require_object_encryption_confirmation:
+            try:
+                await self._verify_remote_digest(
+                    key=key,
+                    version=version,
+                    expected_size=expected_size,
+                    expected_sha256=expected_sha256,
+                )
+            except RuntimeError:
+                await self._delete_invalid_version(key, version)
+                raise
         return StoredManagedBackup(
             version=version, size_bytes=expected_size, sha256=expected_sha256
         )
+
+    async def _delete_invalid_version(self, key: str, version: str) -> None:
+        """Remove one uploaded version that failed validation."""
+        await asyncio.to_thread(
+            self._client.delete_object,
+            Bucket=self._bucket,
+            Key=key,
+            VersionId=version,
+        )
+
+    async def _verify_remote_digest(
+        self,
+        *,
+        key: str,
+        version: str,
+        expected_size: int,
+        expected_sha256: str,
+    ) -> None:
+        """Confirm exact remote ciphertext when provider metadata is insufficient."""
+        response = await asyncio.to_thread(
+            self._client.get_object,
+            Bucket=self._bucket,
+            Key=key,
+            VersionId=version,
+        )
+        body = response.get("Body")
+        read = getattr(body, "read", None)
+        close = getattr(body, "close", None)
+        try:
+            if response.get("ContentLength") != expected_size or not callable(read):
+                raise RuntimeError("backup object checksum could not be confirmed")
+            digest = hashlib.sha256()
+            total = 0
+            while chunk := await asyncio.to_thread(read, self._part_bytes):
+                total += len(chunk)
+                digest.update(chunk)
+        finally:
+            if callable(close):
+                close()
+        if total != expected_size or digest.hexdigest() != expected_sha256:
+            raise RuntimeError("backup object checksum did not match")
 
     async def reconcile_upload(
         self,
@@ -297,10 +366,20 @@ class S3ManagedBackupStore:
             or metadata.get("archive-id") != archive_id
             or metadata.get("format") != "yinshi-managed-backup-v1"
             or metadata.get("sha256") != expected_sha256
-            or head.get("ServerSideEncryption") != self._server_side_encryption
+            or (
+                self._require_object_encryption_confirmation
+                and head.get("ServerSideEncryption") != self._server_side_encryption
+            )
             or head.get("VersionId") != version
         ):
             raise RuntimeError("backup upload reconciliation validation failed")
+        if not self._require_object_encryption_confirmation:
+            await self._verify_remote_digest(
+                key=key,
+                version=version,
+                expected_size=expected_size,
+                expected_sha256=expected_sha256,
+            )
         return StoredManagedBackup(
             version=version,
             size_bytes=size_bytes,
