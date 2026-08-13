@@ -252,6 +252,7 @@ async def test_install_writes_private_inputs_then_configures_private_services() 
         "yinshi-runner",
     ]
     assert all(service["http_port"] is None for service in client.services)
+    assert client.operation_calls.get("get_service", 0) == 0
     bootstrap, maintenance, sidecar, runner = client.services
     assert maintenance["command"] == "/opt/yinshi/current/venv/bin/python"
     assert maintenance["args"] == ("-m", "yinshi.managed_backup_guest")
@@ -312,25 +313,6 @@ async def test_install_rejects_invalid_artifact_bytes_before_client_calls(
 
 
 @pytest.mark.asyncio
-async def test_install_preserves_fixed_bootstrap_timeout_error() -> None:
-    """Bootstrap timeout must retain its fixed local error contract."""
-    clock_values = iter((0.0, 600.0))
-    client = FakeSpritesClient(statuses=("running",))
-
-    with pytest.raises(RuntimeError) as raised:
-        await _installer(client, clock=lambda: next(clock_values)).install(
-            sprite_name="yinshi-managed",
-            artifact=ARTIFACT,
-            environment=dict(CLAIM_ENVIRONMENT),
-            artifact_version="release-1",
-            artifact_sha256=ARTIFACT_SHA256,
-        )
-
-    assert str(raised.value) == "Managed Sprite bootstrap timed out"
-    assert [service["service_name"] for service in client.services] == ["yinshi-bootstrap"]
-
-
-@pytest.mark.asyncio
 async def test_install_preserves_provider_cancellation() -> None:
     """Cancellation from a provider await must propagate unchanged."""
     cancellation = asyncio.CancelledError()
@@ -349,49 +331,6 @@ async def test_install_preserves_provider_cancellation() -> None:
 
 
 @pytest.mark.asyncio
-async def test_install_rejects_failed_bootstrap_without_waiting_for_timeout() -> None:
-    """A failed bootstrap must return the fixed installation error immediately."""
-    clock_values = iter((0.0, 0.0))
-    client = FakeSpritesClient(
-        statuses=("failed",),
-        bootstrap_error="provider secret detail",
-    )
-
-    with pytest.raises(RuntimeError) as raised:
-        await _installer(client, clock=lambda: next(clock_values)).install(
-            sprite_name="yinshi-managed",
-            artifact=ARTIFACT,
-            environment=dict(CLAIM_ENVIRONMENT),
-            artifact_version="release-1",
-            artifact_sha256=ARTIFACT_SHA256,
-        )
-
-    assert str(raised.value) == "Managed Sprite installation failed"
-    assert raised.value.__cause__ is None
-    assert client.operation_calls["get_service"] == 1
-    assert [service["service_name"] for service in client.services] == ["yinshi-bootstrap"]
-
-
-@pytest.mark.asyncio
-async def test_install_rejects_stopped_bootstrap_with_provider_error() -> None:
-    """A stopped bootstrap with an error must fail without exposing provider text."""
-    client = FakeSpritesClient(bootstrap_error="provider secret detail")
-
-    with pytest.raises(RuntimeError) as raised:
-        await _installer(client).install(
-            sprite_name="yinshi-managed",
-            artifact=ARTIFACT,
-            environment=dict(CLAIM_ENVIRONMENT),
-            artifact_version="release-1",
-            artifact_sha256=ARTIFACT_SHA256,
-        )
-
-    assert str(raised.value) == "Managed Sprite installation failed"
-    assert raised.value.__cause__ is None
-    assert [service["service_name"] for service in client.services] == ["yinshi-bootstrap"]
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("operation", "call_number"),
     [
@@ -401,7 +340,6 @@ async def test_install_rejects_stopped_bootstrap_with_provider_error() -> None:
         ("configure_service", 1),
         ("configure_service", 2),
         ("configure_service", 3),
-        ("get_service", 1),
     ],
 )
 async def test_install_maps_provider_failures_to_fixed_local_error(

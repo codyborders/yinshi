@@ -222,23 +222,6 @@ class ManagedGuestInstaller:
                 monitor_duration=self._bootstrap_timeout_seconds,
             )
         )
-        deadline = self._clock() + self._bootstrap_timeout_seconds
-        while True:
-            bootstrap = await _provider_call(
-                lambda: self._client.get_service(
-                    sprite_name,
-                    service_name="yinshi-bootstrap",
-                )
-            )
-            status = bootstrap.state.status if bootstrap and bootstrap.state else None
-            provider_error = bootstrap.state.error if bootstrap and bootstrap.state else None
-            if status == "failed" or (status == "stopped" and provider_error):
-                raise RuntimeError(_PROVIDER_ERROR) from None
-            if status == "stopped":
-                break
-            if self._clock() >= deadline:
-                raise RuntimeError("Managed Sprite bootstrap timed out")
-            await self._sleep(1.0)
         await _provider_call(
             lambda: self._client.configure_service(
                 sprite_name,
