@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://yinshi.invalid/schemas/managed-recovery-evidence.schema.json",
+  "title": "Managed source-loss recovery evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "status",
+    "commit_sha",
+    "started_at",
+    "checks"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "status": {
+      "const": "passed"
+    },
+    "commit_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "started_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "checks": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "archive_version_count",
+        "cleanup_verified",
+        "data_verified",
+        "multipart_upload_count",
+        "replacement_authority_verified"
+      ],
+      "properties": {
+        "archive_version_count": {
+          "const": 1
+        },
+        "cleanup_verified": {
+          "const": true
+        },
+        "data_verified": {
+          "const": true
+        },
+        "multipart_upload_count": {
+          "const": 0
+        },
+        "replacement_authority_verified": {
+          "const": true
+        }
+      }
+    }
+  }
+}

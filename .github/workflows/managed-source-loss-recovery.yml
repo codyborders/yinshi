@@ -1,0 +1,63 @@
+name: Managed source-loss recovery staging
+
+on:
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: managed-source-loss-recovery-staging
+  cancel-in-progress: false
+
+jobs:
+  staging-recovery:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment: managed-recovery-staging
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements/*.txt
+      - run: python -m pip install --upgrade pip==26.1.2
+      - run: python -m pip install -r requirements/base.txt --no-deps
+      - run: python -m pip install --no-deps -e .
+      - name: Validate staging configuration without exposing values
+        env:
+          STAGING_CONTROL_URL: ${{ secrets.STAGING_CONTROL_URL }}
+          STAGING_OPERATOR_TOKEN: ${{ secrets.STAGING_OPERATOR_TOKEN }}
+          STAGING_SPRITES_API_TOKEN: ${{ secrets.STAGING_SPRITES_API_TOKEN }}
+          STAGING_SPRITES_NAME_KEY: ${{ secrets.STAGING_SPRITES_NAME_KEY }}
+          STAGING_BACKUP_BUCKET: ${{ secrets.STAGING_BACKUP_BUCKET }}
+          STAGING_BACKUP_ENDPOINT_URL: ${{ secrets.STAGING_BACKUP_ENDPOINT_URL }}
+          STAGING_BACKUP_REGION: ${{ secrets.STAGING_BACKUP_REGION }}
+          STAGING_BACKUP_ACCESS_KEY_ID: ${{ secrets.STAGING_BACKUP_ACCESS_KEY_ID }}
+          STAGING_BACKUP_SECRET_ACCESS_KEY: ${{ secrets.STAGING_BACKUP_SECRET_ACCESS_KEY }}
+          STAGING_BACKUP_ENCRYPTION_KEY: ${{ secrets.STAGING_BACKUP_ENCRYPTION_KEY }}
+        run: |
+          set +e
+          python -c 'import sys; from yinshi.managed_source_loss_recovery import configuration_check_main; sys.exit(configuration_check_main())' > managed-recovery-evidence.json
+          status=$?
+          set -e
+          test "$status" -eq 3
+          python -c 'import json; payload=json.load(open("managed-recovery-evidence.json", encoding="utf-8")); assert payload["status"] == "pending_live_staging_integration"'
+      - name: Upload sanitized pending receipt
+        if: always()
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
+        with:
+          name: managed-recovery-evidence-${{ github.run_id }}
+          path: backend/managed-recovery-evidence.json
+          if-no-files-found: error
+          retention-days: 14
+      - name: Block false recovery success
+        run: |
+          echo "Live staging boundary remains pending. See docs/operations/managed-source-loss-recovery.md."
+          exit 1
