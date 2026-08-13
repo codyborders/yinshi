@@ -1,0 +1,38 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "6bfa63c1f622",
+  "session_id": "019ff585-2eba-7471-856a-990d991faa1f",
+  "strategy": "manual-commit",
+  "created_at": "2026-08-13T15:11:34.805254Z",
+  "branch": "main",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "backend/tests/test_sprite_deployment.py",
+    "deploy/sprites/bootstrap.sh"
+  ],
+  "agent": "Pi",
+  "model": "gpt-5.6-sol",
+  "turn_id": "354dfcc3e375",
+  "checkpoint_transcript_start": 5249,
+  "transcript_lines_at_start": 5249,
+  "compact_transcript_start": 2228,
+  "token_usage": {
+    "input_tokens": 0,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 0,
+    "output_tokens": 0,
+    "api_call_count": 0
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-08-13T15:11:33.399356Z",
+    "agent_lines": 0,
+    "agent_removed": 0,
+    "human_added": 88,
+    "human_modified": 1,
+    "human_removed": 0,
+    "total_committed": 88,
+    "total_lines_changed": 89,
+    "agent_percentage": 0,
+    "metric_version": 2
+  }
+}
