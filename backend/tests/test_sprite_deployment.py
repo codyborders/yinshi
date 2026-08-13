@@ -60,6 +60,13 @@ def test_sprite_example_allows_required_package_hosts() -> None:
     )
 
 
+def test_sidecar_allows_only_pinned_terminal_native_install_script() -> None:
+    """Managed installation should build only the audited node-pty native module."""
+    package = json.loads((REPO_ROOT / "sidecar" / "package.json").read_text(encoding="utf-8"))
+
+    assert package["allowScripts"] == {"node-pty@1.1.0": True}
+
+
 def test_sidecar_lock_has_integrity_for_downloaded_runtime_packages() -> None:
     """Downloaded runtime packages must carry registry integrity metadata."""
     packages = json.loads(SIDECAR_LOCK.read_text(encoding="utf-8"))["packages"]

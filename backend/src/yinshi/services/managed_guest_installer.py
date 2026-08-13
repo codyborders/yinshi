@@ -225,19 +225,6 @@ class ManagedGuestInstaller:
         await _provider_call(
             lambda: self._client.configure_service(
                 sprite_name,
-                service_name="yinshi-maintenance",
-                command="/opt/yinshi/current/venv/bin/python",
-                args=("-m", "yinshi.managed_backup_guest"),
-                environment={},
-                directory="/opt/yinshi/current/backend",
-                needs=(),
-                http_port=None,
-                monitor_duration=None,
-            )
-        )
-        await _provider_call(
-            lambda: self._client.configure_service(
-                sprite_name,
                 service_name="yinshi-sidecar",
                 command="/usr/bin/env",
                 args=("node", "/opt/yinshi/current/sidecar/src/index.js"),
