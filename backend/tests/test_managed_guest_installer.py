@@ -265,8 +265,8 @@ async def test_install_writes_private_inputs_then_configures_private_services() 
     runner_args = runner["args"]
     assert isinstance(runner_args, tuple)
     assert "/home/sprite/.config/yinshi/runner.env" in runner_args[1]
-    assert "yinshi.runner_agent" in runner_args[1]
-    assert "sprite-env services stop yinshi-runner" in runner_args[1]
+    assert "exec /opt/yinshi/current/venv/bin/python -m yinshi.runner_agent" in runner_args[1]
+    assert "sprite-env services stop yinshi-runner" not in runner_args[1]
     assert CLAIM_ENVIRONMENT["YINSHI_REGISTRATION_TOKEN"] not in repr(runner_args)
 
 

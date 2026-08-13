@@ -260,10 +260,7 @@ class ManagedGuestInstaller:
         )
         runner_command = (
             "set -a; . /home/sprite/.config/yinshi/runner.env; set +a; "
-            "/opt/yinshi/current/venv/bin/python -m yinshi.runner_agent; "
-            "status=$?; "
-            'if [ "$status" -eq 0 ]; then sprite-env services stop yinshi-runner; fi; '
-            'exit "$status"'
+            "exec /opt/yinshi/current/venv/bin/python -m yinshi.runner_agent"
         )
         await _provider_call(
             lambda: self._client.configure_service(
