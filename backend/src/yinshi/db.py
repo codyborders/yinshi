@@ -843,6 +843,7 @@ CREATE TABLE IF NOT EXISTS managed_backup_operations (
     next_attempt_at TEXT,
     source_runner_id TEXT,
     source_sprite_id TEXT,
+    source_lost INTEGER NOT NULL DEFAULT 0 CHECK (source_lost IN (0, 1)),
     candidate_runner_id TEXT,
     candidate_sprite_id TEXT,
     activation_generation INTEGER,
@@ -1138,6 +1139,7 @@ def _migrate_control(conn: sqlite3.Connection) -> None:
             next_attempt_at TEXT,
             source_runner_id TEXT,
             source_sprite_id TEXT,
+            source_lost INTEGER NOT NULL DEFAULT 0 CHECK (source_lost IN (0, 1)),
             candidate_runner_id TEXT,
             candidate_sprite_id TEXT,
             activation_generation INTEGER,
@@ -1299,6 +1301,10 @@ def _migrate_managed_backup_operation_columns(conn: sqlite3.Connection) -> None:
         ),
         "source_sprite_id": (
             "ALTER TABLE managed_backup_operations ADD COLUMN source_sprite_id TEXT"
+        ),
+        "source_lost": (
+            "ALTER TABLE managed_backup_operations "
+            "ADD COLUMN source_lost INTEGER NOT NULL DEFAULT 0 CHECK (source_lost IN (0, 1))"
         ),
         "candidate_runner_id": (
             "ALTER TABLE managed_backup_operations ADD COLUMN candidate_runner_id TEXT"

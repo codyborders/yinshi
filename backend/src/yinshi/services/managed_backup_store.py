@@ -87,6 +87,15 @@ class PendingManagedBackupUploads:
     upload_ids: tuple[str, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class ManagedBackupObjectInventory:
+    """Bounded exact-key counts used by staging cleanup checks."""
+
+    version_count: int
+    delete_marker_count: int
+    multipart_upload_ids: tuple[str, ...]
+
+
 class S3ManagedBackupStore:
     """Store already encrypted archives under immutable versioned object keys."""
 
@@ -120,6 +129,21 @@ class S3ManagedBackupStore:
         self._require_part_checksum_confirmation = require_part_checksum_confirmation
         self._require_object_encryption_confirmation = require_object_encryption_confirmation
         self._part_bytes = part_bytes
+        self._lost_completion_response_target: tuple[str, str] | None = None
+
+    @property
+    def lost_completion_response_target(self) -> tuple[str, str] | None:
+        """Return the exact staging fault target without mutating it."""
+        return self._lost_completion_response_target
+
+    def arm_lost_completion_response(self, *, object_key: str, archive_id: str) -> None:
+        """Lose one completion response only for one exact staging archive."""
+        key = self._object_key(object_key)
+        if not isinstance(archive_id, str) or not archive_id or len(archive_id) > 128:
+            raise ValueError("archive_id must be bounded non-empty text")
+        if self._lost_completion_response_target is not None:
+            raise RuntimeError("backup completion response fault is already armed")
+        self._lost_completion_response_target = (key, archive_id)
 
     @staticmethod
     def _object_key(value: str) -> str:
@@ -196,6 +220,7 @@ class S3ManagedBackupStore:
         completed_parts: list[dict[str, object]] = []
         digest = hashlib.sha256()
         total = 0
+        completion_response_lost = False
         try:
             with source_path.open("rb") as source:
                 part_number = 1
@@ -239,6 +264,9 @@ class S3ManagedBackupStore:
                 MultipartUpload={"Parts": completed_parts},
                 ChecksumType="COMPOSITE",
             )
+            if self._lost_completion_response_target == (key, archive_id):
+                self._lost_completion_response_target = None
+                completion_response_lost = True
         except BaseException:
             await asyncio.to_thread(
                 self._client.abort_multipart_upload,
@@ -247,6 +275,16 @@ class S3ManagedBackupStore:
                 UploadId=upload_id,
             )
             raise
+        if completion_response_lost:
+            reconciled = await self.reconcile_upload(
+                object_key=object_key,
+                archive_id=archive_id,
+                expected_size=expected_size,
+                expected_sha256=expected_sha256,
+            )
+            if isinstance(reconciled, StoredManagedBackup):
+                return reconciled
+            raise RuntimeError("backup completion response could not be reconciled")
         version = completed.get("VersionId")
         if not isinstance(version, str) or not version:
             raise RuntimeError("backup object upload did not return a version")
@@ -471,6 +509,42 @@ class S3ManagedBackupStore:
             request["KeyMarker"] = next_key
             request["UploadIdMarker"] = next_upload
         raise RuntimeError("backup upload reconciliation was ambiguous")
+
+    async def inspect_object(self, *, object_key: str) -> ManagedBackupObjectInventory:
+        """Return bounded exact-key version and multipart state."""
+        key = self._object_key(object_key)
+        versions, markers = await self._list_exact_versions(key)
+        uploads = await self._list_exact_uploads(key)
+        return ManagedBackupObjectInventory(
+            version_count=len(versions),
+            delete_marker_count=len(markers),
+            multipart_upload_ids=tuple(uploads),
+        )
+
+    async def purge_object(self, *, object_key: str) -> None:
+        """Remove every version, delete marker, and upload for one exact key."""
+        key = self._object_key(object_key)
+        versions, markers = await self._list_exact_versions(key)
+        uploads = await self._list_exact_uploads(key)
+        for upload_id in uploads:
+            await asyncio.to_thread(
+                self._client.abort_multipart_upload,
+                Bucket=self._bucket,
+                Key=key,
+                UploadId=upload_id,
+            )
+        marker_versions = tuple(
+            str(marker["VersionId"])
+            for marker in markers
+            if isinstance(marker.get("VersionId"), str) and marker["VersionId"]
+        )
+        for version in (*versions, *marker_versions):
+            await asyncio.to_thread(
+                self._client.delete_object,
+                Bucket=self._bucket,
+                Key=key,
+                VersionId=version,
+            )
 
     async def abort_uploads(
         self,

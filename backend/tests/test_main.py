@@ -180,6 +180,9 @@ def test_hosted_fly_lifespan_builds_and_closes_managed_runtime(
         control_db_path=str(tmp_path / "control.db"),
         container_enabled=False,
         backup_encryption_key="b" * 64,
+        deployment_environment="staging",
+        managed_recovery_drill_enabled=True,
+        managed_recovery_operator_token_hash="c" * 64,
     )
     provider_http_client = Mock()
     provider_http_client.aclose = AsyncMock()
@@ -203,6 +206,8 @@ def test_hosted_fly_lifespan_builds_and_closes_managed_runtime(
     reconciler = Mock()
     reconciler.reconcile_classified = AsyncMock()
     reconciler.run = AsyncMock()
+    recovery_controller = Mock()
+    recovery_controller.aclose = AsyncMock()
 
     monkeypatch.setattr(main, "get_settings", lambda: app_settings)
     monkeypatch.setattr(
@@ -222,6 +227,11 @@ def test_hosted_fly_lifespan_builds_and_closes_managed_runtime(
     monkeypatch.setattr(main, "ManagedSpriteReconciler", Mock(return_value=reconciler))
     monkeypatch.setattr(
         main,
+        "ManagedRecoveryDrillController",
+        Mock(return_value=recovery_controller),
+    )
+    monkeypatch.setattr(
+        main,
         "create_managed_backup_store",
         Mock(return_value=backup_store),
         raising=False,
@@ -238,7 +248,9 @@ def test_hosted_fly_lifespan_builds_and_closes_managed_runtime(
         assert application.state.managed_runtime_manager is manager
         assert application.state.managed_backup_store is backup_store
         assert application.state.managed_backup_manager is backup_manager
+        assert application.state.managed_recovery_drill_controller is recovery_controller
 
+    recovery_controller.aclose.assert_awaited_once()
     sprites_constructor.assert_called_once_with(
         api_token="provider-token",
         http_client=provider_http_client,

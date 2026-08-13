@@ -266,6 +266,54 @@ async def test_spaces_upload_closes_invalid_remote_response_body(tmp_path: Path)
 
 
 @pytest.mark.asyncio
+async def test_staging_fault_loses_one_completion_response(tmp_path) -> None:
+    """A one-shot staging fault must leave the completed version for reconciliation."""
+    from yinshi.services.managed_backup_store import S3ManagedBackupStore
+
+    payload = b"encrypted managed archive"
+    digest = hashlib.sha256(payload).hexdigest()
+    source = tmp_path / "archive.enc"
+    source.write_bytes(payload)
+
+    class Client(FakeS3Client):
+        def list_object_versions(self, **_request):
+            return {
+                "IsTruncated": False,
+                "Versions": [
+                    {
+                        "Key": "managed/v1/owner/archive.enc",
+                        "VersionId": "version-1",
+                    }
+                ],
+                "DeleteMarkers": [],
+            }
+
+    client = Client()
+    store = S3ManagedBackupStore(
+        client=client,
+        bucket="backup-bucket",
+        server_side_encryption="AES256",
+        part_bytes=5 * 1024 * 1024,
+    )
+    store.arm_lost_completion_response(
+        object_key="managed/v1/owner/archive.enc",
+        archive_id="archive-1",
+    )
+
+    stored = await store.put_file(
+        source,
+        object_key="managed/v1/owner/archive.enc",
+        expected_size=len(payload),
+        expected_sha256=digest,
+        archive_id="archive-1",
+    )
+
+    assert client.object == payload
+    assert stored.version == "version-1"
+    assert stored.sha256 == digest
+
+
+@pytest.mark.asyncio
 async def test_s3_store_recovers_exact_version_after_lost_completion_response() -> None:
     """Reconciliation should recover one fully validated completed object version."""
     from yinshi.services.managed_backup_store import S3ManagedBackupStore

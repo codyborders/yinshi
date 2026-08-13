@@ -226,6 +226,11 @@ class Settings(BaseSettings):
     sprites_reconcile_interval_seconds: int = 900
     sprites_reconcile_grace_seconds: int = 3600
 
+    # Staging-only destructive recovery control
+    deployment_environment: str = "local"
+    managed_recovery_drill_enabled: bool = False
+    managed_recovery_operator_token_hash: str = ""
+
     # Independent encrypted managed guest backups
     managed_backup_provider: str = "aws_s3"
     managed_backup_bucket: str = ""
@@ -400,6 +405,17 @@ def _validate_settings(settings: Settings) -> None:
     if settings.managed_backup_provider not in _MANAGED_BACKUP_PROVIDER_VALUES:
         allowed_values = ", ".join(sorted(_MANAGED_BACKUP_PROVIDER_VALUES))
         raise RuntimeError(f"MANAGED_BACKUP_PROVIDER must be one of: {allowed_values}")
+    if settings.deployment_environment not in {"local", "staging", "production"}:
+        raise RuntimeError("DEPLOYMENT_ENVIRONMENT must be one of: local, production, staging")
+    if settings.managed_recovery_drill_enabled:
+        if settings.deployment_environment != "staging":
+            raise RuntimeError(
+                "MANAGED_RECOVERY_DRILL_ENABLED requires DEPLOYMENT_ENVIRONMENT=staging"
+            )
+        if _SHA256_PATTERN.fullmatch(settings.managed_recovery_operator_token_hash) is None:
+            raise RuntimeError(
+                "MANAGED_RECOVERY_OPERATOR_TOKEN_HASH must be a lowercase SHA-256 digest"
+            )
     if settings.managed_backup_provider == "digitalocean_spaces":
         expected_endpoint = f"https://{settings.managed_backup_region}.digitaloceanspaces.com"
         if settings.managed_backup_endpoint_url != expected_endpoint:

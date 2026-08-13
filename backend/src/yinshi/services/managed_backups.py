@@ -57,6 +57,7 @@ class ManagedBackupOperation:
     next_attempt_at: str | None = None
     source_runner_id: str | None = None
     source_sprite_id: str | None = None
+    source_lost: bool = False
     candidate_runner_id: str | None = None
     candidate_sprite_id: str | None = None
     activation_generation: int | None = None
@@ -116,6 +117,7 @@ def _operation(row: sqlite3.Row) -> ManagedBackupOperation:
         next_attempt_at=row["next_attempt_at"],
         source_runner_id=row["source_runner_id"],
         source_sprite_id=row["source_sprite_id"],
+        source_lost=bool(row["source_lost"]),
         candidate_runner_id=row["candidate_runner_id"],
         candidate_sprite_id=row["candidate_sprite_id"],
         activation_generation=row["activation_generation"],
@@ -566,15 +568,16 @@ def start_managed_backup_creation(
     )
 
 
-def start_managed_backup_restore(
+def _start_managed_backup_restore(
     user_id: str,
     *,
     archive_id: str,
     runtime_generation: int,
     job_id: str,
     now: datetime,
+    source_lost: bool,
 ) -> ManagedBackupCreationClaim:
-    """Claim one tenant-owned ready archive for replacement-runtime restore."""
+    """Claim one tenant-owned ready archive with explicit source state."""
     normalized_user_id = _require_user_id(user_id)
     if not isinstance(archive_id, str) or not archive_id:
         raise ValueError("archive_id must not be empty")
@@ -606,8 +609,8 @@ def start_managed_backup_restore(
                 """INSERT INTO managed_backup_operations (
                        user_id, job_id, archive_id, operation, status,
                        runtime_generation, source_runner_id, source_sprite_id,
-                       started_at, updated_at, last_error
-                   ) VALUES (?, ?, ?, 'restore', 'running', ?, ?, ?, ?, ?, NULL)""",
+                       source_lost, started_at, updated_at, last_error
+                   ) VALUES (?, ?, ?, 'restore', 'running', ?, ?, ?, ?, ?, ?, NULL)""",
                 (
                     normalized_user_id,
                     job_id,
@@ -615,6 +618,7 @@ def start_managed_backup_restore(
                     runtime_generation,
                     runtime["runner_id"],
                     runtime["sprite_external_id"],
+                    int(source_lost),
                     timestamp,
                     timestamp,
                 ),
@@ -638,7 +642,48 @@ def start_managed_backup_restore(
             started_at=timestamp,
             updated_at=timestamp,
             last_error=None,
+            source_runner_id=runtime["runner_id"],
+            source_sprite_id=runtime["sprite_external_id"],
+            source_lost=source_lost,
         ),
+    )
+
+
+def start_managed_backup_restore(
+    user_id: str,
+    *,
+    archive_id: str,
+    runtime_generation: int,
+    job_id: str,
+    now: datetime,
+) -> ManagedBackupCreationClaim:
+    """Claim one tenant-owned ready archive for replacement-runtime restore."""
+    return _start_managed_backup_restore(
+        user_id,
+        archive_id=archive_id,
+        runtime_generation=runtime_generation,
+        job_id=job_id,
+        now=now,
+        source_lost=False,
+    )
+
+
+def start_managed_source_loss_restore(
+    user_id: str,
+    *,
+    archive_id: str,
+    runtime_generation: int,
+    job_id: str,
+    now: datetime,
+) -> ManagedBackupCreationClaim:
+    """Atomically claim one ready archive after confirmed source loss."""
+    return _start_managed_backup_restore(
+        user_id,
+        archive_id=archive_id,
+        runtime_generation=runtime_generation,
+        job_id=job_id,
+        now=now,
+        source_lost=True,
     )
 
 

@@ -27,6 +27,7 @@ from yinshi.api import (
     datadog_proxy,
     desktop_devices,
     github,
+    managed_recovery_drills,
     managed_runtime,
     prompt_runs,
     repos,
@@ -44,6 +45,9 @@ from yinshi.api import (
 from yinshi.auth import AuthMiddleware, setup_oauth
 from yinshi.config import Settings, get_settings, https_required
 from yinshi.db import init_control_db, init_db
+from yinshi.managed_recovery_drill_controller import ManagedRecoveryDrillController
+from yinshi.managed_recovery_live import ManagedRecoveryLiveRunner
+from yinshi.managed_recovery_staging import StagingManagedRecoveryBoundary
 from yinshi.rate_limit import limiter
 from yinshi.services.encrypted_uploads import EncryptedUploadManager
 from yinshi.services.managed_backup_manager import ManagedBackupManager
@@ -447,10 +451,29 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             app.state.managed_backup_store = managed_backup_store
             app.state.managed_backup_manager = managed_backup_manager
             app.state.managed_runtime_manager = managed_runtime_manager
+            if app_settings.managed_recovery_drill_enabled:
+                recovery_boundary = StagingManagedRecoveryBoundary(
+                    runtime_manager=managed_runtime_manager,
+                    backup_manager=managed_backup_manager,
+                    provider=managed_runtime.backup_provider,
+                    store=managed_backup_store,
+                )
+                await recovery_boundary.recover_retained_cleanup()
+                recovery_runner = ManagedRecoveryLiveRunner(boundary=recovery_boundary)
+                app.state.managed_recovery_drill_controller = ManagedRecoveryDrillController(
+                    run_drill=recovery_runner.run
+                )
 
         yield
     finally:
         cleanup_error: BaseException | None = None
+        recovery_controller = getattr(app.state, "managed_recovery_drill_controller", None)
+        recovery_close = getattr(recovery_controller, "aclose", None)
+        if callable(recovery_close):
+            cleanup_error = await _attempt_shutdown_cleanup(
+                recovery_close,
+                cleanup_error,
+            )
         prompt_journal = getattr(app.state, "prompt_journal", None)
         if isinstance(prompt_journal, PromptJournal):
             cleanup_error = await _attempt_shutdown_cleanup(
@@ -650,6 +673,14 @@ def _include_routes(
         if app_settings.managed_runtime_provider == "fly_sprites":
             hosted_execution_routers = ()
         selected_routers = [*control_routers, *hosted_execution_routers]
+    if (
+        mode == "hosted"
+        and app_settings.managed_runtime_provider == "fly_sprites"
+        and getattr(app_settings, "managed_recovery_drill_enabled", False)
+        and getattr(app_settings, "deployment_environment", "local") == "staging"
+        and bool(getattr(app_settings, "managed_recovery_operator_token_hash", ""))
+    ):
+        selected_routers.append(managed_recovery_drills.router)
     for router in selected_routers:
         application.include_router(router)
 
@@ -698,6 +729,10 @@ def create_app(
     application.state.managed_backup_manager = None
     application.state.managed_backup_store = None
     application.state.managed_runtime_manager = None
+    application.state.managed_recovery_drill_controller = None
+    application.state.managed_recovery_operator_token_hash = (
+        app_settings.managed_recovery_operator_token_hash
+    )
     application.state.sprites_public_launch_enabled = False
     application.state.prompt_journal = PromptJournal()
     application.state.terminal_journal = TerminalJournal()

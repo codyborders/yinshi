@@ -14,7 +14,7 @@ from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from yinshi.services.managed_backup_crypto import (
     seal_managed_backup_job,
@@ -40,6 +40,7 @@ from yinshi.services.managed_backups import (
     record_managed_backup_upload_intent,
     renew_managed_backup_operation_lease,
     start_managed_backup_creation,
+    start_managed_source_loss_restore,
 )
 from yinshi.services.managed_operation_failures import fail_managed_backup_operation
 from yinshi.services.managed_runners import (
@@ -59,6 +60,14 @@ _RESULT_BYTES_MAX = 4096
 logger = logging.getLogger(__name__)
 
 
+class ManagedBackupReservation(NamedTuple):
+    """Non-runnable exact backup identity reserved by one manager call."""
+
+    archive_id: str
+    job_id: str
+    object_key: str
+
+
 class ManagedBackupManager:
     """Own managed backup startup and shutdown outside request handlers."""
 
@@ -69,6 +78,7 @@ class ManagedBackupManager:
         interval_seconds: float = 5.0,
         start_creation: Callable[..., Any] = start_managed_backup_creation,
         start_restore: Callable[..., Any] | None = None,
+        start_source_loss_restore: Callable[..., Any] | None = start_managed_source_loss_restore,
         start_deletion: Callable[..., Any] | None = None,
         get_runtime: Callable[[str], ManagedRuntimeStatus | None] = get_managed_runtime_status,
         get_runner: Callable[[str], dict[str, Any] | None] = get_managed_runner_for_user,
@@ -123,6 +133,7 @@ class ManagedBackupManager:
         self._interval_seconds = interval_seconds
         self._start_creation = start_creation
         self._start_restore = start_restore
+        self._start_source_loss_restore = start_source_loss_restore
         self._start_deletion = start_deletion
         self._get_runtime = get_runtime
         self._get_runner = get_runner
@@ -171,7 +182,21 @@ class ManagedBackupManager:
         self._stop_event = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
 
-    def enqueue_create(self, user_id: str) -> ManagedBackupOperation:
+    def reserve_create(self) -> ManagedBackupReservation:
+        """Reserve exact identifiers before publishing a runnable operation."""
+        archive_id = self._new_id()
+        return ManagedBackupReservation(
+            archive_id=archive_id,
+            job_id=self._new_id(),
+            object_key=f"{self._object_prefix}/{archive_id}.enc",
+        )
+
+    def enqueue_create(
+        self,
+        user_id: str,
+        *,
+        reservation: ManagedBackupReservation | None = None,
+    ) -> ManagedBackupOperation:
         """Persist one server-authorized encrypted backup request."""
         if self._wrapping_key is None:
             raise ValueError("managed backups are unavailable")
@@ -185,8 +210,9 @@ class ManagedBackupManager:
             or runner.get("noise_key_confirmed") is not True
         ):
             raise ValueError("managed runtime is not ready for backup")
-        archive_id = self._new_id()
-        job_id = self._new_id()
+        reserved = reservation or self.reserve_create()
+        archive_id = reserved.archive_id
+        job_id = reserved.job_id
         archive_key = os.urandom(32)
         owner_digest = hashlib.sha256(user_id.encode("utf-8")).hexdigest()
         wrapped_key = wrap_managed_archive_key(
@@ -201,7 +227,7 @@ class ManagedBackupManager:
             runtime_generation=runtime.generation,
             archive_id=archive_id,
             job_id=job_id,
-            object_key=f"{self._object_prefix}/{archive_id}.enc",
+            object_key=reserved.object_key,
             wrapped_key=wrapped_key,
             key_id=self._key_id,
             owner_digest=owner_digest,
@@ -260,6 +286,38 @@ class ManagedBackupManager:
             updated_at=self._now().isoformat(),
             last_error=None,
         )
+
+    def enqueue_source_loss_restore(
+        self,
+        user_id: str,
+        archive_id: str,
+    ) -> ManagedBackupOperation:
+        """Persist one explicitly destructive source-loss restore request."""
+        runtime = self._get_runtime(user_id)
+        archive = self._get_archive(user_id, archive_id)
+        if archive is None:
+            raise LookupError("managed backup archive was not found")
+        if (
+            runtime is None
+            or runtime.lifecycle_status != "ready"
+            or archive.status != "ready"
+            or archive.object_version is None
+            or self._start_source_loss_restore is None
+        ):
+            raise ValueError("managed backup archive is not restorable after source loss")
+        job_id = self._new_id()
+        claim = self._start_source_loss_restore(
+            user_id,
+            archive_id=archive_id,
+            runtime_generation=runtime.generation,
+            job_id=job_id,
+            now=self._now(),
+        )
+        if isinstance(claim, ManagedBackupCreationClaim):
+            return claim.operation
+        if isinstance(claim, ManagedBackupOperation):
+            return claim
+        raise RuntimeError("managed source-loss restore claim is invalid")
 
     def enqueue_delete(self, user_id: str, archive_id: str) -> ManagedBackupOperation:
         """Persist one tenant-owned exact-version deletion request."""
@@ -598,11 +656,12 @@ class ManagedBackupManager:
             candidate_sprite_name=candidate_name,
             expected_public_key=candidate.runner_public_key,
         )
-        await self._relay.quiesce_runner(
-            operation.source_runner_id,
-            job_id=operation.job_id,
-            timeout_seconds=30,
-        )
+        if not operation.source_lost:
+            await self._relay.quiesce_runner(
+                operation.source_runner_id,
+                job_id=operation.job_id,
+                timeout_seconds=30,
+            )
         artifact_version = self._runtime_service.artifact_version
         if not self._activate_candidate(
             operation.user_id,
@@ -625,7 +684,8 @@ class ManagedBackupManager:
         """Finish post-cutover cleanup without reverting active authority."""
         assert self._provider is not None
         assert operation.source_sprite_id is not None
-        await self._provider.delete_sprite(operation.source_sprite_id)
+        if not operation.source_lost:
+            await self._provider.delete_sprite(operation.source_sprite_id)
         root = f"{_MAINTENANCE_ROOT}/{operation.job_id}"
         for suffix in (".job", ".result", ".archive.enc", ".release"):
             with suppress(Exception):
@@ -669,7 +729,7 @@ class ManagedBackupManager:
                     candidate_sprite_id=operation.candidate_sprite_id,
                     now=self._now(),
                 )
-        if operation.source_sprite_id is not None:
+        if operation.source_sprite_id is not None and not operation.source_lost:
             for service in ("yinshi-sidecar", "yinshi-runner"):
                 with suppress(Exception):
                     await self._provider.start_service(
@@ -677,7 +737,7 @@ class ManagedBackupManager:
                         service_name=service,
                         monitor_duration=30,
                     )
-        if operation.source_runner_id is not None:
+        if operation.source_runner_id is not None and not operation.source_lost:
             with suppress(Exception):
                 await self._relay.release_maintenance(
                     operation.source_runner_id,
