@@ -381,18 +381,46 @@ def load_config() -> RunnerAgentConfig:
 def _probe_writable_directory(directory: Path, label: str) -> None:
     """Create and probe a POSIX directory required by the runner."""
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-    metadata = directory.lstat()
-    if not stat.S_ISDIR(metadata.st_mode) or directory.is_symlink():
-        raise RuntimeError(f"Runner {label} path is not a directory: {directory}")
-    if metadata.st_uid != os.geteuid():
-        raise RuntimeError(f"Runner {label} directory is not owned by the runner user")
-    directory.chmod(0o700)
-
-    probe_path = directory / ".yinshi-runner-write-check"
-    probe_path.write_text("ok\n", encoding="utf-8")
-    if probe_path.read_text(encoding="utf-8") != "ok\n":
-        raise RuntimeError(f"Runner {label} directory failed read-after-write check")
-    probe_path.unlink(missing_ok=True)
+    directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    directory_flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    try:
+        directory_descriptor = os.open(directory, directory_flags)
+    except OSError:
+        raise RuntimeError(f"Runner {label} path is not a directory: {directory}") from None
+    probe_name = f".yinshi-runner-write-check.{secrets.token_hex(16)}"
+    probe_descriptor: int | None = None
+    try:
+        metadata = os.fstat(directory_descriptor)
+        if not stat.S_ISDIR(metadata.st_mode):
+            raise RuntimeError(f"Runner {label} path is not a directory: {directory}")
+        if metadata.st_uid != os.geteuid():
+            raise RuntimeError(f"Runner {label} directory is not owned by the runner user")
+        os.fchmod(directory_descriptor, 0o700)
+        probe_flags = os.O_RDWR | os.O_CREAT | os.O_EXCL
+        probe_flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+        probe_descriptor = os.open(
+            probe_name,
+            probe_flags,
+            0o600,
+            dir_fd=directory_descriptor,
+        )
+        expected = b"ok\n"
+        if os.write(probe_descriptor, expected) != len(expected):
+            raise RuntimeError(f"Runner {label} directory failed read-after-write check")
+        os.fsync(probe_descriptor)
+        os.lseek(probe_descriptor, 0, os.SEEK_SET)
+        if os.read(probe_descriptor, len(expected) + 1) != expected:
+            raise RuntimeError(f"Runner {label} directory failed read-after-write check")
+    except OSError:
+        raise RuntimeError(f"Runner {label} directory failed read-after-write check") from None
+    finally:
+        if probe_descriptor is not None:
+            os.close(probe_descriptor)
+            try:
+                os.unlink(probe_name, dir_fd=directory_descriptor)
+            except OSError:
+                pass
+        os.close(directory_descriptor)
 
 
 def _shared_files_storage(shared_files_dir: Path) -> str:

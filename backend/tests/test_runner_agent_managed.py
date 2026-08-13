@@ -47,6 +47,31 @@ def test_managed_capability_preparation_enforces_owner_only_storage(
     assert [stat.S_IMODE(path.stat().st_mode) for path in paths] == [0o700] * 3
     assert all(not (path / ".yinshi-runner-write-check").exists() for path in paths)
 
+    target = tmp_path / "target"
+    target.write_text("unchanged\n", encoding="utf-8")
+    planted_probe = paths[0] / ".yinshi-runner-write-check"
+    planted_probe.symlink_to(target)
+
+    runner_agent._capabilities(runner_agent.load_config())
+
+    assert target.read_text(encoding="utf-8") == "unchanged\n"
+    assert planted_probe.is_symlink()
+
+
+def test_managed_capability_preparation_rejects_replaced_directory(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Capability preparation must reject a managed directory symlink."""
+    _set_runner_agent_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("YINSHI_RUNNER_STORAGE_PROFILE", "fly_sprites_posix")
+    replacement = tmp_path / "replacement"
+    replacement.mkdir()
+    (tmp_path / "data").symlink_to(replacement, target_is_directory=True)
+
+    with pytest.raises(RuntimeError, match="Runner data path is not a directory"):
+        runner_agent._capabilities(runner_agent.load_config())
+
 
 def test_runner_agent_managed_lifecycle_defaults_are_disabled(
     monkeypatch: pytest.MonkeyPatch,
