@@ -214,6 +214,30 @@ async def test_list_sprites_follows_pagination_without_detail_requests() -> None
 
 
 @pytest.mark.asyncio
+async def test_list_sprites_accepts_nonempty_terminal_page_with_null_token() -> None:
+    """A present null token terminates inventory after validated records."""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "has_more": True,
+                "next_continuation_token": None,
+                "sprites": [{"name": "yinshi-staging-retained"}],
+            },
+        )
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="https://api.sprites.dev"
+    ) as http_client:
+        client = SpritesClient(api_token="secret", http_client=http_client)
+
+        records = await client.list_sprites(prefix="yinshi-staging")
+
+    assert [record.name for record in records] == ["yinshi-staging-retained"]
+
+
+@pytest.mark.asyncio
 async def test_list_sprites_accepts_empty_filtered_terminal_page() -> None:
     """Provider empty prefix results may omit a continuation token despite has_more."""
     from yinshi.services.sprites import SpritesClient
@@ -236,6 +260,35 @@ async def test_list_sprites_accepts_empty_filtered_terminal_page() -> None:
         records = await client.list_sprites(prefix="yinshi-staging")
 
     assert records == ()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "pagination",
+    [
+        {"has_more": False, "next_continuation_token": "unexpected"},
+        {"has_more": True},
+        {"has_more": True, "next_continuation_token": 7},
+    ],
+)
+async def test_list_sprites_rejects_invalid_continuation_shapes(
+    pagination: dict[str, object],
+) -> None:
+    """Inventory must reject contradictory, missing, and malformed tokens."""
+
+    def handle_request(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"sprites": [{"name": "yinshi-first"}], **pagination},
+        )
+
+    async with httpx.AsyncClient(
+        base_url="https://api.sprites.dev",
+        transport=httpx.MockTransport(handle_request),
+    ) as http_client:
+        client = SpritesClient(api_token="provider-token", http_client=http_client)
+        with pytest.raises(SpritesProtocolError, match="continuation"):
+            await client.list_sprites(prefix="yinshi-")
 
 
 @pytest.mark.asyncio

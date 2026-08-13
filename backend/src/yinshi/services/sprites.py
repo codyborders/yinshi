@@ -531,7 +531,7 @@ class SpritesClient:
             if len(names) > _MAX_SPRITE_INVENTORY_ITEMS:
                 raise SpritesProtocolError("Sprite inventory exceeds item limit")
             records.extend(SpriteInventoryRecord(name=name) for name in page_names)
-            if not has_more or (not entries and has_next_token_field and next_token is None):
+            if not has_more or (has_next_token_field and next_token is None):
                 if not has_more and next_token is not None:
                     raise SpritesProtocolError("Sprite inventory continuation is invalid")
                 return tuple(records)
