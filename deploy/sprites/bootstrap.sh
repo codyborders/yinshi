@@ -147,9 +147,12 @@ member_limit = int(member_limit_text)
 byte_limit = int(byte_limit_text)
 staging = Path(staging_path).resolve()
 required_files = {
+    "deploy",
+    "deploy/sprites",
     "backend/pyproject.toml",
     "backend/requirements/base.txt",
     "backend/requirements/base.lock",
+    "deploy/sprites/bootstrap.sh",
     "sidecar/package.json",
     "sidecar/package-lock.json",
 }
@@ -194,12 +197,22 @@ with tarfile.open(fileobj=artifact_file, mode="r:gz") as archive:
         path = PurePosixPath(name)
         if any(part in {"", ".", ".."} for part in path.parts):
             raise SystemExit("Archive member path is invalid")
-        if str(path) != name or path.parts[0] not in {"backend", "sidecar"}:
+        is_runtime_member = path.parts[0] in {"backend", "sidecar"}
+        is_bootstrap_member = name in {
+            "deploy",
+            "deploy/sprites",
+            "deploy/sprites/bootstrap.sh",
+        }
+        if str(path) != name or not (is_runtime_member or is_bootstrap_member):
             raise SystemExit("Archive contains an unexpected root")
         if name in names:
             raise SystemExit("Archive contains duplicate members")
         if not (member.isdir() or member.isfile()):
             raise SystemExit("Archive links and special files are not allowed")
+        if name in {"deploy", "deploy/sprites"} and not member.isdir():
+            raise SystemExit("Archive bootstrap parent type is invalid")
+        if name == "deploy/sprites/bootstrap.sh" and not member.isfile():
+            raise SystemExit("Archive bootstrap file type is invalid")
         if member.size < 0:
             raise SystemExit("Archive member size is invalid")
         if member.isfile():

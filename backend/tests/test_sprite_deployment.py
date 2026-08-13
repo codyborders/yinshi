@@ -98,6 +98,7 @@ def _build_repository(tmp_path: Path) -> tuple[Path, str]:
         "sidecar/package.json": '{"name":"sidecar"}\n',
         "sidecar/package-lock.json": '{"lockfileVersion":3}\n',
         "sidecar/src/index.js": "export const tracked = true;\n",
+        "deploy/sprites/bootstrap.sh": "#!/usr/bin/env bash\n",
         "sidecar/src/.env.production": "SECRET=excluded\n",
         "sidecar/src/node_modules/pkg.js": "excluded\n",
         "outside.txt": "excluded\n",
@@ -141,6 +142,18 @@ def test_build_artifact_includes_managed_python_lock(tmp_path: Path) -> None:
         assert "backend/requirements/base.lock" in archive.getnames()
 
 
+def test_build_artifact_includes_managed_bootstrap_script(tmp_path: Path) -> None:
+    """Build includes the audited bootstrap used to install the artifact."""
+    repository, commit = _build_repository(tmp_path)
+    output = tmp_path / "release.tar.gz"
+
+    result = _run([str(BUILD_SCRIPT), commit, str(output)], repository)
+
+    assert result.returncode == 0, result.stderr
+    with tarfile.open(output, mode="r:gz") as archive:
+        assert "deploy/sprites/bootstrap.sh" in archive.getnames()
+
+
 def test_build_artifact_rejects_dirty_selected_paths(tmp_path: Path) -> None:
     """Build stops when selected deployment paths contain local changes."""
     repository, commit = _build_repository(tmp_path)
@@ -157,6 +170,10 @@ def test_build_artifact_rejects_dirty_selected_paths(tmp_path: Path) -> None:
 
 def _write_artifact(path: Path, members: dict[str, bytes]) -> str:
     with tarfile.open(path, mode="w:gz") as archive:
+        for directory_name in ("deploy", "deploy/sprites"):
+            directory = tarfile.TarInfo(directory_name)
+            directory.type = tarfile.DIRTYPE
+            archive.addfile(directory)
         for name, content in members.items():
             member = tarfile.TarInfo(name)
             member.mode = 0o644
@@ -233,6 +250,7 @@ def _valid_members() -> dict[str, bytes]:
         "backend/requirements/base.txt": b"fastapi==1.0\n",
         "backend/requirements/base.lock": b"fastapi==1.0 --hash=sha256:abc\n",
         "backend/src/yinshi/__init__.py": b"",
+        "deploy/sprites/bootstrap.sh": b"#!/usr/bin/env bash\n",
         "sidecar/package.json": b'{"name":"sidecar"}\n',
         "sidecar/package-lock.json": b'{"lockfileVersion":3}\n',
         "sidecar/src/index.js": b"",
@@ -259,6 +277,56 @@ def test_bootstrap_requires_existing_encryption_marker(tmp_path: Path) -> None:
     assert not log.exists()
 
 
+def test_bootstrap_rejects_bootstrap_path_as_directory(tmp_path: Path) -> None:
+    """Bootstrap path must contain the audited regular file, not a directory."""
+    env, install_root, log = _bootstrap_environment(tmp_path)
+    artifact = tmp_path / "release.tar.gz"
+    members = _valid_members()
+    members.pop("deploy/sprites/bootstrap.sh")
+    with tarfile.open(artifact, mode="w:gz") as archive:
+        for name, content in members.items():
+            member = tarfile.TarInfo(name)
+            member.size = len(content)
+            archive.addfile(member, io.BytesIO(content))
+        bootstrap = tarfile.TarInfo("deploy/sprites/bootstrap.sh")
+        bootstrap.type = tarfile.DIRTYPE
+        archive.addfile(bootstrap)
+    digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+
+    result = _run([str(BOOTSTRAP_SCRIPT), str(artifact), digest, "release-123"], tmp_path, env)
+
+    assert result.returncode != 0
+    assert not (install_root / "current").exists()
+    assert not log.exists()
+
+
+@pytest.mark.parametrize("missing_parent", ["deploy", "deploy/sprites"])
+def test_bootstrap_rejects_missing_bootstrap_parent_directory(
+    tmp_path: Path, missing_parent: str
+) -> None:
+    """Artifact must declare both bootstrap parent directories explicitly."""
+    env, install_root, log = _bootstrap_environment(tmp_path)
+    artifact = tmp_path / "release.tar.gz"
+    with tarfile.open(artifact, mode="w:gz") as archive:
+        for name, content in _valid_members().items():
+            member = tarfile.TarInfo(name)
+            member.size = len(content)
+            archive.addfile(member, io.BytesIO(content))
+        for directory_name in ("deploy", "deploy/sprites"):
+            if directory_name == missing_parent:
+                continue
+            directory = tarfile.TarInfo(directory_name)
+            directory.type = tarfile.DIRTYPE
+            archive.addfile(directory)
+    digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+
+    result = _run([str(BOOTSTRAP_SCRIPT), str(artifact), digest, "release-123"], tmp_path, env)
+
+    assert result.returncode != 0
+    assert not (install_root / "current").exists()
+    assert not log.exists()
+
+
 def test_bootstrap_rejects_checksum_mismatch_before_install(tmp_path: Path) -> None:
     """Bootstrap verifies the exact digest before package tools or extraction."""
     env, install_root, log = _bootstrap_environment(tmp_path)
@@ -280,6 +348,7 @@ def test_bootstrap_rejects_checksum_mismatch_before_install(tmp_path: Path) -> N
         ("backend/src/link", tarfile.SYMTYPE, "/etc/passwd"),
         ("backend/src/device", tarfile.CHRTYPE, ""),
         ("unexpected/file", tarfile.REGTYPE, ""),
+        ("deploy/hooks/payload", tarfile.REGTYPE, ""),
     ],
 )
 def test_bootstrap_rejects_unsafe_archive_members(
@@ -289,6 +358,10 @@ def test_bootstrap_rejects_unsafe_archive_members(
     env, install_root, log = _bootstrap_environment(tmp_path)
     artifact = tmp_path / "release.tar.gz"
     with tarfile.open(artifact, mode="w:gz") as archive:
+        for directory_name in ("deploy", "deploy/sprites"):
+            directory = tarfile.TarInfo(directory_name)
+            directory.type = tarfile.DIRTYPE
+            archive.addfile(directory)
         for name, content in _valid_members().items():
             safe_member = tarfile.TarInfo(name)
             safe_member.size = len(content)
@@ -390,6 +463,7 @@ def test_bootstrap_installs_release_and_switches_current(tmp_path: Path) -> None
     assert result.returncode == 0, result.stderr
     release = install_root / "releases" / "release-123"
     assert (release / "backend" / "src" / "yinshi" / "__init__.py").is_file()
+    assert (release / "deploy" / "sprites" / "bootstrap.sh").is_file()
     attestation = release / ".artifact-sha256"
     assert attestation.is_file()
     assert not attestation.is_symlink()

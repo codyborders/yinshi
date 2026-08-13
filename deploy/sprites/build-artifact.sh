@@ -12,6 +12,7 @@ selected_paths=(
     backend/requirements/base.txt
     backend/requirements/base.lock
     backend/src
+    deploy/sprites/bootstrap.sh
     sidecar/package.json
     sidecar/package-lock.json
     sidecar/src
