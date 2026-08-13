@@ -3,8 +3,12 @@
   "checkpoint_id": "b9f3dc84ac9a",
   "strategy": "manual-commit",
   "branch": "main",
-  "checkpoints_count": 5,
-  "files_touched": null,
+  "checkpoints_count": 6,
+  "files_touched": [
+    "backend/src/yinshi/managed_backup_guest.py",
+    "backend/tests/test_managed_backup_guest.py",
+    "backend/tests/test_managed_restore_crash_recovery.py"
+  ],
   "sessions": [
     {
       "metadata": "/b9/f3dc84ac9a/0/metadata.json",
@@ -26,13 +30,20 @@
       "compact_transcript": "/b9/f3dc84ac9a/2/transcript.jsonl",
       "content_hash": "/b9/f3dc84ac9a/2/content_hash.txt",
       "prompt": "/b9/f3dc84ac9a/2/prompt.txt"
+    },
+    {
+      "metadata": "/b9/f3dc84ac9a/3/metadata.json",
+      "transcript": "/b9/f3dc84ac9a/3/full.jsonl",
+      "compact_transcript": "/b9/f3dc84ac9a/3/transcript.jsonl",
+      "content_hash": "/b9/f3dc84ac9a/3/content_hash.txt",
+      "prompt": "/b9/f3dc84ac9a/3/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 16847594,
+    "input_tokens": 17566834,
     "cache_creation_tokens": 0,
-    "cache_read_tokens": 951079936,
-    "output_tokens": 1621897,
-    "api_call_count": 4748
+    "cache_read_tokens": 968175104,
+    "output_tokens": 1661812,
+    "api_call_count": 4915
   }
 }
