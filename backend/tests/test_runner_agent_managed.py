@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import stat
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,27 @@ def _set_runner_agent_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> No
     attestation.chmod(0o600)
     monkeypatch.setenv("YINSHI_RUNNER_ARTIFACT_SHA256", "a" * 64)
     monkeypatch.setenv("YINSHI_RUNNER_ARTIFACT_ATTESTATION_FILE", str(attestation))
+
+
+@pytest.mark.parametrize("existing_mode", [None, 0o755])
+def test_managed_capability_preparation_enforces_owner_only_storage(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    existing_mode: int | None,
+) -> None:
+    """Capability preparation creates or corrects managed storage to mode 0700."""
+    _set_runner_agent_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("YINSHI_RUNNER_STORAGE_PROFILE", "fly_sprites_posix")
+    paths = tuple(tmp_path / name for name in ("data", "sqlite", "shared"))
+    if existing_mode is not None:
+        for path in paths:
+            path.mkdir(mode=existing_mode)
+            path.chmod(existing_mode)
+
+    runner_agent._capabilities(runner_agent.load_config())
+
+    assert [stat.S_IMODE(path.stat().st_mode) for path in paths] == [0o700] * 3
+    assert all(not (path / ".yinshi-runner-write-check").exists() for path in paths)
 
 
 def test_runner_agent_managed_lifecycle_defaults_are_disabled(

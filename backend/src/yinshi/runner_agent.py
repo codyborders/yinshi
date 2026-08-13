@@ -380,9 +380,13 @@ def load_config() -> RunnerAgentConfig:
 
 def _probe_writable_directory(directory: Path, label: str) -> None:
     """Create and probe a POSIX directory required by the runner."""
-    directory.mkdir(parents=True, exist_ok=True)
-    if not directory.is_dir():
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    metadata = directory.lstat()
+    if not stat.S_ISDIR(metadata.st_mode) or directory.is_symlink():
         raise RuntimeError(f"Runner {label} path is not a directory: {directory}")
+    if metadata.st_uid != os.geteuid():
+        raise RuntimeError(f"Runner {label} directory is not owned by the runner user")
+    directory.chmod(0o700)
 
     probe_path = directory / ".yinshi-runner-write-check"
     probe_path.write_text("ok\n", encoding="utf-8")
