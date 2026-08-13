@@ -3,7 +3,7 @@
   "checkpoint_id": "6bfa63c1f622",
   "strategy": "manual-commit",
   "branch": "main",
-  "checkpoints_count": 4,
+  "checkpoints_count": 5,
   "files_touched": [
     "backend/tests/test_sprite_deployment.py",
     "deploy/sprites/bootstrap.sh"
@@ -22,6 +22,13 @@
       "compact_transcript": "/6b/fa63c1f622/1/transcript.jsonl",
       "content_hash": "/6b/fa63c1f622/1/content_hash.txt",
       "prompt": "/6b/fa63c1f622/1/prompt.txt"
+    },
+    {
+      "metadata": "/6b/fa63c1f622/2/metadata.json",
+      "transcript": "/6b/fa63c1f622/2/full.jsonl",
+      "compact_transcript": "/6b/fa63c1f622/2/transcript.jsonl",
+      "content_hash": "/6b/fa63c1f622/2/content_hash.txt",
+      "prompt": "/6b/fa63c1f622/2/prompt.txt"
     }
   ],
   "token_usage": {
