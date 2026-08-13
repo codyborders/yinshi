@@ -1,0 +1,33 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "fc410b753d95",
+  "strategy": "manual-commit",
+  "branch": "pi-parallel-58a13b1f-0",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "backend/src/yinshi/config.py",
+    "backend/src/yinshi/main.py",
+    "backend/src/yinshi/services/managed_runtime_manager.py",
+    "backend/src/yinshi/services/managed_sprite_reconciliation.py",
+    "backend/src/yinshi/services/sprites.py",
+    "backend/tests/test_main.py",
+    "backend/tests/test_managed_sprite_reconciliation.py",
+    "backend/tests/test_sprites.py"
+  ],
+  "sessions": [
+    {
+      "metadata": "/fc/410b753d95/0/metadata.json",
+      "transcript": "/fc/410b753d95/0/full.jsonl",
+      "compact_transcript": "/fc/410b753d95/0/transcript.jsonl",
+      "content_hash": "/fc/410b753d95/0/content_hash.txt",
+      "prompt": "/fc/410b753d95/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 314782,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 6910464,
+    "output_tokens": 26120,
+    "api_call_count": 85
+  }
+}
