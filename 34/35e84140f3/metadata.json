@@ -3,7 +3,7 @@
   "checkpoint_id": "3435e84140f3",
   "strategy": "manual-commit",
   "branch": "main",
-  "checkpoints_count": 10,
+  "checkpoints_count": 14,
   "files_touched": [
     "backend/src/yinshi/managed_recovery_staging.py",
     "backend/tests/test_managed_recovery_staging.py"
@@ -64,13 +64,20 @@
       "compact_transcript": "/34/35e84140f3/7/transcript.jsonl",
       "content_hash": "/34/35e84140f3/7/content_hash.txt",
       "prompt": "/34/35e84140f3/7/prompt.txt"
+    },
+    {
+      "metadata": "/34/35e84140f3/8/metadata.json",
+      "transcript": "/34/35e84140f3/8/full.jsonl",
+      "compact_transcript": "/34/35e84140f3/8/transcript.jsonl",
+      "content_hash": "/34/35e84140f3/8/content_hash.txt",
+      "prompt": "/34/35e84140f3/8/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 46312471,
+    "input_tokens": 46363846,
     "cache_creation_tokens": 0,
-    "cache_read_tokens": 2419187712,
-    "output_tokens": 3919381,
-    "api_call_count": 13683
+    "cache_read_tokens": 2419255808,
+    "output_tokens": 3923262,
+    "api_call_count": 13688
   }
 }
