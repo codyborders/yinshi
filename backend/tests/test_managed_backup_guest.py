@@ -154,6 +154,43 @@ def test_create_archive_rejects_symlink_portable_data_key(tmp_path: Path) -> Non
         )
 
 
+def test_create_archive_rejects_replaced_portable_data_key(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Archive copy must validate the exact portable-key descriptor it reads."""
+    import yinshi.managed_backup_guest as guest
+
+    sqlite_root = tmp_path / "sqlite"
+    files_root = tmp_path / "files"
+    sqlite_root.mkdir()
+    files_root.mkdir()
+    key_path = _write_data_key(sqlite_root)
+    original_write_tar = guest._write_tar
+
+    def replace_before_write(*args: object, **kwargs: object) -> None:
+        key_path.unlink()
+        key_path.write_bytes(b"r" * 32)
+        key_path.chmod(0o644)
+        original_write_tar(*args, **kwargs)
+
+    monkeypatch.setattr(guest, "_write_tar", replace_before_write)
+
+    with pytest.raises(ValueError, match="portable data-protection key"):
+        guest.create_managed_backup_archive(
+            sqlite_root=sqlite_root,
+            files_root=files_root,
+            archive_path=tmp_path / "archive.enc",
+            archive_key=b"k" * 32,
+            context=guest.ManagedArchiveContext(
+                archive_id="archive",
+                created_at="2026-08-13T00:00:00+00:00",
+                owner_digest="a" * 64,
+                runtime_generation=1,
+            ),
+        )
+
+
 def test_create_archive_rejects_hardlinked_portable_data_key(tmp_path: Path) -> None:
     """Portable key source must have exactly one filesystem link."""
     from yinshi.managed_backup_guest import ManagedArchiveContext, create_managed_backup_archive

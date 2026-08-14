@@ -5,10 +5,13 @@ from __future__ import annotations
 import os
 import secrets
 import stat
+import time
 from pathlib import Path
 
 _KEY_BYTES = 32
 _ERROR = "Runner data-protection key is invalid"
+_PUBLISH_READ_ATTEMPTS = 100
+_PUBLISH_READ_DELAY_SECONDS = 0.01
 
 
 def _require_key(value: bytes, name: str) -> bytes:
@@ -41,34 +44,82 @@ def _read_key(path: Path) -> bytes:
     return bytes(key)
 
 
+def _read_published_key(path: Path) -> bytes:
+    """Read a winner while tolerating its brief hard-link publication window."""
+    for attempt in range(_PUBLISH_READ_ATTEMPTS):
+        try:
+            return _read_key(path)
+        except RuntimeError:
+            try:
+                metadata = path.lstat()
+            except FileNotFoundError:
+                raise
+            publishing = stat.S_ISREG(metadata.st_mode) and metadata.st_nlink > 1
+            if not publishing or attempt + 1 == _PUBLISH_READ_ATTEMPTS:
+                raise
+            time.sleep(_PUBLISH_READ_DELAY_SECONDS)
+    raise RuntimeError(_ERROR)
+
+
 def _create_key(path: Path, key: bytes) -> bool:
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
-    try:
-        descriptor = os.open(path, flags, 0o600)
-    except FileExistsError:
-        return False
-    try:
-        remaining = memoryview(key)
-        while remaining:
-            written = os.write(descriptor, remaining)
-            if written <= 0:
-                raise RuntimeError(_ERROR)
-            remaining = remaining[written:]
-        os.fsync(descriptor)
-    except BaseException:
+    temporary_path: Path | None = None
+    descriptor: int | None = None
+    for _attempt in range(16):
+        candidate = path.with_name(f"{path.name}.tmp-{secrets.token_hex(8)}")
         try:
-            os.unlink(path)
-        except OSError:
-            pass
-        raise
-    finally:
-        os.close(descriptor)
-    directory_descriptor = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+            descriptor = os.open(candidate, flags, 0o600)
+        except FileExistsError:
+            continue
+        temporary_path = candidate
+        break
+    if temporary_path is None or descriptor is None:
+        raise RuntimeError(_ERROR)
+
+    published = False
     try:
-        os.fsync(directory_descriptor)
-    finally:
-        os.close(directory_descriptor)
-    return True
+        try:
+            remaining = memoryview(key)
+            while remaining:
+                written = os.write(descriptor, remaining)
+                if written <= 0:
+                    raise RuntimeError(_ERROR)
+                remaining = remaining[written:]
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+            descriptor = None
+        try:
+            os.link(temporary_path, path, follow_symlinks=False)
+            published = True
+        except FileExistsError:
+            published = False
+        os.unlink(temporary_path)
+        temporary_path = None
+        if published:
+            directory_descriptor = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(directory_descriptor)
+            finally:
+                os.close(directory_descriptor)
+        return published
+    except BaseException:
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        if temporary_path is not None:
+            try:
+                os.unlink(temporary_path)
+            except OSError:
+                pass
+        if published:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+        raise
 
 
 def load_or_create_runner_data_key(
@@ -90,7 +141,7 @@ def load_or_create_runner_data_key(
         raise RuntimeError(_ERROR)
     database_root.chmod(0o700)
     if key_path.exists() or key_path.is_symlink():
-        return _read_key(key_path)
+        return _read_published_key(key_path)
     initialized = False
     for name in ("control.db", "legacy.db"):
         durable_path = database_root / name
@@ -104,4 +155,4 @@ def load_or_create_runner_data_key(
     key = legacy_key if initialized else secrets.token_bytes(_KEY_BYTES)
     if _create_key(key_path, key):
         return key
-    return _read_key(key_path)
+    return _read_published_key(key_path)

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -24,6 +26,109 @@ def test_fresh_root_creates_stable_random_key_independent_from_noise(tmp_path: P
     assert key_path.read_bytes() == first
     assert key_path.stat().st_mode & 0o777 == 0o600
     assert database_root.stat().st_mode & 0o777 == 0o700
+
+
+def test_concurrent_creation_publishes_only_complete_key(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Concurrent creators should converge without exposing partial final content."""
+    import yinshi.services.runner_data_key as data_key
+
+    database_root = tmp_path / "sqlite"
+    key_path = database_root / ".yinshi-data-protection-key"
+    first_publish_started = threading.Event()
+    allow_first_publish = threading.Event()
+    original_link = data_key.os.link
+    call_lock = threading.Lock()
+    link_calls = 0
+
+    def controlled_link(source: object, target: object, **kwargs: object) -> None:
+        nonlocal link_calls
+        with call_lock:
+            link_calls += 1
+            call_number = link_calls
+        original_link(source, target, **kwargs)
+        if call_number == 1:
+            first_publish_started.set()
+            assert allow_first_publish.wait(timeout=5)
+
+    monkeypatch.setattr(data_key.os, "link", controlled_link)
+    results: list[bytes] = []
+    errors: list[BaseException] = []
+
+    def load() -> None:
+        try:
+            results.append(load_or_create_runner_data_key(key_path, database_root, b"n" * 32))
+        except BaseException as exc:
+            errors.append(exc)
+
+    winner = threading.Thread(target=load)
+    winner.start()
+    assert first_publish_started.wait(timeout=5)
+    loser = threading.Thread(target=load)
+    loser.start()
+    time.sleep(0.05)
+    assert loser.is_alive()
+    allow_first_publish.set()
+    winner.join(timeout=5)
+    loser.join(timeout=5)
+
+    assert not winner.is_alive() and not loser.is_alive()
+    assert errors == []
+    assert len(results) == 2 and results[0] == results[1] == key_path.read_bytes()
+    assert len(results[0]) == 32
+    assert list(database_root.glob(".yinshi-data-protection-key.tmp-*")) == []
+
+
+def test_publish_failure_removes_private_temporary_key(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Failed publication should leave neither final nor temporary key files."""
+    import yinshi.services.runner_data_key as data_key
+
+    database_root = tmp_path / "sqlite"
+    key_path = database_root / ".yinshi-data-protection-key"
+
+    def fail_link(*_args: object, **_kwargs: object) -> None:
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(data_key.os, "link", fail_link)
+
+    with pytest.raises(PermissionError, match="denied"):
+        load_or_create_runner_data_key(key_path, database_root, b"n" * 32)
+
+    assert not key_path.exists()
+    assert list(database_root.glob(".yinshi-data-protection-key.tmp-*")) == []
+
+
+def test_temporary_cleanup_failure_removes_published_key(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Temporary cleanup failure must not leave a published final key."""
+    import yinshi.services.runner_data_key as data_key
+
+    database_root = tmp_path / "sqlite"
+    key_path = database_root / ".yinshi-data-protection-key"
+    original_unlink = data_key.os.unlink
+    failed = False
+
+    def fail_first_temporary_unlink(path: object, *args: object, **kwargs: object) -> None:
+        nonlocal failed
+        if not failed and ".tmp-" in os.fspath(path):
+            failed = True
+            raise PermissionError("cleanup denied")
+        original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(data_key.os, "unlink", fail_first_temporary_unlink)
+
+    with pytest.raises(PermissionError, match="cleanup denied"):
+        load_or_create_runner_data_key(key_path, database_root, b"n" * 32)
+
+    assert not key_path.exists()
+    assert list(database_root.glob(".yinshi-data-protection-key.tmp-*")) == []
 
 
 def test_initialized_legacy_root_seeds_from_noise_key(tmp_path: Path) -> None:

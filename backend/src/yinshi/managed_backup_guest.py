@@ -91,14 +91,14 @@ def _require_key(key: bytes) -> bytes:
     return bytes(key)
 
 
-def _regular_files(root: Path, archive_root: str) -> list[tuple[Path, str]]:
+def _regular_files(root: Path, archive_root: str) -> list[tuple[Path, str, os.stat_result]]:
     """List regular files without following links or accepting special entries."""
     if not isinstance(root, Path) or not root.is_absolute():
         raise ValueError(f"{archive_root}_root must be an absolute path")
     metadata = root.lstat()
     if not stat.S_ISDIR(metadata.st_mode) or root.is_symlink():
         raise ValueError(f"{archive_root}_root must be a real directory")
-    files: list[tuple[Path, str]] = []
+    files: list[tuple[Path, str, os.stat_result]] = []
     for directory_name, directory_names, file_names in os.walk(root, followlinks=False):
         directory = Path(directory_name)
         for name in tuple(directory_names):
@@ -113,8 +113,24 @@ def _regular_files(root: Path, archive_root: str) -> list[tuple[Path, str]]:
                 raise ValueError("managed backup roots must contain regular files only")
             relative = candidate.relative_to(root)
             member_name = str(PurePosixPath(archive_root, *relative.parts))
-            files.append((candidate, member_name))
+            files.append((candidate, member_name, candidate_metadata))
     return sorted(files, key=lambda item: item[1])
+
+
+def _validate_portable_data_key_descriptor(descriptor: int) -> None:
+    """Validate exact portable storage-key descriptor and reset its offset."""
+    metadata = os.fstat(descriptor)
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_uid != os.geteuid()
+        or metadata.st_nlink != 1
+        or stat.S_IMODE(metadata.st_mode) != 0o600
+        or metadata.st_size != 32
+    ):
+        raise ValueError(_PORTABLE_DATA_KEY_ERROR)
+    if len(os.read(descriptor, 33)) != 32 or os.read(descriptor, 1):
+        raise ValueError(_PORTABLE_DATA_KEY_ERROR)
+    os.lseek(descriptor, 0, os.SEEK_SET)
 
 
 def _validate_portable_data_key(source_path: Path) -> None:
@@ -124,17 +140,7 @@ def _validate_portable_data_key(source_path: Path) -> None:
     except OSError as exc:
         raise ValueError(_PORTABLE_DATA_KEY_ERROR) from exc
     try:
-        metadata = os.fstat(descriptor)
-        if (
-            not stat.S_ISREG(metadata.st_mode)
-            or metadata.st_uid != os.geteuid()
-            or metadata.st_nlink != 1
-            or stat.S_IMODE(metadata.st_mode) != 0o600
-            or metadata.st_size != 32
-        ):
-            raise ValueError(_PORTABLE_DATA_KEY_ERROR)
-        if len(os.read(descriptor, 33)) != 32:
-            raise ValueError(_PORTABLE_DATA_KEY_ERROR)
+        _validate_portable_data_key_descriptor(descriptor)
     finally:
         os.close(descriptor)
 
@@ -157,7 +163,7 @@ def _manifest(context: ManagedArchiveContext, member_names: tuple[str, ...]) -> 
 
 def _write_tar(
     target: BinaryIO,
-    files: list[tuple[Path, str]],
+    files: list[tuple[Path, str, os.stat_result]],
     manifest: bytes,
 ) -> None:
     """Write a deterministic uncompressed archive with bounded copy buffers."""
@@ -167,19 +173,23 @@ def _write_tar(
         manifest_member.mode = 0o600
         manifest_member.mtime = 0
         archive.addfile(manifest_member, io.BytesIO(manifest))
-        for source_path, member_name in files:
-            listed_metadata = source_path.lstat()
+        for source_path, member_name, listed_metadata in files:
             descriptor = os.open(source_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
             try:
                 source_metadata = os.fstat(descriptor)
-                if (
+                source_changed = (
                     not stat.S_ISREG(source_metadata.st_mode)
                     or source_metadata.st_dev != listed_metadata.st_dev
                     or source_metadata.st_ino != listed_metadata.st_ino
                     or source_metadata.st_size != listed_metadata.st_size
                     or stat.S_IMODE(source_metadata.st_mode)
                     != stat.S_IMODE(listed_metadata.st_mode)
-                ):
+                )
+                if member_name == _PORTABLE_DATA_KEY_MEMBER:
+                    if source_changed:
+                        raise ValueError(_PORTABLE_DATA_KEY_ERROR)
+                    _validate_portable_data_key_descriptor(descriptor)
+                elif source_changed:
                     raise ValueError("managed backup source changed during creation")
                 member = tarfile.TarInfo(member_name)
                 member.size = source_metadata.st_size
@@ -231,15 +241,14 @@ def create_managed_backup_archive(
     sqlite_files = _regular_files(sqlite_root, "sqlite")
     portable_keys = [
         source_path
-        for source_path, member_name in sqlite_files
+        for source_path, member_name, _metadata in sqlite_files
         if member_name == _PORTABLE_DATA_KEY_MEMBER
     ]
     if len(portable_keys) != 1:
         raise ValueError(_PORTABLE_DATA_KEY_ERROR)
-    _validate_portable_data_key(portable_keys[0])
     shared_files = _regular_files(files_root, "files")
     files = sorted(sqlite_files + shared_files, key=lambda item: item[1])
-    member_names = tuple(member_name for _path, member_name in files)
+    member_names = tuple(member_name for _path, member_name, _metadata in files)
     manifest = _manifest(context, member_names)
     temporary_parent = archive_path.parent
     temporary_parent.mkdir(mode=0o700, parents=True, exist_ok=True)
