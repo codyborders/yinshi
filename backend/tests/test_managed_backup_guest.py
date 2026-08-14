@@ -126,6 +126,137 @@ def test_create_archive_rejects_invalid_portable_data_key(
         )
 
 
+def test_create_archive_rejects_symlink_portable_data_key(tmp_path: Path) -> None:
+    """Portable key source must not be a symlink."""
+    from yinshi.managed_backup_guest import ManagedArchiveContext, create_managed_backup_archive
+
+    sqlite_root = tmp_path / "sqlite"
+    files_root = tmp_path / "files"
+    sqlite_root.mkdir()
+    files_root.mkdir()
+    original = tmp_path / "key"
+    original.write_bytes(b"s" * 32)
+    original.chmod(0o600)
+    (sqlite_root / ".yinshi-data-protection-key").symlink_to(original)
+
+    with pytest.raises(ValueError):
+        create_managed_backup_archive(
+            sqlite_root=sqlite_root,
+            files_root=files_root,
+            archive_path=tmp_path / "archive.enc",
+            archive_key=b"k" * 32,
+            context=ManagedArchiveContext(
+                archive_id="archive",
+                created_at="2026-08-13T00:00:00+00:00",
+                owner_digest="a" * 64,
+                runtime_generation=1,
+            ),
+        )
+
+
+def test_create_archive_rejects_hardlinked_portable_data_key(tmp_path: Path) -> None:
+    """Portable key source must have exactly one filesystem link."""
+    from yinshi.managed_backup_guest import ManagedArchiveContext, create_managed_backup_archive
+
+    sqlite_root = tmp_path / "sqlite"
+    files_root = tmp_path / "files"
+    sqlite_root.mkdir()
+    files_root.mkdir()
+    original = tmp_path / "key"
+    original.write_bytes(b"s" * 32)
+    original.chmod(0o600)
+    (sqlite_root / ".yinshi-data-protection-key").hardlink_to(original)
+
+    with pytest.raises(ValueError):
+        create_managed_backup_archive(
+            sqlite_root=sqlite_root,
+            files_root=files_root,
+            archive_path=tmp_path / "archive.enc",
+            archive_key=b"k" * 32,
+            context=ManagedArchiveContext(
+                archive_id="archive",
+                created_at="2026-08-13T00:00:00+00:00",
+                owner_digest="a" * 64,
+                runtime_generation=1,
+            ),
+        )
+
+
+@pytest.mark.parametrize("defect", ["missing", "size", "mode", "duplicate", "alias", "directory"])
+def test_restore_rejects_invalid_portable_key_member_before_publication(
+    tmp_path: Path,
+    defect: str,
+) -> None:
+    """Authenticated malformed key members must not replace live roots."""
+    import json
+    import tarfile
+
+    import yinshi.managed_backup_guest as guest
+
+    context = guest.ManagedArchiveContext(
+        archive_id="archive",
+        created_at="2026-08-13T00:00:00+00:00",
+        owner_digest="a" * 64,
+        runtime_generation=1,
+    )
+    key_info = tarfile.TarInfo("sqlite/.yinshi-data-protection-key")
+    key_info.mode = 0o600
+    members: list[tuple[tarfile.TarInfo, bytes]] = []
+    if defect != "missing":
+        members.append((key_info, b"s" * (31 if defect == "size" else 32)))
+    if defect == "mode":
+        key_info.mode = 0o644
+    elif defect == "duplicate":
+        duplicate = tarfile.TarInfo("sqlite/.yinshi-data-protection-key")
+        duplicate.mode = 0o600
+        members.append((duplicate, b"s" * 32))
+    elif defect == "alias":
+        key_info.name = "sqlite/./.yinshi-data-protection-key"
+    elif defect == "directory":
+        key_info.type = tarfile.DIRTYPE
+    names = [member.name for member, _content in members]
+    manifest = (
+        json.dumps(
+            {
+                "context": guest.asdict(context),
+                "format": "yinshi-managed-backup-v2",
+                "members": sorted(names),
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        + "\n"
+    ).encode()
+    tar_path = tmp_path / "crafted.tar"
+    with tarfile.open(tar_path, "w") as archive:
+        manifest_info = tarfile.TarInfo("manifest.json")
+        manifest_info.size = len(manifest)
+        archive.addfile(manifest_info, guest.io.BytesIO(manifest))
+        for member, content in members:
+            member.size = len(content)
+            archive.addfile(member, guest.io.BytesIO(content))
+    archive_path = tmp_path / "crafted.enc"
+    guest._encrypt_file(tar_path, archive_path, b"k" * 32)
+    sqlite_root = tmp_path / "live" / "sqlite"
+    files_root = tmp_path / "live" / "files"
+    sqlite_root.mkdir(parents=True)
+    files_root.mkdir()
+    (sqlite_root / "sentinel").write_text("sqlite", encoding="utf-8")
+    (files_root / "sentinel").write_text("files", encoding="utf-8")
+
+    with pytest.raises(ValueError):
+        guest.restore_managed_backup_archive(
+            archive_path,
+            archive_key=b"k" * 32,
+            expected_context=context,
+            sqlite_root=sqlite_root,
+            files_root=files_root,
+        )
+
+    assert (sqlite_root / "sentinel").read_text(encoding="utf-8") == "sqlite"
+    assert (files_root / "sentinel").read_text(encoding="utf-8") == "files"
+
+
 def test_source_loss_inspection_rejects_legacy_v1_archive(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -237,6 +368,90 @@ def test_restore_archive_replaces_both_roots_and_preserves_runner_identity(
     assert (files_root / "repo.txt").read_text(encoding="utf-8") == "original-workspace"
     assert identity_path.read_bytes() == b"identity-must-survive"
     assert not list(state_root.glob(".yinshi-restore-*"))
+
+
+def test_restore_keeps_candidate_noise_and_reopens_source_worker_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Restored storage uses source data key while transport identity stays fresh."""
+    from yinshi.managed_backup_guest import (
+        ManagedArchiveContext,
+        create_managed_backup_archive,
+        restore_managed_backup_archive,
+    )
+    from yinshi.runner_worker import RunnerWorkerManager
+
+    source = tmp_path / "source"
+    source_sqlite = source / "sqlite"
+    source_files = source / "files"
+    source_runtime = source / "runtime"
+    source_sqlite.mkdir(parents=True, mode=0o700)
+    source_files.mkdir(mode=0o700)
+    source_key = b"s" * 32
+    _write_data_key(source_sqlite, source_key)
+    first = RunnerWorkerManager(
+        data_directory=source_runtime,
+        database_directory=source_sqlite,
+        user_data_directory=source_files,
+        data_protection_key=source_key,
+        environment_setter=monkeypatch.setenv,
+    ).dispatcher("account-1")
+    source_bearer = first._principal.bearer_token
+    context = ManagedArchiveContext(
+        archive_id="archive",
+        created_at="2026-08-13T00:00:00+00:00",
+        owner_digest="a" * 64,
+        runtime_generation=1,
+    )
+    archive_path = tmp_path / "archive.enc"
+    create_managed_backup_archive(
+        sqlite_root=source_sqlite,
+        files_root=source_files,
+        archive_path=archive_path,
+        archive_key=b"k" * 32,
+        context=context,
+    )
+
+    candidate = tmp_path / "candidate"
+    candidate_sqlite = candidate / "sqlite"
+    candidate_files = candidate / "files"
+    candidate_runtime = candidate / "runtime"
+    candidate_sqlite.mkdir(parents=True, mode=0o700)
+    candidate_files.mkdir(mode=0o700)
+    _write_data_key(candidate_sqlite, b"c" * 32)
+    candidate_runtime.mkdir()
+    candidate_runtime.chmod(0o700)
+    noise_path = candidate_runtime / "runner-noise.key"
+    noise_path.write_bytes(b"n" * 32)
+    noise_path.chmod(0o600)
+
+    restore_managed_backup_archive(
+        archive_path,
+        archive_key=b"k" * 32,
+        expected_context=context,
+        sqlite_root=candidate_sqlite,
+        files_root=candidate_files,
+    )
+
+    assert noise_path.read_bytes() == b"n" * 32
+    assert (candidate_sqlite / ".yinshi-data-protection-key").read_bytes() == source_key
+    restored = RunnerWorkerManager(
+        data_directory=candidate_runtime,
+        database_directory=candidate_sqlite,
+        user_data_directory=candidate_files,
+        data_protection_key=source_key,
+        environment_setter=monkeypatch.setenv,
+    ).dispatcher("account-1")
+    assert restored._principal.bearer_token == source_bearer
+    with pytest.raises(Exception):
+        RunnerWorkerManager(
+            data_directory=tmp_path / "wrong-runtime",
+            database_directory=candidate_sqlite,
+            user_data_directory=candidate_files,
+            data_protection_key=b"w" * 32,
+            environment_setter=monkeypatch.setenv,
+        )
 
 
 def test_archive_with_empty_shared_root_remains_restorable(tmp_path: Path) -> None:

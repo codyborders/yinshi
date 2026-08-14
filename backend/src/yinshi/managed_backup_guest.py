@@ -371,6 +371,10 @@ def _extract_validated_tar(tar_path: Path, stage_root: Path) -> None:
                 continue
             target = stage_root.joinpath(*PurePosixPath(member.name).parts)
             target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            parent = target.parent
+            while parent != stage_root:
+                os.chmod(parent, 0o700)
+                parent = parent.parent
             source = archive.extractfile(member)
             if source is None:
                 raise ValueError("managed backup member cannot be read")

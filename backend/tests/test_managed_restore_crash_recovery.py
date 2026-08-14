@@ -186,6 +186,7 @@ def test_restore_recovers_interrupted_journal_cleanup(
     assert retry_result.committed is True
     assert retry_result.cleanup_pending is False
     assert (sqlite_root / "value").read_text(encoding="utf-8") == "new-sqlite"
+    assert (sqlite_root / ".yinshi-data-protection-key").read_bytes() == b"s" * 32
     assert (files_root / "value").read_text(encoding="utf-8") == "new-files"
     assert not (sqlite_root.parent / ".yinshi-restore-active").exists()
     assert not (sqlite_root.parent / ".yinshi-restore-cleanup").exists()
