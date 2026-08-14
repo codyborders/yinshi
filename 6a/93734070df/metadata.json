@@ -3,7 +3,7 @@
   "checkpoint_id": "6a93734070df",
   "strategy": "manual-commit",
   "branch": "main",
-  "checkpoints_count": 5,
+  "checkpoints_count": 6,
   "files_touched": [
     "docs/operations/managed-runtime-recovery.md"
   ],
@@ -35,6 +35,13 @@
       "compact_transcript": "/6a/93734070df/3/transcript.jsonl",
       "content_hash": "/6a/93734070df/3/content_hash.txt",
       "prompt": "/6a/93734070df/3/prompt.txt"
+    },
+    {
+      "metadata": "/6a/93734070df/4/metadata.json",
+      "transcript": "/6a/93734070df/4/full.jsonl",
+      "compact_transcript": "/6a/93734070df/4/transcript.jsonl",
+      "content_hash": "/6a/93734070df/4/content_hash.txt",
+      "prompt": "/6a/93734070df/4/prompt.txt"
     }
   ],
   "token_usage": {
