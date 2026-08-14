@@ -212,6 +212,7 @@ class Settings(BaseSettings):
     # Managed Fly Sprites runtime
     managed_runtime_provider: str = "disabled"
     sprites_public_launch_enabled: bool = False
+    sprites_storage_encryption_confirmed: bool = False
     sprites_api_token: SecretStr | None = None
     sprites_api_url: str = "https://api.sprites.dev/v1"
     sprites_name_prefix: str = "yinshi"
@@ -393,11 +394,13 @@ def https_required(settings: Settings) -> bool:
 
 def _validate_settings(settings: Settings) -> None:
     """Reject invalid security-critical configuration."""
-    if settings.sprites_public_launch_enabled:
+    if (
+        settings.sprites_public_launch_enabled
+        and not settings.sprites_storage_encryption_confirmed
+    ):
         raise RuntimeError(
-            "SPRITES_PUBLIC_LAUNCH_ENABLED cannot be true until off-provider managed guest "
-            "backup/restore and trustworthy Sprite storage-encryption verification are "
-            "implemented"
+            "SPRITES_PUBLIC_LAUNCH_ENABLED requires "
+            "SPRITES_STORAGE_ENCRYPTION_CONFIRMED=true"
         )
     if settings.managed_runtime_provider not in _MANAGED_RUNTIME_PROVIDER_VALUES:
         allowed_values = ", ".join(sorted(_MANAGED_RUNTIME_PROVIDER_VALUES))

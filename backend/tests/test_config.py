@@ -286,8 +286,8 @@ def test_fly_sprites_rejects_invalid_managed_values(field, value, error_name):
         _validate_settings(settings)
 
 
-def test_fly_sprites_public_launch_cannot_be_enabled():
-    """Public Fly launch should remain blocked until both requirements exist."""
+def test_fly_sprites_public_launch_requires_storage_confirmation():
+    """Public Fly launch should require explicit storage-encryption confirmation."""
     from yinshi.config import Settings, _validate_settings
 
     settings = Settings(
@@ -302,8 +302,8 @@ def test_fly_sprites_public_launch_cannot_be_enabled():
         _validate_settings(settings)
 
     assert str(error_info.value) == (
-        "SPRITES_PUBLIC_LAUNCH_ENABLED cannot be true until off-provider managed guest "
-        "backup/restore and trustworthy Sprite storage-encryption verification are implemented"
+        "SPRITES_PUBLIC_LAUNCH_ENABLED requires "
+        "SPRITES_STORAGE_ENCRYPTION_CONFIRMED=true"
     )
 
 
