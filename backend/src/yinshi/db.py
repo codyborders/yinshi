@@ -1434,6 +1434,9 @@ def _migrate_runner_kinds(conn: sqlite3.Connection) -> None:
     try:
         conn.execute("BEGIN IMMEDIATE")
         conn.execute("DROP TRIGGER IF EXISTS update_user_runners_updated_at")
+        conn.execute("DROP TRIGGER IF EXISTS validate_managed_runtime_runner_insert")
+        conn.execute("DROP TRIGGER IF EXISTS validate_managed_runtime_runner_update")
+        conn.execute("DROP TRIGGER IF EXISTS protect_linked_managed_runner_update")
         conn.execute("""
             CREATE TABLE user_runners_with_kinds (
                 id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
@@ -1518,6 +1521,9 @@ def _migrate_managed_restore_runner_kind(conn: sqlite3.Connection) -> None:
     try:
         conn.execute("BEGIN IMMEDIATE")
         conn.execute("DROP TRIGGER IF EXISTS update_user_runners_updated_at")
+        conn.execute("DROP TRIGGER IF EXISTS validate_managed_runtime_runner_insert")
+        conn.execute("DROP TRIGGER IF EXISTS validate_managed_runtime_runner_update")
+        conn.execute("DROP TRIGGER IF EXISTS protect_linked_managed_runner_update")
         conn.execute("""CREATE TABLE user_runners_expanded (
                    id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
