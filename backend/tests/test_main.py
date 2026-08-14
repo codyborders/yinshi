@@ -190,6 +190,7 @@ def test_hosted_fly_lifespan_builds_and_closes_managed_runtime(
         deployment_environment="staging",
         managed_recovery_drill_enabled=True,
         managed_recovery_operator_token_hash="c" * 64,
+        sprites_storage_encryption_confirmed=False,
     )
     provider_http_client = Mock()
     provider_http_client.aclose = AsyncMock()
@@ -266,7 +267,7 @@ def test_hosted_fly_lifespan_builds_and_closes_managed_runtime(
     assert installer_kwargs["client"] is provider
     assert installer_kwargs["bootstrap_script"] == b"#!/bin/sh\nexit 0\n"
     assert installer_kwargs["relay_idle_timeout_seconds"] == 20.0
-    assert installer_kwargs["storage_encryption_confirmed"] is True
+    assert installer_kwargs["storage_encryption_confirmed"] is False
     assert installer_kwargs["bootstrap_timeout_seconds"] == 901
     manager_constructor.assert_called_once_with(
         provider=provider,

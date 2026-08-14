@@ -394,13 +394,16 @@ def https_required(settings: Settings) -> bool:
 
 def _validate_settings(settings: Settings) -> None:
     """Reject invalid security-critical configuration."""
+    if settings.sprites_public_launch_enabled and not settings.sprites_storage_encryption_confirmed:
+        raise RuntimeError(
+            "SPRITES_PUBLIC_LAUNCH_ENABLED requires " "SPRITES_STORAGE_ENCRYPTION_CONFIRMED=true"
+        )
     if (
         settings.sprites_public_launch_enabled
-        and not settings.sprites_storage_encryption_confirmed
+        and settings.managed_runtime_provider != "fly_sprites"
     ):
         raise RuntimeError(
-            "SPRITES_PUBLIC_LAUNCH_ENABLED requires "
-            "SPRITES_STORAGE_ENCRYPTION_CONFIRMED=true"
+            "SPRITES_PUBLIC_LAUNCH_ENABLED requires MANAGED_RUNTIME_PROVIDER=fly_sprites"
         )
     if settings.managed_runtime_provider not in _MANAGED_RUNTIME_PROVIDER_VALUES:
         allowed_values = ", ".join(sorted(_MANAGED_RUNTIME_PROVIDER_VALUES))

@@ -302,13 +302,33 @@ def test_fly_sprites_public_launch_requires_storage_confirmation():
         _validate_settings(settings)
 
     assert str(error_info.value) == (
-        "SPRITES_PUBLIC_LAUNCH_ENABLED requires "
-        "SPRITES_STORAGE_ENCRYPTION_CONFIRMED=true"
+        "SPRITES_PUBLIC_LAUNCH_ENABLED requires " "SPRITES_STORAGE_ENCRYPTION_CONFIRMED=true"
+    )
+
+
+def test_public_launch_requires_fly_sprites_provider():
+    """Public launch should require the managed Fly provider."""
+    from yinshi.config import Settings, _validate_settings
+
+    settings = Settings(
+        _env_file=None,
+        disable_auth=True,
+        container_enabled=False,
+        managed_runtime_provider="disabled",
+        sprites_public_launch_enabled=True,
+        sprites_storage_encryption_confirmed=True,
+    )
+
+    with pytest.raises(RuntimeError) as error_info:
+        _validate_settings(settings)
+
+    assert str(error_info.value) == (
+        "SPRITES_PUBLIC_LAUNCH_ENABLED requires MANAGED_RUNTIME_PROVIDER=fly_sprites"
     )
 
 
 def test_fly_sprites_accepts_valid_bounded_settings():
-    """Fly mode should accept valid wildcard domains and timeout boundaries."""
+    """Confirmed public Fly mode should accept valid bounded settings."""
     from pathlib import Path
 
     from pydantic import SecretStr
@@ -327,6 +347,8 @@ def test_fly_sprites_accepts_valid_bounded_settings():
         control_field_encryption="required",
         require_https="required",
         managed_runtime_provider="fly_sprites",
+        sprites_public_launch_enabled=True,
+        sprites_storage_encryption_confirmed=True,
         sprites_api_token="test-token",
         sprites_api_url="https://api.sprites.dev:443/v1",
         sprites_name_key="é" * 16,

@@ -318,7 +318,7 @@ async def _initialize_managed_runtime(
             bootstrap_script=bootstrap_script,
             relay_idle_timeout_seconds=_MANAGED_RELAY_IDLE_TIMEOUT_SECONDS,
             bootstrap_timeout_seconds=app_settings.sprites_operation_stale_seconds,
-            storage_encryption_confirmed=app_settings.managed_recovery_drill_enabled,
+            storage_encryption_confirmed=app_settings.sprites_storage_encryption_confirmed,
             clock=asyncio.get_running_loop().time,
             sleep=asyncio.sleep,
         )
