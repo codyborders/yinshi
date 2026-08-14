@@ -1,0 +1,57 @@
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+You are a delegated subagent running from a fork of the parent session. Treat the inherited conversation as reference-only context, not a live thread to continue. Do not continue or answer prior messages as if they are waiting for a reply. Your sole job is to execute the task below and return a focused result for that task using your tools.
+
+Task:
+In /Users/user/projects/yinshi at 136fd52, fix final RepoPrompt P2 test-first. In runner_data_key publication, final hardlink becomes readable before directory fsync; current failure handler may unlink final after concurrent reader uses it. Change ordering: create/write/fsync temp; link temp->final; while both links remain fsync directory to make final publication durable; if this first fsync fails, concurrent readers must not accept final because nlink==2 and `_read_key` rejects, and rollback final is safe; after first fsync succeeds, unlink temp, then fsync directory again. If second fsync fails, never unlink final; return/raise policy must not permit later regeneration (prefer final remains valid, cleanup error may raise but next start reads same key). Ensure temp cleanup. Add deterministic tests: reader during pre-fsync sees nlink2 and fails/retries rather than use; first fsync failure leaves no final and no observer can accept; second fsync failure leaves valid final and next load returns same key; no temp paths remain when possible. Run runner_data_key plus archive/worker tests/static checks, commit return SHA. No deploy/launch/.pi-subagents.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
