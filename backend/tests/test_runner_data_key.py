@@ -81,6 +81,82 @@ def test_concurrent_creation_publishes_only_complete_key(
     assert list(database_root.glob(".yinshi-data-protection-key.tmp-*")) == []
 
 
+def test_first_directory_fsync_failure_never_exposes_published_key(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A publication must remain unreadable until its directory entry is durable."""
+    import yinshi.services.runner_data_key as data_key
+
+    database_root = tmp_path / "sqlite"
+    key_path = database_root / ".yinshi-data-protection-key"
+    original_fsync = data_key.os.fsync
+    original_unlink = data_key.os.unlink
+    fsync_calls = 0
+    observed_keys: list[bytes] = []
+    observed_links: list[int] = []
+    final_present_during_temporary_cleanup: list[bool] = []
+
+    def fail_first_directory_fsync(descriptor: int) -> None:
+        nonlocal fsync_calls
+        fsync_calls += 1
+        if fsync_calls == 2:
+            observed_links.append(key_path.stat().st_nlink)
+            try:
+                observed_keys.append(data_key._read_key(key_path))
+            except RuntimeError:
+                pass
+            raise OSError("directory fsync failed")
+        original_fsync(descriptor)
+
+    def observe_cleanup_unlink(path: object, *args: object, **kwargs: object) -> None:
+        if ".tmp-" in os.fspath(path):
+            final_present_during_temporary_cleanup.append(key_path.exists())
+        original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(data_key.os, "fsync", fail_first_directory_fsync)
+    monkeypatch.setattr(data_key.os, "unlink", observe_cleanup_unlink)
+
+    with pytest.raises(OSError, match="directory fsync failed"):
+        load_or_create_runner_data_key(key_path, database_root, b"n" * 32)
+
+    assert observed_links == [2]
+    assert observed_keys == []
+    assert final_present_during_temporary_cleanup == [False]
+    assert not key_path.exists()
+    assert list(database_root.glob(".yinshi-data-protection-key.tmp-*")) == []
+
+
+def test_second_directory_fsync_failure_preserves_durable_key(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Post-cleanup fsync failure must not roll back an observable key."""
+    import yinshi.services.runner_data_key as data_key
+
+    database_root = tmp_path / "sqlite"
+    key_path = database_root / ".yinshi-data-protection-key"
+    original_fsync = data_key.os.fsync
+    fsync_calls = 0
+
+    def fail_second_directory_fsync(descriptor: int) -> None:
+        nonlocal fsync_calls
+        fsync_calls += 1
+        if fsync_calls == 3:
+            raise OSError("cleanup fsync failed")
+        original_fsync(descriptor)
+
+    monkeypatch.setattr(data_key.os, "fsync", fail_second_directory_fsync)
+
+    with pytest.raises(OSError, match="cleanup fsync failed"):
+        load_or_create_runner_data_key(key_path, database_root, b"n" * 32)
+
+    published_key = key_path.read_bytes()
+    assert len(published_key) == 32
+    assert load_or_create_runner_data_key(key_path, database_root, b"x" * 32) == published_key
+    assert list(database_root.glob(".yinshi-data-protection-key.tmp-*")) == []
+
+
 def test_publish_failure_removes_private_temporary_key(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -103,11 +179,11 @@ def test_publish_failure_removes_private_temporary_key(
     assert list(database_root.glob(".yinshi-data-protection-key.tmp-*")) == []
 
 
-def test_temporary_cleanup_failure_removes_published_key(
+def test_temporary_cleanup_failure_preserves_durable_published_key(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Temporary cleanup failure must not leave a published final key."""
+    """Temporary cleanup failure must not roll back a durable published key."""
     import yinshi.services.runner_data_key as data_key
 
     database_root = tmp_path / "sqlite"
@@ -127,7 +203,9 @@ def test_temporary_cleanup_failure_removes_published_key(
     with pytest.raises(PermissionError, match="cleanup denied"):
         load_or_create_runner_data_key(key_path, database_root, b"n" * 32)
 
-    assert not key_path.exists()
+    published_key = key_path.read_bytes()
+    assert len(published_key) == 32
+    assert load_or_create_runner_data_key(key_path, database_root, b"x" * 32) == published_key
     assert list(database_root.glob(".yinshi-data-protection-key.tmp-*")) == []
 
 

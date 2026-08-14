@@ -77,6 +77,7 @@ def _create_key(path: Path, key: bytes) -> bool:
         raise RuntimeError(_ERROR)
 
     published = False
+    publication_durable = False
     try:
         try:
             remaining = memoryview(key)
@@ -94,29 +95,35 @@ def _create_key(path: Path, key: bytes) -> bool:
             published = True
         except FileExistsError:
             published = False
-        os.unlink(temporary_path)
-        temporary_path = None
-        if published:
-            directory_descriptor = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
-            try:
-                os.fsync(directory_descriptor)
-            finally:
-                os.close(directory_descriptor)
-        return published
+        if not published:
+            os.unlink(temporary_path)
+            temporary_path = None
+            return False
+        directory_descriptor = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory_descriptor)
+            publication_durable = True
+            os.unlink(temporary_path)
+            temporary_path = None
+            os.fsync(directory_descriptor)
+        finally:
+            os.close(directory_descriptor)
+        return True
     except BaseException:
         if descriptor is not None:
             try:
                 os.close(descriptor)
             except OSError:
                 pass
+        if published and not publication_durable:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
         if temporary_path is not None:
             try:
                 os.unlink(temporary_path)
-            except OSError:
-                pass
-        if published:
-            try:
-                os.unlink(path)
+                temporary_path = None
             except OSError:
                 pass
         raise
