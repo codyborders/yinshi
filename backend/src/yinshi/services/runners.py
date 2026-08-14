@@ -531,6 +531,9 @@ def _runner_environment(
         "YINSHI_RUNNER_SHARED_FILES_STORAGE": profile.shared_files_storage,
         "YINSHI_RUNNER_DATA_DIR": _DEFAULT_RUNNER_DATA_DIR,
         "YINSHI_RUNNER_SQLITE_DIR": profile.default_sqlite_dir,
+        "YINSHI_RUNNER_DATA_PROTECTION_KEY_FILE": (
+            f"{profile.default_sqlite_dir}/.yinshi-data-protection-key"
+        ),
         "YINSHI_RUNNER_SHARED_FILES_DIR": profile.default_shared_files_dir,
         "YINSHI_RUNNER_TOKEN_FILE": _DEFAULT_RUNNER_TOKEN_FILE,
         "YINSHI_RUNNER_NOISE_KEY_FILE": f"{_DEFAULT_RUNNER_DATA_DIR}/runner-noise.key",

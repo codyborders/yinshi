@@ -41,6 +41,10 @@ def test_cloud_runner_registration_and_heartbeat(auth_client: TestClient) -> Non
     )
     assert create_payload["environment"]["YINSHI_RUNNER_DATA_DIR"] == "/var/lib/yinshi"
     assert create_payload["environment"]["YINSHI_RUNNER_SQLITE_DIR"] == "/var/lib/yinshi/sqlite"
+    assert (
+        create_payload["environment"]["YINSHI_RUNNER_DATA_PROTECTION_KEY_FILE"]
+        == "/var/lib/yinshi/sqlite/.yinshi-data-protection-key"
+    )
     assert create_payload["environment"]["YINSHI_RUNNER_SHARED_FILES_DIR"] == "/mnt/yinshi-s3-files"
     assert create_payload["environment"]["YINSHI_RUNNER_TOKEN_FILE"].endswith("/runner-token")
     assert create_payload["registration_token"]
@@ -580,6 +584,10 @@ def test_cloud_runner_create_archil_profiles(auth_client: TestClient) -> None:
     assert all_posix_payload["runner"]["capabilities"]["live_sqlite_on_shared_files"] is True
     assert (
         all_posix_payload["environment"]["YINSHI_RUNNER_SQLITE_DIR"] == "/mnt/archil/yinshi/sqlite"
+    )
+    assert (
+        all_posix_payload["environment"]["YINSHI_RUNNER_DATA_PROTECTION_KEY_FILE"]
+        == "/mnt/archil/yinshi/sqlite/.yinshi-data-protection-key"
     )
 
 

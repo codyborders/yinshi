@@ -314,6 +314,10 @@ async def test_owner_provisions_sprite_and_marks_linked_runner_ready(
     environment = installer.calls[0]["environment"]
     assert isinstance(environment, dict)
     assert environment["YINSHI_REGISTRATION_TOKEN"]
+    assert (
+        environment["YINSHI_RUNNER_DATA_PROTECTION_KEY_FILE"]
+        == "/var/lib/yinshi/sqlite/.yinshi-data-protection-key"
+    )
 
 
 async def test_missing_artifact_attestation_fails_first_provision(
