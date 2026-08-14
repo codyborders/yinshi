@@ -3,7 +3,7 @@
   "checkpoint_id": "ef43929de276",
   "strategy": "manual-commit",
   "branch": "main",
-  "checkpoints_count": 9,
+  "checkpoints_count": 10,
   "files_touched": [
     "backend/src/yinshi/config.py"
   ],
@@ -63,6 +63,13 @@
       "compact_transcript": "/ef/43929de276/7/transcript.jsonl",
       "content_hash": "/ef/43929de276/7/content_hash.txt",
       "prompt": "/ef/43929de276/7/prompt.txt"
+    },
+    {
+      "metadata": "/ef/43929de276/8/metadata.json",
+      "transcript": "/ef/43929de276/8/full.jsonl",
+      "compact_transcript": "/ef/43929de276/8/transcript.jsonl",
+      "content_hash": "/ef/43929de276/8/content_hash.txt",
+      "prompt": "/ef/43929de276/8/prompt.txt"
     }
   ],
   "token_usage": {
