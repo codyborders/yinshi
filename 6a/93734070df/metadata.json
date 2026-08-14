@@ -3,8 +3,12 @@
   "checkpoint_id": "6a93734070df",
   "strategy": "manual-commit",
   "branch": "main",
-  "checkpoints_count": 12,
+  "checkpoints_count": 13,
   "files_touched": [
+    "backend/src/yinshi/managed_sprite_cleanup.py",
+    "backend/src/yinshi/services/managed_sprite_reconciliation.py",
+    "backend/tests/test_managed_sprite_cleanup.py",
+    "backend/tests/test_managed_sprite_reconciliation.py",
     "docs/operations/managed-runtime-recovery.md"
   ],
   "sessions": [
@@ -84,13 +88,20 @@
       "compact_transcript": "/6a/93734070df/10/transcript.jsonl",
       "content_hash": "/6a/93734070df/10/content_hash.txt",
       "prompt": "/6a/93734070df/10/prompt.txt"
+    },
+    {
+      "metadata": "/6a/93734070df/11/metadata.json",
+      "transcript": "/6a/93734070df/11/full.jsonl",
+      "compact_transcript": "/6a/93734070df/11/transcript.jsonl",
+      "content_hash": "/6a/93734070df/11/content_hash.txt",
+      "prompt": "/6a/93734070df/11/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 6301316,
+    "input_tokens": 12704564,
     "cache_creation_tokens": 0,
-    "cache_read_tokens": 304240640,
-    "output_tokens": 466164,
-    "api_call_count": 1826
+    "cache_read_tokens": 610908672,
+    "output_tokens": 948993,
+    "api_call_count": 3691
   }
 }
