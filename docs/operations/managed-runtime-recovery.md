@@ -63,7 +63,25 @@ Do not use Fly checkpoints as the recovery source.
 
 ## Cleanup
 
-Before closure, inspect provider inventory for unreferenced managed Sprites. Confirm that failed candidate authority is revoked and retired source authority stays revoked. Check selected object versions against retention policy. Confirm that no multipart upload remains. Guest maintenance files and local encrypted staging directories must be absent.
+Inspect cleanup candidates without changing provider or control-plane state:
+
+```bash
+python -m yinshi.managed_sprite_cleanup
+```
+
+The command prints sanitized counts only. Review `eligible`, `retained`, and `deferred` before execution. A failed inventory or provider read returns a fixed failure status without exposing provider details.
+
+Delete only old, deployment-owned Sprites that remain unreferenced after the final ownership check:
+
+```bash
+python -m yinshi.managed_sprite_cleanup \
+  --execute \
+  --confirm-delete-unreferenced-managed-sprites
+```
+
+Both flags are mandatory. The command completes provider inventory before any mutation. It never treats a matching name prefix as ownership. Retry the same command after an interrupted deletion. Registry cleanup for an already absent Sprite requires a direct provider absence check.
+
+Before closure, confirm that failed candidate authority is revoked and retired source authority stays revoked. Check selected object versions against retention policy. Confirm that no multipart upload remains. Guest maintenance files and local encrypted staging directories must be absent.
 
 ## Incident records
 

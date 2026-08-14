@@ -40,12 +40,24 @@ class ManagedSpriteReconciliationResult:
     retained: int
     deleted: tuple[str, ...]
     deferred: int
+    eligible: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
 class _ManagedSpriteReferences:
     names: frozenset[str]
     restore_jobs_by_name: dict[str, tuple[str, str]]
+
+
+def _parse_registry_created_at(value: str) -> datetime | None:
+    """Parse one registry timestamp without treating malformed state as old."""
+    try:
+        created_at = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if created_at.tzinfo is None:
+        return None
+    return created_at.astimezone(timezone.utc)
 
 
 def _managed_sprite_references(
@@ -125,7 +137,11 @@ class ManagedSpriteReconciler:
         self._sleep = sleep
         self._task: asyncio.Task[None] | None = None
 
-    async def reconcile_once(self) -> ManagedSpriteReconciliationResult:
+    async def reconcile_once(
+        self,
+        *,
+        dry_run: bool = False,
+    ) -> ManagedSpriteReconciliationResult:
         """Reconcile one fully validated provider inventory."""
         inventory_names: set[str] = set()
         for prefix in self._inventory_prefixes():
@@ -135,21 +151,40 @@ class ManagedSpriteReconciler:
             restore_name_prefix=self._restore_name_prefix,
             restore_name_key=self._restore_name_key,
         )
-        registered_names = {identity.sprite_name for identity in list_managed_sprite_identities()}
-        candidate_names = inventory_names & registered_names
+        registered_by_name = {
+            identity.sprite_name: identity
+            for identity in list_managed_sprite_identities()
+            if self._owns_name(identity.sprite_name)
+        }
+        registered_names = set(registered_by_name)
+        absent_registered_names = registered_names - inventory_names
+        candidate_names = (inventory_names & registered_names) | absent_registered_names
+        records_by_name = {
+            name: await self._provider.get_sprite(name) for name in sorted(candidate_names)
+        }
         now = self._clock().astimezone(timezone.utc)
         deleted: list[str] = []
+        eligible: list[str] = []
         retained = 0
         deferred = 0
         for name in sorted(candidate_names):
             if name in references.names:
                 retained += 1
                 continue
-            record = await self._provider.get_sprite(name)
-            if record is None:
+            record = records_by_name[name]
+            provider_absent = name in absent_registered_names and record is None
+            if name in absent_registered_names and record is not None:
                 deferred += 1
                 continue
-            if record.created_at is None or now - record.created_at < self._grace:
+            if record is None and not provider_absent:
+                deferred += 1
+                continue
+            created_at = (
+                _parse_registry_created_at(registered_by_name[name].created_at)
+                if provider_absent
+                else record.created_at if record is not None else None
+            )
+            if created_at is None or now - created_at < self._grace:
                 deferred += 1
                 continue
             current = _managed_sprite_references(
@@ -159,17 +194,22 @@ class ManagedSpriteReconciler:
             if name in current.names:
                 retained += 1
                 continue
+            if dry_run:
+                eligible.append(name)
+                continue
             restore_job = current.restore_jobs_by_name.get(name)
             if restore_job is not None:
                 revoke_managed_restore_runner_for_job(*restore_job)
-            await self._provider.delete_sprite(name)
+            if not provider_absent:
+                await self._provider.delete_sprite(name)
             remove_managed_sprite_identity(name)
             deleted.append(name)
         return ManagedSpriteReconciliationResult(
-            examined=len(inventory_names),
+            examined=len(inventory_names | absent_registered_names),
             retained=retained,
             deleted=tuple(deleted),
             deferred=deferred,
+            eligible=tuple(eligible),
         )
 
     async def reconcile_classified(

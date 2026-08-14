@@ -81,7 +81,10 @@ async def test_reconcile_retains_durable_references_and_deletes_old_orphan(
     from yinshi.db import get_control_db, init_control_db
     from yinshi.services.managed_runners import managed_sprite_name
     from yinshi.services.managed_sprite_reconciliation import ManagedSpriteReconciler
-    from yinshi.services.managed_sprite_registry import register_managed_sprite_identity
+    from yinshi.services.managed_sprite_registry import (
+        list_managed_sprite_identities,
+        register_managed_sprite_identity,
+    )
 
     monkeypatch.setenv("CONTROL_DB_PATH", str(tmp_path / "control.db"))
     monkeypatch.setenv("CONTROL_FIELD_ENCRYPTION", "disabled")
@@ -168,9 +171,22 @@ async def test_reconcile_retains_durable_references_and_deletes_old_orphan(
         clock=lambda: datetime(2026, 8, 13, tzinfo=timezone.utc),
     )
 
+    dry_run_result = await reconciler.reconcile_once(dry_run=True)
+
+    assert dry_run_result.eligible == ("yinshi-orphan",)
+    assert dry_run_result.deleted == ()
+    assert provider.deleted == []
+    assert {identity.sprite_name for identity in list_managed_sprite_identities()} == {
+        "yinshi-runtime",
+        "yinshi-source",
+        candidate_name,
+        "yinshi-orphan",
+    }
+
     result = await reconciler.reconcile_once()
 
     assert result.deleted == ("yinshi-orphan",)
+    assert result.eligible == ()
     assert provider.deleted == ["yinshi-orphan"]
     get_settings.cache_clear()
 
@@ -385,6 +401,72 @@ async def test_reconcile_retains_identity_after_inconsistent_provider_read(
     assert [identity.sprite_name for identity in list_managed_sprite_identities()] == [
         "yinshi-inconsistent"
     ]
+    get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_reconcile_retry_removes_registry_only_after_direct_provider_absence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Interrupted deletion retries must confirm absence before registry cleanup."""
+    from yinshi.config import get_settings
+    from yinshi.db import get_control_db, init_control_db
+    from yinshi.services.managed_sprite_reconciliation import ManagedSpriteReconciler
+    from yinshi.services.managed_sprite_registry import (
+        list_managed_sprite_identities,
+        register_managed_sprite_identity,
+    )
+
+    monkeypatch.setenv("CONTROL_DB_PATH", str(tmp_path / "control.db"))
+    monkeypatch.setenv("CONTROL_FIELD_ENCRYPTION", "disabled")
+    monkeypatch.setenv("ENCRYPTION_PEPPER", "a" * 64)
+    monkeypatch.setenv("SECRET_KEY", "test-session-secret-0123456789abcdef")
+    monkeypatch.setenv("DISABLE_AUTH", "true")
+    monkeypatch.setenv("CONTAINER_ENABLED", "false")
+    get_settings.cache_clear()
+    init_control_db()
+    with get_control_db() as database:
+        database.execute(
+            "INSERT INTO users (id, email, display_name) VALUES (?, ?, ?)",
+            ("user-1", "user@example.com", "User"),
+        )
+        database.commit()
+    old = datetime(2026, 8, 12, tzinfo=timezone.utc)
+    register_managed_sprite_identity(
+        sprite_name="yinshi-already-absent",
+        identity_kind="runtime",
+        user_id="user-1",
+        job_id=None,
+        lifecycle_status="retired",
+        now=old,
+    )
+
+    class AbsentProvider(FakeProvider):
+        def __init__(self) -> None:
+            super().__init__(())
+            self.reads: list[str] = []
+
+        async def get_sprite(self, name: str) -> SpriteRecord | None:
+            self.reads.append(name)
+            return None
+
+    provider = AbsentProvider()
+    reconciler = ManagedSpriteReconciler(
+        provider=provider,
+        name_prefix="yinshi",
+        restore_name_prefix="yinshi-restore",
+        restore_name_key="sprite-name-key",
+        grace=timedelta(hours=1),
+        clock=lambda: datetime(2026, 8, 13, tzinfo=timezone.utc),
+    )
+
+    result = await reconciler.reconcile_once()
+
+    assert provider.reads == ["yinshi-already-absent"]
+    assert provider.deleted == []
+    assert result.deleted == ("yinshi-already-absent",)
+    assert list_managed_sprite_identities() == ()
     get_settings.cache_clear()
 
 
