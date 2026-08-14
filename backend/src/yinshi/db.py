@@ -806,6 +806,17 @@ CREATE TABLE IF NOT EXISTS managed_sprite_identities (
     )
 );
 
+CREATE TABLE IF NOT EXISTS managed_operational_failures (
+    alert_class TEXT PRIMARY KEY CHECK (
+        alert_class IN (
+            'managed_sprite_reconciliation_failed',
+            'managed_storage_preflight_failed'
+        )
+    ),
+    first_seen_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS managed_backup_archives (
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
