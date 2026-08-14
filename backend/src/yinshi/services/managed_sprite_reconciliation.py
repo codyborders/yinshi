@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Protocol
 
 from yinshi.db import get_control_db
+from yinshi.services import managed_operational_failures
 from yinshi.services.managed_runners import managed_sprite_name
 from yinshi.services.managed_sprite_registry import (
     list_managed_sprite_identities,
@@ -177,15 +178,21 @@ class ManagedSpriteReconciler:
         raise_on_failure: bool,
     ) -> ManagedSpriteReconciliationResult | None:
         """Run one pass with the same stable failure classification for every caller."""
+        alert_class = (
+            managed_operational_failures.ManagedPersistentAlertClass.SPRITE_RECONCILIATION_FAILED
+        )
         try:
-            return await self.reconcile_once()
+            result = await self.reconcile_once()
         except asyncio.CancelledError:
             raise
         except Exception:
+            managed_operational_failures.record_managed_operational_failure(alert_class)
             logger.exception("managed_sprite_reconciliation_failed")
             if raise_on_failure:
                 raise
             return None
+        managed_operational_failures.clear_managed_operational_failure(alert_class)
+        return result
 
     async def run(self, *, interval_seconds: float) -> None:
         """Run recurring passes until cancelled."""

@@ -41,6 +41,11 @@ def _database() -> sqlite3.Connection:
             last_error TEXT,
             failure_class TEXT
         );
+        CREATE TABLE managed_operational_failures (
+            alert_class TEXT PRIMARY KEY,
+            first_seen_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL
+        );
         """)
     return database
 
@@ -91,6 +96,35 @@ def test_status_aggregates_critical_alerts_without_identifiers() -> None:
     assert "secret error" not in serialized
 
 
+def test_status_includes_active_persisted_service_failures() -> None:
+    """Persisted service failures become aggregate alerts without stored details."""
+    database = _database()
+    database.execute(
+        "INSERT INTO managed_operational_failures VALUES (?, ?, ?)",
+        (
+            ManagedAlertClass.SPRITE_RECONCILIATION_FAILED.value,
+            "2026-08-13T10:00:00Z",
+            "2026-08-13T11:00:00Z",
+        ),
+    )
+    database.commit()
+
+    report = collect_managed_operational_status(
+        database,
+        now=datetime(2026, 8, 13, 12, 0, tzinfo=UTC),
+        backup_stale_seconds=86_400,
+        operation_stuck_seconds=3_600,
+    )
+
+    assert report.to_dict()["alerts"] == [
+        {
+            "alert_class": ManagedAlertClass.SPRITE_RECONCILIATION_FAILED.value,
+            "count": 1,
+            "oldest_age_seconds": 7200,
+        }
+    ]
+
+
 def test_checker_returns_nonzero_with_sanitized_json(
     tmp_path: Path,
     capsys: object,
@@ -108,6 +142,11 @@ def test_checker_returns_nonzero_with_sanitized_json(
             job_id TEXT, operation TEXT, status TEXT, phase TEXT, lease_token TEXT,
             lease_expires_at TEXT, attempt_count INTEGER, updated_at TEXT, last_error TEXT,
             failure_class TEXT
+        );
+        CREATE TABLE managed_operational_failures (
+            alert_class TEXT PRIMARY KEY,
+            first_seen_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL
         );
         INSERT INTO managed_runtimes VALUES ('private-user', 'ready');
         """)

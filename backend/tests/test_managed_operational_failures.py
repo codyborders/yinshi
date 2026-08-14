@@ -58,8 +58,7 @@ def test_failure_upsert_preserves_first_seen_and_clear_removes_state(
 
     with get_control_db() as database:
         row = database.execute(
-            "SELECT alert_class, first_seen_at, last_seen_at "
-            "FROM managed_operational_failures"
+            "SELECT alert_class, first_seen_at, last_seen_at " "FROM managed_operational_failures"
         ).fetchone()
     assert row is not None
     assert row["alert_class"] == alert_class.value
@@ -68,9 +67,9 @@ def test_failure_upsert_preserves_first_seen_and_clear_removes_state(
 
     clear_managed_operational_failure(alert_class)
     with get_control_db() as database:
-        assert database.execute(
-            "SELECT COUNT(*) FROM managed_operational_failures"
-        ).fetchone()[0] == 0
+        assert (
+            database.execute("SELECT COUNT(*) FROM managed_operational_failures").fetchone()[0] == 0
+        )
 
 
 def test_failure_helpers_reject_unapproved_classes_and_naive_time(
@@ -100,9 +99,7 @@ def test_failure_helpers_reject_unapproved_classes_and_naive_time(
             now=datetime(2026, 8, 13, 10, 0),
         )
     with pytest.raises(ValueError, match="approved"):
-        clear_managed_operational_failure(  # type: ignore[arg-type]
-            "private-provider-error"
-        )
+        clear_managed_operational_failure("private-provider-error")  # type: ignore[arg-type]
 
 
 def test_control_schema_rejects_unapproved_alert_class(

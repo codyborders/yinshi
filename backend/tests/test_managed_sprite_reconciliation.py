@@ -6,7 +6,7 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -395,7 +395,13 @@ async def test_classified_reconcile_logs_and_reraises_startup_failure(
 ) -> None:
     """Startup and recurring callers must share one failure classification."""
     import yinshi.services.managed_sprite_reconciliation as reconciliation
+    from yinshi.services import managed_operational_failures
 
+    monkeypatch.setattr(
+        managed_operational_failures,
+        "record_managed_operational_failure",
+        Mock(),
+    )
     reconciler = reconciliation.ManagedSpriteReconciler(
         provider=FakeProvider(()),
         name_prefix="yinshi",
@@ -421,7 +427,20 @@ async def test_recurring_reconcile_retries_unexpected_failure(
 ) -> None:
     """An unexpected pass failure must not stop later inventory passes."""
     import yinshi.services.managed_sprite_reconciliation as reconciliation
+    from yinshi.services import managed_operational_failures
 
+    record_failure = Mock()
+    clear_failure = Mock()
+    monkeypatch.setattr(
+        managed_operational_failures,
+        "record_managed_operational_failure",
+        record_failure,
+    )
+    monkeypatch.setattr(
+        managed_operational_failures,
+        "clear_managed_operational_failure",
+        clear_failure,
+    )
     reconciler = reconciliation.ManagedSpriteReconciler(
         provider=FakeProvider(()),
         name_prefix="yinshi",
@@ -450,4 +469,10 @@ async def test_recurring_reconcile_retries_unexpected_failure(
         await reconciler.run(interval_seconds=60)
 
     assert reconcile_once.await_count == 2
+    record_failure.assert_called_once_with(
+        managed_operational_failures.ManagedPersistentAlertClass.SPRITE_RECONCILIATION_FAILED
+    )
+    clear_failure.assert_called_once_with(
+        managed_operational_failures.ManagedPersistentAlertClass.SPRITE_RECONCILIATION_FAILED
+    )
     assert "managed_sprite_reconciliation_failed" in caplog.text

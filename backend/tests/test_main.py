@@ -160,8 +160,15 @@ def test_hosted_fly_lifespan_builds_and_closes_managed_runtime(
 
     import yinshi.main as main
     from yinshi.config import Settings
+    from yinshi.services import managed_operational_failures
     from yinshi.services.runner_relay import runner_relay_broker
 
+    clear_failure = Mock()
+    monkeypatch.setattr(
+        managed_operational_failures,
+        "clear_managed_operational_failure",
+        clear_failure,
+    )
     app_settings = Settings(
         managed_runtime_provider="fly_sprites",
         sprites_api_token="provider-token",
@@ -278,6 +285,9 @@ def test_hosted_fly_lifespan_builds_and_closes_managed_runtime(
     )
     assert not Path(app_settings.db_path).exists()
     backup_store.preflight.assert_awaited_once_with()
+    clear_failure.assert_called_once_with(
+        managed_operational_failures.ManagedPersistentAlertClass.STORAGE_PREFLIGHT_FAILED
+    )
     manager.reconcile_startup.assert_awaited_once_with()
     reconciler.reconcile_classified.assert_awaited_once_with(raise_on_failure=True)
     assert reconciler.run.await_args.kwargs["interval_seconds"] == 601
@@ -444,6 +454,11 @@ async def test_lifespan_attempts_every_cleanup_before_raising_first_error(
 
     monkeypatch.setattr(main, "get_settings", lambda: app_settings)
     monkeypatch.setattr(main, "init_control_db", Mock())
+    monkeypatch.setattr(
+        main.managed_operational_failures,
+        "clear_managed_operational_failure",
+        Mock(),
+    )
     monkeypatch.setattr(main, "setup_oauth", Mock())
     monkeypatch.setattr(main, "PromptJournal", FakePromptJournal)
     monkeypatch.setattr(main, "TerminalJournal", FakeTerminalJournal)
@@ -493,7 +508,14 @@ def test_hosted_fly_storage_preflight_logs_stable_alert_code(
 
     import yinshi.main as main
     from yinshi.config import Settings
+    from yinshi.services import managed_operational_failures
 
+    record_failure = Mock()
+    monkeypatch.setattr(
+        managed_operational_failures,
+        "record_managed_operational_failure",
+        record_failure,
+    )
     app_settings = Settings(
         managed_runtime_provider="fly_sprites",
         control_db_path=str(tmp_path / "control.db"),
@@ -511,6 +533,9 @@ def test_hosted_fly_storage_preflight_logs_stable_alert_code(
             pass
 
     initialize_runtime.assert_not_awaited()
+    record_failure.assert_called_once_with(
+        managed_operational_failures.ManagedPersistentAlertClass.STORAGE_PREFLIGHT_FAILED
+    )
     assert "managed_storage_preflight_failed" in caplog.text
 
 

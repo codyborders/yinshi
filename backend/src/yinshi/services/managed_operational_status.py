@@ -187,6 +187,17 @@ def collect_managed_operational_status(
         now=now,
     )
 
+    persistent_rows = database.execute(
+        "SELECT alert_class, first_seen_at FROM managed_operational_failures"
+    ).fetchall()
+    for row in persistent_rows:
+        _append_alert(
+            alerts,
+            ManagedAlertClass(row["alert_class"]),
+            [row["first_seen_at"]],
+            now=now,
+        )
+
     alerts.sort(key=lambda alert: alert.alert_class.value)
     return ManagedOperationalStatus(
         generated_at=now.isoformat().replace("+00:00", "Z"),

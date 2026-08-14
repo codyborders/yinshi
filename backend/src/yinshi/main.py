@@ -4,7 +4,7 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal, cast
 
@@ -17,10 +17,11 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
-from starlette.responses import RedirectResponse
+from starlette.responses import JSONResponse, RedirectResponse
 from starlette.staticfiles import StaticFiles
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from yinshi import db as database_module
 from yinshi.api import (
     auth_routes,
     catalog,
@@ -49,6 +50,7 @@ from yinshi.managed_recovery_drill_controller import ManagedRecoveryDrillControl
 from yinshi.managed_recovery_live import ManagedRecoveryLiveRunner
 from yinshi.managed_recovery_staging import StagingManagedRecoveryBoundary
 from yinshi.rate_limit import limiter
+from yinshi.services import managed_operational_failures
 from yinshi.services.encrypted_uploads import EncryptedUploadManager
 from yinshi.services.managed_backup_manager import ManagedBackupManager
 from yinshi.services.managed_backup_store import create_managed_backup_store
@@ -61,6 +63,7 @@ from yinshi.services.managed_guest_installer import (
     ManagedGuestInstaller as ConcreteManagedGuestInstaller,
 )
 from yinshi.services.managed_hosted_runtime import HostedManagedRuntime
+from yinshi.services.managed_operational_status import collect_managed_operational_status
 from yinshi.services.managed_runtime_manager import ManagedRuntimeManager
 from yinshi.services.managed_sprite_reconciliation import ManagedSpriteReconciler
 from yinshi.services.prompt_journal import PromptJournal
@@ -403,11 +406,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             relay_process_lock.acquire()
         if app.state.mode == "hosted" and app_settings.managed_runtime_provider == "fly_sprites":
             managed_backup_store = create_managed_backup_store(app_settings)
+            preflight_alert = (
+                managed_operational_failures.ManagedPersistentAlertClass.STORAGE_PREFLIGHT_FAILED
+            )
             try:
                 await managed_backup_store.preflight()
             except Exception:
+                managed_operational_failures.record_managed_operational_failure(preflight_alert)
                 logger.exception("managed_storage_preflight_failed")
                 raise
+            managed_operational_failures.clear_managed_operational_failure(preflight_alert)
             managed_runtime = await _initialize_managed_runtime(app_settings)
             managed_runtime_manager = managed_runtime.runtime_manager
             provider_http_client = managed_runtime.provider_http_client
@@ -691,6 +699,25 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+def managed_health() -> JSONResponse:
+    """Return sanitized managed operational health for external monitoring."""
+    try:
+        settings = get_settings()
+        with database_module.get_control_db() as database:
+            status = collect_managed_operational_status(
+                database,
+                now=datetime.now(UTC),
+                backup_stale_seconds=86_400,
+                operation_stuck_seconds=settings.sprites_operation_stale_seconds,
+            )
+    except Exception:
+        logger.error("managed_operational_health_failed")
+        return JSONResponse(status_code=503, content={"status": "critical"})
+    if status.alerts:
+        return JSONResponse(status_code=503, content={"status": "critical"})
+    return JSONResponse(status_code=200, content={"status": "ok"})
+
+
 def create_app(
     *,
     mode: AppMode = "hosted",
@@ -749,6 +776,7 @@ def create_app(
     )
     _include_routes(application, app_settings, mode=mode)
     application.add_api_route("/health", health, methods=["GET"])
+    application.add_api_route("/health/managed", managed_health, methods=["GET"])
     if asset_directory is not None:
         application.mount(
             "/",
