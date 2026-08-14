@@ -1,0 +1,37 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "6a93734070df",
+  "session_id": "019ffcfe-91db-7098-88e1-b86d8235474a",
+  "strategy": "manual-commit",
+  "created_at": "2026-08-14T15:59:55.526768Z",
+  "branch": "main",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "docs/operations/managed-runtime-recovery.md"
+  ],
+  "agent": "Pi",
+  "model": "gpt-5.6-sol",
+  "turn_id": "d3922034daf1",
+  "checkpoint_transcript_start": 3594,
+  "transcript_lines_at_start": 3594,
+  "compact_transcript_start": 1639,
+  "token_usage": {
+    "input_tokens": 0,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 0,
+    "output_tokens": 0,
+    "api_call_count": 0
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-08-14T15:59:54.86552Z",
+    "agent_lines": 0,
+    "agent_removed": 0,
+    "human_added": 402,
+    "human_modified": 1,
+    "human_removed": 0,
+    "total_committed": 402,
+    "total_lines_changed": 412,
+    "agent_percentage": 0,
+    "metric_version": 2
+  }
+}
