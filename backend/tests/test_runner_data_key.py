@@ -157,6 +157,110 @@ def test_second_directory_fsync_failure_preserves_durable_key(
     assert list(database_root.glob(".yinshi-data-protection-key.tmp-*")) == []
 
 
+def test_crash_state_recovers_published_key_and_removes_temporary_link(
+    tmp_path: Path,
+) -> None:
+    """Startup should finish cleanup after durable publication crash state."""
+    database_root = tmp_path / "sqlite"
+    database_root.mkdir(mode=0o700)
+    key_path = database_root / ".yinshi-data-protection-key"
+    key_path.write_bytes(b"k" * 32)
+    key_path.chmod(0o600)
+    temporary_path = database_root / ".yinshi-data-protection-key.tmp-0123456789abcdef"
+    os.link(key_path, temporary_path)
+
+    key = load_or_create_runner_data_key(key_path, database_root, b"n" * 32)
+
+    assert key == b"k" * 32
+    assert key_path.stat().st_nlink == 1
+    assert not temporary_path.exists()
+
+
+def test_crash_state_rejects_rogue_matching_temporary_name(tmp_path: Path) -> None:
+    """Startup must not remove a matching name that references another inode."""
+    database_root = tmp_path / "sqlite"
+    database_root.mkdir(mode=0o700)
+    key_path = database_root / ".yinshi-data-protection-key"
+    key_path.write_bytes(b"k" * 32)
+    key_path.chmod(0o600)
+    linked_path = database_root / ".yinshi-data-protection-key.tmp-0123456789abcdef"
+    os.link(key_path, linked_path)
+    rogue_path = database_root / ".yinshi-data-protection-key.tmp-fedcba9876543210"
+    rogue_path.write_bytes(b"r" * 32)
+    rogue_path.chmod(0o600)
+
+    with pytest.raises(RuntimeError, match="data-protection key"):
+        load_or_create_runner_data_key(key_path, database_root, b"n" * 32)
+
+    assert linked_path.exists()
+    assert rogue_path.read_bytes() == b"r" * 32
+
+
+def test_crash_state_rejects_unsafe_temporary_entry(tmp_path: Path) -> None:
+    """Startup must preserve links when a matching entry is unsafe."""
+    database_root = tmp_path / "sqlite"
+    database_root.mkdir(mode=0o700)
+    key_path = database_root / ".yinshi-data-protection-key"
+    key_path.write_bytes(b"k" * 32)
+    key_path.chmod(0o600)
+    linked_path = database_root / ".yinshi-data-protection-key.tmp-0123456789abcdef"
+    os.link(key_path, linked_path)
+    unsafe_path = database_root / ".yinshi-data-protection-key.tmp-fedcba9876543210"
+    unsafe_path.symlink_to(key_path)
+
+    with pytest.raises(RuntimeError, match="data-protection key"):
+        load_or_create_runner_data_key(key_path, database_root, b"n" * 32)
+
+    assert linked_path.exists()
+    assert unsafe_path.is_symlink()
+
+
+def test_crash_state_recovers_multiple_temporary_links(tmp_path: Path) -> None:
+    """Startup should remove every recognized link to the published key."""
+    database_root = tmp_path / "sqlite"
+    database_root.mkdir(mode=0o700)
+    key_path = database_root / ".yinshi-data-protection-key"
+    key_path.write_bytes(b"k" * 32)
+    key_path.chmod(0o600)
+    temporary_paths = [
+        database_root / f".yinshi-data-protection-key.tmp-{token}"
+        for token in ("0123456789abcdef", "fedcba9876543210")
+    ]
+    for temporary_path in temporary_paths:
+        os.link(key_path, temporary_path)
+
+    assert load_or_create_runner_data_key(key_path, database_root, b"n" * 32) == b"k" * 32
+    assert key_path.stat().st_nlink == 1
+    assert all(not path.exists() for path in temporary_paths)
+
+
+def test_crash_state_fsync_failure_preserves_final_key(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Recovery must fail closed without removing the published final key."""
+    import yinshi.services.runner_data_key as data_key
+
+    database_root = tmp_path / "sqlite"
+    database_root.mkdir(mode=0o700)
+    key_path = database_root / ".yinshi-data-protection-key"
+    key_path.write_bytes(b"k" * 32)
+    key_path.chmod(0o600)
+    temporary_path = database_root / ".yinshi-data-protection-key.tmp-0123456789abcdef"
+    os.link(key_path, temporary_path)
+    monkeypatch.setattr(data_key, "_PUBLISH_READ_ATTEMPTS", 1)
+
+    def fail_fsync(_descriptor: int) -> None:
+        raise OSError("recovery fsync failed")
+
+    monkeypatch.setattr(data_key.os, "fsync", fail_fsync)
+
+    with pytest.raises(RuntimeError, match="data-protection key"):
+        load_or_create_runner_data_key(key_path, database_root, b"n" * 32)
+
+    assert key_path.read_bytes() == b"k" * 32
+
+
 def test_publish_failure_removes_private_temporary_key(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

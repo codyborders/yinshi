@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import secrets
 import stat
 import time
@@ -12,6 +13,9 @@ _KEY_BYTES = 32
 _ERROR = "Runner data-protection key is invalid"
 _PUBLISH_READ_ATTEMPTS = 100
 _PUBLISH_READ_DELAY_SECONDS = 0.01
+_TEMPORARY_NAME_PATTERN = re.compile(
+    rf"^{re.escape('.yinshi-data-protection-key.tmp-')}[0-9a-f]{{16}}$"
+)
 
 
 def _require_key(value: bytes, name: str) -> bytes:
@@ -44,8 +48,77 @@ def _read_key(path: Path) -> bytes:
     return bytes(key)
 
 
+def _valid_key_metadata(metadata: os.stat_result) -> bool:
+    return (
+        stat.S_ISREG(metadata.st_mode)
+        and metadata.st_uid == os.geteuid()
+        and stat.S_IMODE(metadata.st_mode) == 0o600
+        and metadata.st_size == _KEY_BYTES
+    )
+
+
+def _recover_published_key(path: Path) -> bytes:
+    """Finish durable cleanup left between publication directory syncs."""
+    directory_descriptor = os.open(
+        path.parent,
+        os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0),
+    )
+    final_descriptor: int | None = None
+    temporary_descriptors: list[tuple[str, int]] = []
+    try:
+        final_descriptor = os.open(
+            path.name,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=directory_descriptor,
+        )
+        final_metadata = os.fstat(final_descriptor)
+        if not _valid_key_metadata(final_metadata):
+            raise RuntimeError(_ERROR)
+        temporary_names = sorted(
+            name
+            for name in os.listdir(directory_descriptor)
+            if _TEMPORARY_NAME_PATTERN.fullmatch(name)
+        )
+        if not temporary_names:
+            raise RuntimeError(_ERROR)
+        for name in temporary_names:
+            descriptor = os.open(
+                name,
+                os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=directory_descriptor,
+            )
+            temporary_descriptors.append((name, descriptor))
+            metadata = os.fstat(descriptor)
+            if (
+                not _valid_key_metadata(metadata)
+                or (metadata.st_dev, metadata.st_ino)
+                != (final_metadata.st_dev, final_metadata.st_ino)
+                or metadata.st_nlink != final_metadata.st_nlink
+            ):
+                raise RuntimeError(_ERROR)
+        if final_metadata.st_nlink != len(temporary_descriptors) + 1:
+            raise RuntimeError(_ERROR)
+        key = os.read(final_descriptor, _KEY_BYTES + 1)
+        if len(key) != _KEY_BYTES:
+            raise RuntimeError(_ERROR)
+        for name, _descriptor in temporary_descriptors:
+            os.unlink(name, dir_fd=directory_descriptor)
+        os.fsync(directory_descriptor)
+        if os.fstat(final_descriptor).st_nlink != 1:
+            raise RuntimeError(_ERROR)
+        return bytes(key)
+    except OSError as exc:
+        raise RuntimeError(_ERROR) from exc
+    finally:
+        for _name, descriptor in temporary_descriptors:
+            os.close(descriptor)
+        if final_descriptor is not None:
+            os.close(final_descriptor)
+        os.close(directory_descriptor)
+
+
 def _read_published_key(path: Path) -> bytes:
-    """Read a winner while tolerating its brief hard-link publication window."""
+    """Read a winner or recover its durable interrupted cleanup."""
     for attempt in range(_PUBLISH_READ_ATTEMPTS):
         try:
             return _read_key(path)
@@ -55,8 +128,10 @@ def _read_published_key(path: Path) -> bytes:
             except FileNotFoundError:
                 raise
             publishing = stat.S_ISREG(metadata.st_mode) and metadata.st_nlink > 1
-            if not publishing or attempt + 1 == _PUBLISH_READ_ATTEMPTS:
+            if not publishing:
                 raise
+            if attempt + 1 == _PUBLISH_READ_ATTEMPTS:
+                return _recover_published_key(path)
             time.sleep(_PUBLISH_READ_DELAY_SECONDS)
     raise RuntimeError(_ERROR)
 
