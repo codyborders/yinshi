@@ -1,0 +1,71 @@
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+You are reviving a previous subagent conversation.
+
+Original run: f4250dec
+Original agent: worker
+Original session file: /Users/user/.pi/agent/sessions/--Users-user-projects-yinshi--/2026-08-13T23-40-24-719Z_019ffd7f-950f-7dab-9620-de13b869b4d8.jsonl
+
+Use the stored session context as background. Answer the orchestrator's follow-up below. Do not assume the original child process is still alive.
+
+Follow-up:
+Complete the remaining required tests and any fixes for commit 0ee5c54. Add crafted authenticated v2 tar tests where reserved `sqlite/.yinshi-data-protection-key` is missing, wrong size, wrong tar mode, duplicate/alias or non-regular; inspection/restore must reject before live roots change. Add source key symlink and hardlink create rejection tests. Add real continuity test: create source RunnerWorkerManager using source data key and fresh source Noise (Noise not passed to worker now), initialize/write durable control or tenant state; create encrypted archive including key; prepare candidate with different random data key and distinct Noise file outside roots; restore archive over candidate sqlite/files; assert candidate Noise bytes unchanged, restored key equals source key, and new RunnerWorkerManager with restored key opens/retains source database state or at minimum initializes existing DB successfully and derives same stable secrets/bearer while a different key fails. Add crash recovery assertion key follows sqlite root. Fix implementation only if tests expose defects. Run managed backup guest, runner data key/worker, restore crash/source-loss/manager tests, static checks. Commit follow-up and return SHA. No deployment/launch flag/.pi-subagents changes.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+- criterion-2: Return evidence sufficient for an independent acceptance review
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Review gate: required by reviewer.
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    },
+    {
+      "id": "criterion-2",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
