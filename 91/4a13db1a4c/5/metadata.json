@@ -1,0 +1,45 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "914a13db1a4c",
+  "session_id": "019ffda7-a567-79f1-a955-43b116486e64",
+  "strategy": "manual-commit",
+  "created_at": "2026-08-14T15:46:15.180569Z",
+  "branch": "main",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "backend/src/yinshi/main.py",
+    "backend/src/yinshi/services/managed_operational_status.py",
+    "backend/src/yinshi/services/managed_sprite_reconciliation.py",
+    "backend/tests/test_main.py",
+    "backend/tests/test_managed_operational_status.py",
+    "backend/tests/test_managed_sprite_reconciliation.py"
+  ],
+  "agent": "Pi",
+  "model": "gpt-5.6-sol",
+  "turn_id": "c92c17e36e02",
+  "checkpoint_transcript_start": 3894,
+  "transcript_lines_at_start": 3894,
+  "compact_transcript_start": 1772,
+  "token_usage": {
+    "input_tokens": 0,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 0,
+    "output_tokens": 0,
+    "api_call_count": 0
+  },
+  "session_metrics": {
+    "turn_count": 1
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-08-14T15:46:14.411239Z",
+    "agent_lines": 0,
+    "agent_removed": 0,
+    "human_added": 195,
+    "human_modified": 4,
+    "human_removed": 0,
+    "total_committed": 195,
+    "total_lines_changed": 207,
+    "agent_percentage": 0,
+    "metric_version": 2
+  }
+}
