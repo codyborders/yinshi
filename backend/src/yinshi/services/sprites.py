@@ -64,9 +64,12 @@ async def _read_bounded_response(
     description: str,
     *,
     max_bytes: int = _MAX_STREAM_RESPONSE_BYTES,
+    maximum: int = _MAX_STREAM_RESPONSE_BYTES,
 ) -> bytes:
     """Read one provider response without exceeding its byte limit."""
-    if type(max_bytes) is not int or not 1 <= max_bytes <= _MAX_STREAM_RESPONSE_BYTES:
+    if type(maximum) is not int or not 1 <= maximum <= _MAX_FILE_CONTENT_BYTES:
+        raise ValueError("maximum is outside the provider response limit")
+    if type(max_bytes) is not int or not 1 <= max_bytes <= maximum:
         raise ValueError("max_bytes is outside the provider response limit")
     content_length = response.headers.get("Content-Length")
     if content_length is not None:
@@ -695,6 +698,7 @@ class SpritesClient:
                         response,
                         "Sprite file read response",
                         max_bytes=max_bytes,
+                        maximum=_MAX_FILE_CONTENT_BYTES,
                     )
                     status_code = response.status_code
         if not 200 <= status_code < 300:
