@@ -1,0 +1,57 @@
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+You are a delegated subagent running from a fork of the parent session. Treat the inherited conversation as reference-only context, not a live thread to continue. Do not continue or answer prior messages as if they are waiting for a reply. Your sole job is to execute the task below and return a focused result for that task using your tools.
+
+Task:
+In /Users/user/projects/yinshi at 2f58454, fix two RepoPrompt P2 races test-first. (1) managed_backup_guest validates portable key then later reopens path; replacement can archive different invalid key. Refactor `_write_tar` so the exact descriptor used for tar copy gets portable-key-specific fstat validation (regular,euid,nlink1,mode0600,size32), and verify exactly32 bytes/EOF using that descriptor without consuming archive copy incorrectly (seek back or descriptor duplicate). Remove detached trust; source path replacement test between listing/validation and write must fail, and invalid replacement metadata must fail. (2) runner_data_key `_create_key` exposes final pathname before complete write. Create owner-only unique temp in same database root using random bounded name/O_EXCL/O_NOFOLLOW, write all/fsync, atomically publish no-replace using os.link(temp, final, follow_symlinks=False) or equivalent; if final exists, remove temp and read winner; fsync dir after successful publish; cleanup temp always. Test concurrent creation deterministically by pausing winner before publish/partial write and starting loser; both converge same valid key, no temp files. Also test publish race and cleanup failure paths. Run focused archive/key/worker/restore tests and static checks, commit return SHA. No deploy/launch/.pi-subagents changes.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
