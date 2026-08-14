@@ -3,7 +3,7 @@
   "checkpoint_id": "0e3c50e60b07",
   "strategy": "manual-commit",
   "branch": "main",
-  "checkpoints_count": 3,
+  "checkpoints_count": 4,
   "files_touched": [
     "backend/src/yinshi/db.py",
     "backend/src/yinshi/services/managed_operational_failures.py",
@@ -23,13 +23,20 @@
       "compact_transcript": "/0e/3c50e60b07/1/transcript.jsonl",
       "content_hash": "/0e/3c50e60b07/1/content_hash.txt",
       "prompt": "/0e/3c50e60b07/1/prompt.txt"
+    },
+    {
+      "metadata": "/0e/3c50e60b07/2/metadata.json",
+      "transcript": "/0e/3c50e60b07/2/full.jsonl",
+      "compact_transcript": "/0e/3c50e60b07/2/transcript.jsonl",
+      "content_hash": "/0e/3c50e60b07/2/content_hash.txt",
+      "prompt": "/0e/3c50e60b07/2/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 6289333,
+    "input_tokens": 12327679,
     "cache_creation_tokens": 0,
-    "cache_read_tokens": 303428096,
-    "output_tokens": 463474,
-    "api_call_count": 1813
+    "cache_read_tokens": 599984640,
+    "output_tokens": 932631,
+    "api_call_count": 3647
   }
 }
