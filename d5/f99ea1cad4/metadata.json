@@ -3,7 +3,7 @@
   "checkpoint_id": "d5f99ea1cad4",
   "strategy": "manual-commit",
   "branch": "main",
-  "checkpoints_count": 8,
+  "checkpoints_count": 9,
   "files_touched": [
     "backend/src/yinshi/services/sprites.py"
   ],
@@ -49,6 +49,13 @@
       "compact_transcript": "/d5/f99ea1cad4/5/transcript.jsonl",
       "content_hash": "/d5/f99ea1cad4/5/content_hash.txt",
       "prompt": "/d5/f99ea1cad4/5/prompt.txt"
+    },
+    {
+      "metadata": "/d5/f99ea1cad4/6/metadata.json",
+      "transcript": "/d5/f99ea1cad4/6/full.jsonl",
+      "compact_transcript": "/d5/f99ea1cad4/6/transcript.jsonl",
+      "content_hash": "/d5/f99ea1cad4/6/content_hash.txt",
+      "prompt": "/d5/f99ea1cad4/6/prompt.txt"
     }
   ],
   "token_usage": {
