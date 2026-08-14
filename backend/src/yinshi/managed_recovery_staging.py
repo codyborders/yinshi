@@ -29,6 +29,7 @@ from yinshi.services.managed_sprite_registry import (
 )
 
 _SQLITE_PATH = "/var/lib/yinshi/sqlite/drill.db"
+_SQLITE_FIXTURE_MAX_BYTES = 10 * 1024 * 1024
 _TEXT_PATH = "/var/lib/yinshi/files/nested/canary.txt"
 _BINARY_PATH = "/var/lib/yinshi/files/canary.bin"
 _EMPTY_PATH = "/var/lib/yinshi/files/empty"
@@ -170,7 +171,7 @@ class StagingManagedRecoveryBoundary:
         database_payload = await self._provider.read_file(
             runtime.sprite_name,
             path=_SQLITE_PATH,
-            max_bytes=16 * 1024 * 1024,
+            max_bytes=_SQLITE_FIXTURE_MAX_BYTES,
         )
         data_verified = await asyncio.to_thread(self._verify_sqlite, database_payload)
         source_absent = await self._provider.get_sprite(self._required_source_name()) is None
