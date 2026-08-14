@@ -1,18 +1,18 @@
 # Managed Runtime Recovery Runbook
 
-## Scope and launch status
+## Scope and beta status
 
-Use this runbook for managed backup, restore, deletion, lease, storage, or Sprite reconciliation incidents. Managed public launch remains blocked. Keep `SPRITES_PUBLIC_LAUNCH_ENABLED=false`, and do not call public provisioning during an incident.
+Use this runbook for managed backup, restore, deletion, lease, storage, or Sprite reconciliation incidents. Managed beta can operate while recovery, monitoring, and guarded cleanup remain healthy.
 
 ## Ownership and severity
 
-The primary owner, backup owner, and escalation contact must be assigned before launch. Missing owners block launch approval.
+DigitalOcean sends operational alerts to the account email. The available operator handles recovery and escalation.
 
 Treat data loss risk, mixed restore roots, authority conflicts, failed source-loss recovery, or unbounded orphan deletion as critical. Treat stale backups, stuck operations, expired leases, restore failures, deletion failures, storage preflight failures, and reconciliation failures as high severity. Delayed cleanup is medium severity only when one active runner is verified and an immutable backup is recoverable.
 
 ## Immediate containment
 
-Keep both public launch controls blocked. Stop the managed backup manager and Sprite reconciler before manual SQL or provider changes. Preserve the control database, structured logs, and sanitized checker output.
+Pause managed provisioning when continued provisioning could increase incident impact. Stop the managed backup manager and Sprite reconciler before manual SQL or provider changes. Preserve the control database, structured logs, and sanitized checker output.
 
 Before deleting any source or candidate, confirm its SQL identity against the generation and job. Confirm operation phase separately. Do not expose user IDs, job IDs, Sprite names, object keys, paths, tokens, or provider response bodies in tickets.
 
@@ -31,7 +31,9 @@ Exit code `0` means no critical finding. Exit code `2` means one or more alert c
 
 The checker reports `managed_backup_stale`, `managed_operation_stuck`, `managed_operation_lease_expired`, `managed_restore_failed`, and `managed_deletion_failed`.
 
-Hosted monitoring must also collect `managed_sprite_reconciliation_failed` and `managed_storage_preflight_failed` from structured service logs. Missing routing for either class blocks launch approval.
+DigitalOcean checks `GET /health/managed` from three regions. The endpoint returns `200 {"status":"ok"}` when no managed finding exists. It returns `503 {"status":"critical"}` for a managed finding or status-read failure. It never returns identifiers or provider details.
+
+The `yinshi-managed-operational-critical` alert sends email after two minutes of global failure. DigitalOcean also sends recovery notification. A successful Sprite reconciliation or storage preflight clears its corresponding persistent failure. The ordinary `GET /health` process check remains independent.
 
 ## State interpretation
 
@@ -49,7 +51,7 @@ Restart source services if they were quiesced. Release source maintenance for th
 
 Never reactivate the retired source. Keep the candidate as active `managed` runner. Confirm that source runner remains `managed_retired` with revoked authority.
 
-Delete the exact old source Sprite, treating provider `404` as completed deletion. Remove candidate maintenance files for job and archive. Remove result files separately. Complete the operation with exact job and generation. Supply current owner, token, and lease. Keep phase `activated` until exact source deletion finishes.
+Delete the exact old source Sprite, treating provider `404` as completed deletion. Remove candidate maintenance files for job and archive. Remove result files separately. Complete the operation with exact job, generation, current lease owner, lease token, and lease expiry. Keep phase `activated` until exact source deletion finishes.
 
 After activation, recovery always moves forward.
 
@@ -57,7 +59,7 @@ After activation, recovery always moves forward.
 
 Select the exact immutable object version from a ready archive record. Confirm its checksum and wrapped key metadata. Confirm owner digest and runtime generation before provisioning the deterministic replacement Sprite.
 
-Upload the exact encrypted archive version with its sealed restore job. Wait for the durable guest result. Verify both restored roots, SQLite integrity, content digests, and session readability. Confirm replacement identity and sole authority before atomic activation. Then follow post-activation recovery.
+Upload the exact encrypted archive version with its sealed restore job. Wait for the durable guest result. Verify both restored roots, SQLite integrity, and content digests. Confirm replacement identity and sole authority before atomic activation. Then follow post-activation recovery.
 
 Do not use Fly checkpoints as the recovery source.
 
@@ -91,4 +93,4 @@ Record commit SHA and UTC times. Record alert counts, oldest ages, recovery phas
 
 Close the incident only after data checks pass. One runner must hold authority. Provider cleanup must be complete, backup recovery must remain available, and monitoring must resolve.
 
-Escalate immediately when provider inventory is incomplete, storage encryption facts are unavailable, authority cannot be established, or cleanup cannot be verified. Keep launch blocked until owners review the incident and rerun the destructive staging drill.
+Escalate immediately when provider inventory is incomplete, storage encryption facts are unavailable, authority cannot be established, or cleanup cannot be verified. Resume affected managed operations only after recovery and monitoring checks pass.
