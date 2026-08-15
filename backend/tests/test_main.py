@@ -63,6 +63,26 @@ def test_create_app_builds_independent_health_applications(
     assert response.json() == {"status": "ok"}
 
 
+def test_public_launch_setting_only_enables_hosted_application(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Validated public launch should enable only the hosted application surface."""
+    _configure_startup_env(monkeypatch, tmp_path, container_enabled=False)
+    import yinshi.main as main
+    from yinshi.config import Settings
+
+    launch_settings = Settings(
+        managed_runtime_provider="fly_sprites",
+        sprites_public_launch_enabled=True,
+        sprites_storage_encryption_confirmed=True,
+    )
+    monkeypatch.setattr(main, "get_settings", lambda: launch_settings)
+
+    assert main.create_app(mode="hosted").state.sprites_public_launch_enabled is True
+    assert main.create_app(mode="desktop").state.sprites_public_launch_enabled is False
+
+
 def test_hosted_fly_mode_uses_control_plane_route_surface(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,

@@ -761,7 +761,9 @@ def create_app(
     application.state.managed_recovery_operator_token_hash = (
         app_settings.managed_recovery_operator_token_hash
     )
-    application.state.sprites_public_launch_enabled = False
+    application.state.sprites_public_launch_enabled = (
+        mode == "hosted" and app_settings.sprites_public_launch_enabled
+    )
     application.state.prompt_journal = PromptJournal()
     application.state.terminal_journal = TerminalJournal()
     application.add_exception_handler(
