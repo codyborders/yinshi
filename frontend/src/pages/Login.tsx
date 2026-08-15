@@ -17,7 +17,7 @@ export default function Login() {
     ? ERROR_MESSAGES[errorCode] ?? "Something went wrong. Please try again."
     : null;
 
-  if (status === "authenticated" || status === "disabled") {
+  if (status === "authenticated") {
     return <Navigate to="/" replace />;
   }
 

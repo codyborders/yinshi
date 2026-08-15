@@ -86,7 +86,7 @@ describe("useAuth", () => {
     });
   });
 
-  it("sets status to disabled when authenticated: false", async () => {
+  it("sets status to unauthenticated when authenticated: false", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
       new Response(JSON.stringify({ authenticated: false }), {
         status: 200,
@@ -97,7 +97,7 @@ describe("useAuth", () => {
     renderWithAuth();
 
     await waitFor(() => {
-      expect(screen.getByTestId("status").textContent).toBe("disabled");
+      expect(screen.getByTestId("status").textContent).toBe("unauthenticated");
     });
   });
 

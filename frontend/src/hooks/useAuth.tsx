@@ -6,7 +6,7 @@ import {
   type ReactNode,
 } from "react";
 
-type AuthStatus = "loading" | "authenticated" | "unauthenticated" | "disabled";
+type AuthStatus = "loading" | "authenticated" | "unauthenticated";
 
 interface AuthState {
   status: AuthStatus;
@@ -60,7 +60,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
           setUserId(data.user_id || null);
           setStatus("authenticated");
         } else {
-          setStatus("disabled");
+          setStatus("unauthenticated");
         }
       } catch {
         setStatus("unauthenticated");
