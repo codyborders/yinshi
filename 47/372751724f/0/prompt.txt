@@ -1,0 +1,97 @@
+Implement @ plans/2026-08-13-managed-public-launch-readiness.md
+
+---
+
+Continue
+
+---
+
+/skill:software-design-review on the commits
+
+---
+
+Go do those, commit, and run /skill:software-design on the commits
+
+---
+
+go
+
+---
+
+What's our next step to get into production?
+
+---
+
+1. confirmed. What's next?
+
+---
+
+Didn't I already give you a Sprites API token? Where do I get these other pieces from?
+
+---
+
+We don't have a staging backend?
+
+---
+
+Can't sign in to AWS, missing my USB key and authenticator is no longer supported
+
+---
+
+Since you already have `doctl` access just use DigitalOcean Spaces
+
+---
+
+I think you already have access to Backblaze CLI?
+
+---
+
+ok
+
+---
+
+Did you create a droplet? If so, should have the ability to provision ssh keys
+
+---
+
+Why do you need a $12 droplet to test this?
+
+---
+
+Ok, go
+
+---
+
+Just use the $12 droplet for right now
+
+---
+
+Anything left?
+
+---
+
+Most of this doesn't sound necessary for getting Yinshi in a place where I can begin getting beta users for early feedback.
+
+---
+
+No, I don't want to do that. I want to just get it in a place where the risk of data loss is neutralized, we have failure monitoring and manual cleanup. Don't need to set up manual user approval or disabling public signup/provisioning
+
+---
+
+go
+
+---
+
+What's next to make it possible for people to try it?
+
+---
+
+Can we just put all of this on the main branch and stop messing with staging?
+
+---
+
+Ok, go
+
+---
+
+Done
