@@ -75,3 +75,11 @@ Most of this doesn't sound necessary for getting Yinshi in a place where I can b
 ---
 
 No, I don't want to do that. I want to just get it in a place where the risk of data loss is neutralized, we have failure monitoring and manual cleanup. Don't need to set up manual user approval or disabling public signup/provisioning
+
+---
+
+go
+
+---
+
+What's next to make it possible for people to try it?
