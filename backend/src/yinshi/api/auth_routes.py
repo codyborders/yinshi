@@ -1102,13 +1102,19 @@ async def submit_provider_auth_callback(
             await sidecar.disconnect()
 
 
-# --- Backward compatibility: /auth/login redirects to /auth/login/google ---
+# --- Backward-compatible provider-neutral OAuth entrypoint ---
 
 
 @router.get("/login")
-async def login_redirect(request: Request) -> RedirectResponse:
-    """Legacy /auth/login redirects to Google OAuth."""
-    return RedirectResponse(url="/auth/login/google", status_code=307)
+async def login_redirect(request: Request) -> Response:
+    """Redirect to a configured OAuth provider, preferring GitHub."""
+    del request
+    settings = get_settings()
+    if settings.github_client_id and settings.github_client_secret:
+        return RedirectResponse(url="/auth/login/github", status_code=307)
+    if settings.google_client_id and settings.google_client_secret:
+        return RedirectResponse(url="/auth/login/google", status_code=307)
+    return JSONResponse({"error": "OAuth is not configured"}, status_code=503)
 
 
 @router.get("/callback")

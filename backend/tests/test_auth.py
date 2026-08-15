@@ -91,6 +91,77 @@ def _configure_github_app_settings(tmp_path, monkeypatch) -> None:
     get_settings.cache_clear()
 
 
+def test_legacy_login_prefers_configured_github_oauth(
+    auth_enabled_app,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Provider-neutral login should prefer configured GitHub OAuth."""
+    monkeypatch.setenv("GITHUB_CLIENT_ID", "github-client-id")
+    monkeypatch.setenv("GITHUB_CLIENT_SECRET", "github-client-secret")
+    monkeypatch.setenv(
+        "GITHUB_REDIRECT_URI",
+        "http://testserver/auth/callback/github",
+    )
+
+    from fastapi.testclient import TestClient
+
+    from yinshi.config import get_settings
+    from yinshi.main import app
+
+    get_settings.cache_clear()
+    with TestClient(app) as client:
+        response = client.get("/auth/login", follow_redirects=False)
+
+    assert response.status_code == 307
+    assert response.headers["location"] == "/auth/login/github"
+
+
+def test_legacy_login_falls_back_to_configured_google_oauth(
+    auth_enabled_app,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Provider-neutral login should retain configured Google OAuth."""
+    monkeypatch.delenv("GITHUB_CLIENT_ID", raising=False)
+    monkeypatch.delenv("GITHUB_CLIENT_SECRET", raising=False)
+
+    from fastapi.testclient import TestClient
+
+    from yinshi.config import get_settings
+    from yinshi.main import app
+
+    get_settings.cache_clear()
+    with TestClient(app) as client:
+        response = client.get("/auth/login", follow_redirects=False)
+
+    assert response.status_code == 307
+    assert response.headers["location"] == "/auth/login/google"
+
+
+def test_legacy_login_fails_closed_without_oauth_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Provider-neutral login should fail with a fixed configuration response."""
+    from types import SimpleNamespace
+
+    from yinshi.api import auth_routes
+
+    monkeypatch.setattr(
+        auth_routes,
+        "get_settings",
+        lambda: SimpleNamespace(
+            github_client_id=None,
+            github_client_secret=None,
+            google_client_id=None,
+            google_client_secret=None,
+        ),
+    )
+
+    response = asyncio.run(auth_routes.login_redirect(MagicMock()))
+
+    assert response.status_code == 503
+    assert response.body == b'{"error":"OAuth is not configured"}'
+
+
 def test_create_and_verify_session_token(tmp_path, monkeypatch):
     """Session tokens should be creatable and verifiable."""
     _configure_test_env(monkeypatch, tmp_path, auth_enabled=True)
