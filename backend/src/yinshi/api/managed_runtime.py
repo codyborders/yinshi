@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 from yinshi.api.deps import require_tenant
 from yinshi.api.runners import _request_relay_url
@@ -48,7 +48,9 @@ class ManagedBackupOut(BaseModel):
 class ManagedBackupJobOut(BaseModel):
     """Safe maintenance progress without worker or provider ownership."""
 
-    id: str
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str = Field(validation_alias=AliasChoices("id", "job_id"))
     archive_id: str
     operation: str
     status: str

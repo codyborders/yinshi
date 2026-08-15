@@ -144,6 +144,7 @@ def test_managed_backup_create_returns_safe_accepted_job(
 ) -> None:
     """Authenticated tenants can queue one encrypted managed backup."""
     from datetime import datetime, timezone
+    from types import SimpleNamespace
     from unittest.mock import Mock
 
     from yinshi.db import get_control_db
@@ -168,16 +169,16 @@ def test_managed_backup_create_returns_safe_accepted_job(
         database.commit()
     manager = Mock()
     manager.enqueue_create = Mock(
-        return_value={
-            "id": "018f47a2-9d3a-7f3b-8f0f-1a2b3c4d5e91",
-            "archive_id": "018f47a2-9d3a-7f3b-8f0f-1a2b3c4d5e92",
-            "operation": "create",
-            "status": "running",
-            "phase": "claimed",
-            "started_at": "2026-08-12T12:00:00Z",
-            "updated_at": "2026-08-12T12:00:00Z",
-            "last_error": None,
-        }
+        return_value=SimpleNamespace(
+            job_id="018f47a2-9d3a-7f3b-8f0f-1a2b3c4d5e91",
+            archive_id="018f47a2-9d3a-7f3b-8f0f-1a2b3c4d5e92",
+            operation="create",
+            status="running",
+            phase="claimed",
+            started_at="2026-08-12T12:00:00Z",
+            updated_at="2026-08-12T12:00:00Z",
+            last_error=None,
+        )
     )
     manager.wake = Mock()
     auth_client.app.state.managed_backup_manager = manager
@@ -185,7 +186,16 @@ def test_managed_backup_create_returns_safe_accepted_job(
     response = auth_client.post("/api/runtime/backups")
 
     assert response.status_code == 202
-    assert response.json() == manager.enqueue_create.return_value
+    assert response.json() == {
+        "id": "018f47a2-9d3a-7f3b-8f0f-1a2b3c4d5e91",
+        "archive_id": "018f47a2-9d3a-7f3b-8f0f-1a2b3c4d5e92",
+        "operation": "create",
+        "status": "running",
+        "phase": "claimed",
+        "started_at": "2026-08-12T12:00:00Z",
+        "updated_at": "2026-08-12T12:00:00Z",
+        "last_error": None,
+    }
     manager.enqueue_create.assert_called_once_with(tenant.user_id)
     manager.wake.assert_called_once_with()
 
