@@ -1141,6 +1141,9 @@ async def me(request: Request) -> dict[str, Any]:
     This endpoint is under /auth/ (an open path), so the middleware
     doesn't populate request.state.tenant. We manually check the cookie.
     """
+    if get_settings().disable_auth:
+        return {"authenticated": False, "auth_disabled": True}
+
     token = request.cookies.get("yinshi_session")
     if not token:
         return {"authenticated": False}

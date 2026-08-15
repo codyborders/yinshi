@@ -101,6 +101,24 @@ describe("useAuth", () => {
     });
   });
 
+  it("sets status to disabled only for explicit no-auth mode", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ authenticated: false, auth_disabled: true }),
+        {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        },
+      ),
+    );
+
+    renderWithAuth();
+
+    await waitFor(() => {
+      expect(screen.getByTestId("status").textContent).toBe("disabled");
+    });
+  });
+
   it("sets status to unauthenticated on network error", async () => {
     vi.spyOn(globalThis, "fetch").mockRejectedValueOnce(
       new Error("Network error"),

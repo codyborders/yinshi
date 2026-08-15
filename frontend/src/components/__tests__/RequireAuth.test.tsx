@@ -30,6 +30,12 @@ describe("RequireAuth", () => {
     expect(screen.getByTestId("home")).toBeTruthy();
   });
 
+  it("renders children when no-auth mode is explicitly disabled", () => {
+    mockUseAuth.mockReturnValue({ status: "disabled", email: null, userId: null, logout: vi.fn() });
+    renderWithRouter("/app");
+    expect(screen.getByTestId("home")).toBeTruthy();
+  });
+
   it("redirects to landing when unauthenticated", () => {
     mockUseAuth.mockReturnValue({ status: "unauthenticated", email: null, userId: null, logout: vi.fn() });
     renderWithRouter("/app");

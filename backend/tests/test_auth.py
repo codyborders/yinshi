@@ -281,6 +281,7 @@ def test_auth_me_unauthenticated_returns_401(auth_enabled_app):
         assert resp.status_code == 200
         data = resp.json()
         assert data["authenticated"] is False
+        assert "auth_disabled" not in data
 
 
 def test_auth_me_authenticated(auth_enabled_app):
@@ -301,7 +302,7 @@ def test_auth_me_authenticated(auth_enabled_app):
 
 
 def test_auth_me_disabled(auth_disabled_app):
-    """GET /auth/me with auth disabled returns authenticated: false."""
+    """GET /auth/me reports explicit no-auth mode."""
     from fastapi.testclient import TestClient
 
     from yinshi.main import app
@@ -311,6 +312,7 @@ def test_auth_me_disabled(auth_disabled_app):
         assert resp.status_code == 200
         data = resp.json()
         assert data["authenticated"] is False
+        assert data["auth_disabled"] is True
 
 
 def test_csrf_check_allows_with_header(auth_enabled_app):
