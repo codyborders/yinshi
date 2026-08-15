@@ -1116,6 +1116,144 @@ def test_control_db_migrates_pre_kind_runner_before_restore_job_binding(
         get_settings.cache_clear()
 
 
+def test_control_db_migrates_runner_kinds_with_existing_managed_runtime_triggers(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A deployed control database should preserve its user and GitHub installation."""
+    control_path = tmp_path / "control.db"
+    monkeypatch.setenv("CONTROL_DB_PATH", str(control_path))
+    monkeypatch.setenv("SECRET_KEY", "test-secret")
+    monkeypatch.setenv("ENCRYPTION_PEPPER", "a" * 64)
+    monkeypatch.setenv("KEY_ENCRYPTION_KEY", "b" * 64)
+    monkeypatch.setenv("CONTROL_FIELD_ENCRYPTION", "enabled")
+    monkeypatch.setenv("TENANT_DB_ENCRYPTION", "required")
+
+    from yinshi.config import get_settings
+    from yinshi.db import (
+        _application_database_key,
+        _load_sqlcipher_module,
+        _open_keyed_connection,
+    )
+
+    get_settings.cache_clear()
+    connection = _open_keyed_connection(
+        str(control_path),
+        sqlcipher_module=_load_sqlcipher_module(),
+        database_key=_application_database_key(context="control"),
+    )
+    connection.executescript("""
+        CREATE TABLE users (
+            id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE,
+            credit_used_cents INTEGER DEFAULT 0, credit_limit_cents INTEGER DEFAULT 500
+        );
+        CREATE TABLE user_runners (
+            id TEXT PRIMARY KEY, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+            user_id TEXT NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+            name TEXT NOT NULL, cloud_provider TEXT NOT NULL, region TEXT NOT NULL,
+            status TEXT DEFAULT 'pending' NOT NULL, registration_token_hash TEXT,
+            registration_token_expires_at TEXT, runner_token_hash TEXT,
+            registered_at TEXT, last_heartbeat_at TEXT, runner_version TEXT,
+            capabilities_json TEXT DEFAULT '{}' NOT NULL, data_dir TEXT,
+            revoked_at TEXT, noise_public_key TEXT, noise_public_key_confirmed_at TEXT
+        );
+        CREATE TABLE managed_runtimes (
+            user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+            runner_id TEXT NOT NULL UNIQUE REFERENCES user_runners(id) ON DELETE CASCADE,
+            provider_name TEXT NOT NULL,
+            sprite_external_id TEXT NOT NULL UNIQUE,
+            lifecycle_status TEXT NOT NULL,
+            generation INTEGER DEFAULT 1 NOT NULL,
+            artifact_version TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+            last_error TEXT
+        );
+        CREATE TRIGGER validate_managed_runtime_runner_insert
+        BEFORE INSERT ON managed_runtimes
+        WHEN NOT EXISTS (
+            SELECT 1 FROM user_runners
+            WHERE id = NEW.runner_id AND user_id = NEW.user_id AND kind = 'managed'
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'managed runtime must reference matching managed runner');
+        END;
+        CREATE TRIGGER validate_managed_runtime_runner_update
+        BEFORE UPDATE OF user_id, runner_id ON managed_runtimes
+        WHEN NOT EXISTS (
+            SELECT 1 FROM user_runners
+            WHERE id = NEW.runner_id AND user_id = NEW.user_id AND kind = 'managed'
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'managed runtime must reference matching managed runner');
+        END;
+        CREATE TRIGGER protect_linked_managed_runner_update
+        BEFORE UPDATE OF user_id ON user_runners
+        WHEN EXISTS (SELECT 1 FROM managed_runtimes WHERE runner_id = OLD.id)
+        BEGIN
+            SELECT RAISE(ABORT, 'cannot change linked managed runtime runner');
+        END;
+        CREATE TABLE github_installations (
+            id INTEGER PRIMARY KEY,
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            installation_id INTEGER NOT NULL,
+            account_login TEXT NOT NULL,
+            account_type TEXT NOT NULL,
+            html_url TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(user_id, installation_id)
+        );
+        INSERT INTO users (id, email) VALUES ('user-1', 'runner@example.com');
+        INSERT INTO user_runners (
+            id, user_id, name, cloud_provider, region
+        ) VALUES ('runner-1', 'user-1', 'Existing', 'aws', 'us-west-2');
+        INSERT INTO github_installations (
+            user_id, installation_id, account_login, account_type, html_url
+        ) VALUES ('user-1', 12345, 'example', 'User', 'https://github.com/example');
+        """)
+    connection.commit()
+    connection.close()
+
+    from yinshi.config import get_settings
+    from yinshi.db import get_control_db, init_control_db
+
+    get_settings.cache_clear()
+    try:
+        init_control_db()
+        with get_control_db() as database:
+            runner = database.execute(
+                "SELECT kind FROM user_runners WHERE id = ?", ("runner-1",)
+            ).fetchone()
+            installation = database.execute(
+                "SELECT installation_id FROM github_installations WHERE user_id = ?",
+                ("user-1",),
+            ).fetchone()
+            trigger_names = {
+                row["name"]
+                for row in database.execute(
+                    "SELECT name FROM sqlite_master WHERE type = ? AND name IN (?, ?, ?)",
+                    (
+                        "trigger",
+                        "validate_managed_runtime_runner_insert",
+                        "validate_managed_runtime_runner_update",
+                        "protect_linked_managed_runner_update",
+                    ),
+                )
+            }
+        assert runner is not None
+        assert runner["kind"] == "byoc"
+        assert installation is not None
+        assert installation["installation_id"] == 12345
+        assert trigger_names == {
+            "validate_managed_runtime_runner_insert",
+            "validate_managed_runtime_runner_update",
+            "protect_linked_managed_runner_update",
+        }
+    finally:
+        get_settings.cache_clear()
+
+
 def test_control_db_expands_existing_managed_runner_roles(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
