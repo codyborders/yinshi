@@ -3,7 +3,7 @@
   "checkpoint_id": "037c7a4902b7",
   "strategy": "manual-commit",
   "branch": "main",
-  "checkpoints_count": 1,
+  "checkpoints_count": 2,
   "files_touched": [
     "frontend/e2e/navigation.spec.ts"
   ],
@@ -14,6 +14,13 @@
       "compact_transcript": "/03/7c7a4902b7/0/transcript.jsonl",
       "content_hash": "/03/7c7a4902b7/0/content_hash.txt",
       "prompt": "/03/7c7a4902b7/0/prompt.txt"
+    },
+    {
+      "metadata": "/03/7c7a4902b7/1/metadata.json",
+      "transcript": "/03/7c7a4902b7/1/full.jsonl",
+      "compact_transcript": "/03/7c7a4902b7/1/transcript.jsonl",
+      "content_hash": "/03/7c7a4902b7/1/content_hash.txt",
+      "prompt": "/03/7c7a4902b7/1/prompt.txt"
     }
   ],
   "token_usage": {
