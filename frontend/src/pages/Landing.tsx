@@ -64,7 +64,7 @@ function Navigation() {
         <a className="landing-brand" href="/" aria-label="Yinshi home">
           Yinshi
         </a>
-        <a className="landing-nav-link" href="/auth/login/github">
+        <a className="landing-nav-link" href="/auth/login">
           Sign in
         </a>
       </nav>
@@ -124,7 +124,7 @@ function Hero() {
           connects a pi agent, and streams the session to your browser.
         </p>
         <div className="landing-cta-group">
-          <a href="/auth/login/github" className="landing-cta">
+          <a href="/auth/login" className="landing-cta">
             Start a workspace
           </a>
           <a href="/architecture.html" className="landing-cta landing-cta-secondary">
@@ -213,7 +213,7 @@ function FinalAction() {
         No IDE or app required. Fire up your browser, import your repos and pi configs, and get to
         work.
       </p>
-      <a href="/auth/login/github" className="landing-cta">
+      <a href="/auth/login" className="landing-cta">
         Start a workspace
       </a>
     </section>

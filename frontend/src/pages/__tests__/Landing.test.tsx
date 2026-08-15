@@ -138,12 +138,12 @@ describe("Landing", () => {
     renderLanding();
     expect(screen.getByRole("link", { name: "Sign in" })).toHaveAttribute(
       "href",
-      "/auth/login/github",
+      "/auth/login",
     );
     const workspaceLinks = screen.getAllByRole("link", { name: "Start a workspace" });
     expect(workspaceLinks).toHaveLength(2);
     for (const workspaceLink of workspaceLinks) {
-      expect(workspaceLink).toHaveAttribute("href", "/auth/login/github");
+      expect(workspaceLink).toHaveAttribute("href", "/auth/login");
     }
   });
 

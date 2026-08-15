@@ -3,7 +3,7 @@ import { expect, test } from "@playwright/test";
 
 import { authenticateContext } from "./helpers/testApp";
 
-test("landing renders and targets GitHub login", async ({ page }) => {
+test("landing renders and targets configured login", async ({ page }) => {
   await page.goto("/");
 
   await expect(
@@ -13,7 +13,7 @@ test("landing renders and targets GitHub login", async ({ page }) => {
   ).toBeVisible();
   await expect(page.getByRole("link", { name: "Sign in" })).toHaveAttribute(
     "href",
-    "/auth/login/github",
+    "/auth/login",
   );
 });
 
