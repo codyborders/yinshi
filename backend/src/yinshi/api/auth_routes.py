@@ -1110,6 +1110,8 @@ async def login_redirect(request: Request) -> Response:
     """Redirect to a configured OAuth provider, preferring GitHub."""
     del request
     settings = get_settings()
+    if settings.disable_auth:
+        return RedirectResponse(url="/app", status_code=307)
     if settings.github_client_id and settings.github_client_secret:
         return RedirectResponse(url="/auth/login/github", status_code=307)
     if settings.google_client_id and settings.google_client_secret:

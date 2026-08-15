@@ -91,6 +91,32 @@ def _configure_github_app_settings(tmp_path, monkeypatch) -> None:
     get_settings.cache_clear()
 
 
+def test_legacy_login_redirects_explicit_no_auth_mode_to_app(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Provider-neutral login should enter the app when auth is disabled."""
+    from types import SimpleNamespace
+
+    from yinshi.api import auth_routes
+
+    monkeypatch.setattr(
+        auth_routes,
+        "get_settings",
+        lambda: SimpleNamespace(
+            disable_auth=True,
+            github_client_id="github-client-id",
+            github_client_secret="github-client-secret",
+            google_client_id="google-client-id",
+            google_client_secret="google-client-secret",
+        ),
+    )
+
+    response = asyncio.run(auth_routes.login_redirect(MagicMock()))
+
+    assert response.status_code == 307
+    assert response.headers["location"] == "/app"
+
+
 def test_legacy_login_prefers_configured_github_oauth(
     auth_enabled_app,
     monkeypatch: pytest.MonkeyPatch,
@@ -149,6 +175,7 @@ def test_legacy_login_fails_closed_without_oauth_provider(
         auth_routes,
         "get_settings",
         lambda: SimpleNamespace(
+            disable_auth=False,
             github_client_id=None,
             github_client_secret=None,
             google_client_id=None,
