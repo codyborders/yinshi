@@ -3,7 +3,7 @@
   "checkpoint_id": "aec5100866e4",
   "strategy": "manual-commit",
   "branch": "main",
-  "checkpoints_count": 4,
+  "checkpoints_count": 5,
   "files_touched": [
     "backend/tests/test_db.py"
   ],
@@ -14,6 +14,13 @@
       "compact_transcript": "/ae/c5100866e4/0/transcript.jsonl",
       "content_hash": "/ae/c5100866e4/0/content_hash.txt",
       "prompt": "/ae/c5100866e4/0/prompt.txt"
+    },
+    {
+      "metadata": "/ae/c5100866e4/1/metadata.json",
+      "transcript": "/ae/c5100866e4/1/full.jsonl",
+      "compact_transcript": "/ae/c5100866e4/1/transcript.jsonl",
+      "content_hash": "/ae/c5100866e4/1/content_hash.txt",
+      "prompt": "/ae/c5100866e4/1/prompt.txt"
     }
   ],
   "token_usage": {
