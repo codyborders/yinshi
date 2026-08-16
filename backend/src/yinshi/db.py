@@ -1521,6 +1521,9 @@ def _migrate_managed_restore_runner_kind(conn: sqlite3.Connection) -> None:
     try:
         conn.execute("BEGIN IMMEDIATE")
         conn.execute("DROP TRIGGER IF EXISTS update_user_runners_updated_at")
+        conn.execute("DROP TRIGGER IF EXISTS validate_managed_runtime_runner_insert")
+        conn.execute("DROP TRIGGER IF EXISTS validate_managed_runtime_runner_update")
+        conn.execute("DROP TRIGGER IF EXISTS protect_linked_managed_runner_update")
         conn.execute("""CREATE TABLE user_runners_expanded (
                    id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
@@ -1554,6 +1557,25 @@ def _migrate_managed_restore_runner_kind(conn: sqlite3.Connection) -> None:
                AFTER UPDATE ON user_runners BEGIN
                    UPDATE user_runners SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id;
                END""")
+        conn.execute("""CREATE TRIGGER IF NOT EXISTS validate_managed_runtime_runner_insert
+               BEFORE INSERT ON managed_runtimes
+               WHEN NOT EXISTS (
+                   SELECT 1 FROM user_runners
+                   WHERE id = NEW.runner_id AND user_id = NEW.user_id AND kind = 'managed'
+               )
+               BEGIN SELECT RAISE(ABORT, 'managed runtime must reference matching managed runner'); END""")
+        conn.execute("""CREATE TRIGGER IF NOT EXISTS validate_managed_runtime_runner_update
+               BEFORE UPDATE OF user_id, runner_id ON managed_runtimes
+               WHEN NOT EXISTS (
+                   SELECT 1 FROM user_runners
+                   WHERE id = NEW.runner_id AND user_id = NEW.user_id AND kind = 'managed'
+               )
+               BEGIN SELECT RAISE(ABORT, 'managed runtime must reference matching managed runner'); END""")
+        conn.execute("""CREATE TRIGGER IF NOT EXISTS protect_linked_managed_runner_update
+               BEFORE UPDATE OF user_id, kind ON user_runners
+               WHEN EXISTS (SELECT 1 FROM managed_runtimes WHERE runner_id = OLD.id)
+                   AND (NEW.user_id != OLD.user_id OR NEW.kind != OLD.kind)
+               BEGIN SELECT RAISE(ABORT, 'cannot change linked managed runtime runner'); END""")
         if conn.execute("PRAGMA foreign_key_check").fetchone() is not None:
             raise sqlite3.IntegrityError(
                 "Managed restore runner migration left an invalid foreign key"
