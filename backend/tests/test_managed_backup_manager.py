@@ -1054,6 +1054,9 @@ async def test_manager_create_uploads_before_release_and_publishes_after_recover
         async def delete_file(self, _name: str, **_values) -> None:
             events.append("cleanup")
 
+        async def delete_service(self, _name: str, **values) -> None:
+            events.append(f"delete-service:{values['service_name']}")
+
     class Store:
         async def put_file(self, source_path: Path, **values) -> StoredManagedBackup:
             events.append("upload")
@@ -1128,6 +1131,8 @@ async def test_manager_create_uploads_before_release_and_publishes_after_recover
     assert events.index("stop:yinshi-sidecar") < events.index("configure")
     assert events.index("upload") < events.index("record-upload")
     assert events.index("record-upload") < events.index("write:.release")
+    assert events.index("write:.release") < events.index("delete-service:yinshi-maintenance")
+    assert events.index("delete-service:yinshi-maintenance") < events.index("start:yinshi-sidecar")
     assert events.index("start:yinshi-sidecar") < events.index("start:yinshi-runner")
     assert events.index("start:yinshi-sidecar") < events.index("publish")
     assert events.index("relay-release") < events.index("publish")
@@ -1929,6 +1934,9 @@ async def test_manager_recovers_uploaded_archive_without_second_upload(tmp_path)
         async def delete_file(self, _name: str, **_values) -> None:
             events.append("cleanup")
 
+        async def delete_service(self, _name: str, **values) -> None:
+            events.append(f"delete-service:{values['service_name']}")
+
     class Store:
         async def put_file(self, *_args, **_values):
             raise AssertionError("uploaded archive must not be uploaded twice")
@@ -1958,6 +1966,8 @@ async def test_manager_recovers_uploaded_archive_without_second_upload(tmp_path)
     )
 
     assert await manager.run_once()
+    assert events.index("write:release") < events.index("delete-service:yinshi-maintenance")
+    assert events.index("delete-service:yinshi-maintenance") < events.index("start:yinshi-sidecar")
     assert events.index("write:release") < events.index("publish")
     assert events.index("relay-release") < events.index("publish")
 

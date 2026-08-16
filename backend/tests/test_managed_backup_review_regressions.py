@@ -376,6 +376,9 @@ async def test_create_upload_retry_recovers_unrecorded_version(tmp_path) -> None
         async def delete_file(self, *_args, **_values) -> None:
             return None
 
+        async def delete_service(self, *_args, **_values) -> None:
+            return None
+
     class Store:
         async def put_file(self, *_args, **_values) -> StoredManagedBackup:
             raise AssertionError("uncertain upload must not be repeated")
@@ -578,6 +581,9 @@ async def test_create_upload_reconciliation_aborts_after_lease_renewal(tmp_path)
 
         async def delete_file(self, *_args, **_values) -> None:
             events.append("delete")
+
+        async def delete_service(self, *_args, **_values) -> None:
+            events.append("delete-service")
 
     class Store:
         async def reconcile_upload(self, **_values):
@@ -787,6 +793,9 @@ async def test_create_upload_retry_reuploads_preserved_output_after_confirmed_ab
         async def delete_file(self, *_args, **_values) -> None:
             events.append("guest-delete")
 
+        async def delete_service(self, *_args, **_values) -> None:
+            events.append("delete-service")
+
     class Store:
         async def put_file(self, local_path, **values) -> StoredManagedBackup:
             assert local_path.read_bytes() == payload
@@ -829,6 +838,7 @@ async def test_create_upload_retry_reuploads_preserved_output_after_confirmed_ab
         "guest-download",
         "storage-upload",
         "guest-release",
+        "delete-service",
         "start",
         "start",
         "relay-release",

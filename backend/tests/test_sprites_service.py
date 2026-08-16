@@ -254,6 +254,30 @@ async def test_stop_service_requires_stopped_and_complete_events() -> None:
 
 
 @pytest.mark.asyncio
+async def test_delete_service_removes_the_exact_named_service() -> None:
+    """Service deletion should issue one bounded exact-name request."""
+    requests: list[httpx.Request] = []
+
+    def handle_request(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(204)
+
+    transport = httpx.MockTransport(handle_request)
+    async with httpx.AsyncClient(
+        base_url="https://api.sprites.dev",
+        transport=transport,
+    ) as http_client:
+        client = SpritesClient(api_token="provider-token", http_client=http_client)
+        await client.delete_service(
+            "yinshi-test-user",
+            service_name="yinshi-maintenance",
+        )
+
+    assert requests[0].method == "DELETE"
+    assert requests[0].url.path.endswith("/services/yinshi-maintenance")
+
+
+@pytest.mark.asyncio
 async def test_start_service_requires_started_and_complete_events() -> None:
     """Service start should consume a bounded completed start stream."""
     requests: list[httpx.Request] = []

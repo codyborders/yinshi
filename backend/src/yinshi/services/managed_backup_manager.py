@@ -1030,6 +1030,10 @@ class ManagedBackupManager:
             mode="0600",
             mkdir=True,
         )
+        await self._provider.delete_service(
+            runtime.sprite_name,
+            service_name="yinshi-maintenance",
+        )
         for service in ("yinshi-sidecar", "yinshi-runner"):
             await self._provider.start_service(
                 runtime.sprite_name, service_name=service, monitor_duration=30
@@ -1170,6 +1174,11 @@ class ManagedBackupManager:
                 service_name="yinshi-maintenance",
                 timeout_seconds=30,
             )
+        with suppress(Exception):
+            await self._provider.delete_service(
+                runtime.sprite_name,
+                service_name="yinshi-maintenance",
+            )
         for service in ("yinshi-sidecar", "yinshi-runner"):
             with suppress(Exception):
                 await self._provider.start_service(
@@ -1220,6 +1229,10 @@ class ManagedBackupManager:
             content=b"release\n",
             mode="0600",
             mkdir=True,
+        )
+        await self._provider.delete_service(
+            runtime.sprite_name,
+            service_name="yinshi-maintenance",
         )
         for service in ("yinshi-sidecar", "yinshi-runner"):
             await self._provider.start_service(

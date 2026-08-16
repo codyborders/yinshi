@@ -1034,6 +1034,33 @@ class SpritesClient:
         if not any(isinstance(event, dict) and event.get("type") == "stopped" for event in events):
             raise SpritesProtocolError("Sprite service stop response did not stop")
 
+    async def delete_service(
+        self,
+        name: str,
+        *,
+        service_name: str,
+    ) -> None:
+        """Delete one exact service definition with a bounded response."""
+        name = _validate_sprite_name(name)
+        service_name = _validate_service_name(service_name)
+        with _translate_transport_errors("delete service"):
+            async with asyncio.timeout(_STANDARD_OPERATION_TIMEOUT_SECONDS):
+                async with self._http_client.stream(
+                    "DELETE",
+                    f"/v1/sprites/{name}/services/{service_name}",
+                    headers={"Authorization": f"Bearer {self._api_token}"},
+                    timeout=_STANDARD_OPERATION_TIMEOUT_SECONDS,
+                ) as response:
+                    if response.status_code == 404:
+                        return
+                    try:
+                        response.raise_for_status()
+                    except httpx.HTTPStatusError:
+                        raise SpritesProviderError(
+                            f"Fly could not delete service (status {response.status_code})"
+                        ) from None
+                    await _read_bounded_response(response, "Sprite service delete response")
+
     async def restart_service(
         self,
         name: str,
