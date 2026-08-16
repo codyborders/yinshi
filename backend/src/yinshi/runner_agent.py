@@ -358,10 +358,6 @@ def load_config() -> RunnerAgentConfig:
         raise RuntimeError(
             "YINSHI_RUNNER_SPRITE_TASK_LEASE requires fly_sprites_posix storage profile"
         )
-    if sprite_task_lease and relay_idle_timeout_seconds is None:
-        raise RuntimeError(
-            "YINSHI_RUNNER_SPRITE_TASK_LEASE requires " "YINSHI_RUNNER_RELAY_IDLE_TIMEOUT_SECONDS"
-        )
     return RunnerAgentConfig(
         control_url=control_url.rstrip("/"),
         registration_token=_env_text("YINSHI_REGISTRATION_TOKEN"),

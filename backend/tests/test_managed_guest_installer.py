@@ -144,14 +144,6 @@ class FakeSpritesClient:
         ("bootstrap_script", b""),
         ("bootstrap_script", "#!/bin/bash"),
         ("bootstrap_script", b"x" * (10 * 1024 * 1024 + 1)),
-        ("relay_idle_timeout_seconds", True),
-        ("relay_idle_timeout_seconds", float("nan")),
-        ("relay_idle_timeout_seconds", float("inf")),
-        ("relay_idle_timeout_seconds", float("-inf")),
-        ("relay_idle_timeout_seconds", 0.0),
-        ("relay_idle_timeout_seconds", -1.0),
-        ("relay_idle_timeout_seconds", "300"),
-        ("relay_idle_timeout_seconds", 10**1000),
         ("bootstrap_timeout_seconds", True),
         ("bootstrap_timeout_seconds", float("nan")),
         ("bootstrap_timeout_seconds", float("inf")),
@@ -180,7 +172,6 @@ def test_constructor_rejects_invalid_local_configuration(
     options: dict[str, Any] = {
         "client": FakeSpritesClient(),
         "bootstrap_script": b"#!/bin/bash\n",
-        "relay_idle_timeout_seconds": 300.0,
         "bootstrap_timeout_seconds": 600.0,
         "storage_encryption_confirmed": True,
         "clock": lambda: 0.0,
@@ -206,7 +197,6 @@ def _installer(
     return ManagedGuestInstaller(
         client=client,
         bootstrap_script=b"#!/bin/bash\n",
-        relay_idle_timeout_seconds=300.0,
         bootstrap_timeout_seconds=600.0,
         storage_encryption_confirmed=True,
         clock=clock,
@@ -240,7 +230,7 @@ async def test_install_writes_private_inputs_then_configures_private_services() 
     assert "YINSHI_RUNNER_DATA_DIR=/var/lib/yinshi\n" in env_text
     assert "YINSHI_RUNNER_USER_DATA_ENCRYPTION=required\n" in env_text
     assert "YINSHI_RUNNER_SPRITE_TASK_LEASE=enabled\n" in env_text
-    assert "YINSHI_RUNNER_RELAY_IDLE_TIMEOUT_SECONDS=300\n" in env_text
+    assert "YINSHI_RUNNER_RELAY_IDLE_TIMEOUT_SECONDS" not in env_text
     assert "YINSHI_RUNNER_ENV_FILE=/home/sprite/.config/yinshi/runner.env\n" in env_text
     assert f"YINSHI_RUNNER_ARTIFACT_SHA256={ARTIFACT_SHA256}\n" in env_text
     assert (

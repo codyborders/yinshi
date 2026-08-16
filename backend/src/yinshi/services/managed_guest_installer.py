@@ -94,7 +94,6 @@ class ManagedGuestInstaller:
         *,
         client: Any,
         bootstrap_script: bytes,
-        relay_idle_timeout_seconds: float,
         bootstrap_timeout_seconds: float,
         storage_encryption_confirmed: bool,
         clock: Callable[[], float],
@@ -106,16 +105,6 @@ class ManagedGuestInstaller:
             or len(bootstrap_script) > _MAX_FILE_BYTES
         ):
             raise ValueError("bootstrap_script must be non-empty bounded bytes")
-        if isinstance(relay_idle_timeout_seconds, bool) or not isinstance(
-            relay_idle_timeout_seconds, (int, float)
-        ):
-            raise ValueError("relay_idle_timeout_seconds must be finite and positive")
-        try:
-            relay_idle_timeout = float(relay_idle_timeout_seconds)
-        except OverflowError:
-            raise ValueError("relay_idle_timeout_seconds must be finite and positive") from None
-        if not isfinite(relay_idle_timeout) or relay_idle_timeout <= 0:
-            raise ValueError("relay_idle_timeout_seconds must be finite and positive")
         if isinstance(bootstrap_timeout_seconds, bool) or not isinstance(
             bootstrap_timeout_seconds, (int, float)
         ):
@@ -139,7 +128,6 @@ class ManagedGuestInstaller:
             raise ValueError("sleep must be callable")
         self._client = client
         self._bootstrap_script = bootstrap_script
-        self._relay_idle_timeout_seconds = relay_idle_timeout
         self._bootstrap_timeout_seconds = bootstrap_timeout
         self._clock = clock
         self._sleep = sleep
@@ -208,9 +196,6 @@ class ManagedGuestInstaller:
                 "YINSHI_RUNNER_ARTIFACT_ATTESTATION_FILE": _ARTIFACT_ATTESTATION_PATH,
                 "YINSHI_RUNNER_USER_DATA_ENCRYPTION": "required",
                 "YINSHI_RUNNER_SPRITE_TASK_LEASE": "enabled",
-                "YINSHI_RUNNER_RELAY_IDLE_TIMEOUT_SECONDS": (
-                    f"{self._relay_idle_timeout_seconds:g}"
-                ),
                 "YINSHI_RUNNER_ENV_FILE": _RUNNER_ENV_PATH,
                 "SIDECAR_SOCKET_PATH": "/var/lib/yinshi/sidecar.sock",
             }

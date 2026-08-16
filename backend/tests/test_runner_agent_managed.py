@@ -244,17 +244,19 @@ def test_runner_agent_task_lease_requires_fly_sprites_profile(
         runner_agent.load_config()
 
 
-def test_runner_agent_task_lease_requires_idle_timeout(
+def test_runner_agent_task_lease_keeps_relay_alive_without_idle_timeout(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Task lease must have an idle limit for managed shutdown."""
+    """Task leasing must not terminate the control relay while the service runs."""
     _set_runner_agent_env(monkeypatch, tmp_path)
     monkeypatch.setenv("YINSHI_RUNNER_STORAGE_PROFILE", "fly_sprites_posix")
     monkeypatch.setenv("YINSHI_RUNNER_SPRITE_TASK_LEASE", "enabled")
 
-    with pytest.raises(RuntimeError, match="requires YINSHI_RUNNER_RELAY_IDLE_TIMEOUT_SECONDS"):
-        runner_agent.load_config()
+    config = runner_agent.load_config()
+
+    assert config.sprite_task_lease is True
+    assert config.relay_idle_timeout_seconds is None
 
 
 def test_fly_runner_requires_artifact_attestation_configuration(

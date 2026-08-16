@@ -87,7 +87,6 @@ logger = logging.getLogger(__name__)
 AppMode = Literal["desktop", "hosted", "worker"]
 
 _MAX_BOOTSTRAP_SCRIPT_BYTES = 1024 * 1024
-_MANAGED_RELAY_IDLE_TIMEOUT_SECONDS = 20.0
 _MANAGED_REGION = "global"
 
 
@@ -316,7 +315,6 @@ async def _initialize_managed_runtime(
         guest_installer = ConcreteManagedGuestInstaller(
             client=provider,
             bootstrap_script=bootstrap_script,
-            relay_idle_timeout_seconds=_MANAGED_RELAY_IDLE_TIMEOUT_SECONDS,
             bootstrap_timeout_seconds=app_settings.sprites_operation_stale_seconds,
             storage_encryption_confirmed=app_settings.sprites_storage_encryption_confirmed,
             clock=asyncio.get_running_loop().time,
