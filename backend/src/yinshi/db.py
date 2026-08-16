@@ -1557,20 +1557,24 @@ def _migrate_managed_restore_runner_kind(conn: sqlite3.Connection) -> None:
                AFTER UPDATE ON user_runners BEGIN
                    UPDATE user_runners SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id;
                END""")
-        conn.execute("""CREATE TRIGGER IF NOT EXISTS validate_managed_runtime_runner_insert
+        conn.execute(
+            """CREATE TRIGGER IF NOT EXISTS validate_managed_runtime_runner_insert
                BEFORE INSERT ON managed_runtimes
                WHEN NOT EXISTS (
                    SELECT 1 FROM user_runners
                    WHERE id = NEW.runner_id AND user_id = NEW.user_id AND kind = 'managed'
                )
-               BEGIN SELECT RAISE(ABORT, 'managed runtime must reference matching managed runner'); END""")
-        conn.execute("""CREATE TRIGGER IF NOT EXISTS validate_managed_runtime_runner_update
+               BEGIN SELECT RAISE(ABORT, 'managed runtime must reference matching managed runner'); END"""
+        )
+        conn.execute(
+            """CREATE TRIGGER IF NOT EXISTS validate_managed_runtime_runner_update
                BEFORE UPDATE OF user_id, runner_id ON managed_runtimes
                WHEN NOT EXISTS (
                    SELECT 1 FROM user_runners
                    WHERE id = NEW.runner_id AND user_id = NEW.user_id AND kind = 'managed'
                )
-               BEGIN SELECT RAISE(ABORT, 'managed runtime must reference matching managed runner'); END""")
+               BEGIN SELECT RAISE(ABORT, 'managed runtime must reference matching managed runner'); END"""
+        )
         conn.execute("""CREATE TRIGGER IF NOT EXISTS protect_linked_managed_runner_update
                BEFORE UPDATE OF user_id, kind ON user_runners
                WHEN EXISTS (SELECT 1 FROM managed_runtimes WHERE runner_id = OLD.id)
