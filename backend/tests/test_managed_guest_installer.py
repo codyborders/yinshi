@@ -107,6 +107,11 @@ class FakeSpritesClient:
         self._fail_if_requested("write_file")
         self.files.append(WrittenFile(path, content, mode, mkdir))
 
+    async def delete_file(self, name: str, *, path: str) -> None:
+        assert name == "yinshi-managed"
+        assert path == "/var/lib/yinshi/runner-token"
+        self._fail_if_requested("delete_file")
+
     async def configure_service(self, name: str, **kwargs: object) -> None:
         assert name == "yinshi-managed"
         self._fail_if_requested("configure_service")
@@ -264,6 +269,38 @@ async def test_install_writes_private_inputs_then_configures_private_services() 
 
 
 @pytest.mark.asyncio
+async def test_install_removes_stale_runner_token_before_starting_upgrade() -> None:
+    """A new managed claim must not reuse a prior generation's runner token."""
+
+    class UpgradeClient(FakeSpritesClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.stale_runner_token = True
+
+        async def delete_file(self, name: str, *, path: str) -> None:
+            assert name == "yinshi-managed"
+            assert path == "/var/lib/yinshi/runner-token"
+            self.stale_runner_token = False
+
+        async def configure_service(self, name: str, **kwargs: object) -> None:
+            if kwargs.get("service_name") == "yinshi-runner" and self.stale_runner_token:
+                raise RuntimeError("stale runner token")
+            await super().configure_service(name, **kwargs)
+
+    client = UpgradeClient()
+
+    await _installer(client).install(
+        sprite_name="yinshi-managed",
+        artifact=ARTIFACT,
+        environment=dict(CLAIM_ENVIRONMENT),
+        artifact_version="release-1",
+        artifact_sha256=ARTIFACT_SHA256,
+    )
+
+    assert client.stale_runner_token is False
+
+
+@pytest.mark.asyncio
 async def test_install_rejects_invalid_sprite_name_before_client_calls() -> None:
     """Invalid Sprite names must not reach provider methods."""
     client = FakeSpritesClient()
@@ -328,6 +365,7 @@ async def test_install_preserves_provider_cancellation() -> None:
         ("write_file", 2, "write_artifact"),
         ("write_file", 3, "write_bootstrap"),
         ("write_file", 4, "write_runner_environment"),
+        ("delete_file", 1, "delete_stale_runner_token"),
         ("configure_service", 1, "configure_bootstrap"),
         ("configure_service", 2, "configure_sidecar"),
         ("configure_service", 3, "configure_runner"),

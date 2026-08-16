@@ -48,6 +48,7 @@ _ProviderStage = Literal[
     "write_artifact",
     "write_bootstrap",
     "write_runner_environment",
+    "delete_stale_runner_token",
     "configure_bootstrap",
     "configure_sidecar",
     "configure_runner",
@@ -212,6 +213,13 @@ class ManagedGuestInstaller:
                 mkdir=True,
             ),
             stage="write_runner_environment",
+        )
+        await _provider_call(
+            lambda: self._client.delete_file(
+                sprite_name,
+                path=_FIXED_CLAIM_ENVIRONMENT["YINSHI_RUNNER_TOKEN_FILE"],
+            ),
+            stage="delete_stale_runner_token",
         )
         await _provider_call(
             lambda: self._client.configure_service(
