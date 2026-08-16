@@ -146,6 +146,31 @@ async def test_relay_routes_only_bounded_ciphertext() -> None:
 
 
 @pytest.mark.asyncio
+async def test_relay_ignores_late_frames_for_a_detached_transfer() -> None:
+    """A timed-out browser transfer must not disconnect its shared runner."""
+    broker = RunnerRelayBroker()
+    runner = FakeWebSocket()
+    client = FakeWebSocket()
+    grant = _grant()
+    await broker.register_runner(grant.runner_id, runner)
+    await broker.attach_client(grant, client)
+    await broker.detach_client(grant.transfer_id, client)
+
+    await broker.runner_frame(
+        grant.runner_id,
+        uuid.UUID(grant.transfer_id).bytes + b"late-response",
+    )
+    await broker.runner_closed_transfer(grant.runner_id, grant.transfer_id)
+
+    assert broker.is_runner_connected(grant.runner_id) is True
+    with pytest.raises(RunnerRelayAuthorizationError, match="no attached client"):
+        await broker.runner_frame(
+            grant.runner_id,
+            uuid.uuid4().bytes + b"unknown-response",
+        )
+
+
+@pytest.mark.asyncio
 async def test_relay_closes_a_transfer_when_client_backpressure_fills() -> None:
     """One slow client cannot create an unbounded runner-to-client queue."""
     broker = RunnerRelayBroker()

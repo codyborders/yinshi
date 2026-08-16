@@ -13,6 +13,7 @@ import re
 import secrets
 import stat
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -768,7 +769,74 @@ async def _consume_runner_relay_messages(
     *,
     idle_timeout_seconds: float | None = None,
 ) -> bool:
-    """Apply relay messages until transport closure or managed idle expiry."""
+    """Consume controls while dispatching one binary operation per transfer."""
+    send_lock = asyncio.Lock()
+    binary_tasks: dict[str, asyncio.Task[None]] = {}
+    all_binary_tasks: set[asyncio.Task[None]] = set()
+    protocol_error = asyncio.Event()
+
+    async def send(message: str | bytes) -> None:
+        """Serialize writes from control and transfer tasks."""
+        async with send_lock:
+            await websocket.send(message)
+
+    async def cancel_binary_tasks(tasks: tuple[asyncio.Task[None], ...]) -> None:
+        """Stop selected operations before their control state is retired."""
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def apply_control(message: str) -> str | None:
+        """Make close and maintenance controls barriers for active operations."""
+        payload = json.loads(message)
+        if isinstance(payload, dict) and payload.get("type") == "close":
+            if set(payload) == {"transfer_id", "type"}:
+                raw_transfer_id = payload.get("transfer_id")
+                if isinstance(raw_transfer_id, str):
+                    try:
+                        transfer_id = str(uuid.UUID(raw_transfer_id))
+                    except ValueError:
+                        transfer_id = ""
+                    if transfer_id == raw_transfer_id:
+                        task = binary_tasks.get(transfer_id)
+                        await cancel_binary_tasks(() if task is None else (task,))
+        elif isinstance(payload, dict) and payload.get("type") == "quiesce":
+            if set(payload) == {"job_id", "type"}:
+                await cancel_binary_tasks(tuple(binary_tasks.values()))
+        return await runtime.handle_control(message)
+
+    async def dispatch_binary(transfer_id: str, frame: bytes) -> None:
+        """Run one transfer operation without blocking unrelated controls."""
+        try:
+            try:
+                response = await runtime.handle_binary(
+                    frame,
+                    current_time=int(time.time()),
+                )
+            except RunnerRelaySessionError as error:
+                await send(
+                    json.dumps(
+                        {"transfer_id": error.transfer_id, "type": "close"},
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    )
+                )
+            else:
+                await send(response)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            protocol_error.set()
+            try:
+                await websocket.close(code=1008, reason="Runner relay frame rejected")
+            except Exception:
+                pass
+        finally:
+            current_task = asyncio.current_task()
+            if binary_tasks.get(transfer_id) is current_task:
+                binary_tasks.pop(transfer_id, None)
+
     try:
         while True:
             try:
@@ -782,28 +850,30 @@ async def _consume_runner_relay_messages(
             except TimeoutError:
                 return True
             if isinstance(message, str):
-                acknowledgement = await runtime.handle_control(message)
+                acknowledgement = await apply_control(message)
                 if acknowledgement is not None:
-                    await websocket.send(acknowledgement)
+                    await send(acknowledgement)
                 continue
-            try:
-                response = await runtime.handle_binary(
-                    bytes(message),
-                    current_time=int(time.time()),
-                )
-            except RunnerRelaySessionError as error:
-                await websocket.send(
-                    json.dumps(
-                        {"transfer_id": error.transfer_id, "type": "close"},
-                        separators=(",", ":"),
-                        sort_keys=True,
-                    )
-                )
-                continue
-            await websocket.send(response)
+            frame = bytes(message)
+            if len(frame) <= 16:
+                raise ValueError("Runner relay frame has an invalid length")
+            transfer_id = str(uuid.UUID(bytes=frame[:16]))
+            if transfer_id in binary_tasks:
+                raise ValueError("Runner relay transfer already has an active operation")
+            task = asyncio.create_task(dispatch_binary(transfer_id, frame))
+            binary_tasks[transfer_id] = task
+            all_binary_tasks.add(task)
+            task.add_done_callback(all_binary_tasks.discard)
     except (RuntimeError, TypeError, ValueError):
-        await websocket.close(code=1008, reason="Runner relay frame rejected")
+        try:
+            await websocket.close(code=1008, reason="Runner relay frame rejected")
+        except Exception:
+            pass
         raise RuntimeError("Runner relay protocol rejected a frame") from None
+    finally:
+        await cancel_binary_tasks(tuple(all_binary_tasks))
+        if protocol_error.is_set():
+            raise RuntimeError("Runner relay protocol rejected a frame")
 
 
 async def _serve_runner_relay_connection(

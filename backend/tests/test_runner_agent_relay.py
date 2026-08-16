@@ -87,3 +87,24 @@ async def test_runner_relay_runtime_rejects_unknown_or_malformed_frames(
             uuid.uuid4().bytes + b"ciphertext",
             current_time=1_900_000_000,
         )
+
+
+@pytest.mark.asyncio
+async def test_runner_relay_runtime_accepts_duplicate_close_after_retirement(
+    tmp_path: Path,
+    db: sqlite3.Connection,
+) -> None:
+    """A queued browser close remains harmless after its transfer retires."""
+    runtime = _runtime(tmp_path)
+    transfer_id = str(uuid.uuid4())
+    close_message = json.dumps({"transfer_id": transfer_id, "type": "close"})
+    await runtime.handle_control(json.dumps({"runner_id": "runner-1", "type": "welcome"}))
+    await runtime.handle_control(json.dumps({"transfer_id": transfer_id, "type": "open"}))
+
+    await runtime.handle_control(close_message)
+    await runtime.handle_control(close_message)
+
+    with pytest.raises(ValueError, match="not open"):
+        await runtime.handle_control(
+            json.dumps({"transfer_id": str(uuid.uuid4()), "type": "close"})
+        )

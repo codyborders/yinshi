@@ -7,6 +7,7 @@ import hashlib
 import secrets
 import time
 import uuid
+from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Protocol
@@ -19,6 +20,8 @@ _RUNNER_PREFIX_LENGTH = 16
 _RELAY_FRAME_BYTES_MAX = 65_535
 _RELAY_QUEUE_FRAMES_MAX = 16
 _RUNNER_SESSIONS_MAX = 32
+_RETIRED_TRANSFERS_MAX = 128
+_RETIRED_TRANSFER_TTL_SECONDS = 300.0
 
 
 class RunnerRelayAuthorizationError(ValueError):
@@ -163,6 +166,7 @@ class _RunnerConnection:
     websocket: RelayWebSocket
     send_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     sessions: set[str] = field(default_factory=set)
+    retired_transfers: OrderedDict[str, float] = field(default_factory=OrderedDict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -199,10 +203,14 @@ class RunnerRelayBroker:
         self,
         *,
         get_running_operation: Callable[[str], ManagedBackupOperation | None] | None = None,
+        monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         if get_running_operation is not None and not callable(get_running_operation):
             raise TypeError("get_running_operation must be callable or None")
+        if not callable(monotonic):
+            raise TypeError("monotonic must be callable")
         self._get_running_operation = get_running_operation
+        self._monotonic = monotonic
         self._lock = asyncio.Lock()
         self._runners: dict[str, _RunnerConnection] = {}
         self._maintenance: dict[str, _RunnerMaintenance] = {}
@@ -303,6 +311,7 @@ class RunnerRelayBroker:
             for transfer_id in tuple(runner.sessions):
                 client = self._clients.pop(transfer_id, None)
                 runner.sessions.discard(transfer_id)
+                self._retire_transfer(runner, transfer_id)
                 if client is not None:
                     self._close_client_queue(client)
                     clients_to_close.append(client)
@@ -392,6 +401,7 @@ class RunnerRelayBroker:
             runner = self._runners.get(client.grant.runner_id)
             if runner is not None:
                 runner.sessions.discard(normalized_transfer_id)
+                self._retire_transfer(runner, normalized_transfer_id)
         if runner is not None:
             control_message = '{"transfer_id":"' + normalized_transfer_id + '","type":"close"}'
             async with runner.send_lock:
@@ -421,11 +431,16 @@ class RunnerRelayBroker:
         normalized_transfer_id = _require_transfer_id(transfer_id)
         async with self._lock:
             runner = self._runners.get(runner_id)
+            if runner is None:
+                raise RunnerRelayAuthorizationError("Runner relay transfer is not attached")
             client = self._clients.get(normalized_transfer_id)
-            if runner is None or client is None or client.grant.runner_id != runner_id:
+            if client is None or client.grant.runner_id != runner_id:
+                if self._is_retired_transfer(runner, normalized_transfer_id):
+                    return
                 raise RunnerRelayAuthorizationError("Runner relay transfer is not attached")
             del self._clients[normalized_transfer_id]
             runner.sessions.discard(normalized_transfer_id)
+            self._retire_transfer(runner, normalized_transfer_id)
             self._close_client_queue(client)
         await client.websocket.close(code=4004, reason="Runner rejected transfer")
 
@@ -444,8 +459,12 @@ class RunnerRelayBroker:
         close_reason: str | None = None
         async with self._lock:
             runner = self._runners.get(runner_id)
+            if runner is None:
+                raise RunnerRelayAuthorizationError("Runner relay frame has no attached client")
             client = self._clients.get(transfer_id)
-            if runner is None or client is None or client.grant.runner_id != runner_id:
+            if client is None or client.grant.runner_id != runner_id:
+                if self._is_retired_transfer(runner, transfer_id):
+                    return
                 raise RunnerRelayAuthorizationError("Runner relay frame has no attached client")
             if client.ciphertext_bytes + len(ciphertext) > client.grant.max_session_bytes:
                 close_reason = "Runner relay session exceeded byte limit"
@@ -457,6 +476,7 @@ class RunnerRelayBroker:
             if close_reason is not None:
                 del self._clients[transfer_id]
                 runner.sessions.discard(transfer_id)
+                self._retire_transfer(runner, transfer_id)
                 self._close_client_queue(client)
         if close_reason is not None:
             control_message = '{"transfer_id":"' + transfer_id + '","type":"close"}'
@@ -495,6 +515,41 @@ class RunnerRelayBroker:
         await runner.websocket.close(code=4003, reason="Runner revoked")
         for client in clients_to_close:
             await client.websocket.close(code=4003, reason="Runner revoked")
+
+    def _retire_transfer(
+        self,
+        runner: _RunnerConnection,
+        transfer_id: str,
+    ) -> None:
+        """Retain one bounded connection-local marker for late runner traffic."""
+        now = self._monotonic()
+        self._prune_retired_transfers(runner, now=now)
+        runner.retired_transfers[transfer_id] = now
+        runner.retired_transfers.move_to_end(transfer_id)
+        while len(runner.retired_transfers) > _RETIRED_TRANSFERS_MAX:
+            runner.retired_transfers.popitem(last=False)
+
+    def _is_retired_transfer(
+        self,
+        runner: _RunnerConnection,
+        transfer_id: str,
+    ) -> bool:
+        """Return whether this runner recently owned one detached transfer."""
+        self._prune_retired_transfers(runner, now=self._monotonic())
+        return transfer_id in runner.retired_transfers
+
+    @staticmethod
+    def _prune_retired_transfers(
+        runner: _RunnerConnection,
+        *,
+        now: float,
+    ) -> None:
+        """Discard expired markers without scanning beyond their ordered prefix."""
+        while runner.retired_transfers:
+            _, retired_at = next(iter(runner.retired_transfers.items()))
+            if now - retired_at <= _RETIRED_TRANSFER_TTL_SECONDS:
+                return
+            runner.retired_transfers.popitem(last=False)
 
     @staticmethod
     def _close_client_queue(client: _ClientConnection) -> None:

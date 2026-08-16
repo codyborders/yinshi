@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import stat
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -362,6 +364,168 @@ async def test_runner_relay_sends_quiesced_control_acknowledgement() -> None:
         )
 
     assert websocket.sent == ['{"job_id":"job","type":"quiesced"}']
+
+
+@pytest.mark.asyncio
+async def test_runner_relay_dispatches_other_transfers_while_one_rpc_is_blocked() -> None:
+    """One slow transfer must not block independent relay sessions."""
+    slow_transfer_id = uuid.uuid4()
+    fast_transfer_id = uuid.uuid4()
+    release_slow = asyncio.Event()
+    fast_response_sent = asyncio.Event()
+    stop_receive = asyncio.Event()
+
+    class Runtime:
+        active_transfer_ids = (str(slow_transfer_id), str(fast_transfer_id))
+
+        async def handle_binary(self, message: bytes, *, current_time: int) -> bytes:
+            del current_time
+            transfer_id = uuid.UUID(bytes=message[:16])
+            if transfer_id == slow_transfer_id:
+                await release_slow.wait()
+            return message[:16] + b"-response"
+
+    class WebSocket:
+        def __init__(self) -> None:
+            self.messages: asyncio.Queue[bytes] = asyncio.Queue()
+            self.messages.put_nowait(slow_transfer_id.bytes + b"slow")
+            self.messages.put_nowait(fast_transfer_id.bytes + b"fast")
+
+        async def recv(self) -> bytes:
+            if self.messages.empty():
+                await stop_receive.wait()
+                raise RuntimeError("stop")
+            return await self.messages.get()
+
+        async def send(self, message: bytes) -> None:
+            if message.startswith(fast_transfer_id.bytes):
+                fast_response_sent.set()
+
+        async def close(self, *, code: int, reason: str) -> None:
+            return None
+
+    consumer = asyncio.create_task(
+        runner_agent._consume_runner_relay_messages(
+            Runtime(),  # type: ignore[arg-type]
+            WebSocket(),  # type: ignore[arg-type]
+        )
+    )
+    try:
+        await asyncio.wait_for(fast_response_sent.wait(), timeout=0.1)
+    finally:
+        release_slow.set()
+        stop_receive.set()
+    with pytest.raises(RuntimeError, match="Runner relay protocol rejected"):
+        await consumer
+
+
+@pytest.mark.asyncio
+async def test_runner_relay_close_cancels_active_transfer_before_retirement() -> None:
+    """A browser close must stop active work before releasing its transfer."""
+    transfer_id = uuid.uuid4()
+    operation_started = asyncio.Event()
+    operation_cancelled = asyncio.Event()
+    control_applied = asyncio.Event()
+
+    class Runtime:
+        active_transfer_ids = (str(transfer_id),)
+
+        async def handle_binary(self, message: bytes, *, current_time: int) -> bytes:
+            del message, current_time
+            operation_started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                operation_cancelled.set()
+
+        async def handle_control(self, message: str) -> None:
+            assert json.loads(message) == {
+                "transfer_id": str(transfer_id),
+                "type": "close",
+            }
+            assert operation_cancelled.is_set()
+            control_applied.set()
+
+    class WebSocket:
+        def __init__(self) -> None:
+            self.receive_count = 0
+
+        async def recv(self) -> bytes | str:
+            self.receive_count += 1
+            if self.receive_count == 1:
+                return transfer_id.bytes + b"request"
+            if self.receive_count == 2:
+                await operation_started.wait()
+                return json.dumps({"transfer_id": str(transfer_id), "type": "close"})
+            raise RuntimeError("stop")
+
+        async def send(self, message: bytes | str) -> None:
+            raise AssertionError(f"unexpected relay response: {message!r}")
+
+        async def close(self, *, code: int, reason: str) -> None:
+            return None
+
+    with pytest.raises(RuntimeError, match="Runner relay protocol rejected"):
+        await runner_agent._consume_runner_relay_messages(
+            Runtime(),  # type: ignore[arg-type]
+            WebSocket(),  # type: ignore[arg-type]
+        )
+
+    assert control_applied.is_set()
+
+
+@pytest.mark.asyncio
+async def test_runner_relay_quiesce_cancels_active_transfers_before_ack() -> None:
+    """Maintenance acknowledgement must follow cancellation of active work."""
+    transfer_id = uuid.uuid4()
+    job_id = uuid.uuid4()
+    operation_started = asyncio.Event()
+    operation_cancelled = asyncio.Event()
+
+    class Runtime:
+        active_transfer_ids = (str(transfer_id),)
+
+        async def handle_binary(self, message: bytes, *, current_time: int) -> bytes:
+            del message, current_time
+            operation_started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                operation_cancelled.set()
+
+        async def handle_control(self, message: str) -> str:
+            assert json.loads(message) == {"job_id": str(job_id), "type": "quiesce"}
+            assert operation_cancelled.is_set()
+            return json.dumps({"job_id": str(job_id), "type": "quiesced"})
+
+    class WebSocket:
+        def __init__(self) -> None:
+            self.receive_count = 0
+            self.sent: list[str] = []
+
+        async def recv(self) -> bytes | str:
+            self.receive_count += 1
+            if self.receive_count == 1:
+                return transfer_id.bytes + b"request"
+            if self.receive_count == 2:
+                await operation_started.wait()
+                return json.dumps({"job_id": str(job_id), "type": "quiesce"})
+            raise RuntimeError("stop")
+
+        async def send(self, message: str) -> None:
+            self.sent.append(message)
+
+        async def close(self, *, code: int, reason: str) -> None:
+            return None
+
+    websocket = WebSocket()
+    with pytest.raises(RuntimeError, match="Runner relay protocol rejected"):
+        await runner_agent._consume_runner_relay_messages(
+            Runtime(),  # type: ignore[arg-type]
+            websocket,  # type: ignore[arg-type]
+        )
+
+    assert websocket.sent == [json.dumps({"job_id": str(job_id), "type": "quiesced"})]
 
 
 @pytest.mark.asyncio

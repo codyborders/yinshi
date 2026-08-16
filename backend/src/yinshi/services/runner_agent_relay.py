@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import time
 import uuid
+from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Protocol
@@ -17,6 +19,8 @@ from yinshi.services.runner_rpc import DispatcherFactory, EncryptedRunnerRpcSess
 _UUID_BYTES_LENGTH = 16
 _RELAY_FRAME_BYTES_MAX = 65_535
 _ACTIVE_TRANSFERS_MAX = 32
+_RETIRED_TRANSFERS_MAX = 128
+_RETIRED_TRANSFER_TTL_SECONDS = 300.0
 _WELCOME_KEYS = {"runner_id", "type"}
 _TRANSFER_CONTROL_KEYS = {"transfer_id", "type"}
 _MAINTENANCE_CONTROL_KEYS = {"job_id", "type"}
@@ -91,6 +95,7 @@ class RunnerAgentRelayRuntime:
         self._runner_id: str | None = None
         self._maintenance_job_id: str | None = None
         self._sessions: dict[str, EncryptedRunnerRpcSession] = {}
+        self._retired_transfers: OrderedDict[str, float] = OrderedDict()
 
     @property
     def active_transfer_ids(self) -> tuple[str, ...]:
@@ -101,6 +106,7 @@ class RunnerAgentRelayRuntime:
         """Clear open transfers and release their managed task references once."""
         reference_count = len(self._sessions)
         self._sessions.clear()
+        self._retired_transfers.clear()
         if self._task_lease is not None:
             for _ in range(reference_count):
                 await self._task_lease.release()
@@ -144,8 +150,9 @@ class RunnerAgentRelayRuntime:
                 current_time=current_time,
             )
         except (RuntimeError, TypeError, ValueError) as exc:
-            del self._sessions[transfer_id]
-            if self._task_lease is not None:
+            removed_session = self._sessions.pop(transfer_id, None)
+            self._retire_transfer(transfer_id)
+            if removed_session is not None and self._task_lease is not None:
                 await self._task_lease.release()
             raise RunnerRelaySessionError(transfer_id) from exc
         return uuid.UUID(transfer_id).bytes + response
@@ -177,12 +184,16 @@ class RunnerAgentRelayRuntime:
         transfer_id = _canonical_uuid(payload.get("transfer_id"), "transfer_id")
         if message_type == "close":
             if self._sessions.pop(transfer_id, None) is None:
+                if self._is_retired_transfer(transfer_id):
+                    return
                 raise ValueError("Runner relay transfer is not open")
+            self._retire_transfer(transfer_id)
             if self._task_lease is not None:
                 await self._task_lease.release()
             return
         if transfer_id in self._sessions:
             raise ValueError("Runner relay transfer is already open")
+        self._retired_transfers.pop(transfer_id, None)
         if len(self._sessions) >= _ACTIVE_TRANSFERS_MAX:
             raise ValueError("Runner relay active transfer limit was reached")
         if self._task_lease is not None:
@@ -205,6 +216,28 @@ class RunnerAgentRelayRuntime:
             raise
         self._sessions[transfer_id] = session
 
+    def _retire_transfer(self, transfer_id: str) -> None:
+        """Retain one bounded marker for transfer-local teardown races."""
+        now = time.monotonic()
+        self._prune_retired_transfers(now=now)
+        self._retired_transfers[transfer_id] = now
+        self._retired_transfers.move_to_end(transfer_id)
+        while len(self._retired_transfers) > _RETIRED_TRANSFERS_MAX:
+            self._retired_transfers.popitem(last=False)
+
+    def _is_retired_transfer(self, transfer_id: str) -> bool:
+        """Return whether this connection recently retired one known transfer."""
+        self._prune_retired_transfers(now=time.monotonic())
+        return transfer_id in self._retired_transfers
+
+    def _prune_retired_transfers(self, *, now: float) -> None:
+        """Remove expired markers from their ordered prefix."""
+        while self._retired_transfers:
+            _, retired_at = next(iter(self._retired_transfers.items()))
+            if now - retired_at <= _RETIRED_TRANSFER_TTL_SECONDS:
+                return
+            self._retired_transfers.popitem(last=False)
+
     async def _handle_maintenance_control(self, payload: dict[str, object]) -> str:
         """Close transfer authority, drain workers, and acknowledge one job."""
         if set(payload) != _MAINTENANCE_CONTROL_KEYS:
@@ -223,6 +256,8 @@ class RunnerAgentRelayRuntime:
         self._maintenance_job_id = job_id
         try:
             reference_count = len(self._sessions)
+            for transfer_id in self._sessions:
+                self._retire_transfer(transfer_id)
             self._sessions.clear()
             if self._task_lease is not None:
                 for _ in range(reference_count):
