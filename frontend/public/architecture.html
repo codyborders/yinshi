@@ -44925,7 +44925,7 @@ class="header-section-number">20.5</span> pages/Settings.tsx</h2>
 notes, and cloud runner setup into a tabbed screen. The root chunk below
 tangles back to <code>frontend/src/pages/Settings.tsx</code>.</p>
 <pre class="tsx" data-chunk="frontend-src-pages-settings-tsx"
-data-file="frontend/src/pages/Settings.tsx"><code>import { useEffect, useMemo, useState } from &quot;react&quot;;
+data-file="frontend/src/pages/Settings.tsx"><code>import { useEffect, useMemo, useRef, useState } from &quot;react&quot;;
 
 import {
   api,
@@ -45029,6 +45029,8 @@ function ProviderCard({
   const [oauthManualInputSubmitted, setOauthManualInputSubmitted] =
     useState(false);
   const [oauthManualInputValue, setOauthManualInputValue] = useState(&quot;&quot;);
+  const oauthClipboardRequestRef = useRef(0);
+  const [readingOauthClipboard, setReadingOauthClipboard] = useState(false);
   const [submittingOauthInput, setSubmittingOauthInput] = useState(false);
   const [error, setError] = useState&lt;string | null&gt;(null);
 
@@ -45039,7 +45041,9 @@ function ProviderCard({
     setOauthManualInputRequired(false);
     setOauthManualInputPrompt(null);
     setOauthManualInputSubmitted(false);
+    oauthClipboardRequestRef.current += 1;
     setOauthManualInputValue(&quot;&quot;);
+    setReadingOauthClipboard(false);
     setSubmittingOauthInput(false);
   }
 
@@ -45197,6 +45201,38 @@ function ProviderCard({
     }
   }
 
+  async function pasteOauthCallbackInput() {
+    if (!navigator.clipboard?.readText) {
+      setError(&quot;Clipboard access is unavailable. Paste the address manually.&quot;);
+      return;
+    }
+    const clipboardRequest = oauthClipboardRequestRef.current + 1;
+    oauthClipboardRequestRef.current = clipboardRequest;
+    setReadingOauthClipboard(true);
+    setError(null);
+    try {
+      const clipboardValue = normalizeFieldValue(
+        await navigator.clipboard.readText(),
+      );
+      if (oauthClipboardRequestRef.current !== clipboardRequest) {
+        return;
+      }
+      if (!clipboardValue) {
+        setError(&quot;Clipboard is empty. Copy the localhost address first.&quot;);
+        return;
+      }
+      setOauthManualInputValue(clipboardValue);
+    } catch {
+      if (oauthClipboardRequestRef.current === clipboardRequest) {
+        setError(&quot;Clipboard access was denied. Paste the address manually.&quot;);
+      }
+    } finally {
+      if (oauthClipboardRequestRef.current === clipboardRequest) {
+        setReadingOauthClipboard(false);
+      }
+    }
+  }
+
   async function submitOauthCallbackInput() {
     if (!oauthFlowId) {
       setError(&quot;Provider authorization flow is not active&quot;);
@@ -45209,6 +45245,8 @@ function ProviderCard({
       setError(&quot;Authorization input is required&quot;);
       return;
     }
+    oauthClipboardRequestRef.current += 1;
+    setReadingOauthClipboard(false);
     setSubmittingOauthInput(true);
     setError(null);
     try {
@@ -45366,20 +45404,42 @@ function ProviderCard({
           &lt;/button&gt;
           {oauthManualInputRequired &amp;&amp; !connection ? (
             &lt;div className=&quot;rounded-lg border border-gray-800 bg-gray-950/60 p-3&quot;&gt;
+              {window.yinshiDesktop === undefined ? (
+                &lt;p className=&quot;mb-3 rounded border border-amber-700/50 bg-amber-100/80 px-3 py-2 text-sm text-amber-950 dark:border-amber-900/50 dark:bg-amber-950/20 dark:text-amber-200&quot;&gt;
+                  The localhost error page is expected. Copy its full address,
+                  return to Yinshi, paste it below, then submit.
+                &lt;/p&gt;
+              ) : null}
               &lt;p className=&quot;text-sm text-gray-300&quot;&gt;
                 {oauthManualInputPrompt ||
                   &quot;Paste the final redirect URL or authorization code here.&quot;}
               &lt;/p&gt;
               &lt;textarea
                 value={oauthManualInputValue}
-                onChange={(event) =&gt;
-                  setOauthManualInputValue(event.target.value)
-                }
+                onChange={(event) =&gt; {
+                  oauthClipboardRequestRef.current += 1;
+                  setReadingOauthClipboard(false);
+                  setOauthManualInputValue(event.target.value);
+                }}
                 placeholder=&quot;http://localhost:1455/auth/callback?code=...&quot;
                 rows={3}
                 className=&quot;mt-3 w-full rounded border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-gray-200 placeholder-gray-500&quot;
               /&gt;
               &lt;div className=&quot;mt-3 flex flex-wrap items-center gap-3&quot;&gt;
+                {window.yinshiDesktop === undefined ? (
+                  &lt;button
+                    type=&quot;button&quot;
+                    onClick={() =&gt; {
+                      void pasteOauthCallbackInput();
+                    }}
+                    disabled={readingOauthClipboard || oauthManualInputSubmitted}
+                    className=&quot;rounded border border-gray-600 px-4 py-2 text-sm text-gray-100 disabled:opacity-50&quot;
+                  &gt;
+                    {readingOauthClipboard
+                      ? &quot;Reading clipboard...&quot;
+                      : &quot;Paste from clipboard&quot;}
+                  &lt;/button&gt;
+                ) : null}
                 &lt;button
                   type=&quot;button&quot;
                   onClick={() =&gt; {

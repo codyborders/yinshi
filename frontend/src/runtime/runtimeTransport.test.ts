@@ -82,6 +82,40 @@ describe("runtime transport", () => {
     expect(client.get).not.toHaveBeenCalled();
   });
 
+  it("keeps managed OAuth callback input inside the encrypted connection", async () => {
+    const client = apiClient();
+    const connection = {
+      request: vi.fn().mockResolvedValue({ status: "pending" }),
+      close: vi.fn(),
+    };
+    const connectEncrypted = vi.fn().mockResolvedValue(connection);
+    const transport = createRuntimeTransport(
+      { location: "managed", runnerPublicKey },
+      { apiClient: client, encryptedRequest: vi.fn(), connectEncrypted },
+    );
+    const callback = {
+      flow_id: "11111111-1111-4111-8111-111111111111",
+      authorization_input:
+        "http://localhost:1455/auth/callback?code=test-code&state=test-state",
+    };
+
+    await transport.post("/auth/providers/openai-codex/callback", callback);
+
+    expect(connectEncrypted).toHaveBeenCalledWith({
+      expectedRunnerPublicKey: runnerPublicKey,
+      scopes: ["provider.configure"],
+      maxSessionBytes: 16_777_216,
+      capabilityEndpoint: "/api/runtime/capabilities",
+    });
+    expect(connection.request).toHaveBeenCalledWith({
+      method: "POST",
+      path: "/auth/providers/openai-codex/callback",
+      query: {},
+      body: callback,
+    });
+    expect(client.post).not.toHaveBeenCalled();
+  });
+
   it("reuses one managed encrypted connection for sequential same-scope requests", async () => {
     const connection = {
       request: vi.fn().mockResolvedValue([]),

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const useAuthMock = vi.fn();
@@ -56,6 +56,14 @@ import Settings from "../Settings";
 describe("Settings", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: undefined,
+    });
+    Object.defineProperty(window, "yinshiDesktop", {
+      configurable: true,
+      value: undefined,
+    });
     useAuthMock.mockReturnValue({ email: "tester@example.com" });
     useCatalogMock.mockReturnValue({
       catalog: {
@@ -205,6 +213,11 @@ describe("Settings", () => {
     await waitFor(() => {
       expect(screen.getByText("Open the browser and sign in.")).toBeInTheDocument();
     });
+    expect(
+      screen.getByText(
+        "The localhost error page is expected. Copy its full address, return to Yinshi, paste it below, then submit.",
+      ),
+    ).toBeInTheDocument();
 
     const textarea = screen.getByPlaceholderText(
       "http://localhost:1455/auth/callback?code=...",
@@ -230,6 +243,182 @@ describe("Settings", () => {
     expect(
       screen.getByText("Waiting for the provider to finish the OAuth flow."),
     ).toBeInTheDocument();
+  });
+
+  it("fills manual OAuth callback input from the clipboard without submitting it", async () => {
+    const callbackUrl =
+      "http://localhost:1455/auth/callback?code=test-code&state=test-state";
+    const readText = vi.fn().mockResolvedValue(` ${callbackUrl} `);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { readText },
+    });
+    render(<Settings />);
+
+    await waitFor(() => {
+      expect(apiGetMock).toHaveBeenCalledWith("/api/settings/connections");
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Connect Provider" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Paste from clipboard" }),
+    );
+
+    await waitFor(() => {
+      expect(readText).toHaveBeenCalledTimes(1);
+      expect(
+        screen.getByPlaceholderText(
+          "http://localhost:1455/auth/callback?code=...",
+        ),
+      ).toHaveValue(callbackUrl);
+    });
+    expect(apiPostMock).not.toHaveBeenCalledWith(
+      "/auth/providers/openai-codex/callback",
+      expect.anything(),
+    );
+  });
+
+  it("preserves newer manual input when clipboard access finishes later", async () => {
+    let finishClipboardRead: ((value: string) => void) | undefined;
+    const readText = vi.fn(
+      () =>
+        new Promise<string>((resolve) => {
+          finishClipboardRead = resolve;
+        }),
+    );
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { readText },
+    });
+    render(<Settings />);
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Connect Provider" }),
+    );
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Paste from clipboard" }),
+    );
+    const textarea = screen.getByPlaceholderText(
+      "http://localhost:1455/auth/callback?code=...",
+    );
+    fireEvent.change(textarea, {
+      target: { value: "newer-manual-code" },
+    });
+    await act(async () => {
+      finishClipboardRead?.("older-clipboard-code");
+      await Promise.resolve();
+    });
+
+    expect(readText).toHaveBeenCalledTimes(1);
+    expect(textarea).toHaveValue("newer-manual-code");
+  });
+
+  it("ignores a delayed clipboard rejection after manual input", async () => {
+    let rejectClipboardRead: ((reason?: unknown) => void) | undefined;
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        readText: vi.fn(
+          () =>
+            new Promise<string>((_resolve, reject) => {
+              rejectClipboardRead = reject;
+            }),
+        ),
+      },
+    });
+    render(<Settings />);
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Connect Provider" }),
+    );
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Paste from clipboard" }),
+    );
+    fireEvent.change(
+      screen.getByPlaceholderText(
+        "http://localhost:1455/auth/callback?code=...",
+      ),
+      { target: { value: "newer-manual-code" } },
+    );
+    await act(async () => {
+      rejectClipboardRead?.(new Error("denied"));
+      await Promise.resolve();
+    });
+
+    expect(
+      screen.queryByText(
+        "Clipboard access was denied. Paste the address manually.",
+      ),
+    ).not.toBeInTheDocument();
+  });
+
+  it("ignores delayed clipboard input after manual callback submission", async () => {
+    let finishClipboardRead: ((value: string) => void) | undefined;
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        readText: vi.fn(
+          () =>
+            new Promise<string>((resolve) => {
+              finishClipboardRead = resolve;
+            }),
+        ),
+      },
+    });
+    render(<Settings />);
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Connect Provider" }),
+    );
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Paste from clipboard" }),
+    );
+    const textarea = screen.getByPlaceholderText(
+      "http://localhost:1455/auth/callback?code=...",
+    );
+    fireEvent.change(textarea, {
+      target: {
+        value:
+          "http://localhost:1455/auth/callback?code=manual-code&state=manual-state",
+      },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Submit Callback URL" }));
+    await screen.findByText("Waiting for the provider to finish the OAuth flow.");
+
+    await act(async () => {
+      finishClipboardRead?.("older-clipboard-code");
+      await Promise.resolve();
+    });
+
+    expect(textarea).toHaveValue("");
+  });
+
+  it("keeps hosted callback helpers out of the desktop flow", async () => {
+    Object.defineProperty(window, "yinshiDesktop", {
+      configurable: true,
+      value: {
+        fileVaultStatus: vi.fn().mockResolvedValue({ status: "enabled" }),
+        listProfiles: vi.fn().mockResolvedValue([]),
+      },
+    });
+    render(<Settings />);
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Connect Provider" }),
+    );
+
+    expect(
+      await screen.findByPlaceholderText(
+        "http://localhost:1455/auth/callback?code=...",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(
+        "The localhost error page is expected. Copy its full address, return to Yinshi, paste it below, then submit.",
+      ),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Paste from clipboard" }),
+    ).not.toBeInTheDocument();
   });
 
   it("switches between settings tabs", async () => {
