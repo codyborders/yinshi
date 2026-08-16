@@ -3,7 +3,7 @@
   "checkpoint_id": "efd3cebb4c65",
   "strategy": "manual-commit",
   "branch": "main",
-  "checkpoints_count": 1,
+  "checkpoints_count": 2,
   "files_touched": [
     "frontend/src/pages/Settings.tsx",
     "frontend/src/pages/__tests__/Settings.test.tsx",
@@ -16,6 +16,13 @@
       "compact_transcript": "/ef/d3cebb4c65/0/transcript.jsonl",
       "content_hash": "/ef/d3cebb4c65/0/content_hash.txt",
       "prompt": "/ef/d3cebb4c65/0/prompt.txt"
+    },
+    {
+      "metadata": "/ef/d3cebb4c65/1/metadata.json",
+      "transcript": "/ef/d3cebb4c65/1/full.jsonl",
+      "compact_transcript": "/ef/d3cebb4c65/1/transcript.jsonl",
+      "content_hash": "/ef/d3cebb4c65/1/content_hash.txt",
+      "prompt": "/ef/d3cebb4c65/1/prompt.txt"
     }
   ],
   "token_usage": {
