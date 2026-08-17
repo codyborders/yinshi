@@ -50,14 +50,14 @@ def test_managed_python_lock_hashes_exact_build_tools() -> None:
         assert f"{requirement.lower()} \\" in lock.lower()
 
 
-def test_sprite_example_allows_required_package_hosts() -> None:
-    """Managed package installation can reach Python and npm package hosts."""
+def test_sprite_example_allows_required_package_and_codex_hosts() -> None:
+    """Managed installation and Codex authorization can reach required hosts."""
     example = (REPO_ROOT / ".env.example").read_text(encoding="utf-8")
 
     assert (
         "SPRITES_ALLOWED_DOMAINS="
-        "registry.npmjs.org,nodejs.org,pypi.org,files.pythonhosted.org,control.example.com\n"
-        in example
+        "registry.npmjs.org,nodejs.org,pypi.org,files.pythonhosted.org,"
+        "auth.openai.com,chatgpt.com,api.openai.com,control.example.com\n" in example
     )
 
 
