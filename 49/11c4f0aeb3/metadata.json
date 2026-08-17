@@ -3,7 +3,7 @@
   "checkpoint_id": "4911c4f0aeb3",
   "strategy": "manual-commit",
   "branch": "main",
-  "checkpoints_count": 14,
+  "checkpoints_count": 15,
   "files_touched": [
     ".env.example",
     "backend/tests/test_sprite_deployment.py"
@@ -106,13 +106,20 @@
       "compact_transcript": "/49/11c4f0aeb3/13/transcript.jsonl",
       "content_hash": "/49/11c4f0aeb3/13/content_hash.txt",
       "prompt": "/49/11c4f0aeb3/13/prompt.txt"
+    },
+    {
+      "metadata": "/49/11c4f0aeb3/14/metadata.json",
+      "transcript": "/49/11c4f0aeb3/14/full.jsonl",
+      "compact_transcript": "/49/11c4f0aeb3/14/transcript.jsonl",
+      "content_hash": "/49/11c4f0aeb3/14/content_hash.txt",
+      "prompt": "/49/11c4f0aeb3/14/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 24730262,
+    "input_tokens": 31739736,
     "cache_creation_tokens": 0,
-    "cache_read_tokens": 1126279680,
-    "output_tokens": 1895969,
-    "api_call_count": 7281
+    "cache_read_tokens": 1444617728,
+    "output_tokens": 2394079,
+    "api_call_count": 9264
   }
 }
