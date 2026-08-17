@@ -492,6 +492,8 @@ class ProviderAuthStartOut(BaseModel):
     flow_id: str
     provider: str
     auth_url: str
+    authorization_mode: Literal["browser", "device_code"] = "browser"
+    user_code: str | None = None
     instructions: str | None = None
     manual_input_required: bool = False
     manual_input_prompt: str | None = None
@@ -504,6 +506,8 @@ class ProviderAuthStatusOut(BaseModel):
     status: str
     provider: str
     flow_id: str
+    authorization_mode: Literal["browser", "device_code"] = "browser"
+    user_code: str | None = None
     instructions: str | None = None
     progress: list[str] = Field(default_factory=list)
     manual_input_required: bool = False

@@ -955,7 +955,21 @@ async function resolveProviderRuntimeAuth(provider, modelRef, providerAuth, agen
 }
 
 export class YinshiSidecar {
-  constructor() {
+  constructor(options = {}) {
+    if (!options || typeof options !== "object" || Array.isArray(options)) {
+      throw new TypeError("Sidecar options must be an object");
+    }
+    const modelRegistryFactory = options.modelRegistryFactory ?? createModelRegistry;
+    if (typeof modelRegistryFactory !== "function") {
+      throw new TypeError("modelRegistryFactory must be a function");
+    }
+    const oauthLoginMode =
+      options.oauthLoginMode ?? process.env.YINSHI_SIDECAR_OAUTH_MODE ?? "";
+    if (typeof oauthLoginMode !== "string") {
+      throw new TypeError("oauthLoginMode must be a string");
+    }
+    this.modelRegistryFactory = modelRegistryFactory;
+    this.oauthLoginMode = oauthLoginMode.trim();
     this.activeSessions = new Map();
     this.activePromptSessionsBySocket = new Map();
     this.pendingPiSessionCreations = new Map();
@@ -1534,7 +1548,7 @@ export class YinshiSidecar {
       if (typeof providerId !== "string" || !providerId) {
         throw new Error("Provider is required");
       }
-      const { modelRuntime } = await createModelRegistry(null, null);
+      const { modelRuntime } = await this.modelRegistryFactory(null, null);
       const provider = modelRuntime.getProvider(providerId);
       if (!provider?.auth.oauth) {
         throw new Error(`OAuth provider is not available: ${providerId}`);
@@ -1550,7 +1564,9 @@ export class YinshiSidecar {
         provider: providerId,
         createdAtMs: Date.now(),
         status: "starting",
+        authorizationMode: null,
         authUrl: null,
+        userCode: null,
         instructions: null,
         progress: [],
         credentials: null,
@@ -1570,20 +1586,47 @@ export class YinshiSidecar {
       const loginPromise = modelRuntime.login(providerId, "oauth", {
         prompt: async (prompt) => {
           if (prompt.type === "select" && prompt.options.length > 0) {
-            return prompt.options[0].id;
+            const preferredOption = prompt.options.find(
+              (option) => option.id === this.oauthLoginMode,
+            );
+            const selectedOption = preferredOption ?? prompt.options[0];
+            flow.authorizationMode =
+              selectedOption.id === "device_code" ? "device_code" : "browser";
+            if (flow.authorizationMode === "device_code") {
+              flow.manualInputRequired = false;
+              flow.manualInputPrompt = null;
+            }
+            return selectedOption.id;
           }
           return _waitForOAuthManualInput(flow, prompt.message);
         },
         notify: (event) => {
           if (event.type === "auth_url") {
+            if (flow.authorizationMode !== "device_code") {
+              flow.authorizationMode = "browser";
+              flow.userCode = null;
+            }
             flow.authUrl = event.url;
             flow.instructions = event.instructions || null;
             flow.status = "pending";
             return;
           }
           if (event.type === "device_code") {
+            if (
+              typeof event.verificationUri !== "string" ||
+              !event.verificationUri ||
+              typeof event.userCode !== "string" ||
+              !event.userCode
+            ) {
+              throw new Error("OAuth device authorization response is invalid");
+            }
+            flow.authorizationMode = "device_code";
             flow.authUrl = event.verificationUri;
-            flow.instructions = `Enter code ${event.userCode} in the browser.`;
+            flow.userCode = event.userCode;
+            flow.instructions =
+              "Open the verification page and enter the displayed code.";
+            flow.manualInputRequired = false;
+            flow.manualInputPrompt = null;
             flow.status = "pending";
             return;
           }
@@ -1620,6 +1663,8 @@ export class YinshiSidecar {
         flow_id: flowId,
         provider: providerId,
         auth_url: flow.authUrl,
+        authorization_mode: flow.authorizationMode,
+        user_code: flow.userCode,
         instructions: flow.instructions,
         manual_input_required: flow.manualInputRequired,
         manual_input_prompt: flow.manualInputPrompt,
@@ -1652,6 +1697,8 @@ export class YinshiSidecar {
       provider: flow.provider,
       status: flow.status,
       auth_url: flow.authUrl,
+      authorization_mode: flow.authorizationMode,
+      user_code: flow.userCode,
       instructions: flow.instructions,
       progress: flow.progress,
       credentials: flow.status === "complete" ? flow.credentials : null,
@@ -1674,12 +1721,21 @@ export class YinshiSidecar {
       return;
     }
     try {
+      if (
+        flow.authorizationMode !== "browser" ||
+        !flow.manualInputRequired ||
+        !["starting", "pending"].includes(flow.status)
+      ) {
+        throw new Error("OAuth flow does not accept manual input");
+      }
       _submitOAuthManualInput(flow, authorizationInput);
       sendToSocket(socket, {
         id,
         type: "oauth_submitted",
         flow_id: flow.id,
         provider: flow.provider,
+        authorization_mode: flow.authorizationMode,
+        user_code: flow.userCode,
         manual_input_required: flow.manualInputRequired,
         manual_input_prompt: flow.manualInputPrompt,
         manual_input_submitted: flow.manualInputSubmitted,

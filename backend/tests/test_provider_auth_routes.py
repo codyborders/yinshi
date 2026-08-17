@@ -134,6 +134,8 @@ def test_start_provider_auth_exposes_manual_input_metadata(auth_client: TestClie
             "flow_id": "flow-openai-codex",
             "provider": "openai-codex",
             "auth_url": "https://auth.openai.com/oauth/authorize?redirect_uri=http://localhost:1455/auth/callback",
+            "authorization_mode": "browser",
+            "user_code": None,
             "instructions": "Open the browser and sign in.",
             "manual_input_required": True,
             "manual_input_prompt": "Paste the final redirect URL or authorization code here.",
@@ -159,6 +161,8 @@ def test_start_provider_auth_exposes_manual_input_metadata(auth_client: TestClie
         "flow_id": "flow-openai-codex",
         "provider": "openai-codex",
         "auth_url": "https://auth.openai.com/oauth/authorize?redirect_uri=http://localhost:1455/auth/callback",
+        "authorization_mode": "browser",
+        "user_code": None,
         "instructions": "Open the browser and sign in.",
         "manual_input_required": True,
         "manual_input_prompt": "Paste the final redirect URL or authorization code here.",
@@ -167,6 +171,161 @@ def test_start_provider_auth_exposes_manual_input_metadata(auth_client: TestClie
     create_conn.assert_awaited_once_with("/tmp/tenant-oauth.sock")
     protect_container.assert_called_once()
     touch_container.assert_called_once()
+
+
+def test_start_provider_auth_exposes_device_authorization(auth_client: TestClient) -> None:
+    """Managed device authorization returns a transient code without callback input."""
+
+    async def unexpected_query(*args, **kwargs):
+        if False:
+            yield {}
+        raise AssertionError("query should not be called")
+
+    mock_sidecar = make_mock_sidecar(unexpected_query)
+    mock_sidecar.start_oauth_flow = AsyncMock(
+        return_value={
+            "flow_id": "flow-openai-codex",
+            "provider": "openai-codex",
+            "auth_url": "https://auth.openai.com/codex/device",
+            "authorization_mode": "device_code",
+            "user_code": "TEST-CODE",
+            "instructions": "Open the verification page and enter the displayed code.",
+            "manual_input_required": False,
+            "manual_input_prompt": None,
+            "manual_input_submitted": False,
+        }
+    )
+
+    with (
+        patch("yinshi.api.auth_routes.create_sidecar_connection", return_value=mock_sidecar),
+        patch(
+            "yinshi.api.auth_routes.resolve_tenant_sidecar_context",
+            new=AsyncMock(return_value=_tenant_sidecar_context()),
+        ),
+        patch("yinshi.api.auth_routes.protect_tenant_container"),
+        patch("yinshi.api.auth_routes.touch_tenant_container"),
+    ):
+        response = auth_client.post("/auth/providers/openai-codex/start")
+
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    assert response.json() == {
+        "flow_id": "flow-openai-codex",
+        "provider": "openai-codex",
+        "auth_url": "https://auth.openai.com/codex/device",
+        "authorization_mode": "device_code",
+        "user_code": "TEST-CODE",
+        "instructions": "Open the verification page and enter the displayed code.",
+        "manual_input_required": False,
+        "manual_input_prompt": None,
+        "manual_input_submitted": False,
+    }
+
+
+def test_provider_auth_status_preserves_device_authorization(
+    auth_client: TestClient,
+) -> None:
+    """Polling preserves device instructions without enabling callback input."""
+
+    async def unexpected_query(*args, **kwargs):
+        if False:
+            yield {}
+        raise AssertionError("query should not be called")
+
+    mock_sidecar = make_mock_sidecar(unexpected_query)
+    mock_sidecar.get_oauth_flow_status = AsyncMock(
+        return_value={
+            "flow_id": "flow-openai-codex",
+            "provider": "openai-codex",
+            "status": "pending",
+            "authorization_mode": "device_code",
+            "user_code": "TEST-CODE",
+            "instructions": "Open the verification page and enter the displayed code.",
+            "progress": ["Waiting for device authorization..."],
+            "manual_input_required": False,
+            "manual_input_prompt": None,
+            "manual_input_submitted": False,
+        }
+    )
+
+    with (
+        patch("yinshi.api.auth_routes.create_sidecar_connection", return_value=mock_sidecar),
+        patch(
+            "yinshi.api.auth_routes.resolve_tenant_sidecar_context",
+            new=AsyncMock(return_value=_tenant_sidecar_context()),
+        ),
+        patch("yinshi.api.auth_routes.protect_tenant_container"),
+        patch("yinshi.api.auth_routes.touch_tenant_container"),
+    ):
+        response = auth_client.get(
+            "/auth/providers/openai-codex/callback?flow_id=flow-openai-codex"
+        )
+
+    assert response.status_code == 202
+    assert response.headers["cache-control"] == "no-store"
+    assert response.json() == {
+        "status": "pending",
+        "provider": "openai-codex",
+        "flow_id": "flow-openai-codex",
+        "authorization_mode": "device_code",
+        "user_code": "TEST-CODE",
+        "instructions": "Open the verification page and enter the displayed code.",
+        "progress": ["Waiting for device authorization..."],
+        "manual_input_required": False,
+        "manual_input_prompt": None,
+        "manual_input_submitted": False,
+        "error": None,
+    }
+
+
+def test_submit_provider_auth_callback_rejects_device_flow_input(
+    auth_client: TestClient,
+) -> None:
+    """Device authorization never accepts browser callback input."""
+    from yinshi.exceptions import SidecarError
+
+    async def unexpected_query(*args, **kwargs):
+        if False:
+            yield {}
+        raise AssertionError("query should not be called")
+
+    mock_sidecar = make_mock_sidecar(unexpected_query)
+    mock_sidecar.get_oauth_flow_status = AsyncMock(
+        return_value={
+            "flow_id": "flow-openai-codex",
+            "provider": "openai-codex",
+            "status": "pending",
+            "authorization_mode": "device_code",
+            "user_code": "TEST-CODE",
+            "manual_input_required": False,
+            "manual_input_prompt": None,
+            "manual_input_submitted": False,
+        }
+    )
+    mock_sidecar.submit_oauth_flow_input = AsyncMock(
+        side_effect=SidecarError("OAuth submit failed: OAuth flow does not accept manual input")
+    )
+
+    with (
+        patch("yinshi.api.auth_routes.create_sidecar_connection", return_value=mock_sidecar),
+        patch(
+            "yinshi.api.auth_routes.resolve_tenant_sidecar_context",
+            new=AsyncMock(return_value=_tenant_sidecar_context()),
+        ),
+        patch("yinshi.api.auth_routes.protect_tenant_container"),
+        patch("yinshi.api.auth_routes.touch_tenant_container"),
+    ):
+        response = auth_client.post(
+            "/auth/providers/openai-codex/callback",
+            json={
+                "flow_id": "flow-openai-codex",
+                "authorization_input": "unexpected-callback-input",
+            },
+        )
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "OAuth flow does not accept manual input"}
+    mock_sidecar.submit_oauth_flow_input.assert_not_awaited()
 
 
 def test_submit_provider_auth_callback_feeds_manual_input(auth_client: TestClient) -> None:
@@ -183,6 +342,8 @@ def test_submit_provider_auth_callback_feeds_manual_input(auth_client: TestClien
             "flow_id": "flow-openai-codex",
             "provider": "openai-codex",
             "status": "pending",
+            "authorization_mode": "browser",
+            "user_code": None,
             "instructions": "Open the browser and sign in.",
             "progress": ["Waiting for OAuth callback..."],
             "manual_input_required": True,
@@ -212,10 +373,13 @@ def test_submit_provider_auth_callback_feeds_manual_input(auth_client: TestClien
         )
 
     assert response.status_code == 202
+    assert response.headers["cache-control"] == "no-store"
     assert response.json() == {
         "status": "pending",
         "provider": "openai-codex",
         "flow_id": "flow-openai-codex",
+        "authorization_mode": "browser",
+        "user_code": None,
         "instructions": "Open the browser and sign in.",
         "progress": ["Waiting for OAuth callback..."],
         "manual_input_required": True,
@@ -248,6 +412,8 @@ def test_callback_provider_auth_persists_completed_oauth_connection(
             "flow_id": "flow-openai-codex",
             "provider": "openai-codex",
             "status": "complete",
+            "authorization_mode": "browser",
+            "user_code": None,
             "instructions": "Open the browser and sign in.",
             "progress": ["Exchanging authorization code for tokens..."],
             "manual_input_required": True,
@@ -279,10 +445,13 @@ def test_callback_provider_auth_persists_completed_oauth_connection(
         )
 
     assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
     assert response.json() == {
         "status": "complete",
         "provider": "openai-codex",
         "flow_id": "flow-openai-codex",
+        "authorization_mode": "browser",
+        "user_code": None,
         "instructions": "Open the browser and sign in.",
         "progress": ["Exchanging authorization code for tokens..."],
         "manual_input_required": True,

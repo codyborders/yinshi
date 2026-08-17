@@ -106,10 +106,14 @@ export interface CloudRunnerRegistration {
   environment: Record<string, string>;
 }
 
+export type ProviderAuthorizationMode = "browser" | "device_code";
+
 export interface ProviderAuthStart {
   flow_id: string;
   provider: string;
   auth_url: string;
+  authorization_mode?: ProviderAuthorizationMode;
+  user_code?: string | null;
   instructions: string | null;
   manual_input_required: boolean;
   manual_input_prompt: string | null;
@@ -120,6 +124,8 @@ export interface ProviderAuthStatus {
   status: string;
   provider: string;
   flow_id: string;
+  authorization_mode?: ProviderAuthorizationMode;
+  user_code?: string | null;
   instructions?: string | null;
   progress?: string[];
   manual_input_required?: boolean;

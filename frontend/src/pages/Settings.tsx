@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   api,
   type CloudRunner,
+  type ProviderAuthorizationMode,
   type ProviderAuthStart,
   type ProviderAuthStatus,
   type ProviderConnection,
@@ -90,6 +91,12 @@ function ProviderCard({
   const [saving, setSaving] = useState(false);
   const [connecting, setConnecting] = useState(false);
   const [oauthFlowId, setOauthFlowId] = useState<string | null>(null);
+  const [oauthAuthorizationMode, setOauthAuthorizationMode] =
+    useState<ProviderAuthorizationMode>("browser");
+  const [oauthAuthorizationUrl, setOauthAuthorizationUrl] = useState<
+    string | null
+  >(null);
+  const [oauthUserCode, setOauthUserCode] = useState<string | null>(null);
   const [oauthInstructions, setOauthInstructions] = useState<string | null>(
     null,
   );
@@ -109,6 +116,9 @@ function ProviderCard({
 
   function resetOauthFlowState() {
     setOauthFlowId(null);
+    setOauthAuthorizationMode("browser");
+    setOauthAuthorizationUrl(null);
+    setOauthUserCode(null);
     setOauthInstructions(null);
     setOauthProgress([]);
     setOauthManualInputRequired(false);
@@ -122,6 +132,12 @@ function ProviderCard({
 
   function applyOauthFlowState(flow: ProviderAuthStart | ProviderAuthStatus) {
     setOauthFlowId(flow.flow_id);
+    if (flow.authorization_mode) {
+      setOauthAuthorizationMode(flow.authorization_mode);
+    }
+    if ("user_code" in flow) {
+      setOauthUserCode(flow.user_code ?? null);
+    }
     if ("instructions" in flow) {
       setOauthInstructions(flow.instructions ?? null);
     }
@@ -239,14 +255,16 @@ function ProviderCard({
       const started = await transport.post<ProviderAuthStart>(
         `/auth/providers/${provider.id}/start`,
       );
-      applyOauthFlowState(started);
-      if (started.auth_url) {
-        window.open(
-          providerAuthorizationUrl(started.auth_url),
-          "_blank",
-          "noopener,noreferrer",
-        );
+      const authorizationUrl = providerAuthorizationUrl(started.auth_url);
+      if (
+        started.authorization_mode === "device_code" &&
+        !normalizeFieldValue(started.user_code ?? "")
+      ) {
+        throw new Error("Provider device authorization did not return a code.");
       }
+      setOauthAuthorizationUrl(authorizationUrl);
+      applyOauthFlowState(started);
+      window.open(authorizationUrl, "_blank", "noopener,noreferrer");
       for (let attempt = 0; attempt < 600; attempt += 1) {
         await new Promise((resolve) => window.setTimeout(resolve, 1000));
         const status = await transport.get<ProviderAuthStatus>(
@@ -259,19 +277,42 @@ function ProviderCard({
           return;
         }
         if (status.status === "error") {
-          throw new Error(status.error || "Provider authorization failed");
+          throw new Error("Provider authorization failed");
         }
       }
       throw new Error("Provider authorization timed out");
-    } catch (connectError) {
-      setError(
-        connectError instanceof Error
-          ? connectError.message
-          : "Provider authorization failed",
-      );
+    } catch {
+      resetOauthFlowState();
+      setError("Provider authorization failed");
     } finally {
       setConnecting(false);
     }
+  }
+
+  async function copyOauthDeviceCode() {
+    if (!oauthUserCode) {
+      setError("Device authorization code is unavailable. Restart the connection.");
+      return;
+    }
+    if (!navigator.clipboard?.writeText) {
+      setError("Clipboard access is unavailable. Copy the code manually.");
+      return;
+    }
+    setError(null);
+    try {
+      await navigator.clipboard.writeText(oauthUserCode);
+    } catch {
+      setError("Clipboard access was denied. Copy the code manually.");
+    }
+  }
+
+  function openOauthVerificationPage() {
+    if (!oauthAuthorizationUrl) {
+      setError("Provider verification page is unavailable. Restart the connection.");
+      return;
+    }
+    const authorizationUrl = providerAuthorizationUrl(oauthAuthorizationUrl);
+    window.open(authorizationUrl, "_blank", "noopener,noreferrer");
   }
 
   async function pasteOauthCallbackInput() {
@@ -475,6 +516,37 @@ function ProviderCard({
           >
             {connecting ? "Connecting..." : "Connect Provider"}
           </button>
+          {oauthAuthorizationMode === "device_code" &&
+          oauthUserCode &&
+          !connection ? (
+            <div className="rounded-lg border border-gray-800 bg-gray-950/60 p-3">
+              <code
+                aria-label="Device authorization code"
+                className="block select-all rounded border border-gray-700 bg-gray-950 px-4 py-3 text-center font-mono text-lg tracking-wider text-gray-100"
+              >
+                {oauthUserCode}
+              </code>
+              <div className="mt-3 flex flex-wrap items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    void copyOauthDeviceCode();
+                  }}
+                  className="rounded border border-gray-600 px-4 py-2 text-sm text-gray-100"
+                >
+                  Copy code
+                </button>
+                <button
+                  type="button"
+                  onClick={openOauthVerificationPage}
+                  className="btn-primary px-4 py-2 text-sm"
+                >
+                  Open verification page
+                </button>
+              </div>
+            </div>
+          ) : null}
+
           {oauthManualInputRequired && !connection ? (
             <div className="rounded-lg border border-gray-800 bg-gray-950/60 p-3">
               {window.yinshiDesktop === undefined ? (

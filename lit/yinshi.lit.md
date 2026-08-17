@@ -1492,7 +1492,7 @@ def get_settings() -> Settings:
 
 ## models.py
 
-Pydantic models define the HTTP contract shared by the backend and TypeScript client. The root chunk below tangles back to `backend/src/yinshi/models.py`.
+These Pydantic models keep one HTTP contract between the backend and TypeScript client. Device codes exist only while OAuth is active. The root chunk below tangles back to `backend/src/yinshi/models.py`.
 
 ```python {chunk="backend-src-yinshi-models-py" file="backend/src/yinshi/models.py"}
 """Pydantic models for API request/response schemas."""
@@ -1989,6 +1989,8 @@ class ProviderAuthStartOut(BaseModel):
     flow_id: str
     provider: str
     auth_url: str
+    authorization_mode: Literal["browser", "device_code"] = "browser"
+    user_code: str | None = None
     instructions: str | None = None
     manual_input_required: bool = False
     manual_input_prompt: str | None = None
@@ -2001,6 +2003,8 @@ class ProviderAuthStatusOut(BaseModel):
     status: str
     provider: str
     flow_id: str
+    authorization_mode: Literal["browser", "device_code"] = "browser"
+    user_code: str | None = None
     instructions: str | None = None
     progress: list[str] = Field(default_factory=list)
     manual_input_required: bool = False
@@ -6387,7 +6391,7 @@ def signal_user_sessions_revoked(user_id: str) -> None:
 
 ## api/auth_routes.py
 
-Auth routes handle Google login, GitHub login, GitHub App installation state, logout, and provider-auth handoffs. The root chunk below tangles back to `backend/src/yinshi/api/auth_routes.py`.
+Auth routes reject device data that conflicts with browser callbacks. The root chunk below tangles back to `backend/src/yinshi/api/auth_routes.py`.
 
 ```python {chunk="backend-src-yinshi-api-auth-routes-py" file="backend/src/yinshi/api/auth_routes.py"}
 """OAuth login/callback endpoints for Google and GitHub."""
@@ -6715,10 +6719,47 @@ def _provider_auth_sidecar_http_error(error: Exception) -> HTTPException:
     if "OAuth provider is not available" in message:
         detail = message.removeprefix("OAuth start failed: ")
         return HTTPException(status_code=400, detail=detail)
+    if "OAuth flow does not accept manual input" in message:
+        return HTTPException(
+            status_code=409,
+            detail="OAuth flow does not accept manual input",
+        )
     return HTTPException(
         status_code=503,
         detail="Agent environment temporarily unavailable",
     )
+
+
+def _normalize_provider_authorization(
+    flow: dict[str, Any],
+) -> tuple[str, str | None, bool, str | None]:
+    """Validate transient authorization fields from the provider sidecar."""
+    authorization_mode = flow.get("authorization_mode", "browser")
+    user_code = flow.get("user_code")
+    manual_input_required = flow.get("manual_input_required", False)
+    manual_input_prompt = flow.get("manual_input_prompt")
+    if authorization_mode not in {"browser", "device_code"}:
+        raise HTTPException(status_code=500, detail="OAuth authorization mode is invalid")
+    if not isinstance(manual_input_required, bool):
+        raise HTTPException(status_code=500, detail="OAuth manual input state is invalid")
+    if manual_input_prompt is not None and not isinstance(manual_input_prompt, str):
+        raise HTTPException(status_code=500, detail="OAuth flow manual input prompt is invalid")
+    if authorization_mode == "device_code":
+        if not isinstance(user_code, str):
+            raise HTTPException(status_code=500, detail="OAuth device code is invalid")
+        normalized_user_code = user_code.strip()
+        if (
+            not normalized_user_code
+            or len(normalized_user_code) > 256
+            or any(character in normalized_user_code for character in "\r\n\0")
+        ):
+            raise HTTPException(status_code=500, detail="OAuth device code is invalid")
+        if manual_input_required or manual_input_prompt is not None:
+            raise HTTPException(status_code=500, detail="OAuth device input state is invalid")
+        return authorization_mode, normalized_user_code, False, None
+    if user_code is not None:
+        raise HTTPException(status_code=500, detail="OAuth browser code state is invalid")
+    return authorization_mode, None, manual_input_required, manual_input_prompt
 
 
 def _build_provider_auth_start_payload(flow: dict[str, Any]) -> dict[str, Any]:
@@ -6729,7 +6770,12 @@ def _build_provider_auth_start_payload(flow: dict[str, Any]) -> dict[str, Any]:
     provider = flow.get("provider")
     auth_url = flow.get("auth_url")
     instructions = flow.get("instructions")
-    manual_input_prompt = flow.get("manual_input_prompt")
+    (
+        authorization_mode,
+        user_code,
+        manual_input_required,
+        manual_input_prompt,
+    ) = _normalize_provider_authorization(flow)
     if not isinstance(flow_id, str) or not flow_id:
         raise HTTPException(status_code=500, detail="OAuth flow id is invalid")
     if not isinstance(provider, str) or not provider:
@@ -6738,14 +6784,14 @@ def _build_provider_auth_start_payload(flow: dict[str, Any]) -> dict[str, Any]:
         raise HTTPException(status_code=500, detail="OAuth flow auth URL is invalid")
     if instructions is not None and not isinstance(instructions, str):
         raise HTTPException(status_code=500, detail="OAuth flow instructions are invalid")
-    if manual_input_prompt is not None and not isinstance(manual_input_prompt, str):
-        raise HTTPException(status_code=500, detail="OAuth flow manual input prompt is invalid")
     return {
         "flow_id": flow_id,
         "provider": provider,
         "auth_url": auth_url,
+        "authorization_mode": authorization_mode,
+        "user_code": user_code,
         "instructions": instructions,
-        "manual_input_required": bool(flow.get("manual_input_required", False)),
+        "manual_input_required": manual_input_required,
         "manual_input_prompt": manual_input_prompt,
         "manual_input_submitted": bool(flow.get("manual_input_submitted", False)),
     }
@@ -6764,7 +6810,12 @@ def _build_provider_auth_status_payload(
     flow_id = flow.get("flow_id")
     provider = flow.get("provider")
     instructions = flow.get("instructions")
-    manual_input_prompt = flow.get("manual_input_prompt")
+    (
+        authorization_mode,
+        user_code,
+        manual_input_required,
+        manual_input_prompt,
+    ) = _normalize_provider_authorization(flow)
     progress = flow.get("progress", [])
     if not isinstance(flow_id, str) or not flow_id:
         raise HTTPException(status_code=500, detail="OAuth flow id is invalid")
@@ -6772,8 +6823,6 @@ def _build_provider_auth_status_payload(
         raise HTTPException(status_code=500, detail="OAuth flow provider is invalid")
     if instructions is not None and not isinstance(instructions, str):
         raise HTTPException(status_code=500, detail="OAuth flow instructions are invalid")
-    if manual_input_prompt is not None and not isinstance(manual_input_prompt, str):
-        raise HTTPException(status_code=500, detail="OAuth flow manual input prompt is invalid")
     if not isinstance(progress, list):
         raise HTTPException(status_code=500, detail="OAuth flow progress is invalid")
     normalized_progress: list[str] = []
@@ -6787,9 +6836,11 @@ def _build_provider_auth_status_payload(
         "status": normalized_status,
         "provider": provider,
         "flow_id": flow_id,
+        "authorization_mode": authorization_mode,
+        "user_code": user_code,
         "instructions": instructions,
         "progress": normalized_progress,
-        "manual_input_required": bool(flow.get("manual_input_required", False)),
+        "manual_input_required": manual_input_required,
         "manual_input_prompt": manual_input_prompt,
         "manual_input_submitted": bool(flow.get("manual_input_submitted", False)),
         "error": error,
@@ -7335,7 +7386,11 @@ async def github_install_verify(request: Request) -> RedirectResponse:
 
 
 @provider_router.post("/providers/{provider}/start", response_model=ProviderAuthStartOut)
-async def start_provider_auth(provider: str, request: Request) -> dict[str, Any]:
+async def start_provider_auth(
+    provider: str,
+    request: Request,
+    response: Response,
+) -> dict[str, Any]:
     """Start a provider OAuth flow through the sidecar."""
     user_id = _current_user_id(request)
     if user_id is None:
@@ -7359,6 +7414,7 @@ async def start_provider_auth(provider: str, request: Request) -> dict[str, Any]
         touch_tenant_container(request, tenant)
         if sidecar is not None:
             await sidecar.disconnect()
+    response.headers["Cache-Control"] = "no-store"
     return payload
 
 
@@ -7387,6 +7443,7 @@ async def callback_provider_auth(provider: str, flow_id: str, request: Request) 
                 return JSONResponse(
                     status_code=202,
                     content=_build_provider_auth_status_payload(flow, status=status),
+                    headers={"Cache-Control": "no-store"},
                 )
             if status == "error":
                 release_tenant_container(request, tenant, lease_key=lease_key)
@@ -7400,6 +7457,7 @@ async def callback_provider_auth(provider: str, flow_id: str, request: Request) 
                         status="error",
                         error=error_message,
                     ),
+                    headers={"Cache-Control": "no-store"},
                 )
             if status != "complete":
                 raise HTTPException(status_code=500, detail=f"Unexpected OAuth status: {status}")
@@ -7411,7 +7469,10 @@ async def callback_provider_auth(provider: str, flow_id: str, request: Request) 
                 sidecar,
             )
             release_tenant_container(request, tenant, lease_key=lease_key)
-            return JSONResponse(_build_provider_auth_status_payload(flow, status="complete"))
+            return JSONResponse(
+                _build_provider_auth_status_payload(flow, status="complete"),
+                headers={"Cache-Control": "no-store"},
+            )
     except (ContainerNotReadyError, ContainerStartError, OSError, SidecarError) as error:
         raise _provider_auth_sidecar_http_error(error) from error
     finally:
@@ -7440,6 +7501,12 @@ async def submit_provider_auth_callback(
             flow = await sidecar.get_oauth_flow_status(payload.flow_id)
             _require_provider_match(provider, flow)
             status = _normalize_provider_flow_status(flow.get("status"))
+            authorization_mode, _, _, _ = _normalize_provider_authorization(flow)
+            if authorization_mode == "device_code":
+                raise HTTPException(
+                    status_code=409,
+                    detail="OAuth flow does not accept manual input",
+                )
             if status == "complete":
                 await _persist_completed_provider_auth(
                     user_id,
@@ -7450,6 +7517,7 @@ async def submit_provider_auth_callback(
                 release_tenant_container(request, tenant, lease_key=lease_key)
                 return JSONResponse(
                     _build_provider_auth_status_payload(flow, status="complete"),
+                    headers={"Cache-Control": "no-store"},
                 )
             if status == "error":
                 release_tenant_container(request, tenant, lease_key=lease_key)
@@ -7463,6 +7531,7 @@ async def submit_provider_auth_callback(
                         status="error",
                         error=error_message,
                     ),
+                    headers={"Cache-Control": "no-store"},
                 )
 
             await sidecar.submit_oauth_flow_input(
@@ -7485,6 +7554,7 @@ async def submit_provider_auth_callback(
                     },
                     status="pending",
                 ),
+                headers={"Cache-Control": "no-store"},
             )
     except (ContainerNotReadyError, ContainerStartError, OSError, SidecarError) as error:
         raise _provider_auth_sidecar_http_error(error) from error
@@ -22779,7 +22849,7 @@ async def fetch_pinned_artifact(
 
 ## yinshi/services/managed_guest_installer.py
 
-Guest installation verifies the release archive, installs runtime files atomically, and preserves persistent tenant data across upgrades.
+Guest installation verifies each archive before replacing runtime files. Tenant data stays in persistent directories during upgrades. Only managed sidecars receive the device-authorization policy, which leaves desktop and local browser callbacks unchanged.
 ```python {chunk="backend-src-yinshi-services-managed-guest-installer-py" file="backend/src/yinshi/services/managed_guest_installer.py"}
 """Install managed runner services inside a private Fly Sprite."""
 
@@ -23029,7 +23099,10 @@ class ManagedGuestInstaller:
                 service_name="yinshi-sidecar",
                 command="/usr/bin/env",
                 args=("node", "/opt/yinshi/current/sidecar/src/index.js"),
-                environment={"SIDECAR_SOCKET_PATH": "/var/lib/yinshi/sidecar.sock"},
+                environment={
+                    "SIDECAR_SOCKET_PATH": "/var/lib/yinshi/sidecar.sock",
+                    "YINSHI_SIDECAR_OAUTH_MODE": "device_code",
+                },
                 directory="/opt/yinshi/current/sidecar",
                 needs=(),
                 http_port=None,
@@ -43778,7 +43851,7 @@ export default function Session() {
 
 ## pages/Settings.tsx
 
-Settings group provider credentials, imported Pi config, release notes, and cloud runner setup into a tabbed screen. The root chunk below tangles back to `frontend/src/pages/Settings.tsx`.
+Settings collect provider credentials, imported Pi configuration, release notes, and cloud runner controls. Managed authorization shows the temporary code as selectable text. One action copies it. Another reopens the verification page. The callback form remains absent because device flow polling completes the connection. The root chunk below tangles back to `frontend/src/pages/Settings.tsx`.
 
 ```tsx {chunk="frontend-src-pages-settings-tsx" file="frontend/src/pages/Settings.tsx"}
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -43786,6 +43859,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   api,
   type CloudRunner,
+  type ProviderAuthorizationMode,
   type ProviderAuthStart,
   type ProviderAuthStatus,
   type ProviderConnection,
@@ -43873,6 +43947,12 @@ function ProviderCard({
   const [saving, setSaving] = useState(false);
   const [connecting, setConnecting] = useState(false);
   const [oauthFlowId, setOauthFlowId] = useState<string | null>(null);
+  const [oauthAuthorizationMode, setOauthAuthorizationMode] =
+    useState<ProviderAuthorizationMode>("browser");
+  const [oauthAuthorizationUrl, setOauthAuthorizationUrl] = useState<
+    string | null
+  >(null);
+  const [oauthUserCode, setOauthUserCode] = useState<string | null>(null);
   const [oauthInstructions, setOauthInstructions] = useState<string | null>(
     null,
   );
@@ -43892,6 +43972,9 @@ function ProviderCard({
 
   function resetOauthFlowState() {
     setOauthFlowId(null);
+    setOauthAuthorizationMode("browser");
+    setOauthAuthorizationUrl(null);
+    setOauthUserCode(null);
     setOauthInstructions(null);
     setOauthProgress([]);
     setOauthManualInputRequired(false);
@@ -43905,6 +43988,12 @@ function ProviderCard({
 
   function applyOauthFlowState(flow: ProviderAuthStart | ProviderAuthStatus) {
     setOauthFlowId(flow.flow_id);
+    if (flow.authorization_mode) {
+      setOauthAuthorizationMode(flow.authorization_mode);
+    }
+    if ("user_code" in flow) {
+      setOauthUserCode(flow.user_code ?? null);
+    }
     if ("instructions" in flow) {
       setOauthInstructions(flow.instructions ?? null);
     }
@@ -44022,14 +44111,16 @@ function ProviderCard({
       const started = await transport.post<ProviderAuthStart>(
         `/auth/providers/${provider.id}/start`,
       );
-      applyOauthFlowState(started);
-      if (started.auth_url) {
-        window.open(
-          providerAuthorizationUrl(started.auth_url),
-          "_blank",
-          "noopener,noreferrer",
-        );
+      const authorizationUrl = providerAuthorizationUrl(started.auth_url);
+      if (
+        started.authorization_mode === "device_code" &&
+        !normalizeFieldValue(started.user_code ?? "")
+      ) {
+        throw new Error("Provider device authorization did not return a code.");
       }
+      setOauthAuthorizationUrl(authorizationUrl);
+      applyOauthFlowState(started);
+      window.open(authorizationUrl, "_blank", "noopener,noreferrer");
       for (let attempt = 0; attempt < 600; attempt += 1) {
         await new Promise((resolve) => window.setTimeout(resolve, 1000));
         const status = await transport.get<ProviderAuthStatus>(
@@ -44042,19 +44133,42 @@ function ProviderCard({
           return;
         }
         if (status.status === "error") {
-          throw new Error(status.error || "Provider authorization failed");
+          throw new Error("Provider authorization failed");
         }
       }
       throw new Error("Provider authorization timed out");
-    } catch (connectError) {
-      setError(
-        connectError instanceof Error
-          ? connectError.message
-          : "Provider authorization failed",
-      );
+    } catch {
+      resetOauthFlowState();
+      setError("Provider authorization failed");
     } finally {
       setConnecting(false);
     }
+  }
+
+  async function copyOauthDeviceCode() {
+    if (!oauthUserCode) {
+      setError("Device authorization code is unavailable. Restart the connection.");
+      return;
+    }
+    if (!navigator.clipboard?.writeText) {
+      setError("Clipboard access is unavailable. Copy the code manually.");
+      return;
+    }
+    setError(null);
+    try {
+      await navigator.clipboard.writeText(oauthUserCode);
+    } catch {
+      setError("Clipboard access was denied. Copy the code manually.");
+    }
+  }
+
+  function openOauthVerificationPage() {
+    if (!oauthAuthorizationUrl) {
+      setError("Provider verification page is unavailable. Restart the connection.");
+      return;
+    }
+    const authorizationUrl = providerAuthorizationUrl(oauthAuthorizationUrl);
+    window.open(authorizationUrl, "_blank", "noopener,noreferrer");
   }
 
   async function pasteOauthCallbackInput() {
@@ -44258,6 +44372,37 @@ function ProviderCard({
           >
             {connecting ? "Connecting..." : "Connect Provider"}
           </button>
+          {oauthAuthorizationMode === "device_code" &&
+          oauthUserCode &&
+          !connection ? (
+            <div className="rounded-lg border border-gray-800 bg-gray-950/60 p-3">
+              <code
+                aria-label="Device authorization code"
+                className="block select-all rounded border border-gray-700 bg-gray-950 px-4 py-3 text-center font-mono text-lg tracking-wider text-gray-100"
+              >
+                {oauthUserCode}
+              </code>
+              <div className="mt-3 flex flex-wrap items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    void copyOauthDeviceCode();
+                  }}
+                  className="rounded border border-gray-600 px-4 py-2 text-sm text-gray-100"
+                >
+                  Copy code
+                </button>
+                <button
+                  type="button"
+                  onClick={openOauthVerificationPage}
+                  className="btn-primary px-4 py-2 text-sm"
+                >
+                  Open verification page
+                </button>
+              </div>
+            </div>
+          ) : null}
+
           {oauthManualInputRequired && !connection ? (
             <div className="rounded-lg border border-gray-800 bg-gray-950/60 p-3">
               {window.yinshiDesktop === undefined ? (
@@ -44904,7 +45049,7 @@ Network code is typed at the boundary, then hooks turn it into page-level state.
 
 ## api/client.ts
 
-The API client centralizes typed HTTP calls, SSE parsing, WebSocket URL creation, and backend error translation. The root chunk below tangles back to `frontend/src/api/client.ts`.
+The API client gives each OAuth mode a distinct response type. The root chunk below tangles back to `frontend/src/api/client.ts`.
 
 ```ts {chunk="frontend-src-api-client-ts" file="frontend/src/api/client.ts"}
 export interface Repo {
@@ -45015,10 +45160,14 @@ export interface CloudRunnerRegistration {
   environment: Record<string, string>;
 }
 
+export type ProviderAuthorizationMode = "browser" | "device_code";
+
 export interface ProviderAuthStart {
   flow_id: string;
   provider: string;
   auth_url: string;
+  authorization_mode?: ProviderAuthorizationMode;
+  user_code?: string | null;
   instructions: string | null;
   manual_input_required: boolean;
   manual_input_prompt: string | null;
@@ -45029,6 +45178,8 @@ export interface ProviderAuthStatus {
   status: string;
   provider: string;
   flow_id: string;
+  authorization_mode?: ProviderAuthorizationMode;
+  user_code?: string | null;
   instructions?: string | null;
   progress?: string[];
   manual_input_required?: boolean;
@@ -54594,7 +54745,7 @@ main().catch((err) => {
 
 ## sidecar.js
 
-The sidecar server hosts the Pi SDK bridge, model catalog, runtime settings, prompt execution, and terminal lifecycle. The root chunk below tangles back to `sidecar/src/sidecar.js`.
+The sidecar hosts the Pi SDK bridge and terminal sessions. Managed policy selects device authorization when offered, while other runtimes keep the provider default. The root chunk below tangles back to `sidecar/src/sidecar.js`.
 
 ```javascript {chunk="sidecar-src-sidecar-js" file="sidecar/src/sidecar.js"}
 import fs from "node:fs";
@@ -55554,7 +55705,21 @@ async function resolveProviderRuntimeAuth(provider, modelRef, providerAuth, agen
 }
 
 export class YinshiSidecar {
-  constructor() {
+  constructor(options = {}) {
+    if (!options || typeof options !== "object" || Array.isArray(options)) {
+      throw new TypeError("Sidecar options must be an object");
+    }
+    const modelRegistryFactory = options.modelRegistryFactory ?? createModelRegistry;
+    if (typeof modelRegistryFactory !== "function") {
+      throw new TypeError("modelRegistryFactory must be a function");
+    }
+    const oauthLoginMode =
+      options.oauthLoginMode ?? process.env.YINSHI_SIDECAR_OAUTH_MODE ?? "";
+    if (typeof oauthLoginMode !== "string") {
+      throw new TypeError("oauthLoginMode must be a string");
+    }
+    this.modelRegistryFactory = modelRegistryFactory;
+    this.oauthLoginMode = oauthLoginMode.trim();
     this.activeSessions = new Map();
     this.activePromptSessionsBySocket = new Map();
     this.pendingPiSessionCreations = new Map();
@@ -56133,7 +56298,7 @@ export class YinshiSidecar {
       if (typeof providerId !== "string" || !providerId) {
         throw new Error("Provider is required");
       }
-      const { modelRuntime } = await createModelRegistry(null, null);
+      const { modelRuntime } = await this.modelRegistryFactory(null, null);
       const provider = modelRuntime.getProvider(providerId);
       if (!provider?.auth.oauth) {
         throw new Error(`OAuth provider is not available: ${providerId}`);
@@ -56149,7 +56314,9 @@ export class YinshiSidecar {
         provider: providerId,
         createdAtMs: Date.now(),
         status: "starting",
+        authorizationMode: null,
         authUrl: null,
+        userCode: null,
         instructions: null,
         progress: [],
         credentials: null,
@@ -56169,20 +56336,47 @@ export class YinshiSidecar {
       const loginPromise = modelRuntime.login(providerId, "oauth", {
         prompt: async (prompt) => {
           if (prompt.type === "select" && prompt.options.length > 0) {
-            return prompt.options[0].id;
+            const preferredOption = prompt.options.find(
+              (option) => option.id === this.oauthLoginMode,
+            );
+            const selectedOption = preferredOption ?? prompt.options[0];
+            flow.authorizationMode =
+              selectedOption.id === "device_code" ? "device_code" : "browser";
+            if (flow.authorizationMode === "device_code") {
+              flow.manualInputRequired = false;
+              flow.manualInputPrompt = null;
+            }
+            return selectedOption.id;
           }
           return _waitForOAuthManualInput(flow, prompt.message);
         },
         notify: (event) => {
           if (event.type === "auth_url") {
+            if (flow.authorizationMode !== "device_code") {
+              flow.authorizationMode = "browser";
+              flow.userCode = null;
+            }
             flow.authUrl = event.url;
             flow.instructions = event.instructions || null;
             flow.status = "pending";
             return;
           }
           if (event.type === "device_code") {
+            if (
+              typeof event.verificationUri !== "string" ||
+              !event.verificationUri ||
+              typeof event.userCode !== "string" ||
+              !event.userCode
+            ) {
+              throw new Error("OAuth device authorization response is invalid");
+            }
+            flow.authorizationMode = "device_code";
             flow.authUrl = event.verificationUri;
-            flow.instructions = `Enter code ${event.userCode} in the browser.`;
+            flow.userCode = event.userCode;
+            flow.instructions =
+              "Open the verification page and enter the displayed code.";
+            flow.manualInputRequired = false;
+            flow.manualInputPrompt = null;
             flow.status = "pending";
             return;
           }
@@ -56219,6 +56413,8 @@ export class YinshiSidecar {
         flow_id: flowId,
         provider: providerId,
         auth_url: flow.authUrl,
+        authorization_mode: flow.authorizationMode,
+        user_code: flow.userCode,
         instructions: flow.instructions,
         manual_input_required: flow.manualInputRequired,
         manual_input_prompt: flow.manualInputPrompt,
@@ -56251,6 +56447,8 @@ export class YinshiSidecar {
       provider: flow.provider,
       status: flow.status,
       auth_url: flow.authUrl,
+      authorization_mode: flow.authorizationMode,
+      user_code: flow.userCode,
       instructions: flow.instructions,
       progress: flow.progress,
       credentials: flow.status === "complete" ? flow.credentials : null,
@@ -56273,12 +56471,21 @@ export class YinshiSidecar {
       return;
     }
     try {
+      if (
+        flow.authorizationMode !== "browser" ||
+        !flow.manualInputRequired ||
+        !["starting", "pending"].includes(flow.status)
+      ) {
+        throw new Error("OAuth flow does not accept manual input");
+      }
       _submitOAuthManualInput(flow, authorizationInput);
       sendToSocket(socket, {
         id,
         type: "oauth_submitted",
         flow_id: flow.id,
         provider: flow.provider,
+        authorization_mode: flow.authorizationMode,
+        user_code: flow.userCode,
         manual_input_required: flow.manualInputRequired,
         manual_input_prompt: flow.manualInputPrompt,
         manual_input_submitted: flow.manualInputSubmitted,

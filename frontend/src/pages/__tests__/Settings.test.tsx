@@ -106,6 +106,8 @@ describe("Settings", () => {
           flow_id: "flow-openai-codex",
           provider: "openai-codex",
           auth_url: "https://auth.openai.com/oauth/authorize",
+          authorization_mode: "browser",
+          user_code: null,
           instructions: "Open the browser and sign in.",
           manual_input_required: true,
           manual_input_prompt: "Paste the final redirect URL or authorization code here.",
@@ -117,6 +119,8 @@ describe("Settings", () => {
           status: "pending",
           provider: "openai-codex",
           flow_id: "flow-openai-codex",
+          authorization_mode: "browser",
+          user_code: null,
           instructions: "Open the browser and sign in.",
           progress: ["Received manual OAuth callback input."],
           manual_input_required: true,
@@ -243,6 +247,110 @@ describe("Settings", () => {
     expect(
       screen.getByText("Waiting for the provider to finish the OAuth flow."),
     ).toBeInTheDocument();
+  });
+
+  it("shows managed device authorization without callback input", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    apiPostMock.mockImplementation((path: string) => {
+      if (path !== "/auth/providers/openai-codex/start") {
+        throw new Error(`Unexpected POST path: ${path}`);
+      }
+      return Promise.resolve({
+        flow_id: "flow-openai-codex",
+        provider: "openai-codex",
+        auth_url: "https://auth.openai.com/codex/device",
+        authorization_mode: "device_code",
+        user_code: "TEST-CODE",
+        instructions: "Open the verification page and enter the displayed code.",
+        manual_input_required: false,
+        manual_input_prompt: null,
+        manual_input_submitted: false,
+      });
+    });
+    render(<Settings />);
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Connect Provider" }),
+    );
+
+    expect(await screen.findByText("TEST-CODE")).toBeInTheDocument();
+    expect(
+      screen.queryByPlaceholderText(
+        "http://localhost:1455/auth/callback?code=...",
+      ),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/The localhost error page is expected/),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy code" }));
+    await waitFor(() => {
+      expect(writeText).toHaveBeenCalledWith("TEST-CODE");
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "Open verification page" }),
+    );
+    expect(window.open).toHaveBeenLastCalledWith(
+      "https://auth.openai.com/codex/device",
+      "_blank",
+      "noopener,noreferrer",
+    );
+    expect(apiPostMock).toHaveBeenCalledTimes(1);
+    expect(apiPostMock).toHaveBeenCalledWith(
+      "/auth/providers/openai-codex/start",
+    );
+  });
+
+  it("clears a device code when authorization fails", async () => {
+    apiPostMock.mockResolvedValue({
+      flow_id: "flow-openai-codex",
+      provider: "openai-codex",
+      auth_url: "https://auth.openai.com/codex/device",
+      authorization_mode: "device_code",
+      user_code: "TEST-CODE",
+      instructions: "Open the verification page and enter the displayed code.",
+      manual_input_required: false,
+      manual_input_prompt: null,
+      manual_input_submitted: false,
+    });
+    apiGetMock.mockImplementation((path: string) => {
+      if (path === "/api/runtime") {
+        return Promise.resolve({ provider: "local", status: "ready" });
+      }
+      if (path === "/api/settings/connections") {
+        return Promise.resolve([]);
+      }
+      if (path === "/api/settings/runner") {
+        return Promise.resolve(null);
+      }
+      if (path.startsWith("/auth/providers/openai-codex/callback?")) {
+        return Promise.resolve({
+          status: "error",
+          provider: "openai-codex",
+          flow_id: "flow-openai-codex",
+          authorization_mode: "device_code",
+          user_code: "TEST-CODE",
+          manual_input_required: false,
+          manual_input_prompt: null,
+          manual_input_submitted: false,
+          error: "provider-specific failure",
+        });
+      }
+      throw new Error(`Unexpected GET path: ${path}`);
+    });
+    render(<Settings />);
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Connect Provider" }),
+    );
+    expect(await screen.findByText("TEST-CODE")).toBeInTheDocument();
+    expect(await screen.findByText("Provider authorization failed")).toBeInTheDocument();
+    expect(screen.queryByText("TEST-CODE")).not.toBeInTheDocument();
+    expect(screen.queryByText("provider-specific failure")).not.toBeInTheDocument();
   });
 
   it("fills manual OAuth callback input from the clipboard without submitting it", async () => {

@@ -323,10 +323,47 @@ def _provider_auth_sidecar_http_error(error: Exception) -> HTTPException:
     if "OAuth provider is not available" in message:
         detail = message.removeprefix("OAuth start failed: ")
         return HTTPException(status_code=400, detail=detail)
+    if "OAuth flow does not accept manual input" in message:
+        return HTTPException(
+            status_code=409,
+            detail="OAuth flow does not accept manual input",
+        )
     return HTTPException(
         status_code=503,
         detail="Agent environment temporarily unavailable",
     )
+
+
+def _normalize_provider_authorization(
+    flow: dict[str, Any],
+) -> tuple[str, str | None, bool, str | None]:
+    """Validate transient authorization fields from the provider sidecar."""
+    authorization_mode = flow.get("authorization_mode", "browser")
+    user_code = flow.get("user_code")
+    manual_input_required = flow.get("manual_input_required", False)
+    manual_input_prompt = flow.get("manual_input_prompt")
+    if authorization_mode not in {"browser", "device_code"}:
+        raise HTTPException(status_code=500, detail="OAuth authorization mode is invalid")
+    if not isinstance(manual_input_required, bool):
+        raise HTTPException(status_code=500, detail="OAuth manual input state is invalid")
+    if manual_input_prompt is not None and not isinstance(manual_input_prompt, str):
+        raise HTTPException(status_code=500, detail="OAuth flow manual input prompt is invalid")
+    if authorization_mode == "device_code":
+        if not isinstance(user_code, str):
+            raise HTTPException(status_code=500, detail="OAuth device code is invalid")
+        normalized_user_code = user_code.strip()
+        if (
+            not normalized_user_code
+            or len(normalized_user_code) > 256
+            or any(character in normalized_user_code for character in "\r\n\0")
+        ):
+            raise HTTPException(status_code=500, detail="OAuth device code is invalid")
+        if manual_input_required or manual_input_prompt is not None:
+            raise HTTPException(status_code=500, detail="OAuth device input state is invalid")
+        return authorization_mode, normalized_user_code, False, None
+    if user_code is not None:
+        raise HTTPException(status_code=500, detail="OAuth browser code state is invalid")
+    return authorization_mode, None, manual_input_required, manual_input_prompt
 
 
 def _build_provider_auth_start_payload(flow: dict[str, Any]) -> dict[str, Any]:
@@ -337,7 +374,12 @@ def _build_provider_auth_start_payload(flow: dict[str, Any]) -> dict[str, Any]:
     provider = flow.get("provider")
     auth_url = flow.get("auth_url")
     instructions = flow.get("instructions")
-    manual_input_prompt = flow.get("manual_input_prompt")
+    (
+        authorization_mode,
+        user_code,
+        manual_input_required,
+        manual_input_prompt,
+    ) = _normalize_provider_authorization(flow)
     if not isinstance(flow_id, str) or not flow_id:
         raise HTTPException(status_code=500, detail="OAuth flow id is invalid")
     if not isinstance(provider, str) or not provider:
@@ -346,14 +388,14 @@ def _build_provider_auth_start_payload(flow: dict[str, Any]) -> dict[str, Any]:
         raise HTTPException(status_code=500, detail="OAuth flow auth URL is invalid")
     if instructions is not None and not isinstance(instructions, str):
         raise HTTPException(status_code=500, detail="OAuth flow instructions are invalid")
-    if manual_input_prompt is not None and not isinstance(manual_input_prompt, str):
-        raise HTTPException(status_code=500, detail="OAuth flow manual input prompt is invalid")
     return {
         "flow_id": flow_id,
         "provider": provider,
         "auth_url": auth_url,
+        "authorization_mode": authorization_mode,
+        "user_code": user_code,
         "instructions": instructions,
-        "manual_input_required": bool(flow.get("manual_input_required", False)),
+        "manual_input_required": manual_input_required,
         "manual_input_prompt": manual_input_prompt,
         "manual_input_submitted": bool(flow.get("manual_input_submitted", False)),
     }
@@ -372,7 +414,12 @@ def _build_provider_auth_status_payload(
     flow_id = flow.get("flow_id")
     provider = flow.get("provider")
     instructions = flow.get("instructions")
-    manual_input_prompt = flow.get("manual_input_prompt")
+    (
+        authorization_mode,
+        user_code,
+        manual_input_required,
+        manual_input_prompt,
+    ) = _normalize_provider_authorization(flow)
     progress = flow.get("progress", [])
     if not isinstance(flow_id, str) or not flow_id:
         raise HTTPException(status_code=500, detail="OAuth flow id is invalid")
@@ -380,8 +427,6 @@ def _build_provider_auth_status_payload(
         raise HTTPException(status_code=500, detail="OAuth flow provider is invalid")
     if instructions is not None and not isinstance(instructions, str):
         raise HTTPException(status_code=500, detail="OAuth flow instructions are invalid")
-    if manual_input_prompt is not None and not isinstance(manual_input_prompt, str):
-        raise HTTPException(status_code=500, detail="OAuth flow manual input prompt is invalid")
     if not isinstance(progress, list):
         raise HTTPException(status_code=500, detail="OAuth flow progress is invalid")
     normalized_progress: list[str] = []
@@ -395,9 +440,11 @@ def _build_provider_auth_status_payload(
         "status": normalized_status,
         "provider": provider,
         "flow_id": flow_id,
+        "authorization_mode": authorization_mode,
+        "user_code": user_code,
         "instructions": instructions,
         "progress": normalized_progress,
-        "manual_input_required": bool(flow.get("manual_input_required", False)),
+        "manual_input_required": manual_input_required,
         "manual_input_prompt": manual_input_prompt,
         "manual_input_submitted": bool(flow.get("manual_input_submitted", False)),
         "error": error,
@@ -943,7 +990,11 @@ async def github_install_verify(request: Request) -> RedirectResponse:
 
 
 @provider_router.post("/providers/{provider}/start", response_model=ProviderAuthStartOut)
-async def start_provider_auth(provider: str, request: Request) -> dict[str, Any]:
+async def start_provider_auth(
+    provider: str,
+    request: Request,
+    response: Response,
+) -> dict[str, Any]:
     """Start a provider OAuth flow through the sidecar."""
     user_id = _current_user_id(request)
     if user_id is None:
@@ -967,6 +1018,7 @@ async def start_provider_auth(provider: str, request: Request) -> dict[str, Any]
         touch_tenant_container(request, tenant)
         if sidecar is not None:
             await sidecar.disconnect()
+    response.headers["Cache-Control"] = "no-store"
     return payload
 
 
@@ -995,6 +1047,7 @@ async def callback_provider_auth(provider: str, flow_id: str, request: Request) 
                 return JSONResponse(
                     status_code=202,
                     content=_build_provider_auth_status_payload(flow, status=status),
+                    headers={"Cache-Control": "no-store"},
                 )
             if status == "error":
                 release_tenant_container(request, tenant, lease_key=lease_key)
@@ -1008,6 +1061,7 @@ async def callback_provider_auth(provider: str, flow_id: str, request: Request) 
                         status="error",
                         error=error_message,
                     ),
+                    headers={"Cache-Control": "no-store"},
                 )
             if status != "complete":
                 raise HTTPException(status_code=500, detail=f"Unexpected OAuth status: {status}")
@@ -1019,7 +1073,10 @@ async def callback_provider_auth(provider: str, flow_id: str, request: Request) 
                 sidecar,
             )
             release_tenant_container(request, tenant, lease_key=lease_key)
-            return JSONResponse(_build_provider_auth_status_payload(flow, status="complete"))
+            return JSONResponse(
+                _build_provider_auth_status_payload(flow, status="complete"),
+                headers={"Cache-Control": "no-store"},
+            )
     except (ContainerNotReadyError, ContainerStartError, OSError, SidecarError) as error:
         raise _provider_auth_sidecar_http_error(error) from error
     finally:
@@ -1048,6 +1105,12 @@ async def submit_provider_auth_callback(
             flow = await sidecar.get_oauth_flow_status(payload.flow_id)
             _require_provider_match(provider, flow)
             status = _normalize_provider_flow_status(flow.get("status"))
+            authorization_mode, _, _, _ = _normalize_provider_authorization(flow)
+            if authorization_mode == "device_code":
+                raise HTTPException(
+                    status_code=409,
+                    detail="OAuth flow does not accept manual input",
+                )
             if status == "complete":
                 await _persist_completed_provider_auth(
                     user_id,
@@ -1058,6 +1121,7 @@ async def submit_provider_auth_callback(
                 release_tenant_container(request, tenant, lease_key=lease_key)
                 return JSONResponse(
                     _build_provider_auth_status_payload(flow, status="complete"),
+                    headers={"Cache-Control": "no-store"},
                 )
             if status == "error":
                 release_tenant_container(request, tenant, lease_key=lease_key)
@@ -1071,6 +1135,7 @@ async def submit_provider_auth_callback(
                         status="error",
                         error=error_message,
                     ),
+                    headers={"Cache-Control": "no-store"},
                 )
 
             await sidecar.submit_oauth_flow_input(
@@ -1093,6 +1158,7 @@ async def submit_provider_auth_callback(
                     },
                     status="pending",
                 ),
+                headers={"Cache-Control": "no-store"},
             )
     except (ContainerNotReadyError, ContainerStartError, OSError, SidecarError) as error:
         raise _provider_auth_sidecar_http_error(error) from error

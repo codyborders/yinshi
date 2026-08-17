@@ -246,7 +246,10 @@ class ManagedGuestInstaller:
                 service_name="yinshi-sidecar",
                 command="/usr/bin/env",
                 args=("node", "/opt/yinshi/current/sidecar/src/index.js"),
-                environment={"SIDECAR_SOCKET_PATH": "/var/lib/yinshi/sidecar.sock"},
+                environment={
+                    "SIDECAR_SOCKET_PATH": "/var/lib/yinshi/sidecar.sock",
+                    "YINSHI_SIDECAR_OAUTH_MODE": "device_code",
+                },
                 directory="/opt/yinshi/current/sidecar",
                 needs=(),
                 http_port=None,

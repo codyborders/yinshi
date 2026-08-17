@@ -257,7 +257,10 @@ async def test_install_writes_private_inputs_then_configures_private_services() 
         ARTIFACT_SHA256,
         "release-1",
     )
-    assert sidecar["environment"] == {"SIDECAR_SOCKET_PATH": "/var/lib/yinshi/sidecar.sock"}
+    assert sidecar["environment"] == {
+        "SIDECAR_SOCKET_PATH": "/var/lib/yinshi/sidecar.sock",
+        "YINSHI_SIDECAR_OAUTH_MODE": "device_code",
+    }
     assert runner["needs"] == ("yinshi-sidecar",)
     assert runner["environment"] == {}
     runner_args = runner["args"]
