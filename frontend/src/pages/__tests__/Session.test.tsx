@@ -267,6 +267,37 @@ describe("Session", () => {
     });
   });
 
+  it("initializes a missing preference from the current persisted session", async () => {
+    mockCatalog({
+      providers: [minimaxProvider, openaiProvider],
+      models: [minimaxModel, openaiModel],
+    });
+    mockSessionApi({ model: openaiModel.ref });
+
+    renderSession();
+
+    await screen.findByLabelText("Model");
+    expect(localStorage.getItem("yinshi:last-session-model:user-1")).toBe(
+      openaiModel.ref,
+    );
+  });
+
+  it("does not replace an existing preference when another session loads", async () => {
+    localStorage.setItem("yinshi:last-session-model:user-1", minimaxModel.ref);
+    mockCatalog({
+      providers: [minimaxProvider, openaiProvider],
+      models: [minimaxModel, openaiModel],
+    });
+    mockSessionApi({ model: openaiModel.ref });
+
+    renderSession();
+
+    await screen.findByLabelText("Model");
+    expect(localStorage.getItem("yinshi:last-session-model:user-1")).toBe(
+      minimaxModel.ref,
+    );
+  });
+
   it("remembers a successfully selected model for the authenticated user", async () => {
     apiPatchMock.mockResolvedValue({ model: openaiModel.ref });
     mockCatalog({

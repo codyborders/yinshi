@@ -44359,7 +44359,10 @@ import {
   getSessionModelOption,
   resolveSessionModelKey,
 } from &quot;../models/sessionModels&quot;;
-import { rememberSessionModel } from &quot;../models/sessionModelPreference&quot;;
+import {
+  initializeSessionModelPreference,
+  rememberSessionModel,
+} from &quot;../models/sessionModelPreference&quot;;
 import { useRuntimeResource } from &quot;../runtime/useRuntimeResource&quot;;
 import { parseStoredTurnBlocks } from &quot;../utils/turnEvents&quot;;
 
@@ -44510,6 +44513,7 @@ export default function Session() {
         );
         if (cancelled) return;
         setSessionModel(session.model);
+        initializeSessionModelPreference(userId, session.model);
         setWorkspaceId(session.workspace_id);
         setPiContextVersion(session.pi_context_version);
       } catch {
@@ -44521,7 +44525,7 @@ export default function Session() {
     return () =&gt; {
       cancelled = true;
     };
-  }, [id, transport]);
+  }, [id, transport, userId]);
 
   useEffect(() =&gt; {
     setPendingModelSelection(null);
@@ -48022,7 +48026,7 @@ class="sourceCode ts"><code class="sourceCode typescript"><span id="cb149-1"><a 
 <span id="cb149-36"><a href="#cb149-36" aria-hidden="true" tabindex="-1"></a>  }</span>
 <span id="cb149-37"><a href="#cb149-37" aria-hidden="true" tabindex="-1"></a>}</span>
 <span id="cb149-38"><a href="#cb149-38" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb149-39"><a href="#cb149-39" aria-hidden="true" tabindex="-1"></a><span class="im">export</span> <span class="kw">function</span> <span class="fu">rememberSessionModel</span>(</span>
+<span id="cb149-39"><a href="#cb149-39" aria-hidden="true" tabindex="-1"></a><span class="im">export</span> <span class="kw">function</span> <span class="fu">initializeSessionModelPreference</span>(</span>
 <span id="cb149-40"><a href="#cb149-40" aria-hidden="true" tabindex="-1"></a>  userId<span class="op">:</span> <span class="dt">string</span> <span class="op">|</span> <span class="dt">null</span><span class="op">,</span></span>
 <span id="cb149-41"><a href="#cb149-41" aria-hidden="true" tabindex="-1"></a>  model<span class="op">:</span> <span class="dt">string</span><span class="op">,</span></span>
 <span id="cb149-42"><a href="#cb149-42" aria-hidden="true" tabindex="-1"></a>)<span class="op">:</span> <span class="dt">void</span> {</span>
@@ -48031,11 +48035,32 @@ class="sourceCode ts"><code class="sourceCode typescript"><span id="cb149-1"><a 
 <span id="cb149-45"><a href="#cb149-45" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span><span class="op">;</span></span>
 <span id="cb149-46"><a href="#cb149-46" aria-hidden="true" tabindex="-1"></a>  }</span>
 <span id="cb149-47"><a href="#cb149-47" aria-hidden="true" tabindex="-1"></a>  <span class="cf">try</span> {</span>
-<span id="cb149-48"><a href="#cb149-48" aria-hidden="true" tabindex="-1"></a>    localStorage<span class="op">.</span><span class="fu">setItem</span>(<span class="fu">preferenceStorageKey</span>(userId)<span class="op">,</span> normalizedModel)<span class="op">;</span></span>
-<span id="cb149-49"><a href="#cb149-49" aria-hidden="true" tabindex="-1"></a>  } <span class="cf">catch</span> {</span>
-<span id="cb149-50"><a href="#cb149-50" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span><span class="op">;</span></span>
-<span id="cb149-51"><a href="#cb149-51" aria-hidden="true" tabindex="-1"></a>  }</span>
-<span id="cb149-52"><a href="#cb149-52" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
+<span id="cb149-48"><a href="#cb149-48" aria-hidden="true" tabindex="-1"></a>    <span class="kw">const</span> currentModel <span class="op">=</span> <span class="fu">normalizeModelRef</span>(</span>
+<span id="cb149-49"><a href="#cb149-49" aria-hidden="true" tabindex="-1"></a>      localStorage<span class="op">.</span><span class="fu">getItem</span>(<span class="fu">preferenceStorageKey</span>(userId))<span class="op">,</span></span>
+<span id="cb149-50"><a href="#cb149-50" aria-hidden="true" tabindex="-1"></a>    )<span class="op">;</span></span>
+<span id="cb149-51"><a href="#cb149-51" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> (currentModel) {</span>
+<span id="cb149-52"><a href="#cb149-52" aria-hidden="true" tabindex="-1"></a>      <span class="cf">return</span><span class="op">;</span></span>
+<span id="cb149-53"><a href="#cb149-53" aria-hidden="true" tabindex="-1"></a>    }</span>
+<span id="cb149-54"><a href="#cb149-54" aria-hidden="true" tabindex="-1"></a>    localStorage<span class="op">.</span><span class="fu">setItem</span>(<span class="fu">preferenceStorageKey</span>(userId)<span class="op">,</span> normalizedModel)<span class="op">;</span></span>
+<span id="cb149-55"><a href="#cb149-55" aria-hidden="true" tabindex="-1"></a>  } <span class="cf">catch</span> {</span>
+<span id="cb149-56"><a href="#cb149-56" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span><span class="op">;</span></span>
+<span id="cb149-57"><a href="#cb149-57" aria-hidden="true" tabindex="-1"></a>  }</span>
+<span id="cb149-58"><a href="#cb149-58" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb149-59"><a href="#cb149-59" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb149-60"><a href="#cb149-60" aria-hidden="true" tabindex="-1"></a><span class="im">export</span> <span class="kw">function</span> <span class="fu">rememberSessionModel</span>(</span>
+<span id="cb149-61"><a href="#cb149-61" aria-hidden="true" tabindex="-1"></a>  userId<span class="op">:</span> <span class="dt">string</span> <span class="op">|</span> <span class="dt">null</span><span class="op">,</span></span>
+<span id="cb149-62"><a href="#cb149-62" aria-hidden="true" tabindex="-1"></a>  model<span class="op">:</span> <span class="dt">string</span><span class="op">,</span></span>
+<span id="cb149-63"><a href="#cb149-63" aria-hidden="true" tabindex="-1"></a>)<span class="op">:</span> <span class="dt">void</span> {</span>
+<span id="cb149-64"><a href="#cb149-64" aria-hidden="true" tabindex="-1"></a>  <span class="kw">const</span> normalizedModel <span class="op">=</span> <span class="fu">normalizeModelRef</span>(model)<span class="op">;</span></span>
+<span id="cb149-65"><a href="#cb149-65" aria-hidden="true" tabindex="-1"></a>  <span class="cf">if</span> (<span class="op">!</span>normalizedModel <span class="op">||</span> <span class="kw">typeof</span> <span class="bu">window</span> <span class="op">===</span> <span class="st">&quot;undefined&quot;</span>) {</span>
+<span id="cb149-66"><a href="#cb149-66" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span><span class="op">;</span></span>
+<span id="cb149-67"><a href="#cb149-67" aria-hidden="true" tabindex="-1"></a>  }</span>
+<span id="cb149-68"><a href="#cb149-68" aria-hidden="true" tabindex="-1"></a>  <span class="cf">try</span> {</span>
+<span id="cb149-69"><a href="#cb149-69" aria-hidden="true" tabindex="-1"></a>    localStorage<span class="op">.</span><span class="fu">setItem</span>(<span class="fu">preferenceStorageKey</span>(userId)<span class="op">,</span> normalizedModel)<span class="op">;</span></span>
+<span id="cb149-70"><a href="#cb149-70" aria-hidden="true" tabindex="-1"></a>  } <span class="cf">catch</span> {</span>
+<span id="cb149-71"><a href="#cb149-71" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span><span class="op">;</span></span>
+<span id="cb149-72"><a href="#cb149-72" aria-hidden="true" tabindex="-1"></a>  }</span>
+<span id="cb149-73"><a href="#cb149-73" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
 <h2 data-number="21.13" id="utilsrepo.ts"><span
 class="header-section-number">21.13</span> utils/repo.ts</h2>
 <p>Repository utilities recognize Git URLs, GitHub shorthand, and local

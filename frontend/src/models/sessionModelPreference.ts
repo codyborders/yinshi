@@ -36,6 +36,27 @@ export function preferredSessionModel(userId: string | null): string {
   }
 }
 
+export function initializeSessionModelPreference(
+  userId: string | null,
+  model: string,
+): void {
+  const normalizedModel = normalizeModelRef(model);
+  if (!normalizedModel || typeof window === "undefined") {
+    return;
+  }
+  try {
+    const currentModel = normalizeModelRef(
+      localStorage.getItem(preferenceStorageKey(userId)),
+    );
+    if (currentModel) {
+      return;
+    }
+    localStorage.setItem(preferenceStorageKey(userId), normalizedModel);
+  } catch {
+    return;
+  }
+}
+
 export function rememberSessionModel(
   userId: string | null,
   model: string,

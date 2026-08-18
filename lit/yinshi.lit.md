@@ -43209,7 +43209,10 @@ import {
   getSessionModelOption,
   resolveSessionModelKey,
 } from "../models/sessionModels";
-import { rememberSessionModel } from "../models/sessionModelPreference";
+import {
+  initializeSessionModelPreference,
+  rememberSessionModel,
+} from "../models/sessionModelPreference";
 import { useRuntimeResource } from "../runtime/useRuntimeResource";
 import { parseStoredTurnBlocks } from "../utils/turnEvents";
 
@@ -43360,6 +43363,7 @@ export default function Session() {
         );
         if (cancelled) return;
         setSessionModel(session.model);
+        initializeSessionModelPreference(userId, session.model);
         setWorkspaceId(session.workspace_id);
         setPiContextVersion(session.pi_context_version);
       } catch {
@@ -43371,7 +43375,7 @@ export default function Session() {
     return () => {
       cancelled = true;
     };
-  }, [id, transport]);
+  }, [id, transport, userId]);
 
   useEffect(() => {
     setPendingModelSelection(null);
@@ -46853,6 +46857,27 @@ export function preferredSessionModel(userId: string | null): string {
     );
   } catch {
     return DEFAULT_SESSION_MODEL;
+  }
+}
+
+export function initializeSessionModelPreference(
+  userId: string | null,
+  model: string,
+): void {
+  const normalizedModel = normalizeModelRef(model);
+  if (!normalizedModel || typeof window === "undefined") {
+    return;
+  }
+  try {
+    const currentModel = normalizeModelRef(
+      localStorage.getItem(preferenceStorageKey(userId)),
+    );
+    if (currentModel) {
+      return;
+    }
+    localStorage.setItem(preferenceStorageKey(userId), normalizedModel);
+  } catch {
+    return;
   }
 }
 
