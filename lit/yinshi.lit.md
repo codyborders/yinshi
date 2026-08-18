@@ -4349,7 +4349,7 @@ def init_control_db() -> None:
 
 ## tenant.py
 
-Tenant management maps a signed-in user to a private data directory and an optional SQLCipher-backed SQLite database. The root chunk below tangles back to `backend/src/yinshi/tenant.py`.
+Tenant management maps a signed-in user to a private data directory and an optional SQLCipher-backed SQLite database. SQLCipher opens retry brief disk I/O faults, while wrong keys and persistent storage failures still stop immediately. The root chunk below tangles back to `backend/src/yinshi/tenant.py`.
 
 ```python {chunk="backend-src-yinshi-tenant-py" file="backend/src/yinshi/tenant.py"}
 """Multi-tenant context and per-user database management."""
@@ -4364,6 +4364,7 @@ import os
 import sqlite3
 import stat
 import threading
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -4387,6 +4388,9 @@ _SQLCIPHER_MODULE_NAMES: Final[tuple[str, ...]] = (
     "sqlcipher3.dbapi2",
     "pysqlcipher3.dbapi2",
 )
+_SQLCIPHER_OPEN_ATTEMPTS: Final[int] = 3
+_SQLCIPHER_OPEN_RETRY_DELAY_SECONDS: Final[float] = 0.05
+_SQLCIPHER_TRANSIENT_OPEN_ERRORS: Final[frozenset[str]] = frozenset({"disk I/O error"})
 _STORAGE_ENCRYPTION_MARKER: Final[str] = ".yinshi-encrypted-storage"
 _SCHEMA_OBJECT_TYPES: Final[tuple[str, ...]] = ("index", "table", "trigger", "view")
 _MIGRATION_LOCK_SUFFIX: Final[str] = ".migration.lock"
@@ -4587,24 +4591,52 @@ def _open_sqlcipher_connection(db_path: str, sqlcipher_key: bytes) -> sqlite3.Co
 
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     sqlcipher_module = _load_sqlcipher_module()
-    conn = cast(sqlite3.Connection, sqlcipher_module.connect(db_path))
-    conn.row_factory = getattr(sqlcipher_module, "Row")
-    # The key is derived binary material, converted to hex locally, and never
-    # includes user-controlled SQL. SQLCipher requires PRAGMA key syntax.
-    conn.execute(f"PRAGMA key = \"x'{sqlcipher_key.hex()}'\"")  # noqa: S608
-    conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("PRAGMA busy_timeout = 5000")
-    sqlcipher_database_error = getattr(sqlcipher_module, "DatabaseError", sqlite3.DatabaseError)
-    if not isinstance(sqlcipher_database_error, type):
+    sqlcipher_database_error = getattr(
+        sqlcipher_module,
+        "DatabaseError",
+        sqlite3.DatabaseError,
+    )
+    if not isinstance(sqlcipher_database_error, type) or not issubclass(
+        sqlcipher_database_error,
+        Exception,
+    ):
         sqlcipher_database_error = sqlite3.DatabaseError
-    elif not issubclass(sqlcipher_database_error, Exception):
-        sqlcipher_database_error = sqlite3.DatabaseError
-    try:
-        conn.execute("SELECT count(*) FROM sqlite_master").fetchone()
-    except (sqlite3.DatabaseError, sqlcipher_database_error) as exc:
-        conn.close()
-        raise RuntimeError("Tenant database could not be opened with the configured key") from exc
-    return conn
+    sqlcipher_operational_error = getattr(
+        sqlcipher_module,
+        "OperationalError",
+        sqlite3.OperationalError,
+    )
+    if not isinstance(sqlcipher_operational_error, type) or not issubclass(
+        sqlcipher_operational_error,
+        Exception,
+    ):
+        sqlcipher_operational_error = sqlite3.OperationalError
+
+    for attempt in range(_SQLCIPHER_OPEN_ATTEMPTS):
+        conn: sqlite3.Connection | None = None
+        try:
+            conn = cast(sqlite3.Connection, sqlcipher_module.connect(db_path))
+            conn.row_factory = getattr(sqlcipher_module, "Row")
+            # The key is derived binary material, converted to hex locally, and never
+            # includes user-controlled SQL. SQLCipher requires PRAGMA key syntax.
+            conn.execute(f"PRAGMA key = \"x'{sqlcipher_key.hex()}'\"")  # noqa: S608
+            conn.execute("PRAGMA foreign_keys = ON")
+            conn.execute("PRAGMA busy_timeout = 5000")
+            conn.execute("SELECT count(*) FROM sqlite_master").fetchone()
+            return conn
+        except (sqlite3.DatabaseError, sqlcipher_database_error) as exc:
+            if conn is not None:
+                conn.close()
+            is_transient = isinstance(exc, sqlcipher_operational_error) and (
+                str(exc) in _SQLCIPHER_TRANSIENT_OPEN_ERRORS
+            )
+            if not is_transient or attempt + 1 >= _SQLCIPHER_OPEN_ATTEMPTS:
+                raise RuntimeError(
+                    "Tenant database could not be opened with the configured key"
+                ) from exc
+            time.sleep(_SQLCIPHER_OPEN_RETRY_DELAY_SECONDS * (attempt + 1))
+
+    raise AssertionError("SQLCipher connection attempts must return or raise")
 
 
 def _plaintext_database_readable(db_path: str) -> bool:
@@ -52150,7 +52182,7 @@ export async function createNoiseIkInitiator(
 
 ## runner/encryptedRunnerClient.ts
 
-The encrypted client performs runner handshakes, sends RPC requests, and converts authenticated responses into browser errors.
+The encrypted client performs runner handshakes, sends RPC requests, and converts authenticated responses into browser errors. Setup keeps a short deadline, while accepted RPCs allow the worker's full execution budget plus relay overhead.
 ```ts {chunk="frontend-src-runner-encryptedrunnerclient-ts" file="frontend/src/runner/encryptedRunnerClient.ts"}
 import { api } from "../api/client";
 import {
@@ -52176,7 +52208,9 @@ import {
 
 const RUNNER_PROTOCOL = "yinshi-runner-v1";
 const RUNNER_HEALTH_SESSION_BYTES = 65_536;
-const SOCKET_TIMEOUT_MS = 15_000;
+const SOCKET_SETUP_TIMEOUT_MS = 15_000;
+// Worker dispatch allows 30 seconds, so accepted RPCs need relay overhead.
+const RPC_RESPONSE_TIMEOUT_MS = 45_000;
 const RUNNER_PUBLIC_KEY_BYTES = 32;
 const DEFAULT_CAPABILITY_ENDPOINT = "/api/settings/runner/capabilities";
 // Capability budgets count ciphertext for requests, acknowledgements, pulls, and responses.
@@ -52377,14 +52411,17 @@ function waitForOpen(socket: WebSocket): Promise<void> {
     const timeout = window.setTimeout(() => {
       cleanup();
       reject(new Error("Runner relay open timed out"));
-    }, SOCKET_TIMEOUT_MS);
+    }, SOCKET_SETUP_TIMEOUT_MS);
     socket.addEventListener("open", handleOpen);
     socket.addEventListener("error", handleError);
     socket.addEventListener("close", handleClose);
   });
 }
 
-function receiveMessage(socket: WebSocket): Promise<string | ArrayBuffer> {
+function receiveMessage(
+  socket: WebSocket,
+  timeoutMs = SOCKET_SETUP_TIMEOUT_MS,
+): Promise<string | ArrayBuffer> {
   return new Promise((resolve, reject) => {
     const cleanup = () => {
       window.clearTimeout(timeout);
@@ -52411,7 +52448,7 @@ function receiveMessage(socket: WebSocket): Promise<string | ArrayBuffer> {
     const timeout = window.setTimeout(() => {
       cleanup();
       reject(new Error("Runner relay response timed out"));
-    }, SOCKET_TIMEOUT_MS);
+    }, timeoutMs);
     socket.addEventListener("message", handleMessage);
     socket.addEventListener("close", handleClose);
     socket.addEventListener("error", handleError);
@@ -52421,8 +52458,9 @@ function receiveMessage(socket: WebSocket): Promise<string | ArrayBuffer> {
 async function sendAndReceive(
   socket: WebSocket,
   message: string | Uint8Array,
+  timeoutMs = SOCKET_SETUP_TIMEOUT_MS,
 ): Promise<string | ArrayBuffer> {
-  const response = receiveMessage(socket);
+  const response = receiveMessage(socket, timeoutMs);
   socket.send(message);
   return response;
 }
@@ -52461,7 +52499,11 @@ async function exchangeEncryptedFrame(
   if (ciphertext.length > NOISE_CIPHERTEXT_BYTES_MAX) {
     throw new Error("Runner RPC encrypted fragment is too large");
   }
-  const encryptedResponse = await sendAndReceive(socket, ciphertext);
+  const encryptedResponse = await sendAndReceive(
+    socket,
+    ciphertext,
+    RPC_RESPONSE_TIMEOUT_MS,
+  );
   if (!(encryptedResponse instanceof ArrayBuffer)) {
     throw new Error("Runner RPC response must be binary");
   }

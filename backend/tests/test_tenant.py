@@ -4,6 +4,7 @@ import os
 import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import MagicMock, call
 
 import pytest
 
@@ -233,6 +234,198 @@ def test_sqlcipher_connection_uses_driver_row_factory(tenant_env, monkeypatch):
     assert fake_connection.row_factory is fake_row_factory
     assert any(statement.startswith("PRAGMA key") for statement in fake_connection.statements)
     assert not fake_connection.closed
+
+
+def test_sqlcipher_connection_retries_transient_disk_io(tenant_env, monkeypatch):
+    """A transient Sprite disk error should not fail an otherwise valid key."""
+    from yinshi.tenant import _open_sqlcipher_connection
+
+    class FakeOperationalError(Exception):
+        pass
+
+    class FakeConnection:
+        def __init__(self, *, fail_validation: bool) -> None:
+            self.fail_validation = fail_validation
+            self.closed = False
+            self.row_factory = None
+
+        def execute(self, statement: str):
+            if statement.startswith("SELECT count") and self.fail_validation:
+                raise FakeOperationalError("disk I/O error")
+            return SimpleNamespace(fetchone=lambda: (0,))
+
+        def close(self) -> None:
+            self.closed = True
+
+    connections = [
+        FakeConnection(fail_validation=True),
+        FakeConnection(fail_validation=False),
+    ]
+    fake_module = SimpleNamespace(
+        connect=lambda _: connections.pop(0),
+        Row=object(),
+        DatabaseError=FakeOperationalError,
+        OperationalError=FakeOperationalError,
+    )
+    sleep = MagicMock()
+    monkeypatch.setattr("yinshi.tenant._load_sqlcipher_module", lambda: fake_module)
+    monkeypatch.setattr("yinshi.tenant.time.sleep", sleep)
+
+    connection = _open_sqlcipher_connection(
+        str(tenant_env["tmp_path"] / "cipher.db"),
+        b"1" * 32,
+    )
+
+    assert connection.closed is False
+    assert sleep.call_args_list == [call(0.05)]
+
+
+def test_sqlcipher_connection_retries_disk_io_during_connect(tenant_env, monkeypatch):
+    """A transient connect failure should receive the same bounded retry."""
+    from yinshi.tenant import _open_sqlcipher_connection
+
+    class FakeOperationalError(Exception):
+        pass
+
+    class FakeConnection:
+        row_factory = None
+
+        def execute(self, _statement: str):
+            return SimpleNamespace(fetchone=lambda: (0,))
+
+        def close(self) -> None:
+            raise AssertionError("successful connection must remain open")
+
+    connection = FakeConnection()
+    connect = MagicMock(side_effect=[FakeOperationalError("disk I/O error"), connection])
+    fake_module = SimpleNamespace(
+        connect=connect,
+        Row=object(),
+        DatabaseError=FakeOperationalError,
+        OperationalError=FakeOperationalError,
+    )
+    sleep = MagicMock()
+    monkeypatch.setattr("yinshi.tenant._load_sqlcipher_module", lambda: fake_module)
+    monkeypatch.setattr("yinshi.tenant.time.sleep", sleep)
+
+    opened = _open_sqlcipher_connection(
+        str(tenant_env["tmp_path"] / "cipher.db"),
+        b"1" * 32,
+    )
+
+    assert opened is connection
+    assert connect.call_count == 2
+    assert sleep.call_args_list == [call(0.05)]
+
+
+def test_sqlcipher_connection_fails_closed_after_connect_disk_io(
+    tenant_env,
+    monkeypatch,
+):
+    """Persistent connect failures must retain the configured-key boundary."""
+    from yinshi.tenant import _open_sqlcipher_connection
+
+    class FakeOperationalError(Exception):
+        pass
+
+    connect = MagicMock(side_effect=FakeOperationalError("disk I/O error"))
+    fake_module = SimpleNamespace(
+        connect=connect,
+        Row=object(),
+        DatabaseError=FakeOperationalError,
+        OperationalError=FakeOperationalError,
+    )
+    sleep = MagicMock()
+    monkeypatch.setattr("yinshi.tenant._load_sqlcipher_module", lambda: fake_module)
+    monkeypatch.setattr("yinshi.tenant.time.sleep", sleep)
+
+    with pytest.raises(RuntimeError, match="configured key") as error:
+        _open_sqlcipher_connection(
+            str(tenant_env["tmp_path"] / "cipher.db"),
+            b"1" * 32,
+        )
+
+    assert isinstance(error.value.__cause__, FakeOperationalError)
+    assert connect.call_count == 3
+    assert sleep.call_args_list == [call(0.05), call(0.1)]
+
+
+def test_sqlcipher_connection_does_not_retry_near_match_disk_error(
+    tenant_env,
+    monkeypatch,
+):
+    """Only the exact transient driver message should receive a retry."""
+    from yinshi.tenant import _open_sqlcipher_connection
+
+    class FakeOperationalError(Exception):
+        pass
+
+    connect = MagicMock(side_effect=FakeOperationalError("DISK I/O error"))
+    fake_module = SimpleNamespace(
+        connect=connect,
+        Row=object(),
+        DatabaseError=FakeOperationalError,
+        OperationalError=FakeOperationalError,
+    )
+    sleep = MagicMock()
+    monkeypatch.setattr("yinshi.tenant._load_sqlcipher_module", lambda: fake_module)
+    monkeypatch.setattr("yinshi.tenant.time.sleep", sleep)
+
+    with pytest.raises(RuntimeError, match="configured key"):
+        _open_sqlcipher_connection(
+            str(tenant_env["tmp_path"] / "cipher.db"),
+            b"1" * 32,
+        )
+
+    assert connect.call_count == 1
+    sleep.assert_not_called()
+
+
+def test_sqlcipher_connection_fails_closed_after_persistent_disk_io(
+    tenant_env,
+    monkeypatch,
+):
+    """Repeated disk failures must retain the configured-key error boundary."""
+    from yinshi.tenant import _open_sqlcipher_connection
+
+    class FakeOperationalError(Exception):
+        pass
+
+    class FakeConnection:
+        row_factory = None
+
+        def __init__(self) -> None:
+            self.closed = False
+
+        def execute(self, statement: str):
+            if statement.startswith("SELECT count"):
+                raise FakeOperationalError("disk I/O error")
+            return SimpleNamespace(fetchone=lambda: (0,))
+
+        def close(self) -> None:
+            self.closed = True
+
+    connections = [FakeConnection(), FakeConnection(), FakeConnection()]
+    pending_connections = list(connections)
+    fake_module = SimpleNamespace(
+        connect=lambda _: pending_connections.pop(0),
+        Row=object(),
+        DatabaseError=FakeOperationalError,
+        OperationalError=FakeOperationalError,
+    )
+    sleep = MagicMock()
+    monkeypatch.setattr("yinshi.tenant._load_sqlcipher_module", lambda: fake_module)
+    monkeypatch.setattr("yinshi.tenant.time.sleep", sleep)
+
+    with pytest.raises(RuntimeError, match="configured key") as error:
+        _open_sqlcipher_connection(
+            str(tenant_env["tmp_path"] / "cipher.db"),
+            b"1" * 32,
+        )
+
+    assert isinstance(error.value.__cause__, FakeOperationalError)
+    assert all(connection.closed for connection in connections)
+    assert sleep.call_args_list == [call(0.05), call(0.1)]
 
 
 def test_plaintext_migration_preserves_prompt_journal_and_schema(

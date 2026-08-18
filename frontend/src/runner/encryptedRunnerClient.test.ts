@@ -55,7 +55,7 @@ class FakeWebSocket extends EventTarget {
   binaryType = "blob";
   readyState = FakeWebSocket.OPEN;
 
-  constructor() {
+  constructor(private readonly rpcResponseDelayMs = 0) {
     super();
     queueMicrotask(() => this.dispatchEvent(new Event("open")));
   }
@@ -72,11 +72,15 @@ class FakeWebSocket extends EventTarget {
     }
     const response =
       this.sent.length === 2 ? Uint8Array.of(11) : Uint8Array.of(12);
-    queueMicrotask(() =>
+    const dispatchResponse = () =>
       this.dispatchEvent(
         new MessageEvent("message", { data: response.buffer }),
-      ),
-    );
+      );
+    if (this.sent.length > 2 && this.rpcResponseDelayMs > 0) {
+      window.setTimeout(dispatchResponse, this.rpcResponseDelayMs);
+    } else {
+      queueMicrotask(dispatchResponse);
+    }
   }
 
   close(): void {
@@ -374,6 +378,30 @@ describe("checkEncryptedRunnerHealth", () => {
 
     expect(clientDependencies.issueCapability).toHaveBeenCalledTimes(1);
     expect(socket.sent).toHaveLength(4);
+  });
+
+  it("keeps an accepted RPC open while the worker completes within 30 seconds", async () => {
+    vi.useFakeTimers();
+    try {
+      const socket = new FakeWebSocket(30_000);
+      const request = requestEncryptedRunner<{ status: string }>(
+        {
+          expectedRunnerPublicKey: runnerPublicKey,
+          scopes: ["repository.read"],
+          method: "GET",
+          path: "/api/repos",
+        },
+        dependencies(socket, { status: "ready" }),
+      );
+
+      await vi.advanceTimersByTimeAsync(15_001);
+      expect(socket.readyState).toBe(FakeWebSocket.OPEN);
+      await vi.advanceTimersByTimeAsync(14_999);
+
+      await expect(request).resolves.toEqual({ status: "ready" });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("carries bounded large requests and responses through encrypted fragments", async () => {

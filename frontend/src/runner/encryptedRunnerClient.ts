@@ -22,7 +22,9 @@ import {
 
 const RUNNER_PROTOCOL = "yinshi-runner-v1";
 const RUNNER_HEALTH_SESSION_BYTES = 65_536;
-const SOCKET_TIMEOUT_MS = 15_000;
+const SOCKET_SETUP_TIMEOUT_MS = 15_000;
+// Worker dispatch allows 30 seconds, so accepted RPCs need relay overhead.
+const RPC_RESPONSE_TIMEOUT_MS = 45_000;
 const RUNNER_PUBLIC_KEY_BYTES = 32;
 const DEFAULT_CAPABILITY_ENDPOINT = "/api/settings/runner/capabilities";
 // Capability budgets count ciphertext for requests, acknowledgements, pulls, and responses.
@@ -223,14 +225,17 @@ function waitForOpen(socket: WebSocket): Promise<void> {
     const timeout = window.setTimeout(() => {
       cleanup();
       reject(new Error("Runner relay open timed out"));
-    }, SOCKET_TIMEOUT_MS);
+    }, SOCKET_SETUP_TIMEOUT_MS);
     socket.addEventListener("open", handleOpen);
     socket.addEventListener("error", handleError);
     socket.addEventListener("close", handleClose);
   });
 }
 
-function receiveMessage(socket: WebSocket): Promise<string | ArrayBuffer> {
+function receiveMessage(
+  socket: WebSocket,
+  timeoutMs = SOCKET_SETUP_TIMEOUT_MS,
+): Promise<string | ArrayBuffer> {
   return new Promise((resolve, reject) => {
     const cleanup = () => {
       window.clearTimeout(timeout);
@@ -257,7 +262,7 @@ function receiveMessage(socket: WebSocket): Promise<string | ArrayBuffer> {
     const timeout = window.setTimeout(() => {
       cleanup();
       reject(new Error("Runner relay response timed out"));
-    }, SOCKET_TIMEOUT_MS);
+    }, timeoutMs);
     socket.addEventListener("message", handleMessage);
     socket.addEventListener("close", handleClose);
     socket.addEventListener("error", handleError);
@@ -267,8 +272,9 @@ function receiveMessage(socket: WebSocket): Promise<string | ArrayBuffer> {
 async function sendAndReceive(
   socket: WebSocket,
   message: string | Uint8Array,
+  timeoutMs = SOCKET_SETUP_TIMEOUT_MS,
 ): Promise<string | ArrayBuffer> {
-  const response = receiveMessage(socket);
+  const response = receiveMessage(socket, timeoutMs);
   socket.send(message);
   return response;
 }
@@ -307,7 +313,11 @@ async function exchangeEncryptedFrame(
   if (ciphertext.length > NOISE_CIPHERTEXT_BYTES_MAX) {
     throw new Error("Runner RPC encrypted fragment is too large");
   }
-  const encryptedResponse = await sendAndReceive(socket, ciphertext);
+  const encryptedResponse = await sendAndReceive(
+    socket,
+    ciphertext,
+    RPC_RESPONSE_TIMEOUT_MS,
+  );
   if (!(encryptedResponse instanceof ArrayBuffer)) {
     throw new Error("Runner RPC response must be binary");
   }
