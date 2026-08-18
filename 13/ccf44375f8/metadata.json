@@ -3,7 +3,7 @@
   "checkpoint_id": "13ccf44375f8",
   "strategy": "manual-commit",
   "branch": "main",
-  "checkpoints_count": 6,
+  "checkpoints_count": 7,
   "files_touched": [
     "backend/src/yinshi/managed_backup_guest.py",
     "backend/tests/test_managed_backup_guest.py"
@@ -29,6 +29,13 @@
       "compact_transcript": "/13/ccf44375f8/2/transcript.jsonl",
       "content_hash": "/13/ccf44375f8/2/content_hash.txt",
       "prompt": "/13/ccf44375f8/2/prompt.txt"
+    },
+    {
+      "metadata": "/13/ccf44375f8/3/metadata.json",
+      "transcript": "/13/ccf44375f8/3/full.jsonl",
+      "compact_transcript": "/13/ccf44375f8/3/transcript.jsonl",
+      "content_hash": "/13/ccf44375f8/3/content_hash.txt",
+      "prompt": "/13/ccf44375f8/3/prompt.txt"
     }
   ],
   "token_usage": {
