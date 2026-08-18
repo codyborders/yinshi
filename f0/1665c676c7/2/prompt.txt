@@ -1,0 +1,185 @@
+Implement @ plans/2026-08-13-managed-public-launch-readiness.md
+
+---
+
+Continue
+
+---
+
+/skill:software-design-review on the commits
+
+---
+
+Go do those, commit, and run /skill:software-design on the commits
+
+---
+
+go
+
+---
+
+What's our next step to get into production?
+
+---
+
+1. confirmed. What's next?
+
+---
+
+Didn't I already give you a Sprites API token? Where do I get these other pieces from?
+
+---
+
+We don't have a staging backend?
+
+---
+
+Can't sign in to AWS, missing my USB key and authenticator is no longer supported
+
+---
+
+Since you already have `doctl` access just use DigitalOcean Spaces
+
+---
+
+I think you already have access to Backblaze CLI?
+
+---
+
+ok
+
+---
+
+Did you create a droplet? If so, should have the ability to provision ssh keys
+
+---
+
+Why do you need a $12 droplet to test this?
+
+---
+
+Ok, go
+
+---
+
+Just use the $12 droplet for right now
+
+---
+
+Anything left?
+
+---
+
+Most of this doesn't sound necessary for getting Yinshi in a place where I can begin getting beta users for early feedback.
+
+---
+
+No, I don't want to do that. I want to just get it in a place where the risk of data loss is neutralized, we have failure monitoring and manual cleanup. Don't need to set up manual user approval or disabling public signup/provisioning
+
+---
+
+go
+
+---
+
+What's next to make it possible for people to try it?
+
+---
+
+Can we just put all of this on the main branch and stop messing with staging?
+
+---
+
+Ok, go
+
+---
+
+Done
+
+---
+
+I don't see where to add the callbackl?
+
+---
+
+This is different than the redirect uri you told me to input previusly?
+
+---
+
+Done private key is at ~/Downloads/yinshi-beta-coding-agent.2026-08-15.private-key
+
+---
+
+Already generated the secret. It's 73a455eaff453529c5bae433a60ac634875a839b and yes I pasted it here, no we don't need to rotate it. just use it.
+
+---
+
+Why are you unintalling the app? Why are you doing any of this? Why can't we just use the Github app that's already installed, that runs with the main `yinshi` GCP VM already?
+
+---
+
+what are you doing? just use the gloud cli for this there's a gcp vm called `yinshi` that hosts the app, etc.
+
+---
+
+So is it good now? New app running sprites?
+
+---
+
+Well do it. I want to put the app in users hands.
+
+---
+
+use /skill:litprog-skill to update the litprog. don't change the font or colors.
+
+---
+
+I authorize shell-generated updates to lit files for this task.
+
+---
+
+go
+
+---
+
+Bug when I use the app /Users/user/Desktop/Screenshot\ 2026-08-16\ at\ 8.01.41 AM.png
+
+---
+
+Good to go now?
+
+---
+
+Fails when I try to connect openai codex /Users/user/Desktop/Screenshot\ 2026-08-16\ at\ 8.15.59 PM.png
+
+---
+
+Is that how other apps do it?
+
+---
+
+Set up device authorization
+
+---
+
+Why is digitalocean reporting anything at all? We should be using the `yinshi` vm in gcp?
+
+---
+
+And we're still using the original github app, here?
+
+---
+
+Anything left to do?
+
+---
+
+Already authed OAI. Can remove the digiitalocean resources now. Take a snapshot, too.
+
+---
+
+OpenAI works fine. Main issue is when I sign in Minimax is shown as the default providder and I have to select Codex here every time I refresh the page, start a new coding worktree, etc. It should remember my last model selection and only change it if I specifically change it myself. /Users/user/Desktop/Screenshot\ 2026-08-18\ at\ 3.26.20 PM.png
+
+---
+
+Getting timeouts and 500s when I try to query the model /Users/user/Desktop/Screenshot\ 2026-08-18\ at\ 10.42.39 PM.png
