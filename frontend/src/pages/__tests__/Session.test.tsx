@@ -98,6 +98,15 @@ vi.mock("../../hooks/useAgentStream", () => ({
   useAgentStream: (...args: unknown[]) => useAgentStreamMock(...args),
 }));
 
+vi.mock("../../hooks/useAuth", () => ({
+  useAuth: () => ({
+    status: "authenticated",
+    email: "u@t.com",
+    userId: "user-1",
+    logout: vi.fn(),
+  }),
+}));
+
 vi.mock("../../hooks/useCatalog", () => ({
   useCatalog: () => useCatalogMock(),
 }));
@@ -143,7 +152,9 @@ function sessionMetadata(overrides: Record<string, unknown> = {}) {
 }
 
 function mockSessionApi(
-  sessionMetadataValue: Record<string, unknown> | Promise<Record<string, unknown>> = sessionMetadata(),
+  sessionMetadataValue:
+    | Record<string, unknown>
+    | Promise<Record<string, unknown>> = sessionMetadata(),
   messages: unknown[] = [],
 ) {
   const metadata =
@@ -187,6 +198,7 @@ describe("Session", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    localStorage.clear();
     sendPromptMock.mockResolvedValue(undefined);
     cancelMock.mockResolvedValue(undefined);
     useAgentStreamMock.mockReturnValue({
@@ -255,6 +267,51 @@ describe("Session", () => {
     });
   });
 
+  it("remembers a successfully selected model for the authenticated user", async () => {
+    apiPatchMock.mockResolvedValue({ model: openaiModel.ref });
+    mockCatalog({
+      providers: [minimaxProvider, openaiProvider],
+      models: [minimaxModel, openaiModel],
+    });
+    mockSessionApi({ model: minimaxModel.ref });
+
+    renderSession();
+
+    fireEvent.change(await screen.findByLabelText("Model"), {
+      target: { value: openaiModel.ref },
+    });
+
+    await waitFor(() => {
+      expect(localStorage.getItem("yinshi:last-session-model:user-1")).toBe(
+        openaiModel.ref,
+      );
+    });
+  });
+
+  it("preserves the remembered model when a later session update fails", async () => {
+    localStorage.setItem("yinshi:last-session-model:user-1", minimaxModel.ref);
+    apiPatchMock.mockRejectedValue(new Error("save failed"));
+    mockCatalog({
+      providers: [minimaxProvider, openaiProvider],
+      models: [minimaxModel, openaiModel],
+    });
+    mockSessionApi({ model: minimaxModel.ref });
+
+    renderSession();
+
+    const modelSelect = await screen.findByLabelText("Model");
+    setMessagesMock.mockClear();
+    fireEvent.change(modelSelect, {
+      target: { value: openaiModel.ref },
+    });
+
+    await waitFor(() => expect(apiPatchMock).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(setMessagesMock).toHaveBeenCalledTimes(1));
+    expect(localStorage.getItem("yinshi:last-session-model:user-1")).toBe(
+      minimaxModel.ref,
+    );
+  });
+
   it("disables prompting for legacy transcript-only sessions", async () => {
     mockCatalog();
     useAgentStreamMock.mockReturnValue({
@@ -276,11 +333,11 @@ describe("Session", () => {
 
     renderSession();
 
-    const sendButton = await screen.findByRole("button", { name: "Send Prompt" });
+    const sendButton = await screen.findByRole("button", {
+      name: "Send Prompt",
+    });
     expect(sendButton).toBeDisabled();
-    expect(
-      screen.getByText(/predates durable Pi context/),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/predates durable Pi context/)).toBeInTheDocument();
   });
 
   it("omits the thinking override for models that do not support reasoning", async () => {

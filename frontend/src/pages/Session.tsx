@@ -1,9 +1,21 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 import { useParams } from "react-router-dom";
-import { type Message, type SessionInfo, type ThinkingLevel } from "../api/client";
+import {
+  type Message,
+  type SessionInfo,
+  type ThinkingLevel,
+} from "../api/client";
 import ChatView from "../components/ChatView";
 import WorkspaceInspector from "../components/WorkspaceInspector";
 import { useAgentStream, type ChatMessage } from "../hooks/useAgentStream";
+import { useAuth } from "../hooks/useAuth";
 import { useCatalog } from "../hooks/useCatalog";
 import { usePiCommands } from "../hooks/usePiCommands";
 import {
@@ -16,6 +28,7 @@ import {
   getSessionModelOption,
   resolveSessionModelKey,
 } from "../models/sessionModels";
+import { rememberSessionModel } from "../models/sessionModelPreference";
 import { useRuntimeResource } from "../runtime/useRuntimeResource";
 import { parseStoredTurnBlocks } from "../utils/turnEvents";
 
@@ -33,14 +46,20 @@ const LEGACY_PI_CONTEXT_MESSAGE =
 
 function useMediaQuery(query: string): boolean {
   const [matches, setMatches] = useState(() => {
-    if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+    if (
+      typeof window === "undefined" ||
+      typeof window.matchMedia !== "function"
+    ) {
       return false;
     }
     return window.matchMedia(query).matches;
   });
 
   useEffect(() => {
-    if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+    if (
+      typeof window === "undefined" ||
+      typeof window.matchMedia !== "function"
+    ) {
       return;
     }
     const mediaQuery = window.matchMedia(query);
@@ -64,6 +83,7 @@ function storedInspectorWidth(): number {
 
 export default function Session() {
   const { id: encodedSessionId } = useParams<{ id: string }>();
+  const { userId } = useAuth();
   const runtimeState = useRuntimeResource(encodedSessionId);
   const runtimeResource = runtimeState.resource;
   const id = runtimeResource?.resourceId;
@@ -154,7 +174,9 @@ export default function Session() {
 
     async function loadSession() {
       try {
-        const session = await runtimeTransport.get<SessionInfo>(`/api/sessions/${id}`);
+        const session = await runtimeTransport.get<SessionInfo>(
+          `/api/sessions/${id}`,
+        );
         if (cancelled) return;
         setSessionModel(session.model);
         setWorkspaceId(session.workspace_id);
@@ -256,6 +278,7 @@ export default function Session() {
           { model: resolvedModel },
         );
         setSessionModel(updated.model);
+        rememberSessionModel(userId, updated.model);
         if (announce) {
           addSystemMessage(
             `Model changed to ${describeSessionModel(updated.model, catalog.models)}`,
@@ -271,7 +294,7 @@ export default function Session() {
         setUpdatingModel(false);
       }
     },
-    [addSystemMessage, catalog, id, transport],
+    [addSystemMessage, catalog, id, transport, userId],
   );
 
   const handleCommand = useCallback(
@@ -483,7 +506,10 @@ export default function Session() {
       const onMove = (moveEvent: PointerEvent) => {
         const nextWidth = Math.min(
           INSPECTOR_WIDTH_MAX,
-          Math.max(INSPECTOR_WIDTH_MIN, startWidth - (moveEvent.clientX - startX)),
+          Math.max(
+            INSPECTOR_WIDTH_MIN,
+            startWidth - (moveEvent.clientX - startX),
+          ),
         );
         setInspectorWidth(nextWidth);
         sessionStorage.setItem("yinshi-inspector-width", String(nextWidth));

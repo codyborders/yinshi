@@ -11,7 +11,7 @@ import {
 } from "../api/client";
 import { useAuth } from "../hooks/useAuth";
 import { useTheme } from "../hooks/useTheme";
-import { DEFAULT_SESSION_MODEL } from "../models/sessionModels";
+import { preferredSessionModel } from "../models/sessionModelPreference";
 import { listRunnerRepositories } from "../runner/repositories";
 import { resolveRuntimeRef } from "../runtime/resolveRuntime";
 import {
@@ -171,7 +171,7 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const { id: activeSessionId } = useParams<{ id: string }>();
   const location = useLocation();
   const navigate = useNavigate();
-  const { status, email, logout } = useAuth();
+  const { status, email, userId, logout } = useAuth();
   const { theme, toggle: toggleTheme } = useTheme();
   const requestedPrimaryRuntime = useMemo<UnresolvedRuntimeRef>(
     () =>
@@ -197,9 +197,11 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
     try {
       const resolvedPrimary = await resolveRuntimeRef(requestedPrimaryRuntime);
       const primaryTransport = createRuntimeTransport(resolvedPrimary);
-      const data = await primaryTransport.get<Repo[]>("/api/repos").finally(() => {
-        primaryTransport.close();
-      });
+      const data = await primaryTransport
+        .get<Repo[]>("/api/repos")
+        .finally(() => {
+          primaryTransport.close();
+        });
       setPrimaryRuntime(resolvedPrimary);
       const locatedRepositories: LocatedRepo[] = data.map((repository) => ({
         repository,
@@ -432,6 +434,7 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
             repo={repository}
             runtime={runtime}
             activeSessionId={activeSessionId}
+            userId={userId}
             onRepoUpdated={(updatedRepository) =>
               handleRepoUpdated(updatedRepository, runtime)
             }
@@ -522,12 +525,14 @@ function RepoSection({
   repo,
   runtime,
   activeSessionId,
+  userId,
   onRepoUpdated,
   onNavigate,
 }: {
   repo: Repo;
   runtime: RuntimeRef;
   activeSessionId: string | undefined;
+  userId: string | null;
   onRepoUpdated: (repo: Repo) => void;
   onNavigate?: () => void;
 }) {
@@ -584,7 +589,7 @@ function RepoSection({
       // Auto-create a session and navigate to it
       const session = await transport.post<SessionInfo>(
         `/api/workspaces/${ws.id}/sessions`,
-        { model: DEFAULT_SESSION_MODEL },
+        { model: preferredSessionModel(userId) },
       );
       navigate(
         `/app/session/${runtimeResourceId(runtime, session.id, {
@@ -786,6 +791,7 @@ function RepoSection({
               runtime={runtime}
               transport={transport}
               activeSessionId={activeSessionId}
+              userId={userId}
               onNavigate={onNavigate}
               onArchive={() => handleStateChange(ws.id, "archived")}
             />
@@ -820,6 +826,7 @@ function RepoSection({
                     runtime={runtime}
                     transport={transport}
                     activeSessionId={activeSessionId}
+                    userId={userId}
                     onNavigate={onNavigate}
                     onRestore={() => handleStateChange(ws.id, "ready")}
                   />
@@ -837,6 +844,7 @@ function WorkspaceItem({
   runtime,
   transport,
   activeSessionId,
+  userId,
   onNavigate,
   onArchive,
   onRestore,
@@ -845,6 +853,7 @@ function WorkspaceItem({
   runtime: RuntimeRef;
   transport: RuntimeTransport;
   activeSessionId: string | undefined;
+  userId: string | null;
   onNavigate?: () => void;
   onArchive?: () => void;
   onRestore?: () => void;
@@ -883,7 +892,7 @@ function WorkspaceItem({
     try {
       const session = await transport.post<SessionInfo>(
         `/api/workspaces/${workspace.id}/sessions`,
-        { model: DEFAULT_SESSION_MODEL },
+        { model: preferredSessionModel(userId) },
       );
       setSessions([session]);
       navigate(
@@ -1069,9 +1078,11 @@ function ImportForm({
         return;
       }
       const importTransport = createRuntimeTransport(selectedRuntime);
-      const repo = await importTransport.post<Repo>("/api/repos", body).finally(() => {
-        importTransport.close();
-      });
+      const repo = await importTransport
+        .post<Repo>("/api/repos", body)
+        .finally(() => {
+          importTransport.close();
+        });
       onDone(repo, selectedRuntime);
     } catch (err) {
       if (err instanceof ApiError) {

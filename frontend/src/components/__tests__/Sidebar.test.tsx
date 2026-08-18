@@ -26,6 +26,7 @@ vi.mock("../../hooks/useAuth", () => ({
   useAuth: vi.fn(() => ({
     status: "authenticated",
     email: "u@t.com",
+    userId: "user-1",
     logout: mockLogout,
   })),
 }));
@@ -72,6 +73,7 @@ function renderSidebar() {
 
 describe("Sidebar repo settings", () => {
   beforeEach(() => {
+    localStorage.clear();
     mockGet.mockReset();
     mockPost.mockReset();
     mockPatch.mockReset();
@@ -257,6 +259,111 @@ describe("Sidebar repo settings", () => {
     expect(mockListRunnerRepositories).toHaveBeenCalledWith({
       runnerId: "runner-1",
       runnerPublicKey: "MeAwP9ZBjS-MDni5HyLoyu0Pvkhlbc9HZ-SDT3Abj2I",
+    });
+  });
+
+  it("creates a new worktree session with the user's latest remembered model", async () => {
+    mockPost.mockImplementation(async (path: string) => {
+      if (path === "/api/repos/repo-1/workspaces") {
+        return {
+          id: "workspace-1",
+          created_at: "2026-08-18T00:00:00Z",
+          updated_at: "2026-08-18T00:00:00Z",
+          repo_id: "repo-1",
+          name: "steady-river",
+          branch: "steady-river",
+          path: "/tmp/steady-river",
+          state: "ready",
+        };
+      }
+      if (path === "/api/workspaces/workspace-1/sessions") {
+        return {
+          id: "b".repeat(32),
+          created_at: "2026-08-18T00:00:00Z",
+          updated_at: "2026-08-18T00:00:00Z",
+          workspace_id: "workspace-1",
+          status: "idle",
+          model: "openai-codex/gpt-5.6-sol",
+          pi_context_version: 1,
+        };
+      }
+      throw new Error(`Unexpected POST ${path}`);
+    });
+
+    renderSidebar();
+
+    await screen.findByText("demo-repo");
+    localStorage.setItem(
+      "yinshi:last-session-model:user-1",
+      "openai-codex/gpt-5.6-sol",
+    );
+    fireEvent.click(screen.getByTitle("New branch"));
+
+    await waitFor(() => {
+      expect(mockPost).toHaveBeenCalledWith(
+        "/api/workspaces/workspace-1/sessions",
+        { model: "openai-codex/gpt-5.6-sol" },
+      );
+    });
+  });
+
+  it("uses the remembered model when an existing worktree has no session", async () => {
+    localStorage.setItem(
+      "yinshi:last-session-model:user-1",
+      "openai-codex/gpt-5.6-sol",
+    );
+    mockGet.mockImplementation(async (path: string) => {
+      if (path === "/api/repos") {
+        return [
+          {
+            id: "repo-1",
+            created_at: "2026-04-12T00:00:00Z",
+            updated_at: "2026-04-12T00:00:00Z",
+            name: "demo-repo",
+            remote_url: null,
+            root_path: "/tmp/demo-repo",
+            custom_prompt: null,
+            agents_md: null,
+          },
+        ];
+      }
+      if (path === "/api/github/installations") return [];
+      if (path === "/api/repos/repo-1/workspaces") {
+        return [
+          {
+            id: "workspace-1",
+            created_at: "2026-08-18T00:00:00Z",
+            updated_at: "2026-08-18T00:00:00Z",
+            repo_id: "repo-1",
+            name: "steady-river",
+            branch: "steady-river",
+            path: "/tmp/steady-river",
+            state: "ready",
+          },
+        ];
+      }
+      if (path === "/api/workspaces/workspace-1/sessions") return [];
+      throw new Error(`Unexpected GET ${path}`);
+    });
+    mockPost.mockResolvedValue({
+      id: "b".repeat(32),
+      created_at: "2026-08-18T00:00:00Z",
+      updated_at: "2026-08-18T00:00:00Z",
+      workspace_id: "workspace-1",
+      status: "idle",
+      model: "openai-codex/gpt-5.6-sol",
+      pi_context_version: 1,
+    });
+
+    renderSidebar();
+
+    fireEvent.click(await screen.findByText("steady-river"));
+
+    await waitFor(() => {
+      expect(mockPost).toHaveBeenCalledWith(
+        "/api/workspaces/workspace-1/sessions",
+        { model: "openai-codex/gpt-5.6-sol" },
+      );
     });
   });
 

@@ -43179,12 +43179,24 @@ export default function EmptyState() {
 The session page coordinates chat, sidebar selection, prompt submission, cancellation, and the resizable workspace inspector. The root chunk below tangles back to `frontend/src/pages/Session.tsx`.
 
 ```tsx {chunk="frontend-src-pages-session-tsx" file="frontend/src/pages/Session.tsx"}
-import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 import { useParams } from "react-router-dom";
-import { type Message, type SessionInfo, type ThinkingLevel } from "../api/client";
+import {
+  type Message,
+  type SessionInfo,
+  type ThinkingLevel,
+} from "../api/client";
 import ChatView from "../components/ChatView";
 import WorkspaceInspector from "../components/WorkspaceInspector";
 import { useAgentStream, type ChatMessage } from "../hooks/useAgentStream";
+import { useAuth } from "../hooks/useAuth";
 import { useCatalog } from "../hooks/useCatalog";
 import { usePiCommands } from "../hooks/usePiCommands";
 import {
@@ -43197,6 +43209,7 @@ import {
   getSessionModelOption,
   resolveSessionModelKey,
 } from "../models/sessionModels";
+import { rememberSessionModel } from "../models/sessionModelPreference";
 import { useRuntimeResource } from "../runtime/useRuntimeResource";
 import { parseStoredTurnBlocks } from "../utils/turnEvents";
 
@@ -43214,14 +43227,20 @@ const LEGACY_PI_CONTEXT_MESSAGE =
 
 function useMediaQuery(query: string): boolean {
   const [matches, setMatches] = useState(() => {
-    if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+    if (
+      typeof window === "undefined" ||
+      typeof window.matchMedia !== "function"
+    ) {
       return false;
     }
     return window.matchMedia(query).matches;
   });
 
   useEffect(() => {
-    if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+    if (
+      typeof window === "undefined" ||
+      typeof window.matchMedia !== "function"
+    ) {
       return;
     }
     const mediaQuery = window.matchMedia(query);
@@ -43245,6 +43264,7 @@ function storedInspectorWidth(): number {
 
 export default function Session() {
   const { id: encodedSessionId } = useParams<{ id: string }>();
+  const { userId } = useAuth();
   const runtimeState = useRuntimeResource(encodedSessionId);
   const runtimeResource = runtimeState.resource;
   const id = runtimeResource?.resourceId;
@@ -43335,7 +43355,9 @@ export default function Session() {
 
     async function loadSession() {
       try {
-        const session = await runtimeTransport.get<SessionInfo>(`/api/sessions/${id}`);
+        const session = await runtimeTransport.get<SessionInfo>(
+          `/api/sessions/${id}`,
+        );
         if (cancelled) return;
         setSessionModel(session.model);
         setWorkspaceId(session.workspace_id);
@@ -43437,6 +43459,7 @@ export default function Session() {
           { model: resolvedModel },
         );
         setSessionModel(updated.model);
+        rememberSessionModel(userId, updated.model);
         if (announce) {
           addSystemMessage(
             `Model changed to ${describeSessionModel(updated.model, catalog.models)}`,
@@ -43452,7 +43475,7 @@ export default function Session() {
         setUpdatingModel(false);
       }
     },
-    [addSystemMessage, catalog, id, transport],
+    [addSystemMessage, catalog, id, transport, userId],
   );
 
   const handleCommand = useCallback(
@@ -43664,7 +43687,10 @@ export default function Session() {
       const onMove = (moveEvent: PointerEvent) => {
         const nextWidth = Math.min(
           INSPECTOR_WIDTH_MAX,
-          Math.max(INSPECTOR_WIDTH_MIN, startWidth - (moveEvent.clientX - startX)),
+          Math.max(
+            INSPECTOR_WIDTH_MIN,
+            startWidth - (moveEvent.clientX - startX),
+          ),
         );
         setInspectorWidth(nextWidth);
         sessionStorage.setItem("yinshi-inspector-width", String(nextWidth));
@@ -46787,6 +46813,65 @@ export function availableSessionModelsMarkdown(
 }
 ```
 
+## models/sessionModelPreference.ts
+
+A browser preference keeps each user's last confirmed model choice available when Yinshi creates another session. Invalid or unavailable storage falls back to the established default without blocking session creation.
+
+```ts {chunk="frontend-src-models-sessionmodelpreference-ts" file="frontend/src/models/sessionModelPreference.ts"}
+import { DEFAULT_SESSION_MODEL } from "./sessionModels";
+
+const SESSION_MODEL_STORAGE_PREFIX = "yinshi:last-session-model:";
+const LOCAL_USER_SCOPE = "local";
+const MODEL_REF_PATTERN = /^\S+\/\S+$/;
+const MODEL_REF_LENGTH_MAX = 100;
+
+function preferenceStorageKey(userId: string | null): string {
+  const normalizedUserId = userId?.trim();
+  const userScope = normalizedUserId || LOCAL_USER_SCOPE;
+  return `${SESSION_MODEL_STORAGE_PREFIX}${userScope}`;
+}
+
+function normalizeModelRef(model: string | null): string | null {
+  const normalizedModel = model?.trim();
+  if (!normalizedModel || normalizedModel.length > MODEL_REF_LENGTH_MAX) {
+    return null;
+  }
+  if (!MODEL_REF_PATTERN.test(normalizedModel)) {
+    return null;
+  }
+  return normalizedModel;
+}
+
+export function preferredSessionModel(userId: string | null): string {
+  if (typeof window === "undefined") {
+    return DEFAULT_SESSION_MODEL;
+  }
+  try {
+    return (
+      normalizeModelRef(localStorage.getItem(preferenceStorageKey(userId))) ||
+      DEFAULT_SESSION_MODEL
+    );
+  } catch {
+    return DEFAULT_SESSION_MODEL;
+  }
+}
+
+export function rememberSessionModel(
+  userId: string | null,
+  model: string,
+): void {
+  const normalizedModel = normalizeModelRef(model);
+  if (!normalizedModel || typeof window === "undefined") {
+    return;
+  }
+  try {
+    localStorage.setItem(preferenceStorageKey(userId), normalizedModel);
+  } catch {
+    return;
+  }
+}
+```
+
 ## utils/repo.ts
 
 Repository utilities recognize Git URLs, GitHub shorthand, and local paths before import. The root chunk below tangles back to `frontend/src/utils/repo.ts`.
@@ -48419,7 +48504,7 @@ import {
 } from "../api/client";
 import { useAuth } from "../hooks/useAuth";
 import { useTheme } from "../hooks/useTheme";
-import { DEFAULT_SESSION_MODEL } from "../models/sessionModels";
+import { preferredSessionModel } from "../models/sessionModelPreference";
 import { listRunnerRepositories } from "../runner/repositories";
 import { resolveRuntimeRef } from "../runtime/resolveRuntime";
 import {
@@ -48579,7 +48664,7 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const { id: activeSessionId } = useParams<{ id: string }>();
   const location = useLocation();
   const navigate = useNavigate();
-  const { status, email, logout } = useAuth();
+  const { status, email, userId, logout } = useAuth();
   const { theme, toggle: toggleTheme } = useTheme();
   const requestedPrimaryRuntime = useMemo<UnresolvedRuntimeRef>(
     () =>
@@ -48605,9 +48690,11 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
     try {
       const resolvedPrimary = await resolveRuntimeRef(requestedPrimaryRuntime);
       const primaryTransport = createRuntimeTransport(resolvedPrimary);
-      const data = await primaryTransport.get<Repo[]>("/api/repos").finally(() => {
-        primaryTransport.close();
-      });
+      const data = await primaryTransport
+        .get<Repo[]>("/api/repos")
+        .finally(() => {
+          primaryTransport.close();
+        });
       setPrimaryRuntime(resolvedPrimary);
       const locatedRepositories: LocatedRepo[] = data.map((repository) => ({
         repository,
@@ -48840,6 +48927,7 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
             repo={repository}
             runtime={runtime}
             activeSessionId={activeSessionId}
+            userId={userId}
             onRepoUpdated={(updatedRepository) =>
               handleRepoUpdated(updatedRepository, runtime)
             }
@@ -48930,12 +49018,14 @@ function RepoSection({
   repo,
   runtime,
   activeSessionId,
+  userId,
   onRepoUpdated,
   onNavigate,
 }: {
   repo: Repo;
   runtime: RuntimeRef;
   activeSessionId: string | undefined;
+  userId: string | null;
   onRepoUpdated: (repo: Repo) => void;
   onNavigate?: () => void;
 }) {
@@ -48992,7 +49082,7 @@ function RepoSection({
       // Auto-create a session and navigate to it
       const session = await transport.post<SessionInfo>(
         `/api/workspaces/${ws.id}/sessions`,
-        { model: DEFAULT_SESSION_MODEL },
+        { model: preferredSessionModel(userId) },
       );
       navigate(
         `/app/session/${runtimeResourceId(runtime, session.id, {
@@ -49194,6 +49284,7 @@ function RepoSection({
               runtime={runtime}
               transport={transport}
               activeSessionId={activeSessionId}
+              userId={userId}
               onNavigate={onNavigate}
               onArchive={() => handleStateChange(ws.id, "archived")}
             />
@@ -49228,6 +49319,7 @@ function RepoSection({
                     runtime={runtime}
                     transport={transport}
                     activeSessionId={activeSessionId}
+                    userId={userId}
                     onNavigate={onNavigate}
                     onRestore={() => handleStateChange(ws.id, "ready")}
                   />
@@ -49245,6 +49337,7 @@ function WorkspaceItem({
   runtime,
   transport,
   activeSessionId,
+  userId,
   onNavigate,
   onArchive,
   onRestore,
@@ -49253,6 +49346,7 @@ function WorkspaceItem({
   runtime: RuntimeRef;
   transport: RuntimeTransport;
   activeSessionId: string | undefined;
+  userId: string | null;
   onNavigate?: () => void;
   onArchive?: () => void;
   onRestore?: () => void;
@@ -49291,7 +49385,7 @@ function WorkspaceItem({
     try {
       const session = await transport.post<SessionInfo>(
         `/api/workspaces/${workspace.id}/sessions`,
-        { model: DEFAULT_SESSION_MODEL },
+        { model: preferredSessionModel(userId) },
       );
       setSessions([session]);
       navigate(
@@ -49477,9 +49571,11 @@ function ImportForm({
         return;
       }
       const importTransport = createRuntimeTransport(selectedRuntime);
-      const repo = await importTransport.post<Repo>("/api/repos", body).finally(() => {
-        importTransport.close();
-      });
+      const repo = await importTransport
+        .post<Repo>("/api/repos", body)
+        .finally(() => {
+          importTransport.close();
+        });
       onDone(repo, selectedRuntime);
     } catch (err) {
       if (err instanceof ApiError) {
