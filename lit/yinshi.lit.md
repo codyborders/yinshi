@@ -20699,7 +20699,8 @@ async def _consume_runner_relay_messages(
 ) -> bool:
     """Consume controls while dispatching one binary operation per transfer."""
     send_lock = asyncio.Lock()
-    binary_tasks: dict[str, asyncio.Task[None]] = {}
+    binary_tasks: dict[str, set[asyncio.Task[None]]] = {}
+    busy_transfer_tasks: dict[str, asyncio.Task[None]] = {}
     all_binary_tasks: set[asyncio.Task[None]] = set()
     protocol_error = asyncio.Event()
 
@@ -20727,11 +20728,13 @@ async def _consume_runner_relay_messages(
                     except ValueError:
                         transfer_id = ""
                     if transfer_id == raw_transfer_id:
-                        task = binary_tasks.get(transfer_id)
-                        await cancel_binary_tasks(() if task is None else (task,))
+                        tasks = binary_tasks.get(transfer_id)
+                        await cancel_binary_tasks(() if tasks is None else tuple(tasks))
         elif isinstance(payload, dict) and payload.get("type") == "quiesce":
             if set(payload) == {"job_id", "type"}:
-                await cancel_binary_tasks(tuple(binary_tasks.values()))
+                await cancel_binary_tasks(
+                    tuple(task for tasks in binary_tasks.values() for task in tasks)
+                )
         return await runtime.handle_control(message)
 
     async def dispatch_binary(transfer_id: str, frame: bytes) -> None:
@@ -20751,6 +20754,9 @@ async def _consume_runner_relay_messages(
                     )
                 )
             else:
+                current_task = asyncio.current_task()
+                if busy_transfer_tasks.get(transfer_id) is current_task:
+                    busy_transfer_tasks.pop(transfer_id, None)
                 await send(response)
         except asyncio.CancelledError:
             raise
@@ -20762,8 +20768,13 @@ async def _consume_runner_relay_messages(
                 pass
         finally:
             current_task = asyncio.current_task()
-            if binary_tasks.get(transfer_id) is current_task:
-                binary_tasks.pop(transfer_id, None)
+            if busy_transfer_tasks.get(transfer_id) is current_task:
+                busy_transfer_tasks.pop(transfer_id, None)
+            tasks = binary_tasks.get(transfer_id)
+            if current_task is not None and tasks is not None:
+                tasks.discard(current_task)
+                if not tasks:
+                    binary_tasks.pop(transfer_id, None)
 
     try:
         while True:
@@ -20786,10 +20797,11 @@ async def _consume_runner_relay_messages(
             if len(frame) <= 16:
                 raise ValueError("Runner relay frame has an invalid length")
             transfer_id = str(uuid.UUID(bytes=frame[:16]))
-            if transfer_id in binary_tasks:
+            if transfer_id in busy_transfer_tasks:
                 raise ValueError("Runner relay transfer already has an active operation")
             task = asyncio.create_task(dispatch_binary(transfer_id, frame))
-            binary_tasks[transfer_id] = task
+            busy_transfer_tasks[transfer_id] = task
+            binary_tasks.setdefault(transfer_id, set()).add(task)
             all_binary_tasks.add(task)
             task.add_done_callback(all_binary_tasks.discard)
     except (RuntimeError, TypeError, ValueError):

@@ -420,6 +420,139 @@ async def test_runner_relay_dispatches_other_transfers_while_one_rpc_is_blocked(
 
 
 @pytest.mark.asyncio
+async def test_runner_relay_accepts_next_frame_after_response_is_delivered() -> None:
+    """One transfer may continue after delivery while the prior send completes."""
+    transfer_id = uuid.uuid4()
+    first_response_delivered = asyncio.Event()
+    second_request_received = asyncio.Event()
+    release_first_send = asyncio.Event()
+    second_response_sent = asyncio.Event()
+    stop_receive = asyncio.Event()
+
+    class Runtime:
+        active_transfer_ids = (str(transfer_id),)
+
+        async def handle_binary(self, message: bytes, *, current_time: int) -> bytes:
+            del current_time
+            return message[:16] + message[16:] + b"-response"
+
+    class WebSocket:
+        def __init__(self) -> None:
+            self.receive_count = 0
+            self.sent: list[bytes] = []
+
+        async def recv(self) -> bytes:
+            self.receive_count += 1
+            if self.receive_count == 1:
+                return transfer_id.bytes + b"first"
+            if self.receive_count == 2:
+                await first_response_delivered.wait()
+                second_request_received.set()
+                return transfer_id.bytes + b"second"
+            await stop_receive.wait()
+            raise RuntimeError("stop")
+
+        async def send(self, message: bytes) -> None:
+            self.sent.append(message)
+            if len(self.sent) == 1:
+                first_response_delivered.set()
+                await release_first_send.wait()
+            elif len(self.sent) == 2:
+                second_response_sent.set()
+
+        async def close(self, *, code: int, reason: str) -> None:
+            return None
+
+    websocket = WebSocket()
+    consumer = asyncio.create_task(
+        runner_agent._consume_runner_relay_messages(
+            Runtime(),  # type: ignore[arg-type]
+            websocket,  # type: ignore[arg-type]
+        )
+    )
+    await asyncio.wait_for(second_request_received.wait(), timeout=0.1)
+    release_first_send.set()
+    await asyncio.wait_for(second_response_sent.wait(), timeout=0.1)
+    stop_receive.set()
+    with pytest.raises(RuntimeError, match="Runner relay protocol rejected"):
+        await consumer
+
+    assert websocket.sent == [
+        transfer_id.bytes + b"first-response",
+        transfer_id.bytes + b"second-response",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_runner_relay_completed_sender_cannot_release_newer_operation() -> None:
+    """A stale sender must not clear a newer operation's busy ownership."""
+    transfer_id = uuid.uuid4()
+    first_response_delivered = asyncio.Event()
+    release_first_send = asyncio.Event()
+    first_send_finished = asyncio.Event()
+    second_operation_started = asyncio.Event()
+    second_operation_cancelled = asyncio.Event()
+    third_operation_started = asyncio.Event()
+
+    class Runtime:
+        active_transfer_ids = (str(transfer_id),)
+
+        async def handle_binary(self, message: bytes, *, current_time: int) -> bytes:
+            del current_time
+            payload = message[16:]
+            if payload == b"second":
+                second_operation_started.set()
+                try:
+                    await asyncio.Event().wait()
+                finally:
+                    second_operation_cancelled.set()
+            if payload == b"third":
+                third_operation_started.set()
+            return message[:16] + payload + b"-response"
+
+    class WebSocket:
+        def __init__(self) -> None:
+            self.receive_count = 0
+
+        async def recv(self) -> bytes:
+            self.receive_count += 1
+            if self.receive_count == 1:
+                return transfer_id.bytes + b"first"
+            if self.receive_count == 2:
+                await first_response_delivered.wait()
+                return transfer_id.bytes + b"second"
+            if self.receive_count == 3:
+                await second_operation_started.wait()
+                release_first_send.set()
+                await first_send_finished.wait()
+                await asyncio.sleep(0)
+                return transfer_id.bytes + b"third"
+            await third_operation_started.wait()
+            raise RuntimeError("stop")
+
+        async def send(self, message: bytes) -> None:
+            if message.endswith(b"first-response"):
+                first_response_delivered.set()
+                await release_first_send.wait()
+                first_send_finished.set()
+
+        async def close(self, *, code: int, reason: str) -> None:
+            return None
+
+    with pytest.raises(RuntimeError, match="Runner relay protocol rejected"):
+        await asyncio.wait_for(
+            runner_agent._consume_runner_relay_messages(
+                Runtime(),  # type: ignore[arg-type]
+                WebSocket(),  # type: ignore[arg-type]
+            ),
+            timeout=0.1,
+        )
+
+    assert second_operation_cancelled.is_set()
+    assert not third_operation_started.is_set()
+
+
+@pytest.mark.asyncio
 async def test_runner_relay_close_cancels_active_transfer_before_retirement() -> None:
     """A browser close must stop active work before releasing its transfer."""
     transfer_id = uuid.uuid4()
