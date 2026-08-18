@@ -1,0 +1,29 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "f01665c676c7",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "backend/src/yinshi/tenant.py",
+    "backend/tests/test_tenant.py",
+    "frontend/src/runner/encryptedRunnerClient.test.ts",
+    "frontend/src/runner/encryptedRunnerClient.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/f0/1665c676c7/0/metadata.json",
+      "transcript": "/f0/1665c676c7/0/full.jsonl",
+      "compact_transcript": "/f0/1665c676c7/0/transcript.jsonl",
+      "content_hash": "/f0/1665c676c7/0/content_hash.txt",
+      "prompt": "/f0/1665c676c7/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 9088764,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 398142976,
+    "output_tokens": 682057,
+    "api_call_count": 2284
+  }
+}
