@@ -62,6 +62,41 @@ def test_create_archive_encrypts_both_guest_data_roots(tmp_path: Path) -> None:
     )
 
 
+def test_archive_with_large_file_inventory_remains_restorable(tmp_path: Path) -> None:
+    """A realistic repository manifest must remain within restore limits."""
+    import yinshi.managed_backup_guest as guest
+
+    sqlite_root = tmp_path / "sqlite"
+    files_root = tmp_path / "files"
+    sqlite_root.mkdir()
+    files_root.mkdir()
+    _write_data_key(sqlite_root)
+    for index in range(700):
+        (files_root / f"source-{index:04d}-{'x' * 80}.txt").write_bytes(b"")
+    context = guest.ManagedArchiveContext(
+        archive_id="archive",
+        created_at="2026-08-13T00:00:00+00:00",
+        owner_digest="a" * 64,
+        runtime_generation=1,
+    )
+    archive_path = tmp_path / "archive.enc"
+
+    guest.create_managed_backup_archive(
+        sqlite_root=sqlite_root,
+        files_root=files_root,
+        archive_path=archive_path,
+        archive_key=b"k" * 32,
+        context=context,
+    )
+
+    members = guest.inspect_managed_backup_archive(
+        archive_path,
+        archive_key=b"k" * 32,
+        expected_context=context,
+    )
+    assert len(members) == 701
+
+
 def test_create_archive_requires_portable_data_key(tmp_path: Path) -> None:
     """Backup creation should reject roots without portable key material."""
     from yinshi.managed_backup_guest import (

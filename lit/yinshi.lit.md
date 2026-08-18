@@ -26752,6 +26752,7 @@ _MANIFEST_NAME = "manifest.json"
 _PORTABLE_DATA_KEY_MEMBER = "sqlite/.yinshi-data-protection-key"
 _PORTABLE_DATA_KEY_ERROR = "managed backup portable data-protection key is invalid"
 _MEMBER_COUNT_MAX = 200_000
+_MANIFEST_BYTES_MAX = 64 * 1024 * 1024
 _MEMBER_BYTES_MAX = 64 * 1024 * 1024 * 1024
 _EXPANDED_BYTES_MAX = 200 * 1024 * 1024 * 1024
 _STATE_ROOT = Path("/var/lib/yinshi")
@@ -26968,6 +26969,8 @@ def create_managed_backup_archive(
     files = sorted(sqlite_files + shared_files, key=lambda item: item[1])
     member_names = tuple(member_name for _path, member_name, _metadata in files)
     manifest = _manifest(context, member_names)
+    if len(manifest) > _MANIFEST_BYTES_MAX:
+        raise ValueError("managed backup manifest exceeds the size limit")
     temporary_parent = archive_path.parent
     temporary_parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(prefix=".archive-", dir=temporary_parent)
@@ -27045,7 +27048,7 @@ def _inspect_tar(tar_path: Path, expected_context: ManagedArchiveContext) -> tup
                 raise ValueError("managed backup exceeds the expanded size limit")
             members[member.name] = member
         manifest_member = members.pop(_MANIFEST_NAME, None)
-        if manifest_member is None or manifest_member.size > 64 * 1024:
+        if manifest_member is None or manifest_member.size > _MANIFEST_BYTES_MAX:
             raise ValueError("managed backup manifest is missing or too large")
         manifest_source = archive.extractfile(manifest_member)
         if manifest_source is None:
