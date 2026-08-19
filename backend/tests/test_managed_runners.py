@@ -209,6 +209,10 @@ def test_restore_activation_with_lease_completes_job_in_same_transaction(auth_cl
         start_managed_backup_restore,
     )
     from yinshi.services.managed_runners import activate_managed_restore_candidate
+    from yinshi.services.managed_sprite_registry import (
+        list_managed_sprite_identities,
+        register_managed_sprite_identity,
+    )
     from yinshi.services.runners import create_runner_registration
 
     now = datetime(2026, 8, 12, 12, 0, tzinfo=timezone.utc)
@@ -276,6 +280,22 @@ def test_restore_activation_with_lease_completes_job_in_same_transaction(auth_cl
         lease_expires_at=now + timedelta(minutes=2),
     )
     assert claimed is not None
+    register_managed_sprite_identity(
+        sprite_name=claim.runtime.sprite_name,
+        identity_kind="runtime",
+        user_id=tenant.user_id,
+        job_id=None,
+        lifecycle_status="active",
+        now=now,
+    )
+    register_managed_sprite_identity(
+        sprite_name="candidate-sprite",
+        identity_kind="restore_candidate",
+        user_id=tenant.user_id,
+        job_id=job_id,
+        lifecycle_status="creating",
+        now=now,
+    )
 
     assert activate_managed_restore_candidate(
         tenant.user_id,
@@ -291,6 +311,11 @@ def test_restore_activation_with_lease_completes_job_in_same_transaction(auth_cl
     assert operation is not None
     assert operation.phase == "activated"
     assert operation.activation_generation == claim.runtime.generation + 1
+    identities = {item.sprite_name: item for item in list_managed_sprite_identities()}
+    assert identities[claim.runtime.sprite_name].lifecycle_status == "retired"
+    assert identities["candidate-sprite"].identity_kind == "runtime"
+    assert identities["candidate-sprite"].job_id is None
+    assert identities["candidate-sprite"].lifecycle_status == "active"
 
 
 def test_restore_candidate_promotion_atomically_replaces_active_runtime(auth_client) -> None:

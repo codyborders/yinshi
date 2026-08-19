@@ -23424,7 +23424,7 @@ def activate_managed_restore_candidate(
         try:
             database.execute("BEGIN IMMEDIATE")
             runtime = database.execute(
-                """SELECT runner_id FROM managed_runtimes
+                """SELECT runner_id, sprite_external_id FROM managed_runtimes
                    WHERE user_id = ? AND generation = ? AND lifecycle_status = 'ready'""",
                 (normalized_user_id, source_generation),
             ).fetchone()
@@ -23439,6 +23439,32 @@ def activate_managed_restore_candidate(
                 (candidate_runner, normalized_user_id),
             ).fetchone()
             if runtime is None or candidate is None:
+                database.rollback()
+                return False
+            source_identity = database.execute(
+                """SELECT identity_kind, user_id, job_id, lifecycle_status
+                   FROM managed_sprite_identities WHERE sprite_name = ?""",
+                (runtime["sprite_external_id"],),
+            ).fetchone()
+            candidate_identity = database.execute(
+                """SELECT identity_kind, user_id, job_id, lifecycle_status
+                   FROM managed_sprite_identities WHERE sprite_name = ?""",
+                (candidate_sprite,),
+            ).fetchone()
+            identity_tracking_exists = source_identity is not None or candidate_identity is not None
+            if identity_tracking_exists and (
+                source_identity is None
+                or source_identity["identity_kind"] != "runtime"
+                or source_identity["user_id"] != normalized_user_id
+                or source_identity["job_id"] is not None
+                or source_identity["lifecycle_status"] != "active"
+                or candidate_identity is None
+                or candidate_identity["identity_kind"] != "restore_candidate"
+                or candidate_identity["user_id"] != normalized_user_id
+                or candidate_identity["job_id"] != normalized_job_id
+                or candidate_identity["lifecycle_status"] != "creating"
+                or candidate_sprite == runtime["sprite_external_id"]
+            ):
                 database.rollback()
                 return False
             operation = database.execute(
@@ -23520,6 +23546,32 @@ def activate_managed_restore_candidate(
             if operation_result.rowcount != 1:
                 database.rollback()
                 return False
+            if identity_tracking_exists:
+                source_identity_result = database.execute(
+                    """UPDATE managed_sprite_identities
+                       SET lifecycle_status = 'retired', updated_at = ?
+                       WHERE sprite_name = ? AND identity_kind = 'runtime'
+                         AND user_id = ? AND job_id IS NULL
+                         AND lifecycle_status = 'active'""",
+                    (now_text, runtime["sprite_external_id"], normalized_user_id),
+                )
+                candidate_identity_result = database.execute(
+                    """UPDATE managed_sprite_identities
+                       SET identity_kind = 'runtime', job_id = NULL,
+                           lifecycle_status = 'active', updated_at = ?
+                       WHERE sprite_name = ? AND identity_kind = 'restore_candidate'
+                         AND user_id = ? AND job_id = ?
+                         AND lifecycle_status = 'creating'""",
+                    (
+                        now_text,
+                        candidate_sprite,
+                        normalized_user_id,
+                        normalized_job_id,
+                    ),
+                )
+                if source_identity_result.rowcount != 1 or candidate_identity_result.rowcount != 1:
+                    database.rollback()
+                    return False
             database.execute(
                 "DELETE FROM managed_runtime_activation_guards WHERE user_id = ?",
                 (normalized_user_id,),

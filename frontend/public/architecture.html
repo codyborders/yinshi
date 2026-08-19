@@ -24470,7 +24470,7 @@ class="sourceCode python"><code class="sourceCode python"><span id="cb61-1"><a h
 <span id="cb61-156"><a href="#cb61-156" aria-hidden="true" tabindex="-1"></a>        <span class="cf">try</span>:</span>
 <span id="cb61-157"><a href="#cb61-157" aria-hidden="true" tabindex="-1"></a>            database.execute(<span class="st">&quot;BEGIN IMMEDIATE&quot;</span>)</span>
 <span id="cb61-158"><a href="#cb61-158" aria-hidden="true" tabindex="-1"></a>            runtime <span class="op">=</span> database.execute(</span>
-<span id="cb61-159"><a href="#cb61-159" aria-hidden="true" tabindex="-1"></a>                <span class="st">&quot;&quot;&quot;SELECT runner_id FROM managed_runtimes</span></span>
+<span id="cb61-159"><a href="#cb61-159" aria-hidden="true" tabindex="-1"></a>                <span class="st">&quot;&quot;&quot;SELECT runner_id, sprite_external_id FROM managed_runtimes</span></span>
 <span id="cb61-160"><a href="#cb61-160" aria-hidden="true" tabindex="-1"></a><span class="st">                   WHERE user_id = ? AND generation = ? AND lifecycle_status = &#39;ready&#39;&quot;&quot;&quot;</span>,</span>
 <span id="cb61-161"><a href="#cb61-161" aria-hidden="true" tabindex="-1"></a>                (normalized_user_id, source_generation),</span>
 <span id="cb61-162"><a href="#cb61-162" aria-hidden="true" tabindex="-1"></a>            ).fetchone()</span>
@@ -24487,595 +24487,647 @@ class="sourceCode python"><code class="sourceCode python"><span id="cb61-1"><a h
 <span id="cb61-173"><a href="#cb61-173" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> runtime <span class="kw">is</span> <span class="va">None</span> <span class="kw">or</span> candidate <span class="kw">is</span> <span class="va">None</span>:</span>
 <span id="cb61-174"><a href="#cb61-174" aria-hidden="true" tabindex="-1"></a>                database.rollback()</span>
 <span id="cb61-175"><a href="#cb61-175" aria-hidden="true" tabindex="-1"></a>                <span class="cf">return</span> <span class="va">False</span></span>
-<span id="cb61-176"><a href="#cb61-176" aria-hidden="true" tabindex="-1"></a>            operation <span class="op">=</span> database.execute(</span>
-<span id="cb61-177"><a href="#cb61-177" aria-hidden="true" tabindex="-1"></a>                <span class="st">&quot;&quot;&quot;SELECT 1 FROM managed_backup_operations</span></span>
-<span id="cb61-178"><a href="#cb61-178" aria-hidden="true" tabindex="-1"></a><span class="st">                   WHERE user_id = ? AND job_id = ? AND operation = &#39;restore&#39;</span></span>
-<span id="cb61-179"><a href="#cb61-179" aria-hidden="true" tabindex="-1"></a><span class="st">                     AND status = &#39;running&#39; AND runtime_generation = ?</span></span>
-<span id="cb61-180"><a href="#cb61-180" aria-hidden="true" tabindex="-1"></a><span class="st">                     AND lease_token = ? AND lease_expires_at &gt; ?&quot;&quot;&quot;</span>,</span>
-<span id="cb61-181"><a href="#cb61-181" aria-hidden="true" tabindex="-1"></a>                (</span>
-<span id="cb61-182"><a href="#cb61-182" aria-hidden="true" tabindex="-1"></a>                    normalized_user_id,</span>
-<span id="cb61-183"><a href="#cb61-183" aria-hidden="true" tabindex="-1"></a>                    normalized_job_id,</span>
-<span id="cb61-184"><a href="#cb61-184" aria-hidden="true" tabindex="-1"></a>                    source_generation,</span>
-<span id="cb61-185"><a href="#cb61-185" aria-hidden="true" tabindex="-1"></a>                    normalized_lease_token,</span>
-<span id="cb61-186"><a href="#cb61-186" aria-hidden="true" tabindex="-1"></a>                    now_text,</span>
-<span id="cb61-187"><a href="#cb61-187" aria-hidden="true" tabindex="-1"></a>                ),</span>
-<span id="cb61-188"><a href="#cb61-188" aria-hidden="true" tabindex="-1"></a>            ).fetchone()</span>
-<span id="cb61-189"><a href="#cb61-189" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> operation <span class="kw">is</span> <span class="va">None</span>:</span>
-<span id="cb61-190"><a href="#cb61-190" aria-hidden="true" tabindex="-1"></a>                database.rollback()</span>
-<span id="cb61-191"><a href="#cb61-191" aria-hidden="true" tabindex="-1"></a>                <span class="cf">return</span> <span class="va">False</span></span>
-<span id="cb61-192"><a href="#cb61-192" aria-hidden="true" tabindex="-1"></a>            old_runner_id <span class="op">=</span> runtime[<span class="st">&quot;runner_id&quot;</span>]</span>
-<span id="cb61-193"><a href="#cb61-193" aria-hidden="true" tabindex="-1"></a>            database.execute(</span>
-<span id="cb61-194"><a href="#cb61-194" aria-hidden="true" tabindex="-1"></a>                <span class="st">&quot;&quot;&quot;UPDATE user_runners</span></span>
-<span id="cb61-195"><a href="#cb61-195" aria-hidden="true" tabindex="-1"></a><span class="st">                   SET status = &#39;revoked&#39;, revoked_at = ?, registration_token_hash = NULL,</span></span>
-<span id="cb61-196"><a href="#cb61-196" aria-hidden="true" tabindex="-1"></a><span class="st">                       registration_token_expires_at = NULL, runner_token_hash = NULL</span></span>
-<span id="cb61-197"><a href="#cb61-197" aria-hidden="true" tabindex="-1"></a><span class="st">                   WHERE id = ? AND user_id = ? AND kind = &#39;managed&#39;&quot;&quot;&quot;</span>,</span>
-<span id="cb61-198"><a href="#cb61-198" aria-hidden="true" tabindex="-1"></a>                (now_text, old_runner_id, normalized_user_id),</span>
-<span id="cb61-199"><a href="#cb61-199" aria-hidden="true" tabindex="-1"></a>            )</span>
-<span id="cb61-200"><a href="#cb61-200" aria-hidden="true" tabindex="-1"></a>            database.execute(</span>
-<span id="cb61-201"><a href="#cb61-201" aria-hidden="true" tabindex="-1"></a>                <span class="st">&quot;&quot;&quot;INSERT INTO managed_runtime_activation_guards (</span></span>
-<span id="cb61-202"><a href="#cb61-202" aria-hidden="true" tabindex="-1"></a><span class="st">                       user_id, job_id, lease_token</span></span>
-<span id="cb61-203"><a href="#cb61-203" aria-hidden="true" tabindex="-1"></a><span class="st">                   ) VALUES (?, ?, ?)&quot;&quot;&quot;</span>,</span>
-<span id="cb61-204"><a href="#cb61-204" aria-hidden="true" tabindex="-1"></a>                (normalized_user_id, normalized_job_id, normalized_lease_token),</span>
-<span id="cb61-205"><a href="#cb61-205" aria-hidden="true" tabindex="-1"></a>            )</span>
-<span id="cb61-206"><a href="#cb61-206" aria-hidden="true" tabindex="-1"></a>            database.execute(</span>
-<span id="cb61-207"><a href="#cb61-207" aria-hidden="true" tabindex="-1"></a>                <span class="st">&quot;DELETE FROM user_runners WHERE user_id = ? AND kind = &#39;managed_retired&#39;&quot;</span>,</span>
-<span id="cb61-208"><a href="#cb61-208" aria-hidden="true" tabindex="-1"></a>                (normalized_user_id,),</span>
-<span id="cb61-209"><a href="#cb61-209" aria-hidden="true" tabindex="-1"></a>            )</span>
-<span id="cb61-210"><a href="#cb61-210" aria-hidden="true" tabindex="-1"></a>            database.execute(</span>
-<span id="cb61-211"><a href="#cb61-211" aria-hidden="true" tabindex="-1"></a>                <span class="st">&quot;UPDATE user_runners SET kind = &#39;managed_retired&#39; WHERE id = ?&quot;</span>,</span>
-<span id="cb61-212"><a href="#cb61-212" aria-hidden="true" tabindex="-1"></a>                (old_runner_id,),</span>
-<span id="cb61-213"><a href="#cb61-213" aria-hidden="true" tabindex="-1"></a>            )</span>
-<span id="cb61-214"><a href="#cb61-214" aria-hidden="true" tabindex="-1"></a>            database.execute(</span>
-<span id="cb61-215"><a href="#cb61-215" aria-hidden="true" tabindex="-1"></a>                <span class="st">&quot;UPDATE user_runners SET kind = &#39;managed&#39; WHERE id = ?&quot;</span>,</span>
-<span id="cb61-216"><a href="#cb61-216" aria-hidden="true" tabindex="-1"></a>                (candidate_runner,),</span>
-<span id="cb61-217"><a href="#cb61-217" aria-hidden="true" tabindex="-1"></a>            )</span>
-<span id="cb61-218"><a href="#cb61-218" aria-hidden="true" tabindex="-1"></a>            result <span class="op">=</span> database.execute(</span>
-<span id="cb61-219"><a href="#cb61-219" aria-hidden="true" tabindex="-1"></a>                <span class="st">&quot;&quot;&quot;UPDATE managed_runtimes</span></span>
-<span id="cb61-220"><a href="#cb61-220" aria-hidden="true" tabindex="-1"></a><span class="st">                   SET runner_id = ?, sprite_external_id = ?, generation = ?,</span></span>
-<span id="cb61-221"><a href="#cb61-221" aria-hidden="true" tabindex="-1"></a><span class="st">                       artifact_version = ?, updated_at = ?, last_error = NULL</span></span>
-<span id="cb61-222"><a href="#cb61-222" aria-hidden="true" tabindex="-1"></a><span class="st">                   WHERE user_id = ? AND generation = ? AND lifecycle_status = &#39;ready&#39;&quot;&quot;&quot;</span>,</span>
-<span id="cb61-223"><a href="#cb61-223" aria-hidden="true" tabindex="-1"></a>                (</span>
-<span id="cb61-224"><a href="#cb61-224" aria-hidden="true" tabindex="-1"></a>                    candidate_runner,</span>
-<span id="cb61-225"><a href="#cb61-225" aria-hidden="true" tabindex="-1"></a>                    candidate_sprite,</span>
-<span id="cb61-226"><a href="#cb61-226" aria-hidden="true" tabindex="-1"></a>                    source_generation <span class="op">+</span> <span class="dv">1</span>,</span>
-<span id="cb61-227"><a href="#cb61-227" aria-hidden="true" tabindex="-1"></a>                    artifact,</span>
-<span id="cb61-228"><a href="#cb61-228" aria-hidden="true" tabindex="-1"></a>                    now_text,</span>
-<span id="cb61-229"><a href="#cb61-229" aria-hidden="true" tabindex="-1"></a>                    normalized_user_id,</span>
-<span id="cb61-230"><a href="#cb61-230" aria-hidden="true" tabindex="-1"></a>                    source_generation,</span>
-<span id="cb61-231"><a href="#cb61-231" aria-hidden="true" tabindex="-1"></a>                ),</span>
-<span id="cb61-232"><a href="#cb61-232" aria-hidden="true" tabindex="-1"></a>            )</span>
-<span id="cb61-233"><a href="#cb61-233" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> result.rowcount <span class="op">!=</span> <span class="dv">1</span>:</span>
-<span id="cb61-234"><a href="#cb61-234" aria-hidden="true" tabindex="-1"></a>                database.rollback()</span>
-<span id="cb61-235"><a href="#cb61-235" aria-hidden="true" tabindex="-1"></a>                <span class="cf">return</span> <span class="va">False</span></span>
-<span id="cb61-236"><a href="#cb61-236" aria-hidden="true" tabindex="-1"></a>            operation_result <span class="op">=</span> database.execute(</span>
-<span id="cb61-237"><a href="#cb61-237" aria-hidden="true" tabindex="-1"></a>                <span class="st">&quot;&quot;&quot;UPDATE managed_backup_operations</span></span>
-<span id="cb61-238"><a href="#cb61-238" aria-hidden="true" tabindex="-1"></a><span class="st">                   SET phase = &#39;activated&#39;, activation_generation = ?, updated_at = ?</span></span>
-<span id="cb61-239"><a href="#cb61-239" aria-hidden="true" tabindex="-1"></a><span class="st">                   WHERE user_id = ? AND job_id = ? AND operation = &#39;restore&#39;</span></span>
-<span id="cb61-240"><a href="#cb61-240" aria-hidden="true" tabindex="-1"></a><span class="st">                     AND status = &#39;running&#39; AND runtime_generation = ?</span></span>
-<span id="cb61-241"><a href="#cb61-241" aria-hidden="true" tabindex="-1"></a><span class="st">                     AND lease_token = ? AND lease_expires_at &gt; ?&quot;&quot;&quot;</span>,</span>
-<span id="cb61-242"><a href="#cb61-242" aria-hidden="true" tabindex="-1"></a>                (</span>
-<span id="cb61-243"><a href="#cb61-243" aria-hidden="true" tabindex="-1"></a>                    source_generation <span class="op">+</span> <span class="dv">1</span>,</span>
-<span id="cb61-244"><a href="#cb61-244" aria-hidden="true" tabindex="-1"></a>                    now_text,</span>
-<span id="cb61-245"><a href="#cb61-245" aria-hidden="true" tabindex="-1"></a>                    normalized_user_id,</span>
-<span id="cb61-246"><a href="#cb61-246" aria-hidden="true" tabindex="-1"></a>                    normalized_job_id,</span>
-<span id="cb61-247"><a href="#cb61-247" aria-hidden="true" tabindex="-1"></a>                    source_generation,</span>
-<span id="cb61-248"><a href="#cb61-248" aria-hidden="true" tabindex="-1"></a>                    normalized_lease_token,</span>
-<span id="cb61-249"><a href="#cb61-249" aria-hidden="true" tabindex="-1"></a>                    now_text,</span>
-<span id="cb61-250"><a href="#cb61-250" aria-hidden="true" tabindex="-1"></a>                ),</span>
-<span id="cb61-251"><a href="#cb61-251" aria-hidden="true" tabindex="-1"></a>            )</span>
-<span id="cb61-252"><a href="#cb61-252" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> operation_result.rowcount <span class="op">!=</span> <span class="dv">1</span>:</span>
-<span id="cb61-253"><a href="#cb61-253" aria-hidden="true" tabindex="-1"></a>                database.rollback()</span>
-<span id="cb61-254"><a href="#cb61-254" aria-hidden="true" tabindex="-1"></a>                <span class="cf">return</span> <span class="va">False</span></span>
-<span id="cb61-255"><a href="#cb61-255" aria-hidden="true" tabindex="-1"></a>            database.execute(</span>
-<span id="cb61-256"><a href="#cb61-256" aria-hidden="true" tabindex="-1"></a>                <span class="st">&quot;DELETE FROM managed_runtime_activation_guards WHERE user_id = ?&quot;</span>,</span>
-<span id="cb61-257"><a href="#cb61-257" aria-hidden="true" tabindex="-1"></a>                (normalized_user_id,),</span>
+<span id="cb61-176"><a href="#cb61-176" aria-hidden="true" tabindex="-1"></a>            source_identity <span class="op">=</span> database.execute(</span>
+<span id="cb61-177"><a href="#cb61-177" aria-hidden="true" tabindex="-1"></a>                <span class="st">&quot;&quot;&quot;SELECT identity_kind, user_id, job_id, lifecycle_status</span></span>
+<span id="cb61-178"><a href="#cb61-178" aria-hidden="true" tabindex="-1"></a><span class="st">                   FROM managed_sprite_identities WHERE sprite_name = ?&quot;&quot;&quot;</span>,</span>
+<span id="cb61-179"><a href="#cb61-179" aria-hidden="true" tabindex="-1"></a>                (runtime[<span class="st">&quot;sprite_external_id&quot;</span>],),</span>
+<span id="cb61-180"><a href="#cb61-180" aria-hidden="true" tabindex="-1"></a>            ).fetchone()</span>
+<span id="cb61-181"><a href="#cb61-181" aria-hidden="true" tabindex="-1"></a>            candidate_identity <span class="op">=</span> database.execute(</span>
+<span id="cb61-182"><a href="#cb61-182" aria-hidden="true" tabindex="-1"></a>                <span class="st">&quot;&quot;&quot;SELECT identity_kind, user_id, job_id, lifecycle_status</span></span>
+<span id="cb61-183"><a href="#cb61-183" aria-hidden="true" tabindex="-1"></a><span class="st">                   FROM managed_sprite_identities WHERE sprite_name = ?&quot;&quot;&quot;</span>,</span>
+<span id="cb61-184"><a href="#cb61-184" aria-hidden="true" tabindex="-1"></a>                (candidate_sprite,),</span>
+<span id="cb61-185"><a href="#cb61-185" aria-hidden="true" tabindex="-1"></a>            ).fetchone()</span>
+<span id="cb61-186"><a href="#cb61-186" aria-hidden="true" tabindex="-1"></a>            identity_tracking_exists <span class="op">=</span> source_identity <span class="kw">is</span> <span class="kw">not</span> <span class="va">None</span> <span class="kw">or</span> candidate_identity <span class="kw">is</span> <span class="kw">not</span> <span class="va">None</span></span>
+<span id="cb61-187"><a href="#cb61-187" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> identity_tracking_exists <span class="kw">and</span> (</span>
+<span id="cb61-188"><a href="#cb61-188" aria-hidden="true" tabindex="-1"></a>                source_identity <span class="kw">is</span> <span class="va">None</span></span>
+<span id="cb61-189"><a href="#cb61-189" aria-hidden="true" tabindex="-1"></a>                <span class="kw">or</span> source_identity[<span class="st">&quot;identity_kind&quot;</span>] <span class="op">!=</span> <span class="st">&quot;runtime&quot;</span></span>
+<span id="cb61-190"><a href="#cb61-190" aria-hidden="true" tabindex="-1"></a>                <span class="kw">or</span> source_identity[<span class="st">&quot;user_id&quot;</span>] <span class="op">!=</span> normalized_user_id</span>
+<span id="cb61-191"><a href="#cb61-191" aria-hidden="true" tabindex="-1"></a>                <span class="kw">or</span> source_identity[<span class="st">&quot;job_id&quot;</span>] <span class="kw">is</span> <span class="kw">not</span> <span class="va">None</span></span>
+<span id="cb61-192"><a href="#cb61-192" aria-hidden="true" tabindex="-1"></a>                <span class="kw">or</span> source_identity[<span class="st">&quot;lifecycle_status&quot;</span>] <span class="op">!=</span> <span class="st">&quot;active&quot;</span></span>
+<span id="cb61-193"><a href="#cb61-193" aria-hidden="true" tabindex="-1"></a>                <span class="kw">or</span> candidate_identity <span class="kw">is</span> <span class="va">None</span></span>
+<span id="cb61-194"><a href="#cb61-194" aria-hidden="true" tabindex="-1"></a>                <span class="kw">or</span> candidate_identity[<span class="st">&quot;identity_kind&quot;</span>] <span class="op">!=</span> <span class="st">&quot;restore_candidate&quot;</span></span>
+<span id="cb61-195"><a href="#cb61-195" aria-hidden="true" tabindex="-1"></a>                <span class="kw">or</span> candidate_identity[<span class="st">&quot;user_id&quot;</span>] <span class="op">!=</span> normalized_user_id</span>
+<span id="cb61-196"><a href="#cb61-196" aria-hidden="true" tabindex="-1"></a>                <span class="kw">or</span> candidate_identity[<span class="st">&quot;job_id&quot;</span>] <span class="op">!=</span> normalized_job_id</span>
+<span id="cb61-197"><a href="#cb61-197" aria-hidden="true" tabindex="-1"></a>                <span class="kw">or</span> candidate_identity[<span class="st">&quot;lifecycle_status&quot;</span>] <span class="op">!=</span> <span class="st">&quot;creating&quot;</span></span>
+<span id="cb61-198"><a href="#cb61-198" aria-hidden="true" tabindex="-1"></a>                <span class="kw">or</span> candidate_sprite <span class="op">==</span> runtime[<span class="st">&quot;sprite_external_id&quot;</span>]</span>
+<span id="cb61-199"><a href="#cb61-199" aria-hidden="true" tabindex="-1"></a>            ):</span>
+<span id="cb61-200"><a href="#cb61-200" aria-hidden="true" tabindex="-1"></a>                database.rollback()</span>
+<span id="cb61-201"><a href="#cb61-201" aria-hidden="true" tabindex="-1"></a>                <span class="cf">return</span> <span class="va">False</span></span>
+<span id="cb61-202"><a href="#cb61-202" aria-hidden="true" tabindex="-1"></a>            operation <span class="op">=</span> database.execute(</span>
+<span id="cb61-203"><a href="#cb61-203" aria-hidden="true" tabindex="-1"></a>                <span class="st">&quot;&quot;&quot;SELECT 1 FROM managed_backup_operations</span></span>
+<span id="cb61-204"><a href="#cb61-204" aria-hidden="true" tabindex="-1"></a><span class="st">                   WHERE user_id = ? AND job_id = ? AND operation = &#39;restore&#39;</span></span>
+<span id="cb61-205"><a href="#cb61-205" aria-hidden="true" tabindex="-1"></a><span class="st">                     AND status = &#39;running&#39; AND runtime_generation = ?</span></span>
+<span id="cb61-206"><a href="#cb61-206" aria-hidden="true" tabindex="-1"></a><span class="st">                     AND lease_token = ? AND lease_expires_at &gt; ?&quot;&quot;&quot;</span>,</span>
+<span id="cb61-207"><a href="#cb61-207" aria-hidden="true" tabindex="-1"></a>                (</span>
+<span id="cb61-208"><a href="#cb61-208" aria-hidden="true" tabindex="-1"></a>                    normalized_user_id,</span>
+<span id="cb61-209"><a href="#cb61-209" aria-hidden="true" tabindex="-1"></a>                    normalized_job_id,</span>
+<span id="cb61-210"><a href="#cb61-210" aria-hidden="true" tabindex="-1"></a>                    source_generation,</span>
+<span id="cb61-211"><a href="#cb61-211" aria-hidden="true" tabindex="-1"></a>                    normalized_lease_token,</span>
+<span id="cb61-212"><a href="#cb61-212" aria-hidden="true" tabindex="-1"></a>                    now_text,</span>
+<span id="cb61-213"><a href="#cb61-213" aria-hidden="true" tabindex="-1"></a>                ),</span>
+<span id="cb61-214"><a href="#cb61-214" aria-hidden="true" tabindex="-1"></a>            ).fetchone()</span>
+<span id="cb61-215"><a href="#cb61-215" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> operation <span class="kw">is</span> <span class="va">None</span>:</span>
+<span id="cb61-216"><a href="#cb61-216" aria-hidden="true" tabindex="-1"></a>                database.rollback()</span>
+<span id="cb61-217"><a href="#cb61-217" aria-hidden="true" tabindex="-1"></a>                <span class="cf">return</span> <span class="va">False</span></span>
+<span id="cb61-218"><a href="#cb61-218" aria-hidden="true" tabindex="-1"></a>            old_runner_id <span class="op">=</span> runtime[<span class="st">&quot;runner_id&quot;</span>]</span>
+<span id="cb61-219"><a href="#cb61-219" aria-hidden="true" tabindex="-1"></a>            database.execute(</span>
+<span id="cb61-220"><a href="#cb61-220" aria-hidden="true" tabindex="-1"></a>                <span class="st">&quot;&quot;&quot;UPDATE user_runners</span></span>
+<span id="cb61-221"><a href="#cb61-221" aria-hidden="true" tabindex="-1"></a><span class="st">                   SET status = &#39;revoked&#39;, revoked_at = ?, registration_token_hash = NULL,</span></span>
+<span id="cb61-222"><a href="#cb61-222" aria-hidden="true" tabindex="-1"></a><span class="st">                       registration_token_expires_at = NULL, runner_token_hash = NULL</span></span>
+<span id="cb61-223"><a href="#cb61-223" aria-hidden="true" tabindex="-1"></a><span class="st">                   WHERE id = ? AND user_id = ? AND kind = &#39;managed&#39;&quot;&quot;&quot;</span>,</span>
+<span id="cb61-224"><a href="#cb61-224" aria-hidden="true" tabindex="-1"></a>                (now_text, old_runner_id, normalized_user_id),</span>
+<span id="cb61-225"><a href="#cb61-225" aria-hidden="true" tabindex="-1"></a>            )</span>
+<span id="cb61-226"><a href="#cb61-226" aria-hidden="true" tabindex="-1"></a>            database.execute(</span>
+<span id="cb61-227"><a href="#cb61-227" aria-hidden="true" tabindex="-1"></a>                <span class="st">&quot;&quot;&quot;INSERT INTO managed_runtime_activation_guards (</span></span>
+<span id="cb61-228"><a href="#cb61-228" aria-hidden="true" tabindex="-1"></a><span class="st">                       user_id, job_id, lease_token</span></span>
+<span id="cb61-229"><a href="#cb61-229" aria-hidden="true" tabindex="-1"></a><span class="st">                   ) VALUES (?, ?, ?)&quot;&quot;&quot;</span>,</span>
+<span id="cb61-230"><a href="#cb61-230" aria-hidden="true" tabindex="-1"></a>                (normalized_user_id, normalized_job_id, normalized_lease_token),</span>
+<span id="cb61-231"><a href="#cb61-231" aria-hidden="true" tabindex="-1"></a>            )</span>
+<span id="cb61-232"><a href="#cb61-232" aria-hidden="true" tabindex="-1"></a>            database.execute(</span>
+<span id="cb61-233"><a href="#cb61-233" aria-hidden="true" tabindex="-1"></a>                <span class="st">&quot;DELETE FROM user_runners WHERE user_id = ? AND kind = &#39;managed_retired&#39;&quot;</span>,</span>
+<span id="cb61-234"><a href="#cb61-234" aria-hidden="true" tabindex="-1"></a>                (normalized_user_id,),</span>
+<span id="cb61-235"><a href="#cb61-235" aria-hidden="true" tabindex="-1"></a>            )</span>
+<span id="cb61-236"><a href="#cb61-236" aria-hidden="true" tabindex="-1"></a>            database.execute(</span>
+<span id="cb61-237"><a href="#cb61-237" aria-hidden="true" tabindex="-1"></a>                <span class="st">&quot;UPDATE user_runners SET kind = &#39;managed_retired&#39; WHERE id = ?&quot;</span>,</span>
+<span id="cb61-238"><a href="#cb61-238" aria-hidden="true" tabindex="-1"></a>                (old_runner_id,),</span>
+<span id="cb61-239"><a href="#cb61-239" aria-hidden="true" tabindex="-1"></a>            )</span>
+<span id="cb61-240"><a href="#cb61-240" aria-hidden="true" tabindex="-1"></a>            database.execute(</span>
+<span id="cb61-241"><a href="#cb61-241" aria-hidden="true" tabindex="-1"></a>                <span class="st">&quot;UPDATE user_runners SET kind = &#39;managed&#39; WHERE id = ?&quot;</span>,</span>
+<span id="cb61-242"><a href="#cb61-242" aria-hidden="true" tabindex="-1"></a>                (candidate_runner,),</span>
+<span id="cb61-243"><a href="#cb61-243" aria-hidden="true" tabindex="-1"></a>            )</span>
+<span id="cb61-244"><a href="#cb61-244" aria-hidden="true" tabindex="-1"></a>            result <span class="op">=</span> database.execute(</span>
+<span id="cb61-245"><a href="#cb61-245" aria-hidden="true" tabindex="-1"></a>                <span class="st">&quot;&quot;&quot;UPDATE managed_runtimes</span></span>
+<span id="cb61-246"><a href="#cb61-246" aria-hidden="true" tabindex="-1"></a><span class="st">                   SET runner_id = ?, sprite_external_id = ?, generation = ?,</span></span>
+<span id="cb61-247"><a href="#cb61-247" aria-hidden="true" tabindex="-1"></a><span class="st">                       artifact_version = ?, updated_at = ?, last_error = NULL</span></span>
+<span id="cb61-248"><a href="#cb61-248" aria-hidden="true" tabindex="-1"></a><span class="st">                   WHERE user_id = ? AND generation = ? AND lifecycle_status = &#39;ready&#39;&quot;&quot;&quot;</span>,</span>
+<span id="cb61-249"><a href="#cb61-249" aria-hidden="true" tabindex="-1"></a>                (</span>
+<span id="cb61-250"><a href="#cb61-250" aria-hidden="true" tabindex="-1"></a>                    candidate_runner,</span>
+<span id="cb61-251"><a href="#cb61-251" aria-hidden="true" tabindex="-1"></a>                    candidate_sprite,</span>
+<span id="cb61-252"><a href="#cb61-252" aria-hidden="true" tabindex="-1"></a>                    source_generation <span class="op">+</span> <span class="dv">1</span>,</span>
+<span id="cb61-253"><a href="#cb61-253" aria-hidden="true" tabindex="-1"></a>                    artifact,</span>
+<span id="cb61-254"><a href="#cb61-254" aria-hidden="true" tabindex="-1"></a>                    now_text,</span>
+<span id="cb61-255"><a href="#cb61-255" aria-hidden="true" tabindex="-1"></a>                    normalized_user_id,</span>
+<span id="cb61-256"><a href="#cb61-256" aria-hidden="true" tabindex="-1"></a>                    source_generation,</span>
+<span id="cb61-257"><a href="#cb61-257" aria-hidden="true" tabindex="-1"></a>                ),</span>
 <span id="cb61-258"><a href="#cb61-258" aria-hidden="true" tabindex="-1"></a>            )</span>
-<span id="cb61-259"><a href="#cb61-259" aria-hidden="true" tabindex="-1"></a>            database.commit()</span>
-<span id="cb61-260"><a href="#cb61-260" aria-hidden="true" tabindex="-1"></a>            <span class="cf">return</span> <span class="va">True</span></span>
-<span id="cb61-261"><a href="#cb61-261" aria-hidden="true" tabindex="-1"></a>        <span class="cf">except</span> sqlite3.IntegrityError:</span>
-<span id="cb61-262"><a href="#cb61-262" aria-hidden="true" tabindex="-1"></a>            database.rollback()</span>
-<span id="cb61-263"><a href="#cb61-263" aria-hidden="true" tabindex="-1"></a>            <span class="cf">return</span> <span class="va">False</span></span>
-<span id="cb61-264"><a href="#cb61-264" aria-hidden="true" tabindex="-1"></a>        <span class="cf">except</span> <span class="pp">Exception</span>:</span>
-<span id="cb61-265"><a href="#cb61-265" aria-hidden="true" tabindex="-1"></a>            database.rollback()</span>
-<span id="cb61-266"><a href="#cb61-266" aria-hidden="true" tabindex="-1"></a>            <span class="cf">raise</span></span>
-<span id="cb61-267"><a href="#cb61-267" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb61-268"><a href="#cb61-268" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb61-269"><a href="#cb61-269" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> get_managed_runtime_status(user_id: <span class="bu">str</span>) <span class="op">-&gt;</span> ManagedRuntimeStatus <span class="op">|</span> <span class="va">None</span>:</span>
-<span id="cb61-270"><a href="#cb61-270" aria-hidden="true" tabindex="-1"></a>    <span class="co">&quot;&quot;&quot;Return safe persisted state without registration authority.&quot;&quot;&quot;</span></span>
-<span id="cb61-271"><a href="#cb61-271" aria-hidden="true" tabindex="-1"></a>    normalized_user_id <span class="op">=</span> _require_user_id(user_id)</span>
-<span id="cb61-272"><a href="#cb61-272" aria-hidden="true" tabindex="-1"></a>    <span class="cf">with</span> get_control_db() <span class="im">as</span> database:</span>
-<span id="cb61-273"><a href="#cb61-273" aria-hidden="true" tabindex="-1"></a>        row <span class="op">=</span> database.execute(</span>
-<span id="cb61-274"><a href="#cb61-274" aria-hidden="true" tabindex="-1"></a>            <span class="st">&quot;SELECT * FROM managed_runtimes WHERE user_id = ?&quot;</span>,</span>
-<span id="cb61-275"><a href="#cb61-275" aria-hidden="true" tabindex="-1"></a>            (normalized_user_id,),</span>
-<span id="cb61-276"><a href="#cb61-276" aria-hidden="true" tabindex="-1"></a>        ).fetchone()</span>
-<span id="cb61-277"><a href="#cb61-277" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> row <span class="kw">is</span> <span class="va">None</span>:</span>
-<span id="cb61-278"><a href="#cb61-278" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span> <span class="va">None</span></span>
-<span id="cb61-279"><a href="#cb61-279" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> _runtime_status(row)</span>
-<span id="cb61-280"><a href="#cb61-280" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb61-281"><a href="#cb61-281" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb61-282"><a href="#cb61-282" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> claim_managed_runtime_deletion(</span>
-<span id="cb61-283"><a href="#cb61-283" aria-hidden="true" tabindex="-1"></a>    user_id: <span class="bu">str</span>,</span>
-<span id="cb61-284"><a href="#cb61-284" aria-hidden="true" tabindex="-1"></a>    now: datetime,</span>
-<span id="cb61-285"><a href="#cb61-285" aria-hidden="true" tabindex="-1"></a>) <span class="op">-&gt;</span> DeletionClaimResult <span class="op">|</span> <span class="va">None</span>:</span>
-<span id="cb61-286"><a href="#cb61-286" aria-hidden="true" tabindex="-1"></a>    <span class="co">&quot;&quot;&quot;Claim deletion and revoke linked managed runner authority atomically.&quot;&quot;&quot;</span></span>
-<span id="cb61-287"><a href="#cb61-287" aria-hidden="true" tabindex="-1"></a>    normalized_user_id <span class="op">=</span> _require_user_id(user_id)</span>
-<span id="cb61-288"><a href="#cb61-288" aria-hidden="true" tabindex="-1"></a>    current_time <span class="op">=</span> _normalized_now(now)</span>
-<span id="cb61-289"><a href="#cb61-289" aria-hidden="true" tabindex="-1"></a>    now_text <span class="op">=</span> _datetime_to_storage(current_time).replace(<span class="st">&quot;+00:00&quot;</span>, <span class="st">&quot;Z&quot;</span>)</span>
-<span id="cb61-290"><a href="#cb61-290" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb61-291"><a href="#cb61-291" aria-hidden="true" tabindex="-1"></a>    <span class="cf">with</span> get_control_db() <span class="im">as</span> database:</span>
-<span id="cb61-292"><a href="#cb61-292" aria-hidden="true" tabindex="-1"></a>        <span class="cf">try</span>:</span>
-<span id="cb61-293"><a href="#cb61-293" aria-hidden="true" tabindex="-1"></a>            database.execute(<span class="st">&quot;BEGIN IMMEDIATE&quot;</span>)</span>
-<span id="cb61-294"><a href="#cb61-294" aria-hidden="true" tabindex="-1"></a>            maintenance <span class="op">=</span> database.execute(</span>
-<span id="cb61-295"><a href="#cb61-295" aria-hidden="true" tabindex="-1"></a>                <span class="st">&quot;&quot;&quot;SELECT 1 FROM managed_backup_operations</span></span>
-<span id="cb61-296"><a href="#cb61-296" aria-hidden="true" tabindex="-1"></a><span class="st">                   WHERE user_id = ? AND status = &#39;running&#39;&quot;&quot;&quot;</span>,</span>
-<span id="cb61-297"><a href="#cb61-297" aria-hidden="true" tabindex="-1"></a>                (normalized_user_id,),</span>
-<span id="cb61-298"><a href="#cb61-298" aria-hidden="true" tabindex="-1"></a>            ).fetchone()</span>
-<span id="cb61-299"><a href="#cb61-299" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> maintenance <span class="kw">is</span> <span class="kw">not</span> <span class="va">None</span>:</span>
-<span id="cb61-300"><a href="#cb61-300" aria-hidden="true" tabindex="-1"></a>                <span class="cf">raise</span> <span class="pp">RuntimeError</span>(<span class="st">&quot;managed runtime maintenance is active&quot;</span>)</span>
-<span id="cb61-301"><a href="#cb61-301" aria-hidden="true" tabindex="-1"></a>            row <span class="op">=</span> database.execute(</span>
-<span id="cb61-302"><a href="#cb61-302" aria-hidden="true" tabindex="-1"></a>                <span class="st">&quot;&quot;&quot;</span></span>
-<span id="cb61-303"><a href="#cb61-303" aria-hidden="true" tabindex="-1"></a><span class="st">                SELECT runtime.*, runner.kind AS runner_kind</span></span>
-<span id="cb61-304"><a href="#cb61-304" aria-hidden="true" tabindex="-1"></a><span class="st">                FROM managed_runtimes AS runtime</span></span>
-<span id="cb61-305"><a href="#cb61-305" aria-hidden="true" tabindex="-1"></a><span class="st">                JOIN user_runners AS runner ON runner.id = runtime.runner_id</span></span>
-<span id="cb61-306"><a href="#cb61-306" aria-hidden="true" tabindex="-1"></a><span class="st">                WHERE runtime.user_id = ?</span></span>
-<span id="cb61-307"><a href="#cb61-307" aria-hidden="true" tabindex="-1"></a><span class="st">                &quot;&quot;&quot;</span>,</span>
-<span id="cb61-308"><a href="#cb61-308" aria-hidden="true" tabindex="-1"></a>                (normalized_user_id,),</span>
-<span id="cb61-309"><a href="#cb61-309" aria-hidden="true" tabindex="-1"></a>            ).fetchone()</span>
-<span id="cb61-310"><a href="#cb61-310" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> row <span class="kw">is</span> <span class="va">None</span>:</span>
-<span id="cb61-311"><a href="#cb61-311" aria-hidden="true" tabindex="-1"></a>                database.commit()</span>
-<span id="cb61-312"><a href="#cb61-312" aria-hidden="true" tabindex="-1"></a>                <span class="cf">return</span> <span class="va">None</span></span>
-<span id="cb61-313"><a href="#cb61-313" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> row[<span class="st">&quot;lifecycle_status&quot;</span>] <span class="op">==</span> <span class="st">&quot;deleting&quot;</span>:</span>
-<span id="cb61-314"><a href="#cb61-314" aria-hidden="true" tabindex="-1"></a>                database.commit()</span>
-<span id="cb61-315"><a href="#cb61-315" aria-hidden="true" tabindex="-1"></a>                <span class="cf">return</span> DeletionClaimResult(claimed<span class="op">=</span><span class="va">False</span>, runtime<span class="op">=</span>_runtime_status(row))</span>
-<span id="cb61-316"><a href="#cb61-316" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb61-317"><a href="#cb61-317" aria-hidden="true" tabindex="-1"></a>            runtime_result <span class="op">=</span> database.execute(</span>
-<span id="cb61-318"><a href="#cb61-318" aria-hidden="true" tabindex="-1"></a>                <span class="st">&quot;&quot;&quot;</span></span>
-<span id="cb61-319"><a href="#cb61-319" aria-hidden="true" tabindex="-1"></a><span class="st">                INSERT OR REPLACE INTO managed_runtimes (</span></span>
-<span id="cb61-320"><a href="#cb61-320" aria-hidden="true" tabindex="-1"></a><span class="st">                    user_id, runner_id, provider_name, sprite_external_id,</span></span>
-<span id="cb61-321"><a href="#cb61-321" aria-hidden="true" tabindex="-1"></a><span class="st">                    lifecycle_status, generation, artifact_version,</span></span>
-<span id="cb61-322"><a href="#cb61-322" aria-hidden="true" tabindex="-1"></a><span class="st">                    created_at, updated_at, last_error</span></span>
-<span id="cb61-323"><a href="#cb61-323" aria-hidden="true" tabindex="-1"></a><span class="st">                )</span></span>
-<span id="cb61-324"><a href="#cb61-324" aria-hidden="true" tabindex="-1"></a><span class="st">                SELECT user_id, runner_id, provider_name, sprite_external_id,</span></span>
-<span id="cb61-325"><a href="#cb61-325" aria-hidden="true" tabindex="-1"></a><span class="st">                       &#39;deleting&#39;, generation + 1, artifact_version,</span></span>
-<span id="cb61-326"><a href="#cb61-326" aria-hidden="true" tabindex="-1"></a><span class="st">                       created_at, ?, NULL</span></span>
-<span id="cb61-327"><a href="#cb61-327" aria-hidden="true" tabindex="-1"></a><span class="st">                FROM managed_runtimes</span></span>
-<span id="cb61-328"><a href="#cb61-328" aria-hidden="true" tabindex="-1"></a><span class="st">                WHERE user_id = ? AND lifecycle_status != &#39;deleting&#39;</span></span>
-<span id="cb61-329"><a href="#cb61-329" aria-hidden="true" tabindex="-1"></a><span class="st">                &quot;&quot;&quot;</span>,</span>
-<span id="cb61-330"><a href="#cb61-330" aria-hidden="true" tabindex="-1"></a>                (now_text, normalized_user_id),</span>
-<span id="cb61-331"><a href="#cb61-331" aria-hidden="true" tabindex="-1"></a>            )</span>
-<span id="cb61-332"><a href="#cb61-332" aria-hidden="true" tabindex="-1"></a>            runner_result <span class="op">=</span> database.execute(</span>
-<span id="cb61-333"><a href="#cb61-333" aria-hidden="true" tabindex="-1"></a>                <span class="st">&quot;&quot;&quot;</span></span>
-<span id="cb61-334"><a href="#cb61-334" aria-hidden="true" tabindex="-1"></a><span class="st">                UPDATE user_runners</span></span>
-<span id="cb61-335"><a href="#cb61-335" aria-hidden="true" tabindex="-1"></a><span class="st">                SET status = &#39;revoked&#39;, revoked_at = ?,</span></span>
-<span id="cb61-336"><a href="#cb61-336" aria-hidden="true" tabindex="-1"></a><span class="st">                    registration_token_hash = NULL,</span></span>
-<span id="cb61-337"><a href="#cb61-337" aria-hidden="true" tabindex="-1"></a><span class="st">                    registration_token_expires_at = NULL,</span></span>
-<span id="cb61-338"><a href="#cb61-338" aria-hidden="true" tabindex="-1"></a><span class="st">                    runner_token_hash = NULL</span></span>
-<span id="cb61-339"><a href="#cb61-339" aria-hidden="true" tabindex="-1"></a><span class="st">                WHERE id = ? AND user_id = ? AND kind = &#39;managed&#39;</span></span>
-<span id="cb61-340"><a href="#cb61-340" aria-hidden="true" tabindex="-1"></a><span class="st">                &quot;&quot;&quot;</span>,</span>
-<span id="cb61-341"><a href="#cb61-341" aria-hidden="true" tabindex="-1"></a>                (now_text, row[<span class="st">&quot;runner_id&quot;</span>], normalized_user_id),</span>
-<span id="cb61-342"><a href="#cb61-342" aria-hidden="true" tabindex="-1"></a>            )</span>
-<span id="cb61-343"><a href="#cb61-343" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> runtime_result.rowcount <span class="op">!=</span> <span class="dv">1</span> <span class="kw">or</span> runner_result.rowcount <span class="op">!=</span> <span class="dv">1</span>:</span>
-<span id="cb61-344"><a href="#cb61-344" aria-hidden="true" tabindex="-1"></a>                <span class="cf">raise</span> <span class="pp">RuntimeError</span>(<span class="st">&quot;managed runtime deletion claim was not stored&quot;</span>)</span>
-<span id="cb61-345"><a href="#cb61-345" aria-hidden="true" tabindex="-1"></a>            claimed_row <span class="op">=</span> database.execute(</span>
-<span id="cb61-346"><a href="#cb61-346" aria-hidden="true" tabindex="-1"></a>                <span class="st">&quot;SELECT * FROM managed_runtimes WHERE user_id = ?&quot;</span>,</span>
-<span id="cb61-347"><a href="#cb61-347" aria-hidden="true" tabindex="-1"></a>                (normalized_user_id,),</span>
-<span id="cb61-348"><a href="#cb61-348" aria-hidden="true" tabindex="-1"></a>            ).fetchone()</span>
-<span id="cb61-349"><a href="#cb61-349" aria-hidden="true" tabindex="-1"></a>            <span class="cf">assert</span> claimed_row <span class="kw">is</span> <span class="kw">not</span> <span class="va">None</span>, <span class="st">&quot;managed runtime deletion claim must exist&quot;</span></span>
-<span id="cb61-350"><a href="#cb61-350" aria-hidden="true" tabindex="-1"></a>            database.commit()</span>
-<span id="cb61-351"><a href="#cb61-351" aria-hidden="true" tabindex="-1"></a>            <span class="cf">return</span> DeletionClaimResult(claimed<span class="op">=</span><span class="va">True</span>, runtime<span class="op">=</span>_runtime_status(claimed_row))</span>
-<span id="cb61-352"><a href="#cb61-352" aria-hidden="true" tabindex="-1"></a>        <span class="cf">except</span> <span class="pp">Exception</span>:</span>
-<span id="cb61-353"><a href="#cb61-353" aria-hidden="true" tabindex="-1"></a>            database.rollback()</span>
-<span id="cb61-354"><a href="#cb61-354" aria-hidden="true" tabindex="-1"></a>            <span class="cf">raise</span></span>
-<span id="cb61-355"><a href="#cb61-355" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb61-356"><a href="#cb61-356" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb61-357"><a href="#cb61-357" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> finalize_managed_runtime_deletion(user_id: <span class="bu">str</span>, generation: <span class="bu">int</span>) <span class="op">-&gt;</span> <span class="bu">bool</span>:</span>
-<span id="cb61-358"><a href="#cb61-358" aria-hidden="true" tabindex="-1"></a>    <span class="co">&quot;&quot;&quot;Delete one matching deleting runtime followed by its managed runner.&quot;&quot;&quot;</span></span>
-<span id="cb61-359"><a href="#cb61-359" aria-hidden="true" tabindex="-1"></a>    normalized_user_id <span class="op">=</span> _require_user_id(user_id)</span>
-<span id="cb61-360"><a href="#cb61-360" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> <span class="bu">type</span>(generation) <span class="kw">is</span> <span class="kw">not</span> <span class="bu">int</span> <span class="kw">or</span> generation <span class="op">&lt;=</span> <span class="dv">0</span>:</span>
-<span id="cb61-361"><a href="#cb61-361" aria-hidden="true" tabindex="-1"></a>        <span class="cf">raise</span> <span class="pp">ValueError</span>(<span class="st">&quot;generation must be a positive integer&quot;</span>)</span>
-<span id="cb61-362"><a href="#cb61-362" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb61-363"><a href="#cb61-363" aria-hidden="true" tabindex="-1"></a>    <span class="cf">with</span> get_control_db() <span class="im">as</span> database:</span>
-<span id="cb61-364"><a href="#cb61-364" aria-hidden="true" tabindex="-1"></a>        <span class="cf">try</span>:</span>
-<span id="cb61-365"><a href="#cb61-365" aria-hidden="true" tabindex="-1"></a>            database.execute(<span class="st">&quot;BEGIN IMMEDIATE&quot;</span>)</span>
-<span id="cb61-366"><a href="#cb61-366" aria-hidden="true" tabindex="-1"></a>            row <span class="op">=</span> database.execute(</span>
-<span id="cb61-367"><a href="#cb61-367" aria-hidden="true" tabindex="-1"></a>                <span class="st">&quot;&quot;&quot;</span></span>
-<span id="cb61-368"><a href="#cb61-368" aria-hidden="true" tabindex="-1"></a><span class="st">                SELECT runner_id</span></span>
-<span id="cb61-369"><a href="#cb61-369" aria-hidden="true" tabindex="-1"></a><span class="st">                FROM managed_runtimes</span></span>
-<span id="cb61-370"><a href="#cb61-370" aria-hidden="true" tabindex="-1"></a><span class="st">                WHERE user_id = ? AND generation = ?</span></span>
-<span id="cb61-371"><a href="#cb61-371" aria-hidden="true" tabindex="-1"></a><span class="st">                  AND lifecycle_status = &#39;deleting&#39;</span></span>
-<span id="cb61-372"><a href="#cb61-372" aria-hidden="true" tabindex="-1"></a><span class="st">                &quot;&quot;&quot;</span>,</span>
-<span id="cb61-373"><a href="#cb61-373" aria-hidden="true" tabindex="-1"></a>                (normalized_user_id, generation),</span>
-<span id="cb61-374"><a href="#cb61-374" aria-hidden="true" tabindex="-1"></a>            ).fetchone()</span>
-<span id="cb61-375"><a href="#cb61-375" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> row <span class="kw">is</span> <span class="va">None</span>:</span>
-<span id="cb61-376"><a href="#cb61-376" aria-hidden="true" tabindex="-1"></a>                database.rollback()</span>
-<span id="cb61-377"><a href="#cb61-377" aria-hidden="true" tabindex="-1"></a>                <span class="cf">return</span> <span class="va">False</span></span>
-<span id="cb61-378"><a href="#cb61-378" aria-hidden="true" tabindex="-1"></a>            runtime_result <span class="op">=</span> database.execute(</span>
-<span id="cb61-379"><a href="#cb61-379" aria-hidden="true" tabindex="-1"></a>                <span class="st">&quot;&quot;&quot;</span></span>
-<span id="cb61-380"><a href="#cb61-380" aria-hidden="true" tabindex="-1"></a><span class="st">                DELETE FROM managed_runtimes</span></span>
-<span id="cb61-381"><a href="#cb61-381" aria-hidden="true" tabindex="-1"></a><span class="st">                WHERE user_id = ? AND generation = ?</span></span>
-<span id="cb61-382"><a href="#cb61-382" aria-hidden="true" tabindex="-1"></a><span class="st">                  AND lifecycle_status = &#39;deleting&#39;</span></span>
-<span id="cb61-383"><a href="#cb61-383" aria-hidden="true" tabindex="-1"></a><span class="st">                &quot;&quot;&quot;</span>,</span>
-<span id="cb61-384"><a href="#cb61-384" aria-hidden="true" tabindex="-1"></a>                (normalized_user_id, generation),</span>
-<span id="cb61-385"><a href="#cb61-385" aria-hidden="true" tabindex="-1"></a>            )</span>
-<span id="cb61-386"><a href="#cb61-386" aria-hidden="true" tabindex="-1"></a>            runner_result <span class="op">=</span> database.execute(</span>
-<span id="cb61-387"><a href="#cb61-387" aria-hidden="true" tabindex="-1"></a>                <span class="st">&quot;&quot;&quot;</span></span>
-<span id="cb61-388"><a href="#cb61-388" aria-hidden="true" tabindex="-1"></a><span class="st">                DELETE FROM user_runners</span></span>
-<span id="cb61-389"><a href="#cb61-389" aria-hidden="true" tabindex="-1"></a><span class="st">                WHERE id = ? AND user_id = ? AND kind = &#39;managed&#39;</span></span>
-<span id="cb61-390"><a href="#cb61-390" aria-hidden="true" tabindex="-1"></a><span class="st">                &quot;&quot;&quot;</span>,</span>
-<span id="cb61-391"><a href="#cb61-391" aria-hidden="true" tabindex="-1"></a>                (row[<span class="st">&quot;runner_id&quot;</span>], normalized_user_id),</span>
-<span id="cb61-392"><a href="#cb61-392" aria-hidden="true" tabindex="-1"></a>            )</span>
-<span id="cb61-393"><a href="#cb61-393" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> runtime_result.rowcount <span class="op">!=</span> <span class="dv">1</span> <span class="kw">or</span> runner_result.rowcount <span class="op">!=</span> <span class="dv">1</span>:</span>
-<span id="cb61-394"><a href="#cb61-394" aria-hidden="true" tabindex="-1"></a>                <span class="cf">raise</span> <span class="pp">RuntimeError</span>(<span class="st">&quot;managed runtime deletion was not finalized&quot;</span>)</span>
-<span id="cb61-395"><a href="#cb61-395" aria-hidden="true" tabindex="-1"></a>            database.commit()</span>
-<span id="cb61-396"><a href="#cb61-396" aria-hidden="true" tabindex="-1"></a>            <span class="cf">return</span> <span class="va">True</span></span>
-<span id="cb61-397"><a href="#cb61-397" aria-hidden="true" tabindex="-1"></a>        <span class="cf">except</span> <span class="pp">Exception</span>:</span>
-<span id="cb61-398"><a href="#cb61-398" aria-hidden="true" tabindex="-1"></a>            database.rollback()</span>
-<span id="cb61-399"><a href="#cb61-399" aria-hidden="true" tabindex="-1"></a>            <span class="cf">raise</span></span>
-<span id="cb61-400"><a href="#cb61-400" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb61-401"><a href="#cb61-401" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb61-402"><a href="#cb61-402" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> refresh_managed_runtime_provisioning(</span>
-<span id="cb61-403"><a href="#cb61-403" aria-hidden="true" tabindex="-1"></a>    user_id: <span class="bu">str</span>,</span>
-<span id="cb61-404"><a href="#cb61-404" aria-hidden="true" tabindex="-1"></a>    generation: <span class="bu">int</span>,</span>
-<span id="cb61-405"><a href="#cb61-405" aria-hidden="true" tabindex="-1"></a>    now: datetime,</span>
-<span id="cb61-406"><a href="#cb61-406" aria-hidden="true" tabindex="-1"></a>) <span class="op">-&gt;</span> <span class="bu">bool</span>:</span>
-<span id="cb61-407"><a href="#cb61-407" aria-hidden="true" tabindex="-1"></a>    <span class="co">&quot;&quot;&quot;Refresh one current provisioning generation&#39;s ownership timestamp.&quot;&quot;&quot;</span></span>
-<span id="cb61-408"><a href="#cb61-408" aria-hidden="true" tabindex="-1"></a>    normalized_user_id <span class="op">=</span> _require_user_id(user_id)</span>
-<span id="cb61-409"><a href="#cb61-409" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> <span class="bu">type</span>(generation) <span class="kw">is</span> <span class="kw">not</span> <span class="bu">int</span> <span class="kw">or</span> generation <span class="op">&lt;=</span> <span class="dv">0</span>:</span>
-<span id="cb61-410"><a href="#cb61-410" aria-hidden="true" tabindex="-1"></a>        <span class="cf">raise</span> <span class="pp">ValueError</span>(<span class="st">&quot;generation must be a positive integer&quot;</span>)</span>
-<span id="cb61-411"><a href="#cb61-411" aria-hidden="true" tabindex="-1"></a>    current_time <span class="op">=</span> _normalized_now(now)</span>
-<span id="cb61-412"><a href="#cb61-412" aria-hidden="true" tabindex="-1"></a>    now_text <span class="op">=</span> _datetime_to_storage(current_time).replace(<span class="st">&quot;+00:00&quot;</span>, <span class="st">&quot;Z&quot;</span>)</span>
-<span id="cb61-413"><a href="#cb61-413" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb61-414"><a href="#cb61-414" aria-hidden="true" tabindex="-1"></a>    <span class="cf">with</span> get_control_db() <span class="im">as</span> database:</span>
-<span id="cb61-415"><a href="#cb61-415" aria-hidden="true" tabindex="-1"></a>        result <span class="op">=</span> database.execute(</span>
-<span id="cb61-416"><a href="#cb61-416" aria-hidden="true" tabindex="-1"></a>            <span class="st">&quot;&quot;&quot;</span></span>
-<span id="cb61-417"><a href="#cb61-417" aria-hidden="true" tabindex="-1"></a><span class="st">            INSERT OR REPLACE INTO managed_runtimes (</span></span>
-<span id="cb61-418"><a href="#cb61-418" aria-hidden="true" tabindex="-1"></a><span class="st">                user_id, runner_id, provider_name, sprite_external_id,</span></span>
-<span id="cb61-419"><a href="#cb61-419" aria-hidden="true" tabindex="-1"></a><span class="st">                lifecycle_status, generation, artifact_version,</span></span>
-<span id="cb61-420"><a href="#cb61-420" aria-hidden="true" tabindex="-1"></a><span class="st">                created_at, updated_at, last_error</span></span>
-<span id="cb61-421"><a href="#cb61-421" aria-hidden="true" tabindex="-1"></a><span class="st">            )</span></span>
-<span id="cb61-422"><a href="#cb61-422" aria-hidden="true" tabindex="-1"></a><span class="st">            SELECT user_id, runner_id, provider_name, sprite_external_id,</span></span>
-<span id="cb61-423"><a href="#cb61-423" aria-hidden="true" tabindex="-1"></a><span class="st">                   lifecycle_status, generation, artifact_version,</span></span>
-<span id="cb61-424"><a href="#cb61-424" aria-hidden="true" tabindex="-1"></a><span class="st">                   created_at, ?, last_error</span></span>
-<span id="cb61-425"><a href="#cb61-425" aria-hidden="true" tabindex="-1"></a><span class="st">            FROM managed_runtimes</span></span>
-<span id="cb61-426"><a href="#cb61-426" aria-hidden="true" tabindex="-1"></a><span class="st">            WHERE user_id = ? AND generation = ?</span></span>
-<span id="cb61-427"><a href="#cb61-427" aria-hidden="true" tabindex="-1"></a><span class="st">              AND lifecycle_status = &#39;provisioning&#39;</span></span>
-<span id="cb61-428"><a href="#cb61-428" aria-hidden="true" tabindex="-1"></a><span class="st">            &quot;&quot;&quot;</span>,</span>
-<span id="cb61-429"><a href="#cb61-429" aria-hidden="true" tabindex="-1"></a>            (now_text, normalized_user_id, generation),</span>
-<span id="cb61-430"><a href="#cb61-430" aria-hidden="true" tabindex="-1"></a>        )</span>
-<span id="cb61-431"><a href="#cb61-431" aria-hidden="true" tabindex="-1"></a>        database.commit()</span>
-<span id="cb61-432"><a href="#cb61-432" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span> result.rowcount <span class="op">==</span> <span class="dv">1</span></span>
-<span id="cb61-433"><a href="#cb61-433" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb61-434"><a href="#cb61-434" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb61-435"><a href="#cb61-435" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> mark_managed_runtime_ready(</span>
-<span id="cb61-436"><a href="#cb61-436" aria-hidden="true" tabindex="-1"></a>    user_id: <span class="bu">str</span>,</span>
-<span id="cb61-437"><a href="#cb61-437" aria-hidden="true" tabindex="-1"></a>    generation: <span class="bu">int</span>,</span>
-<span id="cb61-438"><a href="#cb61-438" aria-hidden="true" tabindex="-1"></a>    now: datetime,</span>
-<span id="cb61-439"><a href="#cb61-439" aria-hidden="true" tabindex="-1"></a>) <span class="op">-&gt;</span> <span class="bu">bool</span>:</span>
-<span id="cb61-440"><a href="#cb61-440" aria-hidden="true" tabindex="-1"></a>    <span class="co">&quot;&quot;&quot;Mark one current provisioning generation ready after runner validation.&quot;&quot;&quot;</span></span>
-<span id="cb61-441"><a href="#cb61-441" aria-hidden="true" tabindex="-1"></a>    normalized_user_id <span class="op">=</span> _require_user_id(user_id)</span>
-<span id="cb61-442"><a href="#cb61-442" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> <span class="bu">type</span>(generation) <span class="kw">is</span> <span class="kw">not</span> <span class="bu">int</span> <span class="kw">or</span> generation <span class="op">&lt;=</span> <span class="dv">0</span>:</span>
-<span id="cb61-443"><a href="#cb61-443" aria-hidden="true" tabindex="-1"></a>        <span class="cf">raise</span> <span class="pp">ValueError</span>(<span class="st">&quot;generation must be a positive integer&quot;</span>)</span>
-<span id="cb61-444"><a href="#cb61-444" aria-hidden="true" tabindex="-1"></a>    current_time <span class="op">=</span> _normalized_now(now)</span>
-<span id="cb61-445"><a href="#cb61-445" aria-hidden="true" tabindex="-1"></a>    now_text <span class="op">=</span> _datetime_to_storage(current_time).replace(<span class="st">&quot;+00:00&quot;</span>, <span class="st">&quot;Z&quot;</span>)</span>
-<span id="cb61-446"><a href="#cb61-446" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb61-447"><a href="#cb61-447" aria-hidden="true" tabindex="-1"></a>    <span class="cf">with</span> get_control_db() <span class="im">as</span> database:</span>
-<span id="cb61-448"><a href="#cb61-448" aria-hidden="true" tabindex="-1"></a>        <span class="cf">try</span>:</span>
-<span id="cb61-449"><a href="#cb61-449" aria-hidden="true" tabindex="-1"></a>            database.execute(<span class="st">&quot;BEGIN IMMEDIATE&quot;</span>)</span>
-<span id="cb61-450"><a href="#cb61-450" aria-hidden="true" tabindex="-1"></a>            row <span class="op">=</span> database.execute(</span>
-<span id="cb61-451"><a href="#cb61-451" aria-hidden="true" tabindex="-1"></a>                <span class="st">&quot;&quot;&quot;</span></span>
-<span id="cb61-452"><a href="#cb61-452" aria-hidden="true" tabindex="-1"></a><span class="st">                SELECT runtime.lifecycle_status, runtime.generation,</span></span>
-<span id="cb61-453"><a href="#cb61-453" aria-hidden="true" tabindex="-1"></a><span class="st">                       runtime.provider_name, runner.kind,</span></span>
-<span id="cb61-454"><a href="#cb61-454" aria-hidden="true" tabindex="-1"></a><span class="st">                       runner.cloud_provider, runner.status AS runner_status,</span></span>
-<span id="cb61-455"><a href="#cb61-455" aria-hidden="true" tabindex="-1"></a><span class="st">                       runner.last_heartbeat_at, runner.capabilities_json,</span></span>
-<span id="cb61-456"><a href="#cb61-456" aria-hidden="true" tabindex="-1"></a><span class="st">                       runner.noise_public_key,</span></span>
-<span id="cb61-457"><a href="#cb61-457" aria-hidden="true" tabindex="-1"></a><span class="st">                       runner.noise_public_key_confirmed_at</span></span>
-<span id="cb61-458"><a href="#cb61-458" aria-hidden="true" tabindex="-1"></a><span class="st">                FROM managed_runtimes AS runtime</span></span>
-<span id="cb61-459"><a href="#cb61-459" aria-hidden="true" tabindex="-1"></a><span class="st">                JOIN user_runners AS runner ON runner.id = runtime.runner_id</span></span>
-<span id="cb61-460"><a href="#cb61-460" aria-hidden="true" tabindex="-1"></a><span class="st">                WHERE runtime.user_id = ?</span></span>
-<span id="cb61-461"><a href="#cb61-461" aria-hidden="true" tabindex="-1"></a><span class="st">                &quot;&quot;&quot;</span>,</span>
-<span id="cb61-462"><a href="#cb61-462" aria-hidden="true" tabindex="-1"></a>                (normalized_user_id,),</span>
-<span id="cb61-463"><a href="#cb61-463" aria-hidden="true" tabindex="-1"></a>            ).fetchone()</span>
-<span id="cb61-464"><a href="#cb61-464" aria-hidden="true" tabindex="-1"></a>            heartbeat_at <span class="op">=</span> <span class="va">None</span> <span class="cf">if</span> row <span class="kw">is</span> <span class="va">None</span> <span class="cf">else</span> _datetime_from_storage(row[<span class="st">&quot;last_heartbeat_at&quot;</span>])</span>
-<span id="cb61-465"><a href="#cb61-465" aria-hidden="true" tabindex="-1"></a>            capabilities <span class="op">=</span> {} <span class="cf">if</span> row <span class="kw">is</span> <span class="va">None</span> <span class="cf">else</span> _decode_capabilities(row[<span class="st">&quot;capabilities_json&quot;</span>])</span>
-<span id="cb61-466"><a href="#cb61-466" aria-hidden="true" tabindex="-1"></a>            heartbeat_age <span class="op">=</span> (</span>
-<span id="cb61-467"><a href="#cb61-467" aria-hidden="true" tabindex="-1"></a>                <span class="va">None</span> <span class="cf">if</span> heartbeat_at <span class="kw">is</span> <span class="va">None</span> <span class="cf">else</span> (current_time <span class="op">-</span> heartbeat_at).total_seconds()</span>
-<span id="cb61-468"><a href="#cb61-468" aria-hidden="true" tabindex="-1"></a>            )</span>
-<span id="cb61-469"><a href="#cb61-469" aria-hidden="true" tabindex="-1"></a>            heartbeat_is_current <span class="op">=</span> (</span>
-<span id="cb61-470"><a href="#cb61-470" aria-hidden="true" tabindex="-1"></a>                heartbeat_age <span class="kw">is</span> <span class="kw">not</span> <span class="va">None</span> <span class="kw">and</span> <span class="dv">0</span> <span class="op">&lt;=</span> heartbeat_age <span class="op">&lt;=</span> _HEARTBEAT_ONLINE_WINDOW_SECONDS</span>
-<span id="cb61-471"><a href="#cb61-471" aria-hidden="true" tabindex="-1"></a>            )</span>
-<span id="cb61-472"><a href="#cb61-472" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> (</span>
-<span id="cb61-473"><a href="#cb61-473" aria-hidden="true" tabindex="-1"></a>                row <span class="kw">is</span> <span class="va">None</span></span>
-<span id="cb61-474"><a href="#cb61-474" aria-hidden="true" tabindex="-1"></a>                <span class="kw">or</span> row[<span class="st">&quot;lifecycle_status&quot;</span>] <span class="op">!=</span> <span class="st">&quot;provisioning&quot;</span></span>
-<span id="cb61-475"><a href="#cb61-475" aria-hidden="true" tabindex="-1"></a>                <span class="kw">or</span> row[<span class="st">&quot;generation&quot;</span>] <span class="op">!=</span> generation</span>
-<span id="cb61-476"><a href="#cb61-476" aria-hidden="true" tabindex="-1"></a>                <span class="kw">or</span> row[<span class="st">&quot;provider_name&quot;</span>] <span class="op">!=</span> <span class="st">&quot;fly_sprites&quot;</span></span>
-<span id="cb61-477"><a href="#cb61-477" aria-hidden="true" tabindex="-1"></a>                <span class="kw">or</span> row[<span class="st">&quot;kind&quot;</span>] <span class="op">!=</span> <span class="st">&quot;managed&quot;</span></span>
-<span id="cb61-478"><a href="#cb61-478" aria-hidden="true" tabindex="-1"></a>                <span class="kw">or</span> row[<span class="st">&quot;cloud_provider&quot;</span>] <span class="op">!=</span> <span class="st">&quot;fly_sprites&quot;</span></span>
-<span id="cb61-479"><a href="#cb61-479" aria-hidden="true" tabindex="-1"></a>                <span class="kw">or</span> row[<span class="st">&quot;runner_status&quot;</span>] <span class="op">!=</span> <span class="st">&quot;online&quot;</span></span>
-<span id="cb61-480"><a href="#cb61-480" aria-hidden="true" tabindex="-1"></a>                <span class="kw">or</span> <span class="kw">not</span> heartbeat_is_current</span>
-<span id="cb61-481"><a href="#cb61-481" aria-hidden="true" tabindex="-1"></a>                <span class="kw">or</span> capabilities.get(<span class="st">&quot;storage_profile&quot;</span>) <span class="op">!=</span> <span class="st">&quot;fly_sprites_posix&quot;</span></span>
-<span id="cb61-482"><a href="#cb61-482" aria-hidden="true" tabindex="-1"></a>                <span class="kw">or</span> <span class="kw">not</span> row[<span class="st">&quot;noise_public_key&quot;</span>]</span>
-<span id="cb61-483"><a href="#cb61-483" aria-hidden="true" tabindex="-1"></a>                <span class="kw">or</span> row[<span class="st">&quot;noise_public_key_confirmed_at&quot;</span>] <span class="kw">is</span> <span class="va">None</span></span>
-<span id="cb61-484"><a href="#cb61-484" aria-hidden="true" tabindex="-1"></a>            ):</span>
-<span id="cb61-485"><a href="#cb61-485" aria-hidden="true" tabindex="-1"></a>                database.rollback()</span>
-<span id="cb61-486"><a href="#cb61-486" aria-hidden="true" tabindex="-1"></a>                <span class="cf">return</span> <span class="va">False</span></span>
-<span id="cb61-487"><a href="#cb61-487" aria-hidden="true" tabindex="-1"></a>            result <span class="op">=</span> database.execute(</span>
-<span id="cb61-488"><a href="#cb61-488" aria-hidden="true" tabindex="-1"></a>                <span class="st">&quot;&quot;&quot;</span></span>
-<span id="cb61-489"><a href="#cb61-489" aria-hidden="true" tabindex="-1"></a><span class="st">                INSERT OR REPLACE INTO managed_runtimes (</span></span>
-<span id="cb61-490"><a href="#cb61-490" aria-hidden="true" tabindex="-1"></a><span class="st">                    user_id, runner_id, provider_name, sprite_external_id,</span></span>
-<span id="cb61-491"><a href="#cb61-491" aria-hidden="true" tabindex="-1"></a><span class="st">                    lifecycle_status, generation, artifact_version,</span></span>
-<span id="cb61-492"><a href="#cb61-492" aria-hidden="true" tabindex="-1"></a><span class="st">                    created_at, updated_at, last_error</span></span>
-<span id="cb61-493"><a href="#cb61-493" aria-hidden="true" tabindex="-1"></a><span class="st">                )</span></span>
-<span id="cb61-494"><a href="#cb61-494" aria-hidden="true" tabindex="-1"></a><span class="st">                SELECT user_id, runner_id, provider_name, sprite_external_id,</span></span>
-<span id="cb61-495"><a href="#cb61-495" aria-hidden="true" tabindex="-1"></a><span class="st">                       &#39;ready&#39;, generation, artifact_version,</span></span>
-<span id="cb61-496"><a href="#cb61-496" aria-hidden="true" tabindex="-1"></a><span class="st">                       created_at, ?, NULL</span></span>
-<span id="cb61-497"><a href="#cb61-497" aria-hidden="true" tabindex="-1"></a><span class="st">                FROM managed_runtimes</span></span>
-<span id="cb61-498"><a href="#cb61-498" aria-hidden="true" tabindex="-1"></a><span class="st">                WHERE user_id = ? AND generation = ?</span></span>
-<span id="cb61-499"><a href="#cb61-499" aria-hidden="true" tabindex="-1"></a><span class="st">                  AND lifecycle_status = &#39;provisioning&#39;</span></span>
-<span id="cb61-500"><a href="#cb61-500" aria-hidden="true" tabindex="-1"></a><span class="st">                &quot;&quot;&quot;</span>,</span>
-<span id="cb61-501"><a href="#cb61-501" aria-hidden="true" tabindex="-1"></a>                (now_text, normalized_user_id, generation),</span>
-<span id="cb61-502"><a href="#cb61-502" aria-hidden="true" tabindex="-1"></a>            )</span>
-<span id="cb61-503"><a href="#cb61-503" aria-hidden="true" tabindex="-1"></a>            database.commit()</span>
-<span id="cb61-504"><a href="#cb61-504" aria-hidden="true" tabindex="-1"></a>            <span class="cf">return</span> result.rowcount <span class="op">==</span> <span class="dv">1</span></span>
-<span id="cb61-505"><a href="#cb61-505" aria-hidden="true" tabindex="-1"></a>        <span class="cf">except</span> <span class="pp">Exception</span>:</span>
-<span id="cb61-506"><a href="#cb61-506" aria-hidden="true" tabindex="-1"></a>            database.rollback()</span>
-<span id="cb61-507"><a href="#cb61-507" aria-hidden="true" tabindex="-1"></a>            <span class="cf">raise</span></span>
-<span id="cb61-508"><a href="#cb61-508" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb61-509"><a href="#cb61-509" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb61-510"><a href="#cb61-510" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> reconcile_managed_runtime_provisioning(</span>
-<span id="cb61-511"><a href="#cb61-511" aria-hidden="true" tabindex="-1"></a>    active_owners: <span class="bu">set</span>[<span class="bu">tuple</span>[<span class="bu">str</span>, <span class="bu">int</span>]],</span>
-<span id="cb61-512"><a href="#cb61-512" aria-hidden="true" tabindex="-1"></a>    now: datetime,</span>
-<span id="cb61-513"><a href="#cb61-513" aria-hidden="true" tabindex="-1"></a>) <span class="op">-&gt;</span> <span class="bu">int</span>:</span>
-<span id="cb61-514"><a href="#cb61-514" aria-hidden="true" tabindex="-1"></a>    <span class="co">&quot;&quot;&quot;Fail abandoned provisioning while preserving current process ownership.&quot;&quot;&quot;</span></span>
-<span id="cb61-515"><a href="#cb61-515" aria-hidden="true" tabindex="-1"></a>    current_time <span class="op">=</span> _normalized_now(now)</span>
-<span id="cb61-516"><a href="#cb61-516" aria-hidden="true" tabindex="-1"></a>    now_text <span class="op">=</span> _datetime_to_storage(current_time).replace(<span class="st">&quot;+00:00&quot;</span>, <span class="st">&quot;Z&quot;</span>)</span>
-<span id="cb61-517"><a href="#cb61-517" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb61-518"><a href="#cb61-518" aria-hidden="true" tabindex="-1"></a>    <span class="cf">with</span> get_control_db() <span class="im">as</span> database:</span>
-<span id="cb61-519"><a href="#cb61-519" aria-hidden="true" tabindex="-1"></a>        <span class="cf">try</span>:</span>
-<span id="cb61-520"><a href="#cb61-520" aria-hidden="true" tabindex="-1"></a>            database.execute(<span class="st">&quot;BEGIN IMMEDIATE&quot;</span>)</span>
-<span id="cb61-521"><a href="#cb61-521" aria-hidden="true" tabindex="-1"></a>            rows <span class="op">=</span> database.execute(<span class="st">&quot;&quot;&quot;</span></span>
-<span id="cb61-522"><a href="#cb61-522" aria-hidden="true" tabindex="-1"></a><span class="st">                SELECT user_id, runner_id, generation</span></span>
-<span id="cb61-523"><a href="#cb61-523" aria-hidden="true" tabindex="-1"></a><span class="st">                FROM managed_runtimes</span></span>
-<span id="cb61-524"><a href="#cb61-524" aria-hidden="true" tabindex="-1"></a><span class="st">                WHERE lifecycle_status = &#39;provisioning&#39;</span></span>
-<span id="cb61-525"><a href="#cb61-525" aria-hidden="true" tabindex="-1"></a><span class="st">                &quot;&quot;&quot;</span>).fetchall()</span>
-<span id="cb61-526"><a href="#cb61-526" aria-hidden="true" tabindex="-1"></a>            changed <span class="op">=</span> <span class="dv">0</span></span>
-<span id="cb61-527"><a href="#cb61-527" aria-hidden="true" tabindex="-1"></a>            <span class="cf">for</span> row <span class="kw">in</span> rows:</span>
-<span id="cb61-528"><a href="#cb61-528" aria-hidden="true" tabindex="-1"></a>                owner <span class="op">=</span> (row[<span class="st">&quot;user_id&quot;</span>], row[<span class="st">&quot;generation&quot;</span>])</span>
-<span id="cb61-529"><a href="#cb61-529" aria-hidden="true" tabindex="-1"></a>                <span class="cf">if</span> owner <span class="kw">in</span> active_owners:</span>
-<span id="cb61-530"><a href="#cb61-530" aria-hidden="true" tabindex="-1"></a>                    <span class="cf">continue</span></span>
-<span id="cb61-531"><a href="#cb61-531" aria-hidden="true" tabindex="-1"></a>                runtime_result <span class="op">=</span> database.execute(</span>
-<span id="cb61-532"><a href="#cb61-532" aria-hidden="true" tabindex="-1"></a>                    <span class="st">&quot;&quot;&quot;</span></span>
-<span id="cb61-533"><a href="#cb61-533" aria-hidden="true" tabindex="-1"></a><span class="st">                    UPDATE managed_runtimes</span></span>
-<span id="cb61-534"><a href="#cb61-534" aria-hidden="true" tabindex="-1"></a><span class="st">                    SET lifecycle_status = &#39;failed&#39;, updated_at = ?,</span></span>
-<span id="cb61-535"><a href="#cb61-535" aria-hidden="true" tabindex="-1"></a><span class="st">                        last_error = &#39;provider_unavailable&#39;</span></span>
-<span id="cb61-536"><a href="#cb61-536" aria-hidden="true" tabindex="-1"></a><span class="st">                    WHERE user_id = ? AND generation = ?</span></span>
-<span id="cb61-537"><a href="#cb61-537" aria-hidden="true" tabindex="-1"></a><span class="st">                      AND lifecycle_status = &#39;provisioning&#39;</span></span>
-<span id="cb61-538"><a href="#cb61-538" aria-hidden="true" tabindex="-1"></a><span class="st">                    &quot;&quot;&quot;</span>,</span>
-<span id="cb61-539"><a href="#cb61-539" aria-hidden="true" tabindex="-1"></a>                    (now_text, row[<span class="st">&quot;user_id&quot;</span>], row[<span class="st">&quot;generation&quot;</span>]),</span>
-<span id="cb61-540"><a href="#cb61-540" aria-hidden="true" tabindex="-1"></a>                )</span>
-<span id="cb61-541"><a href="#cb61-541" aria-hidden="true" tabindex="-1"></a>                <span class="cf">if</span> runtime_result.rowcount <span class="op">!=</span> <span class="dv">1</span>:</span>
-<span id="cb61-542"><a href="#cb61-542" aria-hidden="true" tabindex="-1"></a>                    <span class="cf">continue</span></span>
-<span id="cb61-543"><a href="#cb61-543" aria-hidden="true" tabindex="-1"></a>                runner_result <span class="op">=</span> database.execute(</span>
-<span id="cb61-544"><a href="#cb61-544" aria-hidden="true" tabindex="-1"></a>                    <span class="st">&quot;&quot;&quot;</span></span>
-<span id="cb61-545"><a href="#cb61-545" aria-hidden="true" tabindex="-1"></a><span class="st">                    UPDATE user_runners</span></span>
-<span id="cb61-546"><a href="#cb61-546" aria-hidden="true" tabindex="-1"></a><span class="st">                    SET status = &#39;revoked&#39;, revoked_at = ?,</span></span>
-<span id="cb61-547"><a href="#cb61-547" aria-hidden="true" tabindex="-1"></a><span class="st">                        registration_token_hash = NULL,</span></span>
-<span id="cb61-548"><a href="#cb61-548" aria-hidden="true" tabindex="-1"></a><span class="st">                        registration_token_expires_at = NULL,</span></span>
-<span id="cb61-549"><a href="#cb61-549" aria-hidden="true" tabindex="-1"></a><span class="st">                        runner_token_hash = NULL</span></span>
-<span id="cb61-550"><a href="#cb61-550" aria-hidden="true" tabindex="-1"></a><span class="st">                    WHERE id = ? AND user_id = ? AND kind = &#39;managed&#39;</span></span>
-<span id="cb61-551"><a href="#cb61-551" aria-hidden="true" tabindex="-1"></a><span class="st">                    &quot;&quot;&quot;</span>,</span>
-<span id="cb61-552"><a href="#cb61-552" aria-hidden="true" tabindex="-1"></a>                    (now_text, row[<span class="st">&quot;runner_id&quot;</span>], row[<span class="st">&quot;user_id&quot;</span>]),</span>
-<span id="cb61-553"><a href="#cb61-553" aria-hidden="true" tabindex="-1"></a>                )</span>
-<span id="cb61-554"><a href="#cb61-554" aria-hidden="true" tabindex="-1"></a>                <span class="cf">if</span> runner_result.rowcount <span class="op">!=</span> <span class="dv">1</span>:</span>
-<span id="cb61-555"><a href="#cb61-555" aria-hidden="true" tabindex="-1"></a>                    <span class="cf">raise</span> <span class="pp">RuntimeError</span>(<span class="st">&quot;managed runtime reconciliation was not stored&quot;</span>)</span>
-<span id="cb61-556"><a href="#cb61-556" aria-hidden="true" tabindex="-1"></a>                changed <span class="op">+=</span> <span class="dv">1</span></span>
-<span id="cb61-557"><a href="#cb61-557" aria-hidden="true" tabindex="-1"></a>            database.commit()</span>
-<span id="cb61-558"><a href="#cb61-558" aria-hidden="true" tabindex="-1"></a>            <span class="cf">return</span> changed</span>
-<span id="cb61-559"><a href="#cb61-559" aria-hidden="true" tabindex="-1"></a>        <span class="cf">except</span> <span class="pp">Exception</span>:</span>
-<span id="cb61-560"><a href="#cb61-560" aria-hidden="true" tabindex="-1"></a>            database.rollback()</span>
-<span id="cb61-561"><a href="#cb61-561" aria-hidden="true" tabindex="-1"></a>            <span class="cf">raise</span></span>
-<span id="cb61-562"><a href="#cb61-562" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb61-563"><a href="#cb61-563" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb61-564"><a href="#cb61-564" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> mark_managed_runtime_failed(</span>
-<span id="cb61-565"><a href="#cb61-565" aria-hidden="true" tabindex="-1"></a>    user_id: <span class="bu">str</span>,</span>
-<span id="cb61-566"><a href="#cb61-566" aria-hidden="true" tabindex="-1"></a>    generation: <span class="bu">int</span>,</span>
-<span id="cb61-567"><a href="#cb61-567" aria-hidden="true" tabindex="-1"></a>    error_code: <span class="bu">str</span>,</span>
-<span id="cb61-568"><a href="#cb61-568" aria-hidden="true" tabindex="-1"></a>    now: datetime,</span>
-<span id="cb61-569"><a href="#cb61-569" aria-hidden="true" tabindex="-1"></a>) <span class="op">-&gt;</span> <span class="bu">bool</span>:</span>
-<span id="cb61-570"><a href="#cb61-570" aria-hidden="true" tabindex="-1"></a>    <span class="co">&quot;&quot;&quot;Fail one current provisioning generation and revoke its runner authority.&quot;&quot;&quot;</span></span>
-<span id="cb61-571"><a href="#cb61-571" aria-hidden="true" tabindex="-1"></a>    normalized_user_id <span class="op">=</span> _require_user_id(user_id)</span>
-<span id="cb61-572"><a href="#cb61-572" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> <span class="bu">type</span>(generation) <span class="kw">is</span> <span class="kw">not</span> <span class="bu">int</span> <span class="kw">or</span> generation <span class="op">&lt;=</span> <span class="dv">0</span>:</span>
-<span id="cb61-573"><a href="#cb61-573" aria-hidden="true" tabindex="-1"></a>        <span class="cf">raise</span> <span class="pp">ValueError</span>(<span class="st">&quot;generation must be a positive integer&quot;</span>)</span>
-<span id="cb61-574"><a href="#cb61-574" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> error_code <span class="kw">not</span> <span class="kw">in</span> _MANAGED_RUNTIME_ERROR_CODES:</span>
-<span id="cb61-575"><a href="#cb61-575" aria-hidden="true" tabindex="-1"></a>        <span class="cf">raise</span> <span class="pp">ValueError</span>(<span class="st">&quot;error_code is not an allowed managed runtime failure code&quot;</span>)</span>
-<span id="cb61-576"><a href="#cb61-576" aria-hidden="true" tabindex="-1"></a>    current_time <span class="op">=</span> _normalized_now(now)</span>
-<span id="cb61-577"><a href="#cb61-577" aria-hidden="true" tabindex="-1"></a>    now_text <span class="op">=</span> _datetime_to_storage(current_time).replace(<span class="st">&quot;+00:00&quot;</span>, <span class="st">&quot;Z&quot;</span>)</span>
-<span id="cb61-578"><a href="#cb61-578" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb61-579"><a href="#cb61-579" aria-hidden="true" tabindex="-1"></a>    <span class="cf">with</span> get_control_db() <span class="im">as</span> database:</span>
-<span id="cb61-580"><a href="#cb61-580" aria-hidden="true" tabindex="-1"></a>        <span class="cf">try</span>:</span>
-<span id="cb61-581"><a href="#cb61-581" aria-hidden="true" tabindex="-1"></a>            database.execute(<span class="st">&quot;BEGIN IMMEDIATE&quot;</span>)</span>
-<span id="cb61-582"><a href="#cb61-582" aria-hidden="true" tabindex="-1"></a>            row <span class="op">=</span> database.execute(</span>
-<span id="cb61-583"><a href="#cb61-583" aria-hidden="true" tabindex="-1"></a>                <span class="st">&quot;&quot;&quot;</span></span>
-<span id="cb61-584"><a href="#cb61-584" aria-hidden="true" tabindex="-1"></a><span class="st">                SELECT runtime.*, runner.kind AS runner_kind</span></span>
-<span id="cb61-585"><a href="#cb61-585" aria-hidden="true" tabindex="-1"></a><span class="st">                FROM managed_runtimes AS runtime</span></span>
-<span id="cb61-586"><a href="#cb61-586" aria-hidden="true" tabindex="-1"></a><span class="st">                JOIN user_runners AS runner ON runner.id = runtime.runner_id</span></span>
-<span id="cb61-587"><a href="#cb61-587" aria-hidden="true" tabindex="-1"></a><span class="st">                WHERE runtime.user_id = ?</span></span>
-<span id="cb61-588"><a href="#cb61-588" aria-hidden="true" tabindex="-1"></a><span class="st">                &quot;&quot;&quot;</span>,</span>
-<span id="cb61-589"><a href="#cb61-589" aria-hidden="true" tabindex="-1"></a>                (normalized_user_id,),</span>
-<span id="cb61-590"><a href="#cb61-590" aria-hidden="true" tabindex="-1"></a>            ).fetchone()</span>
-<span id="cb61-591"><a href="#cb61-591" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> (</span>
-<span id="cb61-592"><a href="#cb61-592" aria-hidden="true" tabindex="-1"></a>                row <span class="kw">is</span> <span class="va">None</span></span>
-<span id="cb61-593"><a href="#cb61-593" aria-hidden="true" tabindex="-1"></a>                <span class="kw">or</span> row[<span class="st">&quot;lifecycle_status&quot;</span>] <span class="op">!=</span> <span class="st">&quot;provisioning&quot;</span></span>
-<span id="cb61-594"><a href="#cb61-594" aria-hidden="true" tabindex="-1"></a>                <span class="kw">or</span> row[<span class="st">&quot;generation&quot;</span>] <span class="op">!=</span> generation</span>
-<span id="cb61-595"><a href="#cb61-595" aria-hidden="true" tabindex="-1"></a>                <span class="kw">or</span> row[<span class="st">&quot;runner_kind&quot;</span>] <span class="op">!=</span> <span class="st">&quot;managed&quot;</span></span>
-<span id="cb61-596"><a href="#cb61-596" aria-hidden="true" tabindex="-1"></a>            ):</span>
-<span id="cb61-597"><a href="#cb61-597" aria-hidden="true" tabindex="-1"></a>                database.rollback()</span>
-<span id="cb61-598"><a href="#cb61-598" aria-hidden="true" tabindex="-1"></a>                <span class="cf">return</span> <span class="va">False</span></span>
-<span id="cb61-599"><a href="#cb61-599" aria-hidden="true" tabindex="-1"></a>            runtime_result <span class="op">=</span> database.execute(</span>
-<span id="cb61-600"><a href="#cb61-600" aria-hidden="true" tabindex="-1"></a>                <span class="st">&quot;&quot;&quot;</span></span>
-<span id="cb61-601"><a href="#cb61-601" aria-hidden="true" tabindex="-1"></a><span class="st">                INSERT OR REPLACE INTO managed_runtimes (</span></span>
-<span id="cb61-602"><a href="#cb61-602" aria-hidden="true" tabindex="-1"></a><span class="st">                    user_id, runner_id, provider_name, sprite_external_id,</span></span>
-<span id="cb61-603"><a href="#cb61-603" aria-hidden="true" tabindex="-1"></a><span class="st">                    lifecycle_status, generation, artifact_version,</span></span>
-<span id="cb61-604"><a href="#cb61-604" aria-hidden="true" tabindex="-1"></a><span class="st">                    created_at, updated_at, last_error</span></span>
-<span id="cb61-605"><a href="#cb61-605" aria-hidden="true" tabindex="-1"></a><span class="st">                )</span></span>
-<span id="cb61-606"><a href="#cb61-606" aria-hidden="true" tabindex="-1"></a><span class="st">                SELECT user_id, runner_id, provider_name, sprite_external_id,</span></span>
-<span id="cb61-607"><a href="#cb61-607" aria-hidden="true" tabindex="-1"></a><span class="st">                       &#39;failed&#39;, generation, artifact_version,</span></span>
-<span id="cb61-608"><a href="#cb61-608" aria-hidden="true" tabindex="-1"></a><span class="st">                       created_at, ?, ?</span></span>
-<span id="cb61-609"><a href="#cb61-609" aria-hidden="true" tabindex="-1"></a><span class="st">                FROM managed_runtimes</span></span>
-<span id="cb61-610"><a href="#cb61-610" aria-hidden="true" tabindex="-1"></a><span class="st">                WHERE user_id = ? AND generation = ?</span></span>
-<span id="cb61-611"><a href="#cb61-611" aria-hidden="true" tabindex="-1"></a><span class="st">                  AND lifecycle_status = &#39;provisioning&#39;</span></span>
-<span id="cb61-612"><a href="#cb61-612" aria-hidden="true" tabindex="-1"></a><span class="st">                &quot;&quot;&quot;</span>,</span>
-<span id="cb61-613"><a href="#cb61-613" aria-hidden="true" tabindex="-1"></a>                (now_text, error_code, normalized_user_id, generation),</span>
-<span id="cb61-614"><a href="#cb61-614" aria-hidden="true" tabindex="-1"></a>            )</span>
-<span id="cb61-615"><a href="#cb61-615" aria-hidden="true" tabindex="-1"></a>            runner_result <span class="op">=</span> database.execute(</span>
-<span id="cb61-616"><a href="#cb61-616" aria-hidden="true" tabindex="-1"></a>                <span class="st">&quot;&quot;&quot;</span></span>
-<span id="cb61-617"><a href="#cb61-617" aria-hidden="true" tabindex="-1"></a><span class="st">                UPDATE user_runners</span></span>
-<span id="cb61-618"><a href="#cb61-618" aria-hidden="true" tabindex="-1"></a><span class="st">                SET status = &#39;revoked&#39;, revoked_at = ?,</span></span>
-<span id="cb61-619"><a href="#cb61-619" aria-hidden="true" tabindex="-1"></a><span class="st">                    registration_token_hash = NULL,</span></span>
-<span id="cb61-620"><a href="#cb61-620" aria-hidden="true" tabindex="-1"></a><span class="st">                    registration_token_expires_at = NULL,</span></span>
-<span id="cb61-621"><a href="#cb61-621" aria-hidden="true" tabindex="-1"></a><span class="st">                    runner_token_hash = NULL</span></span>
-<span id="cb61-622"><a href="#cb61-622" aria-hidden="true" tabindex="-1"></a><span class="st">                WHERE id = ? AND user_id = ? AND kind = &#39;managed&#39;</span></span>
-<span id="cb61-623"><a href="#cb61-623" aria-hidden="true" tabindex="-1"></a><span class="st">                &quot;&quot;&quot;</span>,</span>
-<span id="cb61-624"><a href="#cb61-624" aria-hidden="true" tabindex="-1"></a>                (now_text, row[<span class="st">&quot;runner_id&quot;</span>], normalized_user_id),</span>
-<span id="cb61-625"><a href="#cb61-625" aria-hidden="true" tabindex="-1"></a>            )</span>
-<span id="cb61-626"><a href="#cb61-626" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> runtime_result.rowcount <span class="op">!=</span> <span class="dv">1</span> <span class="kw">or</span> runner_result.rowcount <span class="op">!=</span> <span class="dv">1</span>:</span>
-<span id="cb61-627"><a href="#cb61-627" aria-hidden="true" tabindex="-1"></a>                <span class="cf">raise</span> <span class="pp">RuntimeError</span>(<span class="st">&quot;managed runtime failure transition was not stored&quot;</span>)</span>
-<span id="cb61-628"><a href="#cb61-628" aria-hidden="true" tabindex="-1"></a>            database.commit()</span>
-<span id="cb61-629"><a href="#cb61-629" aria-hidden="true" tabindex="-1"></a>            <span class="cf">return</span> <span class="va">True</span></span>
-<span id="cb61-630"><a href="#cb61-630" aria-hidden="true" tabindex="-1"></a>        <span class="cf">except</span> <span class="pp">Exception</span>:</span>
-<span id="cb61-631"><a href="#cb61-631" aria-hidden="true" tabindex="-1"></a>            database.rollback()</span>
-<span id="cb61-632"><a href="#cb61-632" aria-hidden="true" tabindex="-1"></a>            <span class="cf">raise</span></span>
-<span id="cb61-633"><a href="#cb61-633" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb61-634"><a href="#cb61-634" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb61-635"><a href="#cb61-635" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> _observer(row: sqlite3.Row) <span class="op">-&gt;</span> ProvisioningClaimResult:</span>
-<span id="cb61-636"><a href="#cb61-636" aria-hidden="true" tabindex="-1"></a>    <span class="co">&quot;&quot;&quot;Return runtime state without bearer authority.&quot;&quot;&quot;</span></span>
-<span id="cb61-637"><a href="#cb61-637" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> ProvisioningClaimResult(claimed<span class="op">=</span><span class="va">False</span>, runtime<span class="op">=</span>_runtime_status(row))</span>
-<span id="cb61-638"><a href="#cb61-638" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb61-639"><a href="#cb61-639" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb61-640"><a href="#cb61-640" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> _owner(row: sqlite3.Row, registration: <span class="bu">dict</span>[<span class="bu">str</span>, Any]) <span class="op">-&gt;</span> ProvisioningClaimResult:</span>
-<span id="cb61-641"><a href="#cb61-641" aria-hidden="true" tabindex="-1"></a>    <span class="co">&quot;&quot;&quot;Return runtime state plus newly generated registration authority.&quot;&quot;&quot;</span></span>
-<span id="cb61-642"><a href="#cb61-642" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> ProvisioningClaimResult(</span>
-<span id="cb61-643"><a href="#cb61-643" aria-hidden="true" tabindex="-1"></a>        claimed<span class="op">=</span><span class="va">True</span>,</span>
-<span id="cb61-644"><a href="#cb61-644" aria-hidden="true" tabindex="-1"></a>        runtime<span class="op">=</span>_runtime_status(row),</span>
-<span id="cb61-645"><a href="#cb61-645" aria-hidden="true" tabindex="-1"></a>        registration_token<span class="op">=</span>registration[<span class="st">&quot;registration_token&quot;</span>],</span>
-<span id="cb61-646"><a href="#cb61-646" aria-hidden="true" tabindex="-1"></a>        registration_token_expires_at<span class="op">=</span>registration[<span class="st">&quot;registration_token_expires_at&quot;</span>],</span>
-<span id="cb61-647"><a href="#cb61-647" aria-hidden="true" tabindex="-1"></a>        control_url<span class="op">=</span>registration[<span class="st">&quot;control_url&quot;</span>],</span>
-<span id="cb61-648"><a href="#cb61-648" aria-hidden="true" tabindex="-1"></a>        environment<span class="op">=</span>registration[<span class="st">&quot;environment&quot;</span>],</span>
-<span id="cb61-649"><a href="#cb61-649" aria-hidden="true" tabindex="-1"></a>    )</span>
-<span id="cb61-650"><a href="#cb61-650" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb61-651"><a href="#cb61-651" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb61-652"><a href="#cb61-652" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> claim_managed_runtime_provisioning(</span>
-<span id="cb61-653"><a href="#cb61-653" aria-hidden="true" tabindex="-1"></a>    user_id: <span class="bu">str</span>,</span>
-<span id="cb61-654"><a href="#cb61-654" aria-hidden="true" tabindex="-1"></a>    <span class="op">*</span>,</span>
-<span id="cb61-655"><a href="#cb61-655" aria-hidden="true" tabindex="-1"></a>    name_prefix: <span class="bu">str</span>,</span>
-<span id="cb61-656"><a href="#cb61-656" aria-hidden="true" tabindex="-1"></a>    name_key: <span class="bu">str</span>,</span>
-<span id="cb61-657"><a href="#cb61-657" aria-hidden="true" tabindex="-1"></a>    artifact_version: <span class="bu">str</span>,</span>
-<span id="cb61-658"><a href="#cb61-658" aria-hidden="true" tabindex="-1"></a>    region: <span class="bu">str</span>,</span>
-<span id="cb61-659"><a href="#cb61-659" aria-hidden="true" tabindex="-1"></a>    control_url: <span class="bu">str</span>,</span>
-<span id="cb61-660"><a href="#cb61-660" aria-hidden="true" tabindex="-1"></a>    allow_upgrade: <span class="bu">bool</span> <span class="op">=</span> <span class="va">False</span>,</span>
-<span id="cb61-661"><a href="#cb61-661" aria-hidden="true" tabindex="-1"></a>    now: datetime <span class="op">|</span> <span class="va">None</span> <span class="op">=</span> <span class="va">None</span>,</span>
-<span id="cb61-662"><a href="#cb61-662" aria-hidden="true" tabindex="-1"></a>    stale_after: timedelta <span class="op">=</span> _PROVISIONING_STALE_AFTER,</span>
-<span id="cb61-663"><a href="#cb61-663" aria-hidden="true" tabindex="-1"></a>) <span class="op">-&gt;</span> ProvisioningClaimResult:</span>
-<span id="cb61-664"><a href="#cb61-664" aria-hidden="true" tabindex="-1"></a>    <span class="co">&quot;&quot;&quot;Claim provisioning with registration state in one immediate transaction.&quot;&quot;&quot;</span></span>
-<span id="cb61-665"><a href="#cb61-665" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> <span class="bu">type</span>(allow_upgrade) <span class="kw">is</span> <span class="kw">not</span> <span class="bu">bool</span>:</span>
-<span id="cb61-666"><a href="#cb61-666" aria-hidden="true" tabindex="-1"></a>        <span class="cf">raise</span> <span class="pp">TypeError</span>(<span class="st">&quot;allow_upgrade must be a boolean&quot;</span>)</span>
-<span id="cb61-667"><a href="#cb61-667" aria-hidden="true" tabindex="-1"></a>    normalized_user_id <span class="op">=</span> _require_user_id(user_id)</span>
-<span id="cb61-668"><a href="#cb61-668" aria-hidden="true" tabindex="-1"></a>    normalized_artifact <span class="op">=</span> _required_text(artifact_version, <span class="st">&quot;artifact_version&quot;</span>)</span>
-<span id="cb61-669"><a href="#cb61-669" aria-hidden="true" tabindex="-1"></a>    normalized_region <span class="op">=</span> _required_text(region, <span class="st">&quot;region&quot;</span>)</span>
-<span id="cb61-670"><a href="#cb61-670" aria-hidden="true" tabindex="-1"></a>    current_time <span class="op">=</span> _normalized_now(now)</span>
-<span id="cb61-671"><a href="#cb61-671" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> <span class="kw">not</span> <span class="bu">isinstance</span>(stale_after, timedelta) <span class="kw">or</span> stale_after.total_seconds() <span class="op">&lt;=</span> <span class="dv">0</span>:</span>
-<span id="cb61-672"><a href="#cb61-672" aria-hidden="true" tabindex="-1"></a>        <span class="cf">raise</span> <span class="pp">ValueError</span>(<span class="st">&quot;stale_after must be a positive timedelta&quot;</span>)</span>
-<span id="cb61-673"><a href="#cb61-673" aria-hidden="true" tabindex="-1"></a>    generated_name <span class="op">=</span> managed_sprite_name(</span>
-<span id="cb61-674"><a href="#cb61-674" aria-hidden="true" tabindex="-1"></a>        normalized_user_id,</span>
-<span id="cb61-675"><a href="#cb61-675" aria-hidden="true" tabindex="-1"></a>        prefix<span class="op">=</span>name_prefix,</span>
-<span id="cb61-676"><a href="#cb61-676" aria-hidden="true" tabindex="-1"></a>        secret_key<span class="op">=</span>name_key,</span>
-<span id="cb61-677"><a href="#cb61-677" aria-hidden="true" tabindex="-1"></a>    )</span>
-<span id="cb61-678"><a href="#cb61-678" aria-hidden="true" tabindex="-1"></a>    now_text <span class="op">=</span> _datetime_to_storage(current_time)</span>
-<span id="cb61-679"><a href="#cb61-679" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb61-680"><a href="#cb61-680" aria-hidden="true" tabindex="-1"></a>    <span class="cf">with</span> get_control_db() <span class="im">as</span> database:</span>
-<span id="cb61-681"><a href="#cb61-681" aria-hidden="true" tabindex="-1"></a>        <span class="cf">try</span>:</span>
-<span id="cb61-682"><a href="#cb61-682" aria-hidden="true" tabindex="-1"></a>            database.execute(<span class="st">&quot;BEGIN IMMEDIATE&quot;</span>)</span>
-<span id="cb61-683"><a href="#cb61-683" aria-hidden="true" tabindex="-1"></a>            row <span class="op">=</span> database.execute(</span>
-<span id="cb61-684"><a href="#cb61-684" aria-hidden="true" tabindex="-1"></a>                <span class="st">&quot;SELECT * FROM managed_runtimes WHERE user_id = ?&quot;</span>,</span>
-<span id="cb61-685"><a href="#cb61-685" aria-hidden="true" tabindex="-1"></a>                (normalized_user_id,),</span>
-<span id="cb61-686"><a href="#cb61-686" aria-hidden="true" tabindex="-1"></a>            ).fetchone()</span>
-<span id="cb61-687"><a href="#cb61-687" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> row <span class="kw">is</span> <span class="kw">not</span> <span class="va">None</span>:</span>
-<span id="cb61-688"><a href="#cb61-688" aria-hidden="true" tabindex="-1"></a>                row_time <span class="op">=</span> _datetime_from_storage(row[<span class="st">&quot;updated_at&quot;</span>])</span>
-<span id="cb61-689"><a href="#cb61-689" aria-hidden="true" tabindex="-1"></a>                <span class="cf">assert</span> row_time <span class="kw">is</span> <span class="kw">not</span> <span class="va">None</span>, <span class="st">&quot;managed runtime timestamp must exist&quot;</span></span>
-<span id="cb61-690"><a href="#cb61-690" aria-hidden="true" tabindex="-1"></a>                is_stale <span class="op">=</span> current_time <span class="op">-</span> row_time <span class="op">&gt;=</span> stale_after</span>
-<span id="cb61-691"><a href="#cb61-691" aria-hidden="true" tabindex="-1"></a>                should_claim <span class="op">=</span> row[<span class="st">&quot;lifecycle_status&quot;</span>] <span class="op">==</span> <span class="st">&quot;failed&quot;</span> <span class="kw">or</span> (</span>
-<span id="cb61-692"><a href="#cb61-692" aria-hidden="true" tabindex="-1"></a>                    row[<span class="st">&quot;lifecycle_status&quot;</span>] <span class="op">==</span> <span class="st">&quot;provisioning&quot;</span> <span class="kw">and</span> is_stale</span>
-<span id="cb61-693"><a href="#cb61-693" aria-hidden="true" tabindex="-1"></a>                )</span>
-<span id="cb61-694"><a href="#cb61-694" aria-hidden="true" tabindex="-1"></a>                should_claim <span class="op">=</span> should_claim <span class="kw">or</span> (</span>
-<span id="cb61-695"><a href="#cb61-695" aria-hidden="true" tabindex="-1"></a>                    allow_upgrade</span>
-<span id="cb61-696"><a href="#cb61-696" aria-hidden="true" tabindex="-1"></a>                    <span class="kw">and</span> row[<span class="st">&quot;lifecycle_status&quot;</span>] <span class="op">==</span> <span class="st">&quot;ready&quot;</span></span>
-<span id="cb61-697"><a href="#cb61-697" aria-hidden="true" tabindex="-1"></a>                    <span class="kw">and</span> row[<span class="st">&quot;artifact_version&quot;</span>] <span class="op">!=</span> normalized_artifact</span>
-<span id="cb61-698"><a href="#cb61-698" aria-hidden="true" tabindex="-1"></a>                )</span>
-<span id="cb61-699"><a href="#cb61-699" aria-hidden="true" tabindex="-1"></a>                <span class="cf">if</span> <span class="kw">not</span> should_claim:</span>
-<span id="cb61-700"><a href="#cb61-700" aria-hidden="true" tabindex="-1"></a>                    database.commit()</span>
-<span id="cb61-701"><a href="#cb61-701" aria-hidden="true" tabindex="-1"></a>                    <span class="cf">return</span> _observer(row)</span>
-<span id="cb61-702"><a href="#cb61-702" aria-hidden="true" tabindex="-1"></a>                sprite_name <span class="op">=</span> row[<span class="st">&quot;sprite_external_id&quot;</span>]</span>
-<span id="cb61-703"><a href="#cb61-703" aria-hidden="true" tabindex="-1"></a>                generation <span class="op">=</span> <span class="bu">int</span>(row[<span class="st">&quot;generation&quot;</span>]) <span class="op">+</span> <span class="dv">1</span></span>
-<span id="cb61-704"><a href="#cb61-704" aria-hidden="true" tabindex="-1"></a>            <span class="cf">else</span>:</span>
-<span id="cb61-705"><a href="#cb61-705" aria-hidden="true" tabindex="-1"></a>                sprite_name <span class="op">=</span> generated_name</span>
-<span id="cb61-706"><a href="#cb61-706" aria-hidden="true" tabindex="-1"></a>                generation <span class="op">=</span> <span class="dv">1</span></span>
-<span id="cb61-707"><a href="#cb61-707" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb61-708"><a href="#cb61-708" aria-hidden="true" tabindex="-1"></a>            registration <span class="op">=</span> _create_runner_registration_in_connection(</span>
-<span id="cb61-709"><a href="#cb61-709" aria-hidden="true" tabindex="-1"></a>                database,</span>
-<span id="cb61-710"><a href="#cb61-710" aria-hidden="true" tabindex="-1"></a>                normalized_user_id,</span>
-<span id="cb61-711"><a href="#cb61-711" aria-hidden="true" tabindex="-1"></a>                name<span class="op">=</span><span class="st">&quot;Managed Fly Sprite&quot;</span>,</span>
-<span id="cb61-712"><a href="#cb61-712" aria-hidden="true" tabindex="-1"></a>                cloud_provider<span class="op">=</span><span class="st">&quot;fly_sprites&quot;</span>,</span>
-<span id="cb61-713"><a href="#cb61-713" aria-hidden="true" tabindex="-1"></a>                region<span class="op">=</span>normalized_region,</span>
-<span id="cb61-714"><a href="#cb61-714" aria-hidden="true" tabindex="-1"></a>                storage_profile<span class="op">=</span><span class="st">&quot;fly_sprites_posix&quot;</span>,</span>
-<span id="cb61-715"><a href="#cb61-715" aria-hidden="true" tabindex="-1"></a>                control_url<span class="op">=</span>control_url,</span>
-<span id="cb61-716"><a href="#cb61-716" aria-hidden="true" tabindex="-1"></a>                runner_kind<span class="op">=</span><span class="st">&quot;managed&quot;</span>,</span>
-<span id="cb61-717"><a href="#cb61-717" aria-hidden="true" tabindex="-1"></a>                now<span class="op">=</span>current_time,</span>
-<span id="cb61-718"><a href="#cb61-718" aria-hidden="true" tabindex="-1"></a>            )</span>
-<span id="cb61-719"><a href="#cb61-719" aria-hidden="true" tabindex="-1"></a>            runner_id <span class="op">=</span> registration[<span class="st">&quot;runner&quot;</span>][<span class="st">&quot;id&quot;</span>]</span>
-<span id="cb61-720"><a href="#cb61-720" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> row <span class="kw">is</span> <span class="va">None</span>:</span>
-<span id="cb61-721"><a href="#cb61-721" aria-hidden="true" tabindex="-1"></a>                database.execute(</span>
-<span id="cb61-722"><a href="#cb61-722" aria-hidden="true" tabindex="-1"></a>                    <span class="st">&quot;&quot;&quot;</span></span>
-<span id="cb61-723"><a href="#cb61-723" aria-hidden="true" tabindex="-1"></a><span class="st">                    INSERT INTO managed_runtimes (</span></span>
-<span id="cb61-724"><a href="#cb61-724" aria-hidden="true" tabindex="-1"></a><span class="st">                        user_id, runner_id, provider_name, sprite_external_id,</span></span>
-<span id="cb61-725"><a href="#cb61-725" aria-hidden="true" tabindex="-1"></a><span class="st">                        lifecycle_status, generation, artifact_version,</span></span>
-<span id="cb61-726"><a href="#cb61-726" aria-hidden="true" tabindex="-1"></a><span class="st">                        created_at, updated_at, last_error</span></span>
-<span id="cb61-727"><a href="#cb61-727" aria-hidden="true" tabindex="-1"></a><span class="st">                    ) VALUES (?, ?, &#39;fly_sprites&#39;, ?, &#39;provisioning&#39;, 1, ?, ?, ?, NULL)</span></span>
-<span id="cb61-728"><a href="#cb61-728" aria-hidden="true" tabindex="-1"></a><span class="st">                    &quot;&quot;&quot;</span>,</span>
-<span id="cb61-729"><a href="#cb61-729" aria-hidden="true" tabindex="-1"></a>                    (</span>
-<span id="cb61-730"><a href="#cb61-730" aria-hidden="true" tabindex="-1"></a>                        normalized_user_id,</span>
-<span id="cb61-731"><a href="#cb61-731" aria-hidden="true" tabindex="-1"></a>                        runner_id,</span>
-<span id="cb61-732"><a href="#cb61-732" aria-hidden="true" tabindex="-1"></a>                        sprite_name,</span>
-<span id="cb61-733"><a href="#cb61-733" aria-hidden="true" tabindex="-1"></a>                        normalized_artifact,</span>
-<span id="cb61-734"><a href="#cb61-734" aria-hidden="true" tabindex="-1"></a>                        now_text,</span>
-<span id="cb61-735"><a href="#cb61-735" aria-hidden="true" tabindex="-1"></a>                        now_text,</span>
-<span id="cb61-736"><a href="#cb61-736" aria-hidden="true" tabindex="-1"></a>                    ),</span>
-<span id="cb61-737"><a href="#cb61-737" aria-hidden="true" tabindex="-1"></a>                )</span>
-<span id="cb61-738"><a href="#cb61-738" aria-hidden="true" tabindex="-1"></a>            <span class="cf">else</span>:</span>
-<span id="cb61-739"><a href="#cb61-739" aria-hidden="true" tabindex="-1"></a>                database.execute(</span>
-<span id="cb61-740"><a href="#cb61-740" aria-hidden="true" tabindex="-1"></a>                    <span class="st">&quot;&quot;&quot;</span></span>
-<span id="cb61-741"><a href="#cb61-741" aria-hidden="true" tabindex="-1"></a><span class="st">                    UPDATE managed_runtimes</span></span>
-<span id="cb61-742"><a href="#cb61-742" aria-hidden="true" tabindex="-1"></a><span class="st">                    SET runner_id = ?, lifecycle_status = &#39;provisioning&#39;,</span></span>
-<span id="cb61-743"><a href="#cb61-743" aria-hidden="true" tabindex="-1"></a><span class="st">                        generation = ?, artifact_version = ?, updated_at = ?,</span></span>
-<span id="cb61-744"><a href="#cb61-744" aria-hidden="true" tabindex="-1"></a><span class="st">                        last_error = NULL</span></span>
-<span id="cb61-745"><a href="#cb61-745" aria-hidden="true" tabindex="-1"></a><span class="st">                    WHERE user_id = ?</span></span>
-<span id="cb61-746"><a href="#cb61-746" aria-hidden="true" tabindex="-1"></a><span class="st">                    &quot;&quot;&quot;</span>,</span>
-<span id="cb61-747"><a href="#cb61-747" aria-hidden="true" tabindex="-1"></a>                    (</span>
-<span id="cb61-748"><a href="#cb61-748" aria-hidden="true" tabindex="-1"></a>                        runner_id,</span>
-<span id="cb61-749"><a href="#cb61-749" aria-hidden="true" tabindex="-1"></a>                        generation,</span>
-<span id="cb61-750"><a href="#cb61-750" aria-hidden="true" tabindex="-1"></a>                        normalized_artifact,</span>
-<span id="cb61-751"><a href="#cb61-751" aria-hidden="true" tabindex="-1"></a>                        now_text,</span>
-<span id="cb61-752"><a href="#cb61-752" aria-hidden="true" tabindex="-1"></a>                        normalized_user_id,</span>
-<span id="cb61-753"><a href="#cb61-753" aria-hidden="true" tabindex="-1"></a>                    ),</span>
-<span id="cb61-754"><a href="#cb61-754" aria-hidden="true" tabindex="-1"></a>                )</span>
-<span id="cb61-755"><a href="#cb61-755" aria-hidden="true" tabindex="-1"></a>            claimed_row <span class="op">=</span> database.execute(</span>
-<span id="cb61-756"><a href="#cb61-756" aria-hidden="true" tabindex="-1"></a>                <span class="st">&quot;SELECT * FROM managed_runtimes WHERE user_id = ?&quot;</span>,</span>
-<span id="cb61-757"><a href="#cb61-757" aria-hidden="true" tabindex="-1"></a>                (normalized_user_id,),</span>
-<span id="cb61-758"><a href="#cb61-758" aria-hidden="true" tabindex="-1"></a>            ).fetchone()</span>
-<span id="cb61-759"><a href="#cb61-759" aria-hidden="true" tabindex="-1"></a>            <span class="cf">assert</span> claimed_row <span class="kw">is</span> <span class="kw">not</span> <span class="va">None</span>, <span class="st">&quot;managed runtime claim must exist&quot;</span></span>
-<span id="cb61-760"><a href="#cb61-760" aria-hidden="true" tabindex="-1"></a>            database.commit()</span>
-<span id="cb61-761"><a href="#cb61-761" aria-hidden="true" tabindex="-1"></a>            <span class="cf">return</span> _owner(claimed_row, registration)</span>
-<span id="cb61-762"><a href="#cb61-762" aria-hidden="true" tabindex="-1"></a>        <span class="cf">except</span> <span class="pp">Exception</span>:</span>
-<span id="cb61-763"><a href="#cb61-763" aria-hidden="true" tabindex="-1"></a>            database.rollback()</span>
-<span id="cb61-764"><a href="#cb61-764" aria-hidden="true" tabindex="-1"></a>            <span class="cf">raise</span></span></code></pre></div>
+<span id="cb61-259"><a href="#cb61-259" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> result.rowcount <span class="op">!=</span> <span class="dv">1</span>:</span>
+<span id="cb61-260"><a href="#cb61-260" aria-hidden="true" tabindex="-1"></a>                database.rollback()</span>
+<span id="cb61-261"><a href="#cb61-261" aria-hidden="true" tabindex="-1"></a>                <span class="cf">return</span> <span class="va">False</span></span>
+<span id="cb61-262"><a href="#cb61-262" aria-hidden="true" tabindex="-1"></a>            operation_result <span class="op">=</span> database.execute(</span>
+<span id="cb61-263"><a href="#cb61-263" aria-hidden="true" tabindex="-1"></a>                <span class="st">&quot;&quot;&quot;UPDATE managed_backup_operations</span></span>
+<span id="cb61-264"><a href="#cb61-264" aria-hidden="true" tabindex="-1"></a><span class="st">                   SET phase = &#39;activated&#39;, activation_generation = ?, updated_at = ?</span></span>
+<span id="cb61-265"><a href="#cb61-265" aria-hidden="true" tabindex="-1"></a><span class="st">                   WHERE user_id = ? AND job_id = ? AND operation = &#39;restore&#39;</span></span>
+<span id="cb61-266"><a href="#cb61-266" aria-hidden="true" tabindex="-1"></a><span class="st">                     AND status = &#39;running&#39; AND runtime_generation = ?</span></span>
+<span id="cb61-267"><a href="#cb61-267" aria-hidden="true" tabindex="-1"></a><span class="st">                     AND lease_token = ? AND lease_expires_at &gt; ?&quot;&quot;&quot;</span>,</span>
+<span id="cb61-268"><a href="#cb61-268" aria-hidden="true" tabindex="-1"></a>                (</span>
+<span id="cb61-269"><a href="#cb61-269" aria-hidden="true" tabindex="-1"></a>                    source_generation <span class="op">+</span> <span class="dv">1</span>,</span>
+<span id="cb61-270"><a href="#cb61-270" aria-hidden="true" tabindex="-1"></a>                    now_text,</span>
+<span id="cb61-271"><a href="#cb61-271" aria-hidden="true" tabindex="-1"></a>                    normalized_user_id,</span>
+<span id="cb61-272"><a href="#cb61-272" aria-hidden="true" tabindex="-1"></a>                    normalized_job_id,</span>
+<span id="cb61-273"><a href="#cb61-273" aria-hidden="true" tabindex="-1"></a>                    source_generation,</span>
+<span id="cb61-274"><a href="#cb61-274" aria-hidden="true" tabindex="-1"></a>                    normalized_lease_token,</span>
+<span id="cb61-275"><a href="#cb61-275" aria-hidden="true" tabindex="-1"></a>                    now_text,</span>
+<span id="cb61-276"><a href="#cb61-276" aria-hidden="true" tabindex="-1"></a>                ),</span>
+<span id="cb61-277"><a href="#cb61-277" aria-hidden="true" tabindex="-1"></a>            )</span>
+<span id="cb61-278"><a href="#cb61-278" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> operation_result.rowcount <span class="op">!=</span> <span class="dv">1</span>:</span>
+<span id="cb61-279"><a href="#cb61-279" aria-hidden="true" tabindex="-1"></a>                database.rollback()</span>
+<span id="cb61-280"><a href="#cb61-280" aria-hidden="true" tabindex="-1"></a>                <span class="cf">return</span> <span class="va">False</span></span>
+<span id="cb61-281"><a href="#cb61-281" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> identity_tracking_exists:</span>
+<span id="cb61-282"><a href="#cb61-282" aria-hidden="true" tabindex="-1"></a>                source_identity_result <span class="op">=</span> database.execute(</span>
+<span id="cb61-283"><a href="#cb61-283" aria-hidden="true" tabindex="-1"></a>                    <span class="st">&quot;&quot;&quot;UPDATE managed_sprite_identities</span></span>
+<span id="cb61-284"><a href="#cb61-284" aria-hidden="true" tabindex="-1"></a><span class="st">                       SET lifecycle_status = &#39;retired&#39;, updated_at = ?</span></span>
+<span id="cb61-285"><a href="#cb61-285" aria-hidden="true" tabindex="-1"></a><span class="st">                       WHERE sprite_name = ? AND identity_kind = &#39;runtime&#39;</span></span>
+<span id="cb61-286"><a href="#cb61-286" aria-hidden="true" tabindex="-1"></a><span class="st">                         AND user_id = ? AND job_id IS NULL</span></span>
+<span id="cb61-287"><a href="#cb61-287" aria-hidden="true" tabindex="-1"></a><span class="st">                         AND lifecycle_status = &#39;active&#39;&quot;&quot;&quot;</span>,</span>
+<span id="cb61-288"><a href="#cb61-288" aria-hidden="true" tabindex="-1"></a>                    (now_text, runtime[<span class="st">&quot;sprite_external_id&quot;</span>], normalized_user_id),</span>
+<span id="cb61-289"><a href="#cb61-289" aria-hidden="true" tabindex="-1"></a>                )</span>
+<span id="cb61-290"><a href="#cb61-290" aria-hidden="true" tabindex="-1"></a>                candidate_identity_result <span class="op">=</span> database.execute(</span>
+<span id="cb61-291"><a href="#cb61-291" aria-hidden="true" tabindex="-1"></a>                    <span class="st">&quot;&quot;&quot;UPDATE managed_sprite_identities</span></span>
+<span id="cb61-292"><a href="#cb61-292" aria-hidden="true" tabindex="-1"></a><span class="st">                       SET identity_kind = &#39;runtime&#39;, job_id = NULL,</span></span>
+<span id="cb61-293"><a href="#cb61-293" aria-hidden="true" tabindex="-1"></a><span class="st">                           lifecycle_status = &#39;active&#39;, updated_at = ?</span></span>
+<span id="cb61-294"><a href="#cb61-294" aria-hidden="true" tabindex="-1"></a><span class="st">                       WHERE sprite_name = ? AND identity_kind = &#39;restore_candidate&#39;</span></span>
+<span id="cb61-295"><a href="#cb61-295" aria-hidden="true" tabindex="-1"></a><span class="st">                         AND user_id = ? AND job_id = ?</span></span>
+<span id="cb61-296"><a href="#cb61-296" aria-hidden="true" tabindex="-1"></a><span class="st">                         AND lifecycle_status = &#39;creating&#39;&quot;&quot;&quot;</span>,</span>
+<span id="cb61-297"><a href="#cb61-297" aria-hidden="true" tabindex="-1"></a>                    (</span>
+<span id="cb61-298"><a href="#cb61-298" aria-hidden="true" tabindex="-1"></a>                        now_text,</span>
+<span id="cb61-299"><a href="#cb61-299" aria-hidden="true" tabindex="-1"></a>                        candidate_sprite,</span>
+<span id="cb61-300"><a href="#cb61-300" aria-hidden="true" tabindex="-1"></a>                        normalized_user_id,</span>
+<span id="cb61-301"><a href="#cb61-301" aria-hidden="true" tabindex="-1"></a>                        normalized_job_id,</span>
+<span id="cb61-302"><a href="#cb61-302" aria-hidden="true" tabindex="-1"></a>                    ),</span>
+<span id="cb61-303"><a href="#cb61-303" aria-hidden="true" tabindex="-1"></a>                )</span>
+<span id="cb61-304"><a href="#cb61-304" aria-hidden="true" tabindex="-1"></a>                <span class="cf">if</span> source_identity_result.rowcount <span class="op">!=</span> <span class="dv">1</span> <span class="kw">or</span> candidate_identity_result.rowcount <span class="op">!=</span> <span class="dv">1</span>:</span>
+<span id="cb61-305"><a href="#cb61-305" aria-hidden="true" tabindex="-1"></a>                    database.rollback()</span>
+<span id="cb61-306"><a href="#cb61-306" aria-hidden="true" tabindex="-1"></a>                    <span class="cf">return</span> <span class="va">False</span></span>
+<span id="cb61-307"><a href="#cb61-307" aria-hidden="true" tabindex="-1"></a>            database.execute(</span>
+<span id="cb61-308"><a href="#cb61-308" aria-hidden="true" tabindex="-1"></a>                <span class="st">&quot;DELETE FROM managed_runtime_activation_guards WHERE user_id = ?&quot;</span>,</span>
+<span id="cb61-309"><a href="#cb61-309" aria-hidden="true" tabindex="-1"></a>                (normalized_user_id,),</span>
+<span id="cb61-310"><a href="#cb61-310" aria-hidden="true" tabindex="-1"></a>            )</span>
+<span id="cb61-311"><a href="#cb61-311" aria-hidden="true" tabindex="-1"></a>            database.commit()</span>
+<span id="cb61-312"><a href="#cb61-312" aria-hidden="true" tabindex="-1"></a>            <span class="cf">return</span> <span class="va">True</span></span>
+<span id="cb61-313"><a href="#cb61-313" aria-hidden="true" tabindex="-1"></a>        <span class="cf">except</span> sqlite3.IntegrityError:</span>
+<span id="cb61-314"><a href="#cb61-314" aria-hidden="true" tabindex="-1"></a>            database.rollback()</span>
+<span id="cb61-315"><a href="#cb61-315" aria-hidden="true" tabindex="-1"></a>            <span class="cf">return</span> <span class="va">False</span></span>
+<span id="cb61-316"><a href="#cb61-316" aria-hidden="true" tabindex="-1"></a>        <span class="cf">except</span> <span class="pp">Exception</span>:</span>
+<span id="cb61-317"><a href="#cb61-317" aria-hidden="true" tabindex="-1"></a>            database.rollback()</span>
+<span id="cb61-318"><a href="#cb61-318" aria-hidden="true" tabindex="-1"></a>            <span class="cf">raise</span></span>
+<span id="cb61-319"><a href="#cb61-319" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb61-320"><a href="#cb61-320" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb61-321"><a href="#cb61-321" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> get_managed_runtime_status(user_id: <span class="bu">str</span>) <span class="op">-&gt;</span> ManagedRuntimeStatus <span class="op">|</span> <span class="va">None</span>:</span>
+<span id="cb61-322"><a href="#cb61-322" aria-hidden="true" tabindex="-1"></a>    <span class="co">&quot;&quot;&quot;Return safe persisted state without registration authority.&quot;&quot;&quot;</span></span>
+<span id="cb61-323"><a href="#cb61-323" aria-hidden="true" tabindex="-1"></a>    normalized_user_id <span class="op">=</span> _require_user_id(user_id)</span>
+<span id="cb61-324"><a href="#cb61-324" aria-hidden="true" tabindex="-1"></a>    <span class="cf">with</span> get_control_db() <span class="im">as</span> database:</span>
+<span id="cb61-325"><a href="#cb61-325" aria-hidden="true" tabindex="-1"></a>        row <span class="op">=</span> database.execute(</span>
+<span id="cb61-326"><a href="#cb61-326" aria-hidden="true" tabindex="-1"></a>            <span class="st">&quot;SELECT * FROM managed_runtimes WHERE user_id = ?&quot;</span>,</span>
+<span id="cb61-327"><a href="#cb61-327" aria-hidden="true" tabindex="-1"></a>            (normalized_user_id,),</span>
+<span id="cb61-328"><a href="#cb61-328" aria-hidden="true" tabindex="-1"></a>        ).fetchone()</span>
+<span id="cb61-329"><a href="#cb61-329" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> row <span class="kw">is</span> <span class="va">None</span>:</span>
+<span id="cb61-330"><a href="#cb61-330" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span> <span class="va">None</span></span>
+<span id="cb61-331"><a href="#cb61-331" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> _runtime_status(row)</span>
+<span id="cb61-332"><a href="#cb61-332" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb61-333"><a href="#cb61-333" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb61-334"><a href="#cb61-334" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> claim_managed_runtime_deletion(</span>
+<span id="cb61-335"><a href="#cb61-335" aria-hidden="true" tabindex="-1"></a>    user_id: <span class="bu">str</span>,</span>
+<span id="cb61-336"><a href="#cb61-336" aria-hidden="true" tabindex="-1"></a>    now: datetime,</span>
+<span id="cb61-337"><a href="#cb61-337" aria-hidden="true" tabindex="-1"></a>) <span class="op">-&gt;</span> DeletionClaimResult <span class="op">|</span> <span class="va">None</span>:</span>
+<span id="cb61-338"><a href="#cb61-338" aria-hidden="true" tabindex="-1"></a>    <span class="co">&quot;&quot;&quot;Claim deletion and revoke linked managed runner authority atomically.&quot;&quot;&quot;</span></span>
+<span id="cb61-339"><a href="#cb61-339" aria-hidden="true" tabindex="-1"></a>    normalized_user_id <span class="op">=</span> _require_user_id(user_id)</span>
+<span id="cb61-340"><a href="#cb61-340" aria-hidden="true" tabindex="-1"></a>    current_time <span class="op">=</span> _normalized_now(now)</span>
+<span id="cb61-341"><a href="#cb61-341" aria-hidden="true" tabindex="-1"></a>    now_text <span class="op">=</span> _datetime_to_storage(current_time).replace(<span class="st">&quot;+00:00&quot;</span>, <span class="st">&quot;Z&quot;</span>)</span>
+<span id="cb61-342"><a href="#cb61-342" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb61-343"><a href="#cb61-343" aria-hidden="true" tabindex="-1"></a>    <span class="cf">with</span> get_control_db() <span class="im">as</span> database:</span>
+<span id="cb61-344"><a href="#cb61-344" aria-hidden="true" tabindex="-1"></a>        <span class="cf">try</span>:</span>
+<span id="cb61-345"><a href="#cb61-345" aria-hidden="true" tabindex="-1"></a>            database.execute(<span class="st">&quot;BEGIN IMMEDIATE&quot;</span>)</span>
+<span id="cb61-346"><a href="#cb61-346" aria-hidden="true" tabindex="-1"></a>            maintenance <span class="op">=</span> database.execute(</span>
+<span id="cb61-347"><a href="#cb61-347" aria-hidden="true" tabindex="-1"></a>                <span class="st">&quot;&quot;&quot;SELECT 1 FROM managed_backup_operations</span></span>
+<span id="cb61-348"><a href="#cb61-348" aria-hidden="true" tabindex="-1"></a><span class="st">                   WHERE user_id = ? AND status = &#39;running&#39;&quot;&quot;&quot;</span>,</span>
+<span id="cb61-349"><a href="#cb61-349" aria-hidden="true" tabindex="-1"></a>                (normalized_user_id,),</span>
+<span id="cb61-350"><a href="#cb61-350" aria-hidden="true" tabindex="-1"></a>            ).fetchone()</span>
+<span id="cb61-351"><a href="#cb61-351" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> maintenance <span class="kw">is</span> <span class="kw">not</span> <span class="va">None</span>:</span>
+<span id="cb61-352"><a href="#cb61-352" aria-hidden="true" tabindex="-1"></a>                <span class="cf">raise</span> <span class="pp">RuntimeError</span>(<span class="st">&quot;managed runtime maintenance is active&quot;</span>)</span>
+<span id="cb61-353"><a href="#cb61-353" aria-hidden="true" tabindex="-1"></a>            row <span class="op">=</span> database.execute(</span>
+<span id="cb61-354"><a href="#cb61-354" aria-hidden="true" tabindex="-1"></a>                <span class="st">&quot;&quot;&quot;</span></span>
+<span id="cb61-355"><a href="#cb61-355" aria-hidden="true" tabindex="-1"></a><span class="st">                SELECT runtime.*, runner.kind AS runner_kind</span></span>
+<span id="cb61-356"><a href="#cb61-356" aria-hidden="true" tabindex="-1"></a><span class="st">                FROM managed_runtimes AS runtime</span></span>
+<span id="cb61-357"><a href="#cb61-357" aria-hidden="true" tabindex="-1"></a><span class="st">                JOIN user_runners AS runner ON runner.id = runtime.runner_id</span></span>
+<span id="cb61-358"><a href="#cb61-358" aria-hidden="true" tabindex="-1"></a><span class="st">                WHERE runtime.user_id = ?</span></span>
+<span id="cb61-359"><a href="#cb61-359" aria-hidden="true" tabindex="-1"></a><span class="st">                &quot;&quot;&quot;</span>,</span>
+<span id="cb61-360"><a href="#cb61-360" aria-hidden="true" tabindex="-1"></a>                (normalized_user_id,),</span>
+<span id="cb61-361"><a href="#cb61-361" aria-hidden="true" tabindex="-1"></a>            ).fetchone()</span>
+<span id="cb61-362"><a href="#cb61-362" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> row <span class="kw">is</span> <span class="va">None</span>:</span>
+<span id="cb61-363"><a href="#cb61-363" aria-hidden="true" tabindex="-1"></a>                database.commit()</span>
+<span id="cb61-364"><a href="#cb61-364" aria-hidden="true" tabindex="-1"></a>                <span class="cf">return</span> <span class="va">None</span></span>
+<span id="cb61-365"><a href="#cb61-365" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> row[<span class="st">&quot;lifecycle_status&quot;</span>] <span class="op">==</span> <span class="st">&quot;deleting&quot;</span>:</span>
+<span id="cb61-366"><a href="#cb61-366" aria-hidden="true" tabindex="-1"></a>                database.commit()</span>
+<span id="cb61-367"><a href="#cb61-367" aria-hidden="true" tabindex="-1"></a>                <span class="cf">return</span> DeletionClaimResult(claimed<span class="op">=</span><span class="va">False</span>, runtime<span class="op">=</span>_runtime_status(row))</span>
+<span id="cb61-368"><a href="#cb61-368" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb61-369"><a href="#cb61-369" aria-hidden="true" tabindex="-1"></a>            runtime_result <span class="op">=</span> database.execute(</span>
+<span id="cb61-370"><a href="#cb61-370" aria-hidden="true" tabindex="-1"></a>                <span class="st">&quot;&quot;&quot;</span></span>
+<span id="cb61-371"><a href="#cb61-371" aria-hidden="true" tabindex="-1"></a><span class="st">                INSERT OR REPLACE INTO managed_runtimes (</span></span>
+<span id="cb61-372"><a href="#cb61-372" aria-hidden="true" tabindex="-1"></a><span class="st">                    user_id, runner_id, provider_name, sprite_external_id,</span></span>
+<span id="cb61-373"><a href="#cb61-373" aria-hidden="true" tabindex="-1"></a><span class="st">                    lifecycle_status, generation, artifact_version,</span></span>
+<span id="cb61-374"><a href="#cb61-374" aria-hidden="true" tabindex="-1"></a><span class="st">                    created_at, updated_at, last_error</span></span>
+<span id="cb61-375"><a href="#cb61-375" aria-hidden="true" tabindex="-1"></a><span class="st">                )</span></span>
+<span id="cb61-376"><a href="#cb61-376" aria-hidden="true" tabindex="-1"></a><span class="st">                SELECT user_id, runner_id, provider_name, sprite_external_id,</span></span>
+<span id="cb61-377"><a href="#cb61-377" aria-hidden="true" tabindex="-1"></a><span class="st">                       &#39;deleting&#39;, generation + 1, artifact_version,</span></span>
+<span id="cb61-378"><a href="#cb61-378" aria-hidden="true" tabindex="-1"></a><span class="st">                       created_at, ?, NULL</span></span>
+<span id="cb61-379"><a href="#cb61-379" aria-hidden="true" tabindex="-1"></a><span class="st">                FROM managed_runtimes</span></span>
+<span id="cb61-380"><a href="#cb61-380" aria-hidden="true" tabindex="-1"></a><span class="st">                WHERE user_id = ? AND lifecycle_status != &#39;deleting&#39;</span></span>
+<span id="cb61-381"><a href="#cb61-381" aria-hidden="true" tabindex="-1"></a><span class="st">                &quot;&quot;&quot;</span>,</span>
+<span id="cb61-382"><a href="#cb61-382" aria-hidden="true" tabindex="-1"></a>                (now_text, normalized_user_id),</span>
+<span id="cb61-383"><a href="#cb61-383" aria-hidden="true" tabindex="-1"></a>            )</span>
+<span id="cb61-384"><a href="#cb61-384" aria-hidden="true" tabindex="-1"></a>            runner_result <span class="op">=</span> database.execute(</span>
+<span id="cb61-385"><a href="#cb61-385" aria-hidden="true" tabindex="-1"></a>                <span class="st">&quot;&quot;&quot;</span></span>
+<span id="cb61-386"><a href="#cb61-386" aria-hidden="true" tabindex="-1"></a><span class="st">                UPDATE user_runners</span></span>
+<span id="cb61-387"><a href="#cb61-387" aria-hidden="true" tabindex="-1"></a><span class="st">                SET status = &#39;revoked&#39;, revoked_at = ?,</span></span>
+<span id="cb61-388"><a href="#cb61-388" aria-hidden="true" tabindex="-1"></a><span class="st">                    registration_token_hash = NULL,</span></span>
+<span id="cb61-389"><a href="#cb61-389" aria-hidden="true" tabindex="-1"></a><span class="st">                    registration_token_expires_at = NULL,</span></span>
+<span id="cb61-390"><a href="#cb61-390" aria-hidden="true" tabindex="-1"></a><span class="st">                    runner_token_hash = NULL</span></span>
+<span id="cb61-391"><a href="#cb61-391" aria-hidden="true" tabindex="-1"></a><span class="st">                WHERE id = ? AND user_id = ? AND kind = &#39;managed&#39;</span></span>
+<span id="cb61-392"><a href="#cb61-392" aria-hidden="true" tabindex="-1"></a><span class="st">                &quot;&quot;&quot;</span>,</span>
+<span id="cb61-393"><a href="#cb61-393" aria-hidden="true" tabindex="-1"></a>                (now_text, row[<span class="st">&quot;runner_id&quot;</span>], normalized_user_id),</span>
+<span id="cb61-394"><a href="#cb61-394" aria-hidden="true" tabindex="-1"></a>            )</span>
+<span id="cb61-395"><a href="#cb61-395" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> runtime_result.rowcount <span class="op">!=</span> <span class="dv">1</span> <span class="kw">or</span> runner_result.rowcount <span class="op">!=</span> <span class="dv">1</span>:</span>
+<span id="cb61-396"><a href="#cb61-396" aria-hidden="true" tabindex="-1"></a>                <span class="cf">raise</span> <span class="pp">RuntimeError</span>(<span class="st">&quot;managed runtime deletion claim was not stored&quot;</span>)</span>
+<span id="cb61-397"><a href="#cb61-397" aria-hidden="true" tabindex="-1"></a>            claimed_row <span class="op">=</span> database.execute(</span>
+<span id="cb61-398"><a href="#cb61-398" aria-hidden="true" tabindex="-1"></a>                <span class="st">&quot;SELECT * FROM managed_runtimes WHERE user_id = ?&quot;</span>,</span>
+<span id="cb61-399"><a href="#cb61-399" aria-hidden="true" tabindex="-1"></a>                (normalized_user_id,),</span>
+<span id="cb61-400"><a href="#cb61-400" aria-hidden="true" tabindex="-1"></a>            ).fetchone()</span>
+<span id="cb61-401"><a href="#cb61-401" aria-hidden="true" tabindex="-1"></a>            <span class="cf">assert</span> claimed_row <span class="kw">is</span> <span class="kw">not</span> <span class="va">None</span>, <span class="st">&quot;managed runtime deletion claim must exist&quot;</span></span>
+<span id="cb61-402"><a href="#cb61-402" aria-hidden="true" tabindex="-1"></a>            database.commit()</span>
+<span id="cb61-403"><a href="#cb61-403" aria-hidden="true" tabindex="-1"></a>            <span class="cf">return</span> DeletionClaimResult(claimed<span class="op">=</span><span class="va">True</span>, runtime<span class="op">=</span>_runtime_status(claimed_row))</span>
+<span id="cb61-404"><a href="#cb61-404" aria-hidden="true" tabindex="-1"></a>        <span class="cf">except</span> <span class="pp">Exception</span>:</span>
+<span id="cb61-405"><a href="#cb61-405" aria-hidden="true" tabindex="-1"></a>            database.rollback()</span>
+<span id="cb61-406"><a href="#cb61-406" aria-hidden="true" tabindex="-1"></a>            <span class="cf">raise</span></span>
+<span id="cb61-407"><a href="#cb61-407" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb61-408"><a href="#cb61-408" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb61-409"><a href="#cb61-409" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> finalize_managed_runtime_deletion(user_id: <span class="bu">str</span>, generation: <span class="bu">int</span>) <span class="op">-&gt;</span> <span class="bu">bool</span>:</span>
+<span id="cb61-410"><a href="#cb61-410" aria-hidden="true" tabindex="-1"></a>    <span class="co">&quot;&quot;&quot;Delete one matching deleting runtime followed by its managed runner.&quot;&quot;&quot;</span></span>
+<span id="cb61-411"><a href="#cb61-411" aria-hidden="true" tabindex="-1"></a>    normalized_user_id <span class="op">=</span> _require_user_id(user_id)</span>
+<span id="cb61-412"><a href="#cb61-412" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> <span class="bu">type</span>(generation) <span class="kw">is</span> <span class="kw">not</span> <span class="bu">int</span> <span class="kw">or</span> generation <span class="op">&lt;=</span> <span class="dv">0</span>:</span>
+<span id="cb61-413"><a href="#cb61-413" aria-hidden="true" tabindex="-1"></a>        <span class="cf">raise</span> <span class="pp">ValueError</span>(<span class="st">&quot;generation must be a positive integer&quot;</span>)</span>
+<span id="cb61-414"><a href="#cb61-414" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb61-415"><a href="#cb61-415" aria-hidden="true" tabindex="-1"></a>    <span class="cf">with</span> get_control_db() <span class="im">as</span> database:</span>
+<span id="cb61-416"><a href="#cb61-416" aria-hidden="true" tabindex="-1"></a>        <span class="cf">try</span>:</span>
+<span id="cb61-417"><a href="#cb61-417" aria-hidden="true" tabindex="-1"></a>            database.execute(<span class="st">&quot;BEGIN IMMEDIATE&quot;</span>)</span>
+<span id="cb61-418"><a href="#cb61-418" aria-hidden="true" tabindex="-1"></a>            row <span class="op">=</span> database.execute(</span>
+<span id="cb61-419"><a href="#cb61-419" aria-hidden="true" tabindex="-1"></a>                <span class="st">&quot;&quot;&quot;</span></span>
+<span id="cb61-420"><a href="#cb61-420" aria-hidden="true" tabindex="-1"></a><span class="st">                SELECT runner_id</span></span>
+<span id="cb61-421"><a href="#cb61-421" aria-hidden="true" tabindex="-1"></a><span class="st">                FROM managed_runtimes</span></span>
+<span id="cb61-422"><a href="#cb61-422" aria-hidden="true" tabindex="-1"></a><span class="st">                WHERE user_id = ? AND generation = ?</span></span>
+<span id="cb61-423"><a href="#cb61-423" aria-hidden="true" tabindex="-1"></a><span class="st">                  AND lifecycle_status = &#39;deleting&#39;</span></span>
+<span id="cb61-424"><a href="#cb61-424" aria-hidden="true" tabindex="-1"></a><span class="st">                &quot;&quot;&quot;</span>,</span>
+<span id="cb61-425"><a href="#cb61-425" aria-hidden="true" tabindex="-1"></a>                (normalized_user_id, generation),</span>
+<span id="cb61-426"><a href="#cb61-426" aria-hidden="true" tabindex="-1"></a>            ).fetchone()</span>
+<span id="cb61-427"><a href="#cb61-427" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> row <span class="kw">is</span> <span class="va">None</span>:</span>
+<span id="cb61-428"><a href="#cb61-428" aria-hidden="true" tabindex="-1"></a>                database.rollback()</span>
+<span id="cb61-429"><a href="#cb61-429" aria-hidden="true" tabindex="-1"></a>                <span class="cf">return</span> <span class="va">False</span></span>
+<span id="cb61-430"><a href="#cb61-430" aria-hidden="true" tabindex="-1"></a>            runtime_result <span class="op">=</span> database.execute(</span>
+<span id="cb61-431"><a href="#cb61-431" aria-hidden="true" tabindex="-1"></a>                <span class="st">&quot;&quot;&quot;</span></span>
+<span id="cb61-432"><a href="#cb61-432" aria-hidden="true" tabindex="-1"></a><span class="st">                DELETE FROM managed_runtimes</span></span>
+<span id="cb61-433"><a href="#cb61-433" aria-hidden="true" tabindex="-1"></a><span class="st">                WHERE user_id = ? AND generation = ?</span></span>
+<span id="cb61-434"><a href="#cb61-434" aria-hidden="true" tabindex="-1"></a><span class="st">                  AND lifecycle_status = &#39;deleting&#39;</span></span>
+<span id="cb61-435"><a href="#cb61-435" aria-hidden="true" tabindex="-1"></a><span class="st">                &quot;&quot;&quot;</span>,</span>
+<span id="cb61-436"><a href="#cb61-436" aria-hidden="true" tabindex="-1"></a>                (normalized_user_id, generation),</span>
+<span id="cb61-437"><a href="#cb61-437" aria-hidden="true" tabindex="-1"></a>            )</span>
+<span id="cb61-438"><a href="#cb61-438" aria-hidden="true" tabindex="-1"></a>            runner_result <span class="op">=</span> database.execute(</span>
+<span id="cb61-439"><a href="#cb61-439" aria-hidden="true" tabindex="-1"></a>                <span class="st">&quot;&quot;&quot;</span></span>
+<span id="cb61-440"><a href="#cb61-440" aria-hidden="true" tabindex="-1"></a><span class="st">                DELETE FROM user_runners</span></span>
+<span id="cb61-441"><a href="#cb61-441" aria-hidden="true" tabindex="-1"></a><span class="st">                WHERE id = ? AND user_id = ? AND kind = &#39;managed&#39;</span></span>
+<span id="cb61-442"><a href="#cb61-442" aria-hidden="true" tabindex="-1"></a><span class="st">                &quot;&quot;&quot;</span>,</span>
+<span id="cb61-443"><a href="#cb61-443" aria-hidden="true" tabindex="-1"></a>                (row[<span class="st">&quot;runner_id&quot;</span>], normalized_user_id),</span>
+<span id="cb61-444"><a href="#cb61-444" aria-hidden="true" tabindex="-1"></a>            )</span>
+<span id="cb61-445"><a href="#cb61-445" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> runtime_result.rowcount <span class="op">!=</span> <span class="dv">1</span> <span class="kw">or</span> runner_result.rowcount <span class="op">!=</span> <span class="dv">1</span>:</span>
+<span id="cb61-446"><a href="#cb61-446" aria-hidden="true" tabindex="-1"></a>                <span class="cf">raise</span> <span class="pp">RuntimeError</span>(<span class="st">&quot;managed runtime deletion was not finalized&quot;</span>)</span>
+<span id="cb61-447"><a href="#cb61-447" aria-hidden="true" tabindex="-1"></a>            database.commit()</span>
+<span id="cb61-448"><a href="#cb61-448" aria-hidden="true" tabindex="-1"></a>            <span class="cf">return</span> <span class="va">True</span></span>
+<span id="cb61-449"><a href="#cb61-449" aria-hidden="true" tabindex="-1"></a>        <span class="cf">except</span> <span class="pp">Exception</span>:</span>
+<span id="cb61-450"><a href="#cb61-450" aria-hidden="true" tabindex="-1"></a>            database.rollback()</span>
+<span id="cb61-451"><a href="#cb61-451" aria-hidden="true" tabindex="-1"></a>            <span class="cf">raise</span></span>
+<span id="cb61-452"><a href="#cb61-452" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb61-453"><a href="#cb61-453" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb61-454"><a href="#cb61-454" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> refresh_managed_runtime_provisioning(</span>
+<span id="cb61-455"><a href="#cb61-455" aria-hidden="true" tabindex="-1"></a>    user_id: <span class="bu">str</span>,</span>
+<span id="cb61-456"><a href="#cb61-456" aria-hidden="true" tabindex="-1"></a>    generation: <span class="bu">int</span>,</span>
+<span id="cb61-457"><a href="#cb61-457" aria-hidden="true" tabindex="-1"></a>    now: datetime,</span>
+<span id="cb61-458"><a href="#cb61-458" aria-hidden="true" tabindex="-1"></a>) <span class="op">-&gt;</span> <span class="bu">bool</span>:</span>
+<span id="cb61-459"><a href="#cb61-459" aria-hidden="true" tabindex="-1"></a>    <span class="co">&quot;&quot;&quot;Refresh one current provisioning generation&#39;s ownership timestamp.&quot;&quot;&quot;</span></span>
+<span id="cb61-460"><a href="#cb61-460" aria-hidden="true" tabindex="-1"></a>    normalized_user_id <span class="op">=</span> _require_user_id(user_id)</span>
+<span id="cb61-461"><a href="#cb61-461" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> <span class="bu">type</span>(generation) <span class="kw">is</span> <span class="kw">not</span> <span class="bu">int</span> <span class="kw">or</span> generation <span class="op">&lt;=</span> <span class="dv">0</span>:</span>
+<span id="cb61-462"><a href="#cb61-462" aria-hidden="true" tabindex="-1"></a>        <span class="cf">raise</span> <span class="pp">ValueError</span>(<span class="st">&quot;generation must be a positive integer&quot;</span>)</span>
+<span id="cb61-463"><a href="#cb61-463" aria-hidden="true" tabindex="-1"></a>    current_time <span class="op">=</span> _normalized_now(now)</span>
+<span id="cb61-464"><a href="#cb61-464" aria-hidden="true" tabindex="-1"></a>    now_text <span class="op">=</span> _datetime_to_storage(current_time).replace(<span class="st">&quot;+00:00&quot;</span>, <span class="st">&quot;Z&quot;</span>)</span>
+<span id="cb61-465"><a href="#cb61-465" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb61-466"><a href="#cb61-466" aria-hidden="true" tabindex="-1"></a>    <span class="cf">with</span> get_control_db() <span class="im">as</span> database:</span>
+<span id="cb61-467"><a href="#cb61-467" aria-hidden="true" tabindex="-1"></a>        result <span class="op">=</span> database.execute(</span>
+<span id="cb61-468"><a href="#cb61-468" aria-hidden="true" tabindex="-1"></a>            <span class="st">&quot;&quot;&quot;</span></span>
+<span id="cb61-469"><a href="#cb61-469" aria-hidden="true" tabindex="-1"></a><span class="st">            INSERT OR REPLACE INTO managed_runtimes (</span></span>
+<span id="cb61-470"><a href="#cb61-470" aria-hidden="true" tabindex="-1"></a><span class="st">                user_id, runner_id, provider_name, sprite_external_id,</span></span>
+<span id="cb61-471"><a href="#cb61-471" aria-hidden="true" tabindex="-1"></a><span class="st">                lifecycle_status, generation, artifact_version,</span></span>
+<span id="cb61-472"><a href="#cb61-472" aria-hidden="true" tabindex="-1"></a><span class="st">                created_at, updated_at, last_error</span></span>
+<span id="cb61-473"><a href="#cb61-473" aria-hidden="true" tabindex="-1"></a><span class="st">            )</span></span>
+<span id="cb61-474"><a href="#cb61-474" aria-hidden="true" tabindex="-1"></a><span class="st">            SELECT user_id, runner_id, provider_name, sprite_external_id,</span></span>
+<span id="cb61-475"><a href="#cb61-475" aria-hidden="true" tabindex="-1"></a><span class="st">                   lifecycle_status, generation, artifact_version,</span></span>
+<span id="cb61-476"><a href="#cb61-476" aria-hidden="true" tabindex="-1"></a><span class="st">                   created_at, ?, last_error</span></span>
+<span id="cb61-477"><a href="#cb61-477" aria-hidden="true" tabindex="-1"></a><span class="st">            FROM managed_runtimes</span></span>
+<span id="cb61-478"><a href="#cb61-478" aria-hidden="true" tabindex="-1"></a><span class="st">            WHERE user_id = ? AND generation = ?</span></span>
+<span id="cb61-479"><a href="#cb61-479" aria-hidden="true" tabindex="-1"></a><span class="st">              AND lifecycle_status = &#39;provisioning&#39;</span></span>
+<span id="cb61-480"><a href="#cb61-480" aria-hidden="true" tabindex="-1"></a><span class="st">            &quot;&quot;&quot;</span>,</span>
+<span id="cb61-481"><a href="#cb61-481" aria-hidden="true" tabindex="-1"></a>            (now_text, normalized_user_id, generation),</span>
+<span id="cb61-482"><a href="#cb61-482" aria-hidden="true" tabindex="-1"></a>        )</span>
+<span id="cb61-483"><a href="#cb61-483" aria-hidden="true" tabindex="-1"></a>        database.commit()</span>
+<span id="cb61-484"><a href="#cb61-484" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span> result.rowcount <span class="op">==</span> <span class="dv">1</span></span>
+<span id="cb61-485"><a href="#cb61-485" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb61-486"><a href="#cb61-486" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb61-487"><a href="#cb61-487" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> mark_managed_runtime_ready(</span>
+<span id="cb61-488"><a href="#cb61-488" aria-hidden="true" tabindex="-1"></a>    user_id: <span class="bu">str</span>,</span>
+<span id="cb61-489"><a href="#cb61-489" aria-hidden="true" tabindex="-1"></a>    generation: <span class="bu">int</span>,</span>
+<span id="cb61-490"><a href="#cb61-490" aria-hidden="true" tabindex="-1"></a>    now: datetime,</span>
+<span id="cb61-491"><a href="#cb61-491" aria-hidden="true" tabindex="-1"></a>) <span class="op">-&gt;</span> <span class="bu">bool</span>:</span>
+<span id="cb61-492"><a href="#cb61-492" aria-hidden="true" tabindex="-1"></a>    <span class="co">&quot;&quot;&quot;Mark one current provisioning generation ready after runner validation.&quot;&quot;&quot;</span></span>
+<span id="cb61-493"><a href="#cb61-493" aria-hidden="true" tabindex="-1"></a>    normalized_user_id <span class="op">=</span> _require_user_id(user_id)</span>
+<span id="cb61-494"><a href="#cb61-494" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> <span class="bu">type</span>(generation) <span class="kw">is</span> <span class="kw">not</span> <span class="bu">int</span> <span class="kw">or</span> generation <span class="op">&lt;=</span> <span class="dv">0</span>:</span>
+<span id="cb61-495"><a href="#cb61-495" aria-hidden="true" tabindex="-1"></a>        <span class="cf">raise</span> <span class="pp">ValueError</span>(<span class="st">&quot;generation must be a positive integer&quot;</span>)</span>
+<span id="cb61-496"><a href="#cb61-496" aria-hidden="true" tabindex="-1"></a>    current_time <span class="op">=</span> _normalized_now(now)</span>
+<span id="cb61-497"><a href="#cb61-497" aria-hidden="true" tabindex="-1"></a>    now_text <span class="op">=</span> _datetime_to_storage(current_time).replace(<span class="st">&quot;+00:00&quot;</span>, <span class="st">&quot;Z&quot;</span>)</span>
+<span id="cb61-498"><a href="#cb61-498" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb61-499"><a href="#cb61-499" aria-hidden="true" tabindex="-1"></a>    <span class="cf">with</span> get_control_db() <span class="im">as</span> database:</span>
+<span id="cb61-500"><a href="#cb61-500" aria-hidden="true" tabindex="-1"></a>        <span class="cf">try</span>:</span>
+<span id="cb61-501"><a href="#cb61-501" aria-hidden="true" tabindex="-1"></a>            database.execute(<span class="st">&quot;BEGIN IMMEDIATE&quot;</span>)</span>
+<span id="cb61-502"><a href="#cb61-502" aria-hidden="true" tabindex="-1"></a>            row <span class="op">=</span> database.execute(</span>
+<span id="cb61-503"><a href="#cb61-503" aria-hidden="true" tabindex="-1"></a>                <span class="st">&quot;&quot;&quot;</span></span>
+<span id="cb61-504"><a href="#cb61-504" aria-hidden="true" tabindex="-1"></a><span class="st">                SELECT runtime.lifecycle_status, runtime.generation,</span></span>
+<span id="cb61-505"><a href="#cb61-505" aria-hidden="true" tabindex="-1"></a><span class="st">                       runtime.provider_name, runner.kind,</span></span>
+<span id="cb61-506"><a href="#cb61-506" aria-hidden="true" tabindex="-1"></a><span class="st">                       runner.cloud_provider, runner.status AS runner_status,</span></span>
+<span id="cb61-507"><a href="#cb61-507" aria-hidden="true" tabindex="-1"></a><span class="st">                       runner.last_heartbeat_at, runner.capabilities_json,</span></span>
+<span id="cb61-508"><a href="#cb61-508" aria-hidden="true" tabindex="-1"></a><span class="st">                       runner.noise_public_key,</span></span>
+<span id="cb61-509"><a href="#cb61-509" aria-hidden="true" tabindex="-1"></a><span class="st">                       runner.noise_public_key_confirmed_at</span></span>
+<span id="cb61-510"><a href="#cb61-510" aria-hidden="true" tabindex="-1"></a><span class="st">                FROM managed_runtimes AS runtime</span></span>
+<span id="cb61-511"><a href="#cb61-511" aria-hidden="true" tabindex="-1"></a><span class="st">                JOIN user_runners AS runner ON runner.id = runtime.runner_id</span></span>
+<span id="cb61-512"><a href="#cb61-512" aria-hidden="true" tabindex="-1"></a><span class="st">                WHERE runtime.user_id = ?</span></span>
+<span id="cb61-513"><a href="#cb61-513" aria-hidden="true" tabindex="-1"></a><span class="st">                &quot;&quot;&quot;</span>,</span>
+<span id="cb61-514"><a href="#cb61-514" aria-hidden="true" tabindex="-1"></a>                (normalized_user_id,),</span>
+<span id="cb61-515"><a href="#cb61-515" aria-hidden="true" tabindex="-1"></a>            ).fetchone()</span>
+<span id="cb61-516"><a href="#cb61-516" aria-hidden="true" tabindex="-1"></a>            heartbeat_at <span class="op">=</span> <span class="va">None</span> <span class="cf">if</span> row <span class="kw">is</span> <span class="va">None</span> <span class="cf">else</span> _datetime_from_storage(row[<span class="st">&quot;last_heartbeat_at&quot;</span>])</span>
+<span id="cb61-517"><a href="#cb61-517" aria-hidden="true" tabindex="-1"></a>            capabilities <span class="op">=</span> {} <span class="cf">if</span> row <span class="kw">is</span> <span class="va">None</span> <span class="cf">else</span> _decode_capabilities(row[<span class="st">&quot;capabilities_json&quot;</span>])</span>
+<span id="cb61-518"><a href="#cb61-518" aria-hidden="true" tabindex="-1"></a>            heartbeat_age <span class="op">=</span> (</span>
+<span id="cb61-519"><a href="#cb61-519" aria-hidden="true" tabindex="-1"></a>                <span class="va">None</span> <span class="cf">if</span> heartbeat_at <span class="kw">is</span> <span class="va">None</span> <span class="cf">else</span> (current_time <span class="op">-</span> heartbeat_at).total_seconds()</span>
+<span id="cb61-520"><a href="#cb61-520" aria-hidden="true" tabindex="-1"></a>            )</span>
+<span id="cb61-521"><a href="#cb61-521" aria-hidden="true" tabindex="-1"></a>            heartbeat_is_current <span class="op">=</span> (</span>
+<span id="cb61-522"><a href="#cb61-522" aria-hidden="true" tabindex="-1"></a>                heartbeat_age <span class="kw">is</span> <span class="kw">not</span> <span class="va">None</span> <span class="kw">and</span> <span class="dv">0</span> <span class="op">&lt;=</span> heartbeat_age <span class="op">&lt;=</span> _HEARTBEAT_ONLINE_WINDOW_SECONDS</span>
+<span id="cb61-523"><a href="#cb61-523" aria-hidden="true" tabindex="-1"></a>            )</span>
+<span id="cb61-524"><a href="#cb61-524" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> (</span>
+<span id="cb61-525"><a href="#cb61-525" aria-hidden="true" tabindex="-1"></a>                row <span class="kw">is</span> <span class="va">None</span></span>
+<span id="cb61-526"><a href="#cb61-526" aria-hidden="true" tabindex="-1"></a>                <span class="kw">or</span> row[<span class="st">&quot;lifecycle_status&quot;</span>] <span class="op">!=</span> <span class="st">&quot;provisioning&quot;</span></span>
+<span id="cb61-527"><a href="#cb61-527" aria-hidden="true" tabindex="-1"></a>                <span class="kw">or</span> row[<span class="st">&quot;generation&quot;</span>] <span class="op">!=</span> generation</span>
+<span id="cb61-528"><a href="#cb61-528" aria-hidden="true" tabindex="-1"></a>                <span class="kw">or</span> row[<span class="st">&quot;provider_name&quot;</span>] <span class="op">!=</span> <span class="st">&quot;fly_sprites&quot;</span></span>
+<span id="cb61-529"><a href="#cb61-529" aria-hidden="true" tabindex="-1"></a>                <span class="kw">or</span> row[<span class="st">&quot;kind&quot;</span>] <span class="op">!=</span> <span class="st">&quot;managed&quot;</span></span>
+<span id="cb61-530"><a href="#cb61-530" aria-hidden="true" tabindex="-1"></a>                <span class="kw">or</span> row[<span class="st">&quot;cloud_provider&quot;</span>] <span class="op">!=</span> <span class="st">&quot;fly_sprites&quot;</span></span>
+<span id="cb61-531"><a href="#cb61-531" aria-hidden="true" tabindex="-1"></a>                <span class="kw">or</span> row[<span class="st">&quot;runner_status&quot;</span>] <span class="op">!=</span> <span class="st">&quot;online&quot;</span></span>
+<span id="cb61-532"><a href="#cb61-532" aria-hidden="true" tabindex="-1"></a>                <span class="kw">or</span> <span class="kw">not</span> heartbeat_is_current</span>
+<span id="cb61-533"><a href="#cb61-533" aria-hidden="true" tabindex="-1"></a>                <span class="kw">or</span> capabilities.get(<span class="st">&quot;storage_profile&quot;</span>) <span class="op">!=</span> <span class="st">&quot;fly_sprites_posix&quot;</span></span>
+<span id="cb61-534"><a href="#cb61-534" aria-hidden="true" tabindex="-1"></a>                <span class="kw">or</span> <span class="kw">not</span> row[<span class="st">&quot;noise_public_key&quot;</span>]</span>
+<span id="cb61-535"><a href="#cb61-535" aria-hidden="true" tabindex="-1"></a>                <span class="kw">or</span> row[<span class="st">&quot;noise_public_key_confirmed_at&quot;</span>] <span class="kw">is</span> <span class="va">None</span></span>
+<span id="cb61-536"><a href="#cb61-536" aria-hidden="true" tabindex="-1"></a>            ):</span>
+<span id="cb61-537"><a href="#cb61-537" aria-hidden="true" tabindex="-1"></a>                database.rollback()</span>
+<span id="cb61-538"><a href="#cb61-538" aria-hidden="true" tabindex="-1"></a>                <span class="cf">return</span> <span class="va">False</span></span>
+<span id="cb61-539"><a href="#cb61-539" aria-hidden="true" tabindex="-1"></a>            result <span class="op">=</span> database.execute(</span>
+<span id="cb61-540"><a href="#cb61-540" aria-hidden="true" tabindex="-1"></a>                <span class="st">&quot;&quot;&quot;</span></span>
+<span id="cb61-541"><a href="#cb61-541" aria-hidden="true" tabindex="-1"></a><span class="st">                INSERT OR REPLACE INTO managed_runtimes (</span></span>
+<span id="cb61-542"><a href="#cb61-542" aria-hidden="true" tabindex="-1"></a><span class="st">                    user_id, runner_id, provider_name, sprite_external_id,</span></span>
+<span id="cb61-543"><a href="#cb61-543" aria-hidden="true" tabindex="-1"></a><span class="st">                    lifecycle_status, generation, artifact_version,</span></span>
+<span id="cb61-544"><a href="#cb61-544" aria-hidden="true" tabindex="-1"></a><span class="st">                    created_at, updated_at, last_error</span></span>
+<span id="cb61-545"><a href="#cb61-545" aria-hidden="true" tabindex="-1"></a><span class="st">                )</span></span>
+<span id="cb61-546"><a href="#cb61-546" aria-hidden="true" tabindex="-1"></a><span class="st">                SELECT user_id, runner_id, provider_name, sprite_external_id,</span></span>
+<span id="cb61-547"><a href="#cb61-547" aria-hidden="true" tabindex="-1"></a><span class="st">                       &#39;ready&#39;, generation, artifact_version,</span></span>
+<span id="cb61-548"><a href="#cb61-548" aria-hidden="true" tabindex="-1"></a><span class="st">                       created_at, ?, NULL</span></span>
+<span id="cb61-549"><a href="#cb61-549" aria-hidden="true" tabindex="-1"></a><span class="st">                FROM managed_runtimes</span></span>
+<span id="cb61-550"><a href="#cb61-550" aria-hidden="true" tabindex="-1"></a><span class="st">                WHERE user_id = ? AND generation = ?</span></span>
+<span id="cb61-551"><a href="#cb61-551" aria-hidden="true" tabindex="-1"></a><span class="st">                  AND lifecycle_status = &#39;provisioning&#39;</span></span>
+<span id="cb61-552"><a href="#cb61-552" aria-hidden="true" tabindex="-1"></a><span class="st">                &quot;&quot;&quot;</span>,</span>
+<span id="cb61-553"><a href="#cb61-553" aria-hidden="true" tabindex="-1"></a>                (now_text, normalized_user_id, generation),</span>
+<span id="cb61-554"><a href="#cb61-554" aria-hidden="true" tabindex="-1"></a>            )</span>
+<span id="cb61-555"><a href="#cb61-555" aria-hidden="true" tabindex="-1"></a>            database.commit()</span>
+<span id="cb61-556"><a href="#cb61-556" aria-hidden="true" tabindex="-1"></a>            <span class="cf">return</span> result.rowcount <span class="op">==</span> <span class="dv">1</span></span>
+<span id="cb61-557"><a href="#cb61-557" aria-hidden="true" tabindex="-1"></a>        <span class="cf">except</span> <span class="pp">Exception</span>:</span>
+<span id="cb61-558"><a href="#cb61-558" aria-hidden="true" tabindex="-1"></a>            database.rollback()</span>
+<span id="cb61-559"><a href="#cb61-559" aria-hidden="true" tabindex="-1"></a>            <span class="cf">raise</span></span>
+<span id="cb61-560"><a href="#cb61-560" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb61-561"><a href="#cb61-561" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb61-562"><a href="#cb61-562" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> reconcile_managed_runtime_provisioning(</span>
+<span id="cb61-563"><a href="#cb61-563" aria-hidden="true" tabindex="-1"></a>    active_owners: <span class="bu">set</span>[<span class="bu">tuple</span>[<span class="bu">str</span>, <span class="bu">int</span>]],</span>
+<span id="cb61-564"><a href="#cb61-564" aria-hidden="true" tabindex="-1"></a>    now: datetime,</span>
+<span id="cb61-565"><a href="#cb61-565" aria-hidden="true" tabindex="-1"></a>) <span class="op">-&gt;</span> <span class="bu">int</span>:</span>
+<span id="cb61-566"><a href="#cb61-566" aria-hidden="true" tabindex="-1"></a>    <span class="co">&quot;&quot;&quot;Fail abandoned provisioning while preserving current process ownership.&quot;&quot;&quot;</span></span>
+<span id="cb61-567"><a href="#cb61-567" aria-hidden="true" tabindex="-1"></a>    current_time <span class="op">=</span> _normalized_now(now)</span>
+<span id="cb61-568"><a href="#cb61-568" aria-hidden="true" tabindex="-1"></a>    now_text <span class="op">=</span> _datetime_to_storage(current_time).replace(<span class="st">&quot;+00:00&quot;</span>, <span class="st">&quot;Z&quot;</span>)</span>
+<span id="cb61-569"><a href="#cb61-569" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb61-570"><a href="#cb61-570" aria-hidden="true" tabindex="-1"></a>    <span class="cf">with</span> get_control_db() <span class="im">as</span> database:</span>
+<span id="cb61-571"><a href="#cb61-571" aria-hidden="true" tabindex="-1"></a>        <span class="cf">try</span>:</span>
+<span id="cb61-572"><a href="#cb61-572" aria-hidden="true" tabindex="-1"></a>            database.execute(<span class="st">&quot;BEGIN IMMEDIATE&quot;</span>)</span>
+<span id="cb61-573"><a href="#cb61-573" aria-hidden="true" tabindex="-1"></a>            rows <span class="op">=</span> database.execute(<span class="st">&quot;&quot;&quot;</span></span>
+<span id="cb61-574"><a href="#cb61-574" aria-hidden="true" tabindex="-1"></a><span class="st">                SELECT user_id, runner_id, generation</span></span>
+<span id="cb61-575"><a href="#cb61-575" aria-hidden="true" tabindex="-1"></a><span class="st">                FROM managed_runtimes</span></span>
+<span id="cb61-576"><a href="#cb61-576" aria-hidden="true" tabindex="-1"></a><span class="st">                WHERE lifecycle_status = &#39;provisioning&#39;</span></span>
+<span id="cb61-577"><a href="#cb61-577" aria-hidden="true" tabindex="-1"></a><span class="st">                &quot;&quot;&quot;</span>).fetchall()</span>
+<span id="cb61-578"><a href="#cb61-578" aria-hidden="true" tabindex="-1"></a>            changed <span class="op">=</span> <span class="dv">0</span></span>
+<span id="cb61-579"><a href="#cb61-579" aria-hidden="true" tabindex="-1"></a>            <span class="cf">for</span> row <span class="kw">in</span> rows:</span>
+<span id="cb61-580"><a href="#cb61-580" aria-hidden="true" tabindex="-1"></a>                owner <span class="op">=</span> (row[<span class="st">&quot;user_id&quot;</span>], row[<span class="st">&quot;generation&quot;</span>])</span>
+<span id="cb61-581"><a href="#cb61-581" aria-hidden="true" tabindex="-1"></a>                <span class="cf">if</span> owner <span class="kw">in</span> active_owners:</span>
+<span id="cb61-582"><a href="#cb61-582" aria-hidden="true" tabindex="-1"></a>                    <span class="cf">continue</span></span>
+<span id="cb61-583"><a href="#cb61-583" aria-hidden="true" tabindex="-1"></a>                runtime_result <span class="op">=</span> database.execute(</span>
+<span id="cb61-584"><a href="#cb61-584" aria-hidden="true" tabindex="-1"></a>                    <span class="st">&quot;&quot;&quot;</span></span>
+<span id="cb61-585"><a href="#cb61-585" aria-hidden="true" tabindex="-1"></a><span class="st">                    UPDATE managed_runtimes</span></span>
+<span id="cb61-586"><a href="#cb61-586" aria-hidden="true" tabindex="-1"></a><span class="st">                    SET lifecycle_status = &#39;failed&#39;, updated_at = ?,</span></span>
+<span id="cb61-587"><a href="#cb61-587" aria-hidden="true" tabindex="-1"></a><span class="st">                        last_error = &#39;provider_unavailable&#39;</span></span>
+<span id="cb61-588"><a href="#cb61-588" aria-hidden="true" tabindex="-1"></a><span class="st">                    WHERE user_id = ? AND generation = ?</span></span>
+<span id="cb61-589"><a href="#cb61-589" aria-hidden="true" tabindex="-1"></a><span class="st">                      AND lifecycle_status = &#39;provisioning&#39;</span></span>
+<span id="cb61-590"><a href="#cb61-590" aria-hidden="true" tabindex="-1"></a><span class="st">                    &quot;&quot;&quot;</span>,</span>
+<span id="cb61-591"><a href="#cb61-591" aria-hidden="true" tabindex="-1"></a>                    (now_text, row[<span class="st">&quot;user_id&quot;</span>], row[<span class="st">&quot;generation&quot;</span>]),</span>
+<span id="cb61-592"><a href="#cb61-592" aria-hidden="true" tabindex="-1"></a>                )</span>
+<span id="cb61-593"><a href="#cb61-593" aria-hidden="true" tabindex="-1"></a>                <span class="cf">if</span> runtime_result.rowcount <span class="op">!=</span> <span class="dv">1</span>:</span>
+<span id="cb61-594"><a href="#cb61-594" aria-hidden="true" tabindex="-1"></a>                    <span class="cf">continue</span></span>
+<span id="cb61-595"><a href="#cb61-595" aria-hidden="true" tabindex="-1"></a>                runner_result <span class="op">=</span> database.execute(</span>
+<span id="cb61-596"><a href="#cb61-596" aria-hidden="true" tabindex="-1"></a>                    <span class="st">&quot;&quot;&quot;</span></span>
+<span id="cb61-597"><a href="#cb61-597" aria-hidden="true" tabindex="-1"></a><span class="st">                    UPDATE user_runners</span></span>
+<span id="cb61-598"><a href="#cb61-598" aria-hidden="true" tabindex="-1"></a><span class="st">                    SET status = &#39;revoked&#39;, revoked_at = ?,</span></span>
+<span id="cb61-599"><a href="#cb61-599" aria-hidden="true" tabindex="-1"></a><span class="st">                        registration_token_hash = NULL,</span></span>
+<span id="cb61-600"><a href="#cb61-600" aria-hidden="true" tabindex="-1"></a><span class="st">                        registration_token_expires_at = NULL,</span></span>
+<span id="cb61-601"><a href="#cb61-601" aria-hidden="true" tabindex="-1"></a><span class="st">                        runner_token_hash = NULL</span></span>
+<span id="cb61-602"><a href="#cb61-602" aria-hidden="true" tabindex="-1"></a><span class="st">                    WHERE id = ? AND user_id = ? AND kind = &#39;managed&#39;</span></span>
+<span id="cb61-603"><a href="#cb61-603" aria-hidden="true" tabindex="-1"></a><span class="st">                    &quot;&quot;&quot;</span>,</span>
+<span id="cb61-604"><a href="#cb61-604" aria-hidden="true" tabindex="-1"></a>                    (now_text, row[<span class="st">&quot;runner_id&quot;</span>], row[<span class="st">&quot;user_id&quot;</span>]),</span>
+<span id="cb61-605"><a href="#cb61-605" aria-hidden="true" tabindex="-1"></a>                )</span>
+<span id="cb61-606"><a href="#cb61-606" aria-hidden="true" tabindex="-1"></a>                <span class="cf">if</span> runner_result.rowcount <span class="op">!=</span> <span class="dv">1</span>:</span>
+<span id="cb61-607"><a href="#cb61-607" aria-hidden="true" tabindex="-1"></a>                    <span class="cf">raise</span> <span class="pp">RuntimeError</span>(<span class="st">&quot;managed runtime reconciliation was not stored&quot;</span>)</span>
+<span id="cb61-608"><a href="#cb61-608" aria-hidden="true" tabindex="-1"></a>                changed <span class="op">+=</span> <span class="dv">1</span></span>
+<span id="cb61-609"><a href="#cb61-609" aria-hidden="true" tabindex="-1"></a>            database.commit()</span>
+<span id="cb61-610"><a href="#cb61-610" aria-hidden="true" tabindex="-1"></a>            <span class="cf">return</span> changed</span>
+<span id="cb61-611"><a href="#cb61-611" aria-hidden="true" tabindex="-1"></a>        <span class="cf">except</span> <span class="pp">Exception</span>:</span>
+<span id="cb61-612"><a href="#cb61-612" aria-hidden="true" tabindex="-1"></a>            database.rollback()</span>
+<span id="cb61-613"><a href="#cb61-613" aria-hidden="true" tabindex="-1"></a>            <span class="cf">raise</span></span>
+<span id="cb61-614"><a href="#cb61-614" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb61-615"><a href="#cb61-615" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb61-616"><a href="#cb61-616" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> mark_managed_runtime_failed(</span>
+<span id="cb61-617"><a href="#cb61-617" aria-hidden="true" tabindex="-1"></a>    user_id: <span class="bu">str</span>,</span>
+<span id="cb61-618"><a href="#cb61-618" aria-hidden="true" tabindex="-1"></a>    generation: <span class="bu">int</span>,</span>
+<span id="cb61-619"><a href="#cb61-619" aria-hidden="true" tabindex="-1"></a>    error_code: <span class="bu">str</span>,</span>
+<span id="cb61-620"><a href="#cb61-620" aria-hidden="true" tabindex="-1"></a>    now: datetime,</span>
+<span id="cb61-621"><a href="#cb61-621" aria-hidden="true" tabindex="-1"></a>) <span class="op">-&gt;</span> <span class="bu">bool</span>:</span>
+<span id="cb61-622"><a href="#cb61-622" aria-hidden="true" tabindex="-1"></a>    <span class="co">&quot;&quot;&quot;Fail one current provisioning generation and revoke its runner authority.&quot;&quot;&quot;</span></span>
+<span id="cb61-623"><a href="#cb61-623" aria-hidden="true" tabindex="-1"></a>    normalized_user_id <span class="op">=</span> _require_user_id(user_id)</span>
+<span id="cb61-624"><a href="#cb61-624" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> <span class="bu">type</span>(generation) <span class="kw">is</span> <span class="kw">not</span> <span class="bu">int</span> <span class="kw">or</span> generation <span class="op">&lt;=</span> <span class="dv">0</span>:</span>
+<span id="cb61-625"><a href="#cb61-625" aria-hidden="true" tabindex="-1"></a>        <span class="cf">raise</span> <span class="pp">ValueError</span>(<span class="st">&quot;generation must be a positive integer&quot;</span>)</span>
+<span id="cb61-626"><a href="#cb61-626" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> error_code <span class="kw">not</span> <span class="kw">in</span> _MANAGED_RUNTIME_ERROR_CODES:</span>
+<span id="cb61-627"><a href="#cb61-627" aria-hidden="true" tabindex="-1"></a>        <span class="cf">raise</span> <span class="pp">ValueError</span>(<span class="st">&quot;error_code is not an allowed managed runtime failure code&quot;</span>)</span>
+<span id="cb61-628"><a href="#cb61-628" aria-hidden="true" tabindex="-1"></a>    current_time <span class="op">=</span> _normalized_now(now)</span>
+<span id="cb61-629"><a href="#cb61-629" aria-hidden="true" tabindex="-1"></a>    now_text <span class="op">=</span> _datetime_to_storage(current_time).replace(<span class="st">&quot;+00:00&quot;</span>, <span class="st">&quot;Z&quot;</span>)</span>
+<span id="cb61-630"><a href="#cb61-630" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb61-631"><a href="#cb61-631" aria-hidden="true" tabindex="-1"></a>    <span class="cf">with</span> get_control_db() <span class="im">as</span> database:</span>
+<span id="cb61-632"><a href="#cb61-632" aria-hidden="true" tabindex="-1"></a>        <span class="cf">try</span>:</span>
+<span id="cb61-633"><a href="#cb61-633" aria-hidden="true" tabindex="-1"></a>            database.execute(<span class="st">&quot;BEGIN IMMEDIATE&quot;</span>)</span>
+<span id="cb61-634"><a href="#cb61-634" aria-hidden="true" tabindex="-1"></a>            row <span class="op">=</span> database.execute(</span>
+<span id="cb61-635"><a href="#cb61-635" aria-hidden="true" tabindex="-1"></a>                <span class="st">&quot;&quot;&quot;</span></span>
+<span id="cb61-636"><a href="#cb61-636" aria-hidden="true" tabindex="-1"></a><span class="st">                SELECT runtime.*, runner.kind AS runner_kind</span></span>
+<span id="cb61-637"><a href="#cb61-637" aria-hidden="true" tabindex="-1"></a><span class="st">                FROM managed_runtimes AS runtime</span></span>
+<span id="cb61-638"><a href="#cb61-638" aria-hidden="true" tabindex="-1"></a><span class="st">                JOIN user_runners AS runner ON runner.id = runtime.runner_id</span></span>
+<span id="cb61-639"><a href="#cb61-639" aria-hidden="true" tabindex="-1"></a><span class="st">                WHERE runtime.user_id = ?</span></span>
+<span id="cb61-640"><a href="#cb61-640" aria-hidden="true" tabindex="-1"></a><span class="st">                &quot;&quot;&quot;</span>,</span>
+<span id="cb61-641"><a href="#cb61-641" aria-hidden="true" tabindex="-1"></a>                (normalized_user_id,),</span>
+<span id="cb61-642"><a href="#cb61-642" aria-hidden="true" tabindex="-1"></a>            ).fetchone()</span>
+<span id="cb61-643"><a href="#cb61-643" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> (</span>
+<span id="cb61-644"><a href="#cb61-644" aria-hidden="true" tabindex="-1"></a>                row <span class="kw">is</span> <span class="va">None</span></span>
+<span id="cb61-645"><a href="#cb61-645" aria-hidden="true" tabindex="-1"></a>                <span class="kw">or</span> row[<span class="st">&quot;lifecycle_status&quot;</span>] <span class="op">!=</span> <span class="st">&quot;provisioning&quot;</span></span>
+<span id="cb61-646"><a href="#cb61-646" aria-hidden="true" tabindex="-1"></a>                <span class="kw">or</span> row[<span class="st">&quot;generation&quot;</span>] <span class="op">!=</span> generation</span>
+<span id="cb61-647"><a href="#cb61-647" aria-hidden="true" tabindex="-1"></a>                <span class="kw">or</span> row[<span class="st">&quot;runner_kind&quot;</span>] <span class="op">!=</span> <span class="st">&quot;managed&quot;</span></span>
+<span id="cb61-648"><a href="#cb61-648" aria-hidden="true" tabindex="-1"></a>            ):</span>
+<span id="cb61-649"><a href="#cb61-649" aria-hidden="true" tabindex="-1"></a>                database.rollback()</span>
+<span id="cb61-650"><a href="#cb61-650" aria-hidden="true" tabindex="-1"></a>                <span class="cf">return</span> <span class="va">False</span></span>
+<span id="cb61-651"><a href="#cb61-651" aria-hidden="true" tabindex="-1"></a>            runtime_result <span class="op">=</span> database.execute(</span>
+<span id="cb61-652"><a href="#cb61-652" aria-hidden="true" tabindex="-1"></a>                <span class="st">&quot;&quot;&quot;</span></span>
+<span id="cb61-653"><a href="#cb61-653" aria-hidden="true" tabindex="-1"></a><span class="st">                INSERT OR REPLACE INTO managed_runtimes (</span></span>
+<span id="cb61-654"><a href="#cb61-654" aria-hidden="true" tabindex="-1"></a><span class="st">                    user_id, runner_id, provider_name, sprite_external_id,</span></span>
+<span id="cb61-655"><a href="#cb61-655" aria-hidden="true" tabindex="-1"></a><span class="st">                    lifecycle_status, generation, artifact_version,</span></span>
+<span id="cb61-656"><a href="#cb61-656" aria-hidden="true" tabindex="-1"></a><span class="st">                    created_at, updated_at, last_error</span></span>
+<span id="cb61-657"><a href="#cb61-657" aria-hidden="true" tabindex="-1"></a><span class="st">                )</span></span>
+<span id="cb61-658"><a href="#cb61-658" aria-hidden="true" tabindex="-1"></a><span class="st">                SELECT user_id, runner_id, provider_name, sprite_external_id,</span></span>
+<span id="cb61-659"><a href="#cb61-659" aria-hidden="true" tabindex="-1"></a><span class="st">                       &#39;failed&#39;, generation, artifact_version,</span></span>
+<span id="cb61-660"><a href="#cb61-660" aria-hidden="true" tabindex="-1"></a><span class="st">                       created_at, ?, ?</span></span>
+<span id="cb61-661"><a href="#cb61-661" aria-hidden="true" tabindex="-1"></a><span class="st">                FROM managed_runtimes</span></span>
+<span id="cb61-662"><a href="#cb61-662" aria-hidden="true" tabindex="-1"></a><span class="st">                WHERE user_id = ? AND generation = ?</span></span>
+<span id="cb61-663"><a href="#cb61-663" aria-hidden="true" tabindex="-1"></a><span class="st">                  AND lifecycle_status = &#39;provisioning&#39;</span></span>
+<span id="cb61-664"><a href="#cb61-664" aria-hidden="true" tabindex="-1"></a><span class="st">                &quot;&quot;&quot;</span>,</span>
+<span id="cb61-665"><a href="#cb61-665" aria-hidden="true" tabindex="-1"></a>                (now_text, error_code, normalized_user_id, generation),</span>
+<span id="cb61-666"><a href="#cb61-666" aria-hidden="true" tabindex="-1"></a>            )</span>
+<span id="cb61-667"><a href="#cb61-667" aria-hidden="true" tabindex="-1"></a>            runner_result <span class="op">=</span> database.execute(</span>
+<span id="cb61-668"><a href="#cb61-668" aria-hidden="true" tabindex="-1"></a>                <span class="st">&quot;&quot;&quot;</span></span>
+<span id="cb61-669"><a href="#cb61-669" aria-hidden="true" tabindex="-1"></a><span class="st">                UPDATE user_runners</span></span>
+<span id="cb61-670"><a href="#cb61-670" aria-hidden="true" tabindex="-1"></a><span class="st">                SET status = &#39;revoked&#39;, revoked_at = ?,</span></span>
+<span id="cb61-671"><a href="#cb61-671" aria-hidden="true" tabindex="-1"></a><span class="st">                    registration_token_hash = NULL,</span></span>
+<span id="cb61-672"><a href="#cb61-672" aria-hidden="true" tabindex="-1"></a><span class="st">                    registration_token_expires_at = NULL,</span></span>
+<span id="cb61-673"><a href="#cb61-673" aria-hidden="true" tabindex="-1"></a><span class="st">                    runner_token_hash = NULL</span></span>
+<span id="cb61-674"><a href="#cb61-674" aria-hidden="true" tabindex="-1"></a><span class="st">                WHERE id = ? AND user_id = ? AND kind = &#39;managed&#39;</span></span>
+<span id="cb61-675"><a href="#cb61-675" aria-hidden="true" tabindex="-1"></a><span class="st">                &quot;&quot;&quot;</span>,</span>
+<span id="cb61-676"><a href="#cb61-676" aria-hidden="true" tabindex="-1"></a>                (now_text, row[<span class="st">&quot;runner_id&quot;</span>], normalized_user_id),</span>
+<span id="cb61-677"><a href="#cb61-677" aria-hidden="true" tabindex="-1"></a>            )</span>
+<span id="cb61-678"><a href="#cb61-678" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> runtime_result.rowcount <span class="op">!=</span> <span class="dv">1</span> <span class="kw">or</span> runner_result.rowcount <span class="op">!=</span> <span class="dv">1</span>:</span>
+<span id="cb61-679"><a href="#cb61-679" aria-hidden="true" tabindex="-1"></a>                <span class="cf">raise</span> <span class="pp">RuntimeError</span>(<span class="st">&quot;managed runtime failure transition was not stored&quot;</span>)</span>
+<span id="cb61-680"><a href="#cb61-680" aria-hidden="true" tabindex="-1"></a>            database.commit()</span>
+<span id="cb61-681"><a href="#cb61-681" aria-hidden="true" tabindex="-1"></a>            <span class="cf">return</span> <span class="va">True</span></span>
+<span id="cb61-682"><a href="#cb61-682" aria-hidden="true" tabindex="-1"></a>        <span class="cf">except</span> <span class="pp">Exception</span>:</span>
+<span id="cb61-683"><a href="#cb61-683" aria-hidden="true" tabindex="-1"></a>            database.rollback()</span>
+<span id="cb61-684"><a href="#cb61-684" aria-hidden="true" tabindex="-1"></a>            <span class="cf">raise</span></span>
+<span id="cb61-685"><a href="#cb61-685" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb61-686"><a href="#cb61-686" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb61-687"><a href="#cb61-687" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> _observer(row: sqlite3.Row) <span class="op">-&gt;</span> ProvisioningClaimResult:</span>
+<span id="cb61-688"><a href="#cb61-688" aria-hidden="true" tabindex="-1"></a>    <span class="co">&quot;&quot;&quot;Return runtime state without bearer authority.&quot;&quot;&quot;</span></span>
+<span id="cb61-689"><a href="#cb61-689" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> ProvisioningClaimResult(claimed<span class="op">=</span><span class="va">False</span>, runtime<span class="op">=</span>_runtime_status(row))</span>
+<span id="cb61-690"><a href="#cb61-690" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb61-691"><a href="#cb61-691" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb61-692"><a href="#cb61-692" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> _owner(row: sqlite3.Row, registration: <span class="bu">dict</span>[<span class="bu">str</span>, Any]) <span class="op">-&gt;</span> ProvisioningClaimResult:</span>
+<span id="cb61-693"><a href="#cb61-693" aria-hidden="true" tabindex="-1"></a>    <span class="co">&quot;&quot;&quot;Return runtime state plus newly generated registration authority.&quot;&quot;&quot;</span></span>
+<span id="cb61-694"><a href="#cb61-694" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> ProvisioningClaimResult(</span>
+<span id="cb61-695"><a href="#cb61-695" aria-hidden="true" tabindex="-1"></a>        claimed<span class="op">=</span><span class="va">True</span>,</span>
+<span id="cb61-696"><a href="#cb61-696" aria-hidden="true" tabindex="-1"></a>        runtime<span class="op">=</span>_runtime_status(row),</span>
+<span id="cb61-697"><a href="#cb61-697" aria-hidden="true" tabindex="-1"></a>        registration_token<span class="op">=</span>registration[<span class="st">&quot;registration_token&quot;</span>],</span>
+<span id="cb61-698"><a href="#cb61-698" aria-hidden="true" tabindex="-1"></a>        registration_token_expires_at<span class="op">=</span>registration[<span class="st">&quot;registration_token_expires_at&quot;</span>],</span>
+<span id="cb61-699"><a href="#cb61-699" aria-hidden="true" tabindex="-1"></a>        control_url<span class="op">=</span>registration[<span class="st">&quot;control_url&quot;</span>],</span>
+<span id="cb61-700"><a href="#cb61-700" aria-hidden="true" tabindex="-1"></a>        environment<span class="op">=</span>registration[<span class="st">&quot;environment&quot;</span>],</span>
+<span id="cb61-701"><a href="#cb61-701" aria-hidden="true" tabindex="-1"></a>    )</span>
+<span id="cb61-702"><a href="#cb61-702" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb61-703"><a href="#cb61-703" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb61-704"><a href="#cb61-704" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> claim_managed_runtime_provisioning(</span>
+<span id="cb61-705"><a href="#cb61-705" aria-hidden="true" tabindex="-1"></a>    user_id: <span class="bu">str</span>,</span>
+<span id="cb61-706"><a href="#cb61-706" aria-hidden="true" tabindex="-1"></a>    <span class="op">*</span>,</span>
+<span id="cb61-707"><a href="#cb61-707" aria-hidden="true" tabindex="-1"></a>    name_prefix: <span class="bu">str</span>,</span>
+<span id="cb61-708"><a href="#cb61-708" aria-hidden="true" tabindex="-1"></a>    name_key: <span class="bu">str</span>,</span>
+<span id="cb61-709"><a href="#cb61-709" aria-hidden="true" tabindex="-1"></a>    artifact_version: <span class="bu">str</span>,</span>
+<span id="cb61-710"><a href="#cb61-710" aria-hidden="true" tabindex="-1"></a>    region: <span class="bu">str</span>,</span>
+<span id="cb61-711"><a href="#cb61-711" aria-hidden="true" tabindex="-1"></a>    control_url: <span class="bu">str</span>,</span>
+<span id="cb61-712"><a href="#cb61-712" aria-hidden="true" tabindex="-1"></a>    allow_upgrade: <span class="bu">bool</span> <span class="op">=</span> <span class="va">False</span>,</span>
+<span id="cb61-713"><a href="#cb61-713" aria-hidden="true" tabindex="-1"></a>    now: datetime <span class="op">|</span> <span class="va">None</span> <span class="op">=</span> <span class="va">None</span>,</span>
+<span id="cb61-714"><a href="#cb61-714" aria-hidden="true" tabindex="-1"></a>    stale_after: timedelta <span class="op">=</span> _PROVISIONING_STALE_AFTER,</span>
+<span id="cb61-715"><a href="#cb61-715" aria-hidden="true" tabindex="-1"></a>) <span class="op">-&gt;</span> ProvisioningClaimResult:</span>
+<span id="cb61-716"><a href="#cb61-716" aria-hidden="true" tabindex="-1"></a>    <span class="co">&quot;&quot;&quot;Claim provisioning with registration state in one immediate transaction.&quot;&quot;&quot;</span></span>
+<span id="cb61-717"><a href="#cb61-717" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> <span class="bu">type</span>(allow_upgrade) <span class="kw">is</span> <span class="kw">not</span> <span class="bu">bool</span>:</span>
+<span id="cb61-718"><a href="#cb61-718" aria-hidden="true" tabindex="-1"></a>        <span class="cf">raise</span> <span class="pp">TypeError</span>(<span class="st">&quot;allow_upgrade must be a boolean&quot;</span>)</span>
+<span id="cb61-719"><a href="#cb61-719" aria-hidden="true" tabindex="-1"></a>    normalized_user_id <span class="op">=</span> _require_user_id(user_id)</span>
+<span id="cb61-720"><a href="#cb61-720" aria-hidden="true" tabindex="-1"></a>    normalized_artifact <span class="op">=</span> _required_text(artifact_version, <span class="st">&quot;artifact_version&quot;</span>)</span>
+<span id="cb61-721"><a href="#cb61-721" aria-hidden="true" tabindex="-1"></a>    normalized_region <span class="op">=</span> _required_text(region, <span class="st">&quot;region&quot;</span>)</span>
+<span id="cb61-722"><a href="#cb61-722" aria-hidden="true" tabindex="-1"></a>    current_time <span class="op">=</span> _normalized_now(now)</span>
+<span id="cb61-723"><a href="#cb61-723" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> <span class="kw">not</span> <span class="bu">isinstance</span>(stale_after, timedelta) <span class="kw">or</span> stale_after.total_seconds() <span class="op">&lt;=</span> <span class="dv">0</span>:</span>
+<span id="cb61-724"><a href="#cb61-724" aria-hidden="true" tabindex="-1"></a>        <span class="cf">raise</span> <span class="pp">ValueError</span>(<span class="st">&quot;stale_after must be a positive timedelta&quot;</span>)</span>
+<span id="cb61-725"><a href="#cb61-725" aria-hidden="true" tabindex="-1"></a>    generated_name <span class="op">=</span> managed_sprite_name(</span>
+<span id="cb61-726"><a href="#cb61-726" aria-hidden="true" tabindex="-1"></a>        normalized_user_id,</span>
+<span id="cb61-727"><a href="#cb61-727" aria-hidden="true" tabindex="-1"></a>        prefix<span class="op">=</span>name_prefix,</span>
+<span id="cb61-728"><a href="#cb61-728" aria-hidden="true" tabindex="-1"></a>        secret_key<span class="op">=</span>name_key,</span>
+<span id="cb61-729"><a href="#cb61-729" aria-hidden="true" tabindex="-1"></a>    )</span>
+<span id="cb61-730"><a href="#cb61-730" aria-hidden="true" tabindex="-1"></a>    now_text <span class="op">=</span> _datetime_to_storage(current_time)</span>
+<span id="cb61-731"><a href="#cb61-731" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb61-732"><a href="#cb61-732" aria-hidden="true" tabindex="-1"></a>    <span class="cf">with</span> get_control_db() <span class="im">as</span> database:</span>
+<span id="cb61-733"><a href="#cb61-733" aria-hidden="true" tabindex="-1"></a>        <span class="cf">try</span>:</span>
+<span id="cb61-734"><a href="#cb61-734" aria-hidden="true" tabindex="-1"></a>            database.execute(<span class="st">&quot;BEGIN IMMEDIATE&quot;</span>)</span>
+<span id="cb61-735"><a href="#cb61-735" aria-hidden="true" tabindex="-1"></a>            row <span class="op">=</span> database.execute(</span>
+<span id="cb61-736"><a href="#cb61-736" aria-hidden="true" tabindex="-1"></a>                <span class="st">&quot;SELECT * FROM managed_runtimes WHERE user_id = ?&quot;</span>,</span>
+<span id="cb61-737"><a href="#cb61-737" aria-hidden="true" tabindex="-1"></a>                (normalized_user_id,),</span>
+<span id="cb61-738"><a href="#cb61-738" aria-hidden="true" tabindex="-1"></a>            ).fetchone()</span>
+<span id="cb61-739"><a href="#cb61-739" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> row <span class="kw">is</span> <span class="kw">not</span> <span class="va">None</span>:</span>
+<span id="cb61-740"><a href="#cb61-740" aria-hidden="true" tabindex="-1"></a>                row_time <span class="op">=</span> _datetime_from_storage(row[<span class="st">&quot;updated_at&quot;</span>])</span>
+<span id="cb61-741"><a href="#cb61-741" aria-hidden="true" tabindex="-1"></a>                <span class="cf">assert</span> row_time <span class="kw">is</span> <span class="kw">not</span> <span class="va">None</span>, <span class="st">&quot;managed runtime timestamp must exist&quot;</span></span>
+<span id="cb61-742"><a href="#cb61-742" aria-hidden="true" tabindex="-1"></a>                is_stale <span class="op">=</span> current_time <span class="op">-</span> row_time <span class="op">&gt;=</span> stale_after</span>
+<span id="cb61-743"><a href="#cb61-743" aria-hidden="true" tabindex="-1"></a>                should_claim <span class="op">=</span> row[<span class="st">&quot;lifecycle_status&quot;</span>] <span class="op">==</span> <span class="st">&quot;failed&quot;</span> <span class="kw">or</span> (</span>
+<span id="cb61-744"><a href="#cb61-744" aria-hidden="true" tabindex="-1"></a>                    row[<span class="st">&quot;lifecycle_status&quot;</span>] <span class="op">==</span> <span class="st">&quot;provisioning&quot;</span> <span class="kw">and</span> is_stale</span>
+<span id="cb61-745"><a href="#cb61-745" aria-hidden="true" tabindex="-1"></a>                )</span>
+<span id="cb61-746"><a href="#cb61-746" aria-hidden="true" tabindex="-1"></a>                should_claim <span class="op">=</span> should_claim <span class="kw">or</span> (</span>
+<span id="cb61-747"><a href="#cb61-747" aria-hidden="true" tabindex="-1"></a>                    allow_upgrade</span>
+<span id="cb61-748"><a href="#cb61-748" aria-hidden="true" tabindex="-1"></a>                    <span class="kw">and</span> row[<span class="st">&quot;lifecycle_status&quot;</span>] <span class="op">==</span> <span class="st">&quot;ready&quot;</span></span>
+<span id="cb61-749"><a href="#cb61-749" aria-hidden="true" tabindex="-1"></a>                    <span class="kw">and</span> row[<span class="st">&quot;artifact_version&quot;</span>] <span class="op">!=</span> normalized_artifact</span>
+<span id="cb61-750"><a href="#cb61-750" aria-hidden="true" tabindex="-1"></a>                )</span>
+<span id="cb61-751"><a href="#cb61-751" aria-hidden="true" tabindex="-1"></a>                <span class="cf">if</span> <span class="kw">not</span> should_claim:</span>
+<span id="cb61-752"><a href="#cb61-752" aria-hidden="true" tabindex="-1"></a>                    database.commit()</span>
+<span id="cb61-753"><a href="#cb61-753" aria-hidden="true" tabindex="-1"></a>                    <span class="cf">return</span> _observer(row)</span>
+<span id="cb61-754"><a href="#cb61-754" aria-hidden="true" tabindex="-1"></a>                sprite_name <span class="op">=</span> row[<span class="st">&quot;sprite_external_id&quot;</span>]</span>
+<span id="cb61-755"><a href="#cb61-755" aria-hidden="true" tabindex="-1"></a>                generation <span class="op">=</span> <span class="bu">int</span>(row[<span class="st">&quot;generation&quot;</span>]) <span class="op">+</span> <span class="dv">1</span></span>
+<span id="cb61-756"><a href="#cb61-756" aria-hidden="true" tabindex="-1"></a>            <span class="cf">else</span>:</span>
+<span id="cb61-757"><a href="#cb61-757" aria-hidden="true" tabindex="-1"></a>                sprite_name <span class="op">=</span> generated_name</span>
+<span id="cb61-758"><a href="#cb61-758" aria-hidden="true" tabindex="-1"></a>                generation <span class="op">=</span> <span class="dv">1</span></span>
+<span id="cb61-759"><a href="#cb61-759" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb61-760"><a href="#cb61-760" aria-hidden="true" tabindex="-1"></a>            registration <span class="op">=</span> _create_runner_registration_in_connection(</span>
+<span id="cb61-761"><a href="#cb61-761" aria-hidden="true" tabindex="-1"></a>                database,</span>
+<span id="cb61-762"><a href="#cb61-762" aria-hidden="true" tabindex="-1"></a>                normalized_user_id,</span>
+<span id="cb61-763"><a href="#cb61-763" aria-hidden="true" tabindex="-1"></a>                name<span class="op">=</span><span class="st">&quot;Managed Fly Sprite&quot;</span>,</span>
+<span id="cb61-764"><a href="#cb61-764" aria-hidden="true" tabindex="-1"></a>                cloud_provider<span class="op">=</span><span class="st">&quot;fly_sprites&quot;</span>,</span>
+<span id="cb61-765"><a href="#cb61-765" aria-hidden="true" tabindex="-1"></a>                region<span class="op">=</span>normalized_region,</span>
+<span id="cb61-766"><a href="#cb61-766" aria-hidden="true" tabindex="-1"></a>                storage_profile<span class="op">=</span><span class="st">&quot;fly_sprites_posix&quot;</span>,</span>
+<span id="cb61-767"><a href="#cb61-767" aria-hidden="true" tabindex="-1"></a>                control_url<span class="op">=</span>control_url,</span>
+<span id="cb61-768"><a href="#cb61-768" aria-hidden="true" tabindex="-1"></a>                runner_kind<span class="op">=</span><span class="st">&quot;managed&quot;</span>,</span>
+<span id="cb61-769"><a href="#cb61-769" aria-hidden="true" tabindex="-1"></a>                now<span class="op">=</span>current_time,</span>
+<span id="cb61-770"><a href="#cb61-770" aria-hidden="true" tabindex="-1"></a>            )</span>
+<span id="cb61-771"><a href="#cb61-771" aria-hidden="true" tabindex="-1"></a>            runner_id <span class="op">=</span> registration[<span class="st">&quot;runner&quot;</span>][<span class="st">&quot;id&quot;</span>]</span>
+<span id="cb61-772"><a href="#cb61-772" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> row <span class="kw">is</span> <span class="va">None</span>:</span>
+<span id="cb61-773"><a href="#cb61-773" aria-hidden="true" tabindex="-1"></a>                database.execute(</span>
+<span id="cb61-774"><a href="#cb61-774" aria-hidden="true" tabindex="-1"></a>                    <span class="st">&quot;&quot;&quot;</span></span>
+<span id="cb61-775"><a href="#cb61-775" aria-hidden="true" tabindex="-1"></a><span class="st">                    INSERT INTO managed_runtimes (</span></span>
+<span id="cb61-776"><a href="#cb61-776" aria-hidden="true" tabindex="-1"></a><span class="st">                        user_id, runner_id, provider_name, sprite_external_id,</span></span>
+<span id="cb61-777"><a href="#cb61-777" aria-hidden="true" tabindex="-1"></a><span class="st">                        lifecycle_status, generation, artifact_version,</span></span>
+<span id="cb61-778"><a href="#cb61-778" aria-hidden="true" tabindex="-1"></a><span class="st">                        created_at, updated_at, last_error</span></span>
+<span id="cb61-779"><a href="#cb61-779" aria-hidden="true" tabindex="-1"></a><span class="st">                    ) VALUES (?, ?, &#39;fly_sprites&#39;, ?, &#39;provisioning&#39;, 1, ?, ?, ?, NULL)</span></span>
+<span id="cb61-780"><a href="#cb61-780" aria-hidden="true" tabindex="-1"></a><span class="st">                    &quot;&quot;&quot;</span>,</span>
+<span id="cb61-781"><a href="#cb61-781" aria-hidden="true" tabindex="-1"></a>                    (</span>
+<span id="cb61-782"><a href="#cb61-782" aria-hidden="true" tabindex="-1"></a>                        normalized_user_id,</span>
+<span id="cb61-783"><a href="#cb61-783" aria-hidden="true" tabindex="-1"></a>                        runner_id,</span>
+<span id="cb61-784"><a href="#cb61-784" aria-hidden="true" tabindex="-1"></a>                        sprite_name,</span>
+<span id="cb61-785"><a href="#cb61-785" aria-hidden="true" tabindex="-1"></a>                        normalized_artifact,</span>
+<span id="cb61-786"><a href="#cb61-786" aria-hidden="true" tabindex="-1"></a>                        now_text,</span>
+<span id="cb61-787"><a href="#cb61-787" aria-hidden="true" tabindex="-1"></a>                        now_text,</span>
+<span id="cb61-788"><a href="#cb61-788" aria-hidden="true" tabindex="-1"></a>                    ),</span>
+<span id="cb61-789"><a href="#cb61-789" aria-hidden="true" tabindex="-1"></a>                )</span>
+<span id="cb61-790"><a href="#cb61-790" aria-hidden="true" tabindex="-1"></a>            <span class="cf">else</span>:</span>
+<span id="cb61-791"><a href="#cb61-791" aria-hidden="true" tabindex="-1"></a>                database.execute(</span>
+<span id="cb61-792"><a href="#cb61-792" aria-hidden="true" tabindex="-1"></a>                    <span class="st">&quot;&quot;&quot;</span></span>
+<span id="cb61-793"><a href="#cb61-793" aria-hidden="true" tabindex="-1"></a><span class="st">                    UPDATE managed_runtimes</span></span>
+<span id="cb61-794"><a href="#cb61-794" aria-hidden="true" tabindex="-1"></a><span class="st">                    SET runner_id = ?, lifecycle_status = &#39;provisioning&#39;,</span></span>
+<span id="cb61-795"><a href="#cb61-795" aria-hidden="true" tabindex="-1"></a><span class="st">                        generation = ?, artifact_version = ?, updated_at = ?,</span></span>
+<span id="cb61-796"><a href="#cb61-796" aria-hidden="true" tabindex="-1"></a><span class="st">                        last_error = NULL</span></span>
+<span id="cb61-797"><a href="#cb61-797" aria-hidden="true" tabindex="-1"></a><span class="st">                    WHERE user_id = ?</span></span>
+<span id="cb61-798"><a href="#cb61-798" aria-hidden="true" tabindex="-1"></a><span class="st">                    &quot;&quot;&quot;</span>,</span>
+<span id="cb61-799"><a href="#cb61-799" aria-hidden="true" tabindex="-1"></a>                    (</span>
+<span id="cb61-800"><a href="#cb61-800" aria-hidden="true" tabindex="-1"></a>                        runner_id,</span>
+<span id="cb61-801"><a href="#cb61-801" aria-hidden="true" tabindex="-1"></a>                        generation,</span>
+<span id="cb61-802"><a href="#cb61-802" aria-hidden="true" tabindex="-1"></a>                        normalized_artifact,</span>
+<span id="cb61-803"><a href="#cb61-803" aria-hidden="true" tabindex="-1"></a>                        now_text,</span>
+<span id="cb61-804"><a href="#cb61-804" aria-hidden="true" tabindex="-1"></a>                        normalized_user_id,</span>
+<span id="cb61-805"><a href="#cb61-805" aria-hidden="true" tabindex="-1"></a>                    ),</span>
+<span id="cb61-806"><a href="#cb61-806" aria-hidden="true" tabindex="-1"></a>                )</span>
+<span id="cb61-807"><a href="#cb61-807" aria-hidden="true" tabindex="-1"></a>            claimed_row <span class="op">=</span> database.execute(</span>
+<span id="cb61-808"><a href="#cb61-808" aria-hidden="true" tabindex="-1"></a>                <span class="st">&quot;SELECT * FROM managed_runtimes WHERE user_id = ?&quot;</span>,</span>
+<span id="cb61-809"><a href="#cb61-809" aria-hidden="true" tabindex="-1"></a>                (normalized_user_id,),</span>
+<span id="cb61-810"><a href="#cb61-810" aria-hidden="true" tabindex="-1"></a>            ).fetchone()</span>
+<span id="cb61-811"><a href="#cb61-811" aria-hidden="true" tabindex="-1"></a>            <span class="cf">assert</span> claimed_row <span class="kw">is</span> <span class="kw">not</span> <span class="va">None</span>, <span class="st">&quot;managed runtime claim must exist&quot;</span></span>
+<span id="cb61-812"><a href="#cb61-812" aria-hidden="true" tabindex="-1"></a>            database.commit()</span>
+<span id="cb61-813"><a href="#cb61-813" aria-hidden="true" tabindex="-1"></a>            <span class="cf">return</span> _owner(claimed_row, registration)</span>
+<span id="cb61-814"><a href="#cb61-814" aria-hidden="true" tabindex="-1"></a>        <span class="cf">except</span> <span class="pp">Exception</span>:</span>
+<span id="cb61-815"><a href="#cb61-815" aria-hidden="true" tabindex="-1"></a>            database.rollback()</span>
+<span id="cb61-816"><a href="#cb61-816" aria-hidden="true" tabindex="-1"></a>            <span class="cf">raise</span></span></code></pre></div>
 <h2 data-number="15.8"
 id="yinshiservicesmanaged_runtime_manager.py"><span
 class="header-section-number">15.8</span>
