@@ -1,27 +1,27 @@
 # Pin deployment inputs.
 setuptools==84.0.0
-wheel==0.47.0
+wheel==0.48.0
 # Serve HTTP.
-fastapi==0.139.0
-uvicorn[standard]==0.46.0
-starlette==1.3.1
+fastapi==0.141.1
+uvicorn[standard]==0.52.3
+starlette==1.6.0
 python-multipart==0.0.32
-websockets==16.0
-slowapi==0.1.9
+websockets==17.0.1
+slowapi==0.1.10
 # Validate settings.
-pydantic==2.13.3
-pydantic-settings==2.14.2
+pydantic==2.13.4
+pydantic-settings==2.15.0
 python-dotenv==1.2.2
 # Store encrypted data.
 aiosqlite==0.22.1
 sqlcipher3==0.6.2
 httpx==0.28.1
-boto3==1.43.69
+boto3==1.43.71
 # Secure identity and transport.
-authlib==1.7.0
+authlib==1.7.2
 itsdangerous==2.2.0
 cryptography==50.0.0
 noiseprotocol==0.3.1
 # Retain audited indirect pins.
-idna==3.15
-joserfc==1.6.8
+idna==3.18
+joserfc==1.7.4
