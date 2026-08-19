@@ -923,6 +923,8 @@ async def _runner_relay_loop(config: RunnerAgentConfig, runner_token: str) -> No
     """Reconnect the outbound relay with bounded backoff until cancelled."""
     task_lease = SpriteTaskLease() if config.sprite_task_lease else None
     try:
+        if task_lease is not None:
+            await task_lease.acquire()
         noise_keypair = load_or_create_runner_noise_keypair(config.noise_private_key_file)
         data_protection_key = load_or_create_runner_data_key(
             config.data_protection_key_file,

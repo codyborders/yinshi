@@ -765,8 +765,12 @@ async def test_runner_relay_loop_returns_immediately_after_idle_expiry(
         instances: list[TaskLease] = []
 
         def __init__(self) -> None:
+            self.acquire_count = 0
             self.closed = False
             self.instances.append(self)
+
+        async def acquire(self) -> None:
+            self.acquire_count += 1
 
         async def aclose(self) -> None:
             self.closed = True
@@ -787,6 +791,7 @@ async def test_runner_relay_loop_returns_immediately_after_idle_expiry(
         nonlocal serve_calls
         serve_calls += 1
         assert task_lease is TaskLease.instances[0]
+        assert TaskLease.instances[0].acquire_count == 1
         return True
 
     async def unexpected_sleep(delay: float) -> None:
@@ -806,6 +811,7 @@ async def test_runner_relay_loop_returns_immediately_after_idle_expiry(
 
     assert serve_calls == 1
     assert len(TaskLease.instances) == 1
+    assert TaskLease.instances[0].acquire_count == 1
     assert TaskLease.instances[0].closed is True
 
 
@@ -825,8 +831,12 @@ async def test_runner_relay_loop_closes_task_client_on_fatal_error(
         instance: TaskLease | None = None
 
         def __init__(self) -> None:
+            self.acquired = False
             self.closed = False
             TaskLease.instance = self
+
+        async def acquire(self) -> None:
+            self.acquired = True
 
         async def aclose(self) -> None:
             self.closed = True
@@ -851,6 +861,48 @@ async def test_runner_relay_loop_closes_task_client_on_fatal_error(
     monkeypatch.setattr(runner_agent, "_serve_runner_relay_connection", serve)
 
     with pytest.raises(RuntimeError, match="fatal"):
+        await runner_agent._runner_relay_loop(config, "runner-token")
+
+    assert TaskLease.instance is not None
+    assert TaskLease.instance.acquired is True
+    assert TaskLease.instance.closed is True
+
+
+@pytest.mark.asyncio
+async def test_runner_relay_loop_closes_task_client_after_baseline_acquire_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A failed baseline hold closes its client before relay serving starts."""
+    _set_runner_agent_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("YINSHI_RUNNER_STORAGE_PROFILE", "fly_sprites_posix")
+    monkeypatch.setenv("YINSHI_RUNNER_SPRITE_TASK_LEASE", "enabled")
+    config = runner_agent.load_config()
+
+    class TaskLease:
+        instance: TaskLease | None = None
+
+        def __init__(self) -> None:
+            self.closed = False
+            TaskLease.instance = self
+
+        async def acquire(self) -> None:
+            raise RuntimeError("lease unavailable")
+
+        async def aclose(self) -> None:
+            self.closed = True
+
+    async def unexpected_serve(*args: object) -> bool:
+        raise AssertionError("relay serving must not start")
+
+    monkeypatch.setattr(runner_agent, "SpriteTaskLease", TaskLease)
+    monkeypatch.setattr(
+        runner_agent,
+        "_serve_runner_relay_connection",
+        unexpected_serve,
+    )
+
+    with pytest.raises(RuntimeError, match="lease unavailable"):
         await runner_agent._runner_relay_loop(config, "runner-token")
 
     assert TaskLease.instance is not None

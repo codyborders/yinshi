@@ -21858,129 +21858,131 @@ class="sourceCode python"><code class="sourceCode python"><span id="cb46-1"><a h
 <span id="cb46-923"><a href="#cb46-923" aria-hidden="true" tabindex="-1"></a>    <span class="co">&quot;&quot;&quot;Reconnect the outbound relay with bounded backoff until cancelled.&quot;&quot;&quot;</span></span>
 <span id="cb46-924"><a href="#cb46-924" aria-hidden="true" tabindex="-1"></a>    task_lease <span class="op">=</span> SpriteTaskLease() <span class="cf">if</span> config.sprite_task_lease <span class="cf">else</span> <span class="va">None</span></span>
 <span id="cb46-925"><a href="#cb46-925" aria-hidden="true" tabindex="-1"></a>    <span class="cf">try</span>:</span>
-<span id="cb46-926"><a href="#cb46-926" aria-hidden="true" tabindex="-1"></a>        noise_keypair <span class="op">=</span> load_or_create_runner_noise_keypair(config.noise_private_key_file)</span>
-<span id="cb46-927"><a href="#cb46-927" aria-hidden="true" tabindex="-1"></a>        data_protection_key <span class="op">=</span> load_or_create_runner_data_key(</span>
-<span id="cb46-928"><a href="#cb46-928" aria-hidden="true" tabindex="-1"></a>            config.data_protection_key_file,</span>
-<span id="cb46-929"><a href="#cb46-929" aria-hidden="true" tabindex="-1"></a>            config.sqlite_dir,</span>
-<span id="cb46-930"><a href="#cb46-930" aria-hidden="true" tabindex="-1"></a>            noise_keypair.private_key,</span>
-<span id="cb46-931"><a href="#cb46-931" aria-hidden="true" tabindex="-1"></a>        )</span>
-<span id="cb46-932"><a href="#cb46-932" aria-hidden="true" tabindex="-1"></a>        worker_manager <span class="op">=</span> RunnerWorkerManager(</span>
-<span id="cb46-933"><a href="#cb46-933" aria-hidden="true" tabindex="-1"></a>            data_directory<span class="op">=</span>config.data_dir <span class="op">/</span> <span class="st">&quot;worker-runtime&quot;</span>,</span>
-<span id="cb46-934"><a href="#cb46-934" aria-hidden="true" tabindex="-1"></a>            database_directory<span class="op">=</span>config.sqlite_dir,</span>
-<span id="cb46-935"><a href="#cb46-935" aria-hidden="true" tabindex="-1"></a>            user_data_directory<span class="op">=</span>config.shared_files_dir <span class="op">/</span> <span class="st">&quot;users&quot;</span>,</span>
-<span id="cb46-936"><a href="#cb46-936" aria-hidden="true" tabindex="-1"></a>            data_protection_key<span class="op">=</span>data_protection_key,</span>
-<span id="cb46-937"><a href="#cb46-937" aria-hidden="true" tabindex="-1"></a>            user_data_encryption<span class="op">=</span>config.user_data_encryption,</span>
-<span id="cb46-938"><a href="#cb46-938" aria-hidden="true" tabindex="-1"></a>        )</span>
-<span id="cb46-939"><a href="#cb46-939" aria-hidden="true" tabindex="-1"></a>        reconnect_delay_seconds <span class="op">=</span> <span class="fl">1.0</span></span>
-<span id="cb46-940"><a href="#cb46-940" aria-hidden="true" tabindex="-1"></a>        <span class="cf">while</span> <span class="va">True</span>:</span>
-<span id="cb46-941"><a href="#cb46-941" aria-hidden="true" tabindex="-1"></a>            <span class="cf">try</span>:</span>
-<span id="cb46-942"><a href="#cb46-942" aria-hidden="true" tabindex="-1"></a>                idle_expired <span class="op">=</span> <span class="cf">await</span> _serve_runner_relay_connection(</span>
-<span id="cb46-943"><a href="#cb46-943" aria-hidden="true" tabindex="-1"></a>                    config,</span>
-<span id="cb46-944"><a href="#cb46-944" aria-hidden="true" tabindex="-1"></a>                    runner_token,</span>
-<span id="cb46-945"><a href="#cb46-945" aria-hidden="true" tabindex="-1"></a>                    worker_manager,</span>
-<span id="cb46-946"><a href="#cb46-946" aria-hidden="true" tabindex="-1"></a>                    task_lease,</span>
-<span id="cb46-947"><a href="#cb46-947" aria-hidden="true" tabindex="-1"></a>                )</span>
-<span id="cb46-948"><a href="#cb46-948" aria-hidden="true" tabindex="-1"></a>                <span class="cf">if</span> idle_expired:</span>
-<span id="cb46-949"><a href="#cb46-949" aria-hidden="true" tabindex="-1"></a>                    <span class="cf">return</span></span>
-<span id="cb46-950"><a href="#cb46-950" aria-hidden="true" tabindex="-1"></a>                reconnect_delay_seconds <span class="op">=</span> <span class="fl">1.0</span></span>
-<span id="cb46-951"><a href="#cb46-951" aria-hidden="true" tabindex="-1"></a>            <span class="cf">except</span> InvalidStatus <span class="im">as</span> error:</span>
-<span id="cb46-952"><a href="#cb46-952" aria-hidden="true" tabindex="-1"></a>                status_code <span class="op">=</span> error.response.status_code</span>
-<span id="cb46-953"><a href="#cb46-953" aria-hidden="true" tabindex="-1"></a>                <span class="cf">if</span> status_code <span class="kw">in</span> {<span class="dv">401</span>, <span class="dv">403</span>}:</span>
-<span id="cb46-954"><a href="#cb46-954" aria-hidden="true" tabindex="-1"></a>                    <span class="cf">raise</span> <span class="pp">RuntimeError</span>(<span class="st">&quot;Runner relay authentication was rejected&quot;</span>) <span class="im">from</span> <span class="va">None</span></span>
-<span id="cb46-955"><a href="#cb46-955" aria-hidden="true" tabindex="-1"></a>                logger.warning(<span class="st">&quot;Runner relay unavailable with HTTP status </span><span class="sc">%s</span><span class="st">&quot;</span>, status_code)</span>
-<span id="cb46-956"><a href="#cb46-956" aria-hidden="true" tabindex="-1"></a>            <span class="cf">except</span> (ConnectionClosed, <span class="pp">OSError</span>, <span class="pp">TimeoutError</span>):</span>
-<span id="cb46-957"><a href="#cb46-957" aria-hidden="true" tabindex="-1"></a>                logger.warning(<span class="st">&quot;Runner relay connection unavailable; retrying&quot;</span>)</span>
-<span id="cb46-958"><a href="#cb46-958" aria-hidden="true" tabindex="-1"></a>            <span class="cf">await</span> asyncio.sleep(reconnect_delay_seconds)</span>
-<span id="cb46-959"><a href="#cb46-959" aria-hidden="true" tabindex="-1"></a>            reconnect_delay_seconds <span class="op">=</span> <span class="bu">min</span>(reconnect_delay_seconds <span class="op">*</span> <span class="dv">2</span>, <span class="fl">30.0</span>)</span>
-<span id="cb46-960"><a href="#cb46-960" aria-hidden="true" tabindex="-1"></a>    <span class="cf">finally</span>:</span>
-<span id="cb46-961"><a href="#cb46-961" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> task_lease <span class="kw">is</span> <span class="kw">not</span> <span class="va">None</span>:</span>
-<span id="cb46-962"><a href="#cb46-962" aria-hidden="true" tabindex="-1"></a>            <span class="cf">await</span> task_lease.aclose()</span>
-<span id="cb46-963"><a href="#cb46-963" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb46-964"><a href="#cb46-964" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb46-965"><a href="#cb46-965" aria-hidden="true" tabindex="-1"></a><span class="cf">async</span> <span class="kw">def</span> _heartbeat_loop(</span>
-<span id="cb46-966"><a href="#cb46-966" aria-hidden="true" tabindex="-1"></a>    config: RunnerAgentConfig,</span>
-<span id="cb46-967"><a href="#cb46-967" aria-hidden="true" tabindex="-1"></a>    client: httpx.AsyncClient,</span>
-<span id="cb46-968"><a href="#cb46-968" aria-hidden="true" tabindex="-1"></a>    runner_token: <span class="bu">str</span>,</span>
-<span id="cb46-969"><a href="#cb46-969" aria-hidden="true" tabindex="-1"></a>) <span class="op">-&gt;</span> <span class="va">None</span>:</span>
-<span id="cb46-970"><a href="#cb46-970" aria-hidden="true" tabindex="-1"></a>    <span class="co">&quot;&quot;&quot;Send recurring authenticated heartbeats until cancelled or revoked.&quot;&quot;&quot;</span></span>
-<span id="cb46-971"><a href="#cb46-971" aria-hidden="true" tabindex="-1"></a>    <span class="cf">while</span> <span class="va">True</span>:</span>
-<span id="cb46-972"><a href="#cb46-972" aria-hidden="true" tabindex="-1"></a>        <span class="cf">try</span>:</span>
-<span id="cb46-973"><a href="#cb46-973" aria-hidden="true" tabindex="-1"></a>            <span class="cf">await</span> _heartbeat(config, client, runner_token)</span>
-<span id="cb46-974"><a href="#cb46-974" aria-hidden="true" tabindex="-1"></a>        <span class="cf">except</span> httpx.HTTPStatusError <span class="im">as</span> exc:</span>
-<span id="cb46-975"><a href="#cb46-975" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> exc.response.status_code <span class="op">==</span> <span class="dv">401</span>:</span>
-<span id="cb46-976"><a href="#cb46-976" aria-hidden="true" tabindex="-1"></a>                <span class="cf">raise</span> <span class="pp">RuntimeError</span>(<span class="st">&quot;Runner token was rejected by the control plane&quot;</span>) <span class="im">from</span> exc</span>
-<span id="cb46-977"><a href="#cb46-977" aria-hidden="true" tabindex="-1"></a>            <span class="cf">raise</span></span>
-<span id="cb46-978"><a href="#cb46-978" aria-hidden="true" tabindex="-1"></a>        <span class="cf">await</span> asyncio.sleep(config.heartbeat_interval_s)</span>
-<span id="cb46-979"><a href="#cb46-979" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb46-980"><a href="#cb46-980" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb46-981"><a href="#cb46-981" aria-hidden="true" tabindex="-1"></a><span class="cf">async</span> <span class="kw">def</span> run_agent(config: RunnerAgentConfig) <span class="op">-&gt;</span> <span class="va">None</span>:</span>
-<span id="cb46-982"><a href="#cb46-982" aria-hidden="true" tabindex="-1"></a>    <span class="co">&quot;&quot;&quot;Run heartbeats and outbound encrypted relay until either fails.&quot;&quot;&quot;</span></span>
-<span id="cb46-983"><a href="#cb46-983" aria-hidden="true" tabindex="-1"></a>    limits <span class="op">=</span> httpx.Limits(max_connections<span class="op">=</span><span class="dv">4</span>, max_keepalive_connections<span class="op">=</span><span class="dv">2</span>)</span>
-<span id="cb46-984"><a href="#cb46-984" aria-hidden="true" tabindex="-1"></a>    <span class="cf">async</span> <span class="cf">with</span> httpx.AsyncClient(</span>
-<span id="cb46-985"><a href="#cb46-985" aria-hidden="true" tabindex="-1"></a>        base_url<span class="op">=</span>config.control_url,</span>
-<span id="cb46-986"><a href="#cb46-986" aria-hidden="true" tabindex="-1"></a>        timeout<span class="op">=</span>_REQUEST_TIMEOUT_S,</span>
-<span id="cb46-987"><a href="#cb46-987" aria-hidden="true" tabindex="-1"></a>        limits<span class="op">=</span>limits,</span>
-<span id="cb46-988"><a href="#cb46-988" aria-hidden="true" tabindex="-1"></a>        follow_redirects<span class="op">=</span><span class="va">False</span>,</span>
-<span id="cb46-989"><a href="#cb46-989" aria-hidden="true" tabindex="-1"></a>    ) <span class="im">as</span> client:</span>
-<span id="cb46-990"><a href="#cb46-990" aria-hidden="true" tabindex="-1"></a>        runner_token <span class="op">=</span> _read_runner_token(config.runner_token_file)</span>
-<span id="cb46-991"><a href="#cb46-991" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> runner_token <span class="kw">is</span> <span class="va">None</span>:</span>
-<span id="cb46-992"><a href="#cb46-992" aria-hidden="true" tabindex="-1"></a>            runner_token <span class="op">=</span> <span class="cf">await</span> _register(config, client)</span>
-<span id="cb46-993"><a href="#cb46-993" aria-hidden="true" tabindex="-1"></a>        <span class="cf">else</span>:</span>
-<span id="cb46-994"><a href="#cb46-994" aria-hidden="true" tabindex="-1"></a>            pinned_key <span class="op">=</span> _read_owner_only_text_file(</span>
-<span id="cb46-995"><a href="#cb46-995" aria-hidden="true" tabindex="-1"></a>                config.capability_signing_key_file,</span>
-<span id="cb46-996"><a href="#cb46-996" aria-hidden="true" tabindex="-1"></a>                <span class="st">&quot;Control capability signing key&quot;</span>,</span>
-<span id="cb46-997"><a href="#cb46-997" aria-hidden="true" tabindex="-1"></a>            )</span>
-<span id="cb46-998"><a href="#cb46-998" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> pinned_key <span class="kw">is</span> <span class="va">None</span>:</span>
-<span id="cb46-999"><a href="#cb46-999" aria-hidden="true" tabindex="-1"></a>                <span class="cf">raise</span> <span class="pp">RuntimeError</span>(</span>
-<span id="cb46-1000"><a href="#cb46-1000" aria-hidden="true" tabindex="-1"></a>                    <span class="st">&quot;Control capability signing key is missing; runner re-registration is required&quot;</span></span>
-<span id="cb46-1001"><a href="#cb46-1001" aria-hidden="true" tabindex="-1"></a>                )</span>
-<span id="cb46-1002"><a href="#cb46-1002" aria-hidden="true" tabindex="-1"></a>            _validate_capability_signing_public_key(pinned_key)</span>
-<span id="cb46-1003"><a href="#cb46-1003" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb46-1004"><a href="#cb46-1004" aria-hidden="true" tabindex="-1"></a>        logger.info(<span class="st">&quot;Runner Noise identity loaded&quot;</span>)</span>
-<span id="cb46-1005"><a href="#cb46-1005" aria-hidden="true" tabindex="-1"></a>        heartbeat_task <span class="op">=</span> asyncio.create_task(</span>
-<span id="cb46-1006"><a href="#cb46-1006" aria-hidden="true" tabindex="-1"></a>            _heartbeat_loop(config, client, runner_token),</span>
-<span id="cb46-1007"><a href="#cb46-1007" aria-hidden="true" tabindex="-1"></a>            name<span class="op">=</span><span class="st">&quot;runner-heartbeat&quot;</span>,</span>
-<span id="cb46-1008"><a href="#cb46-1008" aria-hidden="true" tabindex="-1"></a>        )</span>
-<span id="cb46-1009"><a href="#cb46-1009" aria-hidden="true" tabindex="-1"></a>        relay_task <span class="op">=</span> asyncio.create_task(</span>
-<span id="cb46-1010"><a href="#cb46-1010" aria-hidden="true" tabindex="-1"></a>            _runner_relay_loop(config, runner_token),</span>
-<span id="cb46-1011"><a href="#cb46-1011" aria-hidden="true" tabindex="-1"></a>            name<span class="op">=</span><span class="st">&quot;runner-relay&quot;</span>,</span>
-<span id="cb46-1012"><a href="#cb46-1012" aria-hidden="true" tabindex="-1"></a>        )</span>
-<span id="cb46-1013"><a href="#cb46-1013" aria-hidden="true" tabindex="-1"></a>        tasks <span class="op">=</span> (heartbeat_task, relay_task)</span>
-<span id="cb46-1014"><a href="#cb46-1014" aria-hidden="true" tabindex="-1"></a>        <span class="cf">try</span>:</span>
-<span id="cb46-1015"><a href="#cb46-1015" aria-hidden="true" tabindex="-1"></a>            done, pending <span class="op">=</span> <span class="cf">await</span> asyncio.wait(</span>
-<span id="cb46-1016"><a href="#cb46-1016" aria-hidden="true" tabindex="-1"></a>                tasks,</span>
-<span id="cb46-1017"><a href="#cb46-1017" aria-hidden="true" tabindex="-1"></a>                return_when<span class="op">=</span>asyncio.FIRST_COMPLETED,</span>
-<span id="cb46-1018"><a href="#cb46-1018" aria-hidden="true" tabindex="-1"></a>            )</span>
-<span id="cb46-1019"><a href="#cb46-1019" aria-hidden="true" tabindex="-1"></a>            <span class="cf">for</span> task <span class="kw">in</span> pending:</span>
-<span id="cb46-1020"><a href="#cb46-1020" aria-hidden="true" tabindex="-1"></a>                task.cancel()</span>
-<span id="cb46-1021"><a href="#cb46-1021" aria-hidden="true" tabindex="-1"></a>            <span class="cf">await</span> asyncio.gather(<span class="op">*</span>pending, return_exceptions<span class="op">=</span><span class="va">True</span>)</span>
-<span id="cb46-1022"><a href="#cb46-1022" aria-hidden="true" tabindex="-1"></a>            <span class="cf">for</span> task <span class="kw">in</span> tasks:</span>
-<span id="cb46-1023"><a href="#cb46-1023" aria-hidden="true" tabindex="-1"></a>                <span class="cf">if</span> task <span class="kw">in</span> done:</span>
-<span id="cb46-1024"><a href="#cb46-1024" aria-hidden="true" tabindex="-1"></a>                    task.result()</span>
-<span id="cb46-1025"><a href="#cb46-1025" aria-hidden="true" tabindex="-1"></a>        <span class="cf">finally</span>:</span>
-<span id="cb46-1026"><a href="#cb46-1026" aria-hidden="true" tabindex="-1"></a>            <span class="cf">for</span> task <span class="kw">in</span> tasks:</span>
-<span id="cb46-1027"><a href="#cb46-1027" aria-hidden="true" tabindex="-1"></a>                <span class="cf">if</span> <span class="kw">not</span> task.done():</span>
-<span id="cb46-1028"><a href="#cb46-1028" aria-hidden="true" tabindex="-1"></a>                    task.cancel()</span>
-<span id="cb46-1029"><a href="#cb46-1029" aria-hidden="true" tabindex="-1"></a>            <span class="cf">await</span> asyncio.gather(<span class="op">*</span>tasks, return_exceptions<span class="op">=</span><span class="va">True</span>)</span>
-<span id="cb46-1030"><a href="#cb46-1030" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb46-1031"><a href="#cb46-1031" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb46-1032"><a href="#cb46-1032" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> main() <span class="op">-&gt;</span> <span class="va">None</span>:</span>
-<span id="cb46-1033"><a href="#cb46-1033" aria-hidden="true" tabindex="-1"></a>    <span class="co">&quot;&quot;&quot;Load configuration and run the cloud runner agent.&quot;&quot;&quot;</span></span>
-<span id="cb46-1034"><a href="#cb46-1034" aria-hidden="true" tabindex="-1"></a>    logging.basicConfig(</span>
-<span id="cb46-1035"><a href="#cb46-1035" aria-hidden="true" tabindex="-1"></a>        level<span class="op">=</span>logging.INFO,</span>
-<span id="cb46-1036"><a href="#cb46-1036" aria-hidden="true" tabindex="-1"></a>        <span class="bu">format</span><span class="op">=</span><span class="st">&quot;</span><span class="sc">%(asctime)s</span><span class="st"> - </span><span class="sc">%(name)s</span><span class="st"> - </span><span class="sc">%(levelname)s</span><span class="st"> - </span><span class="sc">%(message)s</span><span class="st">&quot;</span>,</span>
-<span id="cb46-1037"><a href="#cb46-1037" aria-hidden="true" tabindex="-1"></a>    )</span>
-<span id="cb46-1038"><a href="#cb46-1038" aria-hidden="true" tabindex="-1"></a>    config <span class="op">=</span> load_config()</span>
-<span id="cb46-1039"><a href="#cb46-1039" aria-hidden="true" tabindex="-1"></a>    logger.info(</span>
-<span id="cb46-1040"><a href="#cb46-1040" aria-hidden="true" tabindex="-1"></a>        <span class="st">&quot;Starting Yinshi cloud runner agent against </span><span class="sc">%s</span><span class="st"> with profile </span><span class="sc">%s</span><span class="st">&quot;</span>,</span>
-<span id="cb46-1041"><a href="#cb46-1041" aria-hidden="true" tabindex="-1"></a>        config.control_url,</span>
-<span id="cb46-1042"><a href="#cb46-1042" aria-hidden="true" tabindex="-1"></a>        config.storage_profile,</span>
-<span id="cb46-1043"><a href="#cb46-1043" aria-hidden="true" tabindex="-1"></a>    )</span>
-<span id="cb46-1044"><a href="#cb46-1044" aria-hidden="true" tabindex="-1"></a>    asyncio.run(run_agent(config))</span>
-<span id="cb46-1045"><a href="#cb46-1045" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb46-1046"><a href="#cb46-1046" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb46-1047"><a href="#cb46-1047" aria-hidden="true" tabindex="-1"></a><span class="cf">if</span> <span class="va">__name__</span> <span class="op">==</span> <span class="st">&quot;__main__&quot;</span>:</span>
-<span id="cb46-1048"><a href="#cb46-1048" aria-hidden="true" tabindex="-1"></a>    main()</span></code></pre></div>
+<span id="cb46-926"><a href="#cb46-926" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> task_lease <span class="kw">is</span> <span class="kw">not</span> <span class="va">None</span>:</span>
+<span id="cb46-927"><a href="#cb46-927" aria-hidden="true" tabindex="-1"></a>            <span class="cf">await</span> task_lease.acquire()</span>
+<span id="cb46-928"><a href="#cb46-928" aria-hidden="true" tabindex="-1"></a>        noise_keypair <span class="op">=</span> load_or_create_runner_noise_keypair(config.noise_private_key_file)</span>
+<span id="cb46-929"><a href="#cb46-929" aria-hidden="true" tabindex="-1"></a>        data_protection_key <span class="op">=</span> load_or_create_runner_data_key(</span>
+<span id="cb46-930"><a href="#cb46-930" aria-hidden="true" tabindex="-1"></a>            config.data_protection_key_file,</span>
+<span id="cb46-931"><a href="#cb46-931" aria-hidden="true" tabindex="-1"></a>            config.sqlite_dir,</span>
+<span id="cb46-932"><a href="#cb46-932" aria-hidden="true" tabindex="-1"></a>            noise_keypair.private_key,</span>
+<span id="cb46-933"><a href="#cb46-933" aria-hidden="true" tabindex="-1"></a>        )</span>
+<span id="cb46-934"><a href="#cb46-934" aria-hidden="true" tabindex="-1"></a>        worker_manager <span class="op">=</span> RunnerWorkerManager(</span>
+<span id="cb46-935"><a href="#cb46-935" aria-hidden="true" tabindex="-1"></a>            data_directory<span class="op">=</span>config.data_dir <span class="op">/</span> <span class="st">&quot;worker-runtime&quot;</span>,</span>
+<span id="cb46-936"><a href="#cb46-936" aria-hidden="true" tabindex="-1"></a>            database_directory<span class="op">=</span>config.sqlite_dir,</span>
+<span id="cb46-937"><a href="#cb46-937" aria-hidden="true" tabindex="-1"></a>            user_data_directory<span class="op">=</span>config.shared_files_dir <span class="op">/</span> <span class="st">&quot;users&quot;</span>,</span>
+<span id="cb46-938"><a href="#cb46-938" aria-hidden="true" tabindex="-1"></a>            data_protection_key<span class="op">=</span>data_protection_key,</span>
+<span id="cb46-939"><a href="#cb46-939" aria-hidden="true" tabindex="-1"></a>            user_data_encryption<span class="op">=</span>config.user_data_encryption,</span>
+<span id="cb46-940"><a href="#cb46-940" aria-hidden="true" tabindex="-1"></a>        )</span>
+<span id="cb46-941"><a href="#cb46-941" aria-hidden="true" tabindex="-1"></a>        reconnect_delay_seconds <span class="op">=</span> <span class="fl">1.0</span></span>
+<span id="cb46-942"><a href="#cb46-942" aria-hidden="true" tabindex="-1"></a>        <span class="cf">while</span> <span class="va">True</span>:</span>
+<span id="cb46-943"><a href="#cb46-943" aria-hidden="true" tabindex="-1"></a>            <span class="cf">try</span>:</span>
+<span id="cb46-944"><a href="#cb46-944" aria-hidden="true" tabindex="-1"></a>                idle_expired <span class="op">=</span> <span class="cf">await</span> _serve_runner_relay_connection(</span>
+<span id="cb46-945"><a href="#cb46-945" aria-hidden="true" tabindex="-1"></a>                    config,</span>
+<span id="cb46-946"><a href="#cb46-946" aria-hidden="true" tabindex="-1"></a>                    runner_token,</span>
+<span id="cb46-947"><a href="#cb46-947" aria-hidden="true" tabindex="-1"></a>                    worker_manager,</span>
+<span id="cb46-948"><a href="#cb46-948" aria-hidden="true" tabindex="-1"></a>                    task_lease,</span>
+<span id="cb46-949"><a href="#cb46-949" aria-hidden="true" tabindex="-1"></a>                )</span>
+<span id="cb46-950"><a href="#cb46-950" aria-hidden="true" tabindex="-1"></a>                <span class="cf">if</span> idle_expired:</span>
+<span id="cb46-951"><a href="#cb46-951" aria-hidden="true" tabindex="-1"></a>                    <span class="cf">return</span></span>
+<span id="cb46-952"><a href="#cb46-952" aria-hidden="true" tabindex="-1"></a>                reconnect_delay_seconds <span class="op">=</span> <span class="fl">1.0</span></span>
+<span id="cb46-953"><a href="#cb46-953" aria-hidden="true" tabindex="-1"></a>            <span class="cf">except</span> InvalidStatus <span class="im">as</span> error:</span>
+<span id="cb46-954"><a href="#cb46-954" aria-hidden="true" tabindex="-1"></a>                status_code <span class="op">=</span> error.response.status_code</span>
+<span id="cb46-955"><a href="#cb46-955" aria-hidden="true" tabindex="-1"></a>                <span class="cf">if</span> status_code <span class="kw">in</span> {<span class="dv">401</span>, <span class="dv">403</span>}:</span>
+<span id="cb46-956"><a href="#cb46-956" aria-hidden="true" tabindex="-1"></a>                    <span class="cf">raise</span> <span class="pp">RuntimeError</span>(<span class="st">&quot;Runner relay authentication was rejected&quot;</span>) <span class="im">from</span> <span class="va">None</span></span>
+<span id="cb46-957"><a href="#cb46-957" aria-hidden="true" tabindex="-1"></a>                logger.warning(<span class="st">&quot;Runner relay unavailable with HTTP status </span><span class="sc">%s</span><span class="st">&quot;</span>, status_code)</span>
+<span id="cb46-958"><a href="#cb46-958" aria-hidden="true" tabindex="-1"></a>            <span class="cf">except</span> (ConnectionClosed, <span class="pp">OSError</span>, <span class="pp">TimeoutError</span>):</span>
+<span id="cb46-959"><a href="#cb46-959" aria-hidden="true" tabindex="-1"></a>                logger.warning(<span class="st">&quot;Runner relay connection unavailable; retrying&quot;</span>)</span>
+<span id="cb46-960"><a href="#cb46-960" aria-hidden="true" tabindex="-1"></a>            <span class="cf">await</span> asyncio.sleep(reconnect_delay_seconds)</span>
+<span id="cb46-961"><a href="#cb46-961" aria-hidden="true" tabindex="-1"></a>            reconnect_delay_seconds <span class="op">=</span> <span class="bu">min</span>(reconnect_delay_seconds <span class="op">*</span> <span class="dv">2</span>, <span class="fl">30.0</span>)</span>
+<span id="cb46-962"><a href="#cb46-962" aria-hidden="true" tabindex="-1"></a>    <span class="cf">finally</span>:</span>
+<span id="cb46-963"><a href="#cb46-963" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> task_lease <span class="kw">is</span> <span class="kw">not</span> <span class="va">None</span>:</span>
+<span id="cb46-964"><a href="#cb46-964" aria-hidden="true" tabindex="-1"></a>            <span class="cf">await</span> task_lease.aclose()</span>
+<span id="cb46-965"><a href="#cb46-965" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb46-966"><a href="#cb46-966" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb46-967"><a href="#cb46-967" aria-hidden="true" tabindex="-1"></a><span class="cf">async</span> <span class="kw">def</span> _heartbeat_loop(</span>
+<span id="cb46-968"><a href="#cb46-968" aria-hidden="true" tabindex="-1"></a>    config: RunnerAgentConfig,</span>
+<span id="cb46-969"><a href="#cb46-969" aria-hidden="true" tabindex="-1"></a>    client: httpx.AsyncClient,</span>
+<span id="cb46-970"><a href="#cb46-970" aria-hidden="true" tabindex="-1"></a>    runner_token: <span class="bu">str</span>,</span>
+<span id="cb46-971"><a href="#cb46-971" aria-hidden="true" tabindex="-1"></a>) <span class="op">-&gt;</span> <span class="va">None</span>:</span>
+<span id="cb46-972"><a href="#cb46-972" aria-hidden="true" tabindex="-1"></a>    <span class="co">&quot;&quot;&quot;Send recurring authenticated heartbeats until cancelled or revoked.&quot;&quot;&quot;</span></span>
+<span id="cb46-973"><a href="#cb46-973" aria-hidden="true" tabindex="-1"></a>    <span class="cf">while</span> <span class="va">True</span>:</span>
+<span id="cb46-974"><a href="#cb46-974" aria-hidden="true" tabindex="-1"></a>        <span class="cf">try</span>:</span>
+<span id="cb46-975"><a href="#cb46-975" aria-hidden="true" tabindex="-1"></a>            <span class="cf">await</span> _heartbeat(config, client, runner_token)</span>
+<span id="cb46-976"><a href="#cb46-976" aria-hidden="true" tabindex="-1"></a>        <span class="cf">except</span> httpx.HTTPStatusError <span class="im">as</span> exc:</span>
+<span id="cb46-977"><a href="#cb46-977" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> exc.response.status_code <span class="op">==</span> <span class="dv">401</span>:</span>
+<span id="cb46-978"><a href="#cb46-978" aria-hidden="true" tabindex="-1"></a>                <span class="cf">raise</span> <span class="pp">RuntimeError</span>(<span class="st">&quot;Runner token was rejected by the control plane&quot;</span>) <span class="im">from</span> exc</span>
+<span id="cb46-979"><a href="#cb46-979" aria-hidden="true" tabindex="-1"></a>            <span class="cf">raise</span></span>
+<span id="cb46-980"><a href="#cb46-980" aria-hidden="true" tabindex="-1"></a>        <span class="cf">await</span> asyncio.sleep(config.heartbeat_interval_s)</span>
+<span id="cb46-981"><a href="#cb46-981" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb46-982"><a href="#cb46-982" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb46-983"><a href="#cb46-983" aria-hidden="true" tabindex="-1"></a><span class="cf">async</span> <span class="kw">def</span> run_agent(config: RunnerAgentConfig) <span class="op">-&gt;</span> <span class="va">None</span>:</span>
+<span id="cb46-984"><a href="#cb46-984" aria-hidden="true" tabindex="-1"></a>    <span class="co">&quot;&quot;&quot;Run heartbeats and outbound encrypted relay until either fails.&quot;&quot;&quot;</span></span>
+<span id="cb46-985"><a href="#cb46-985" aria-hidden="true" tabindex="-1"></a>    limits <span class="op">=</span> httpx.Limits(max_connections<span class="op">=</span><span class="dv">4</span>, max_keepalive_connections<span class="op">=</span><span class="dv">2</span>)</span>
+<span id="cb46-986"><a href="#cb46-986" aria-hidden="true" tabindex="-1"></a>    <span class="cf">async</span> <span class="cf">with</span> httpx.AsyncClient(</span>
+<span id="cb46-987"><a href="#cb46-987" aria-hidden="true" tabindex="-1"></a>        base_url<span class="op">=</span>config.control_url,</span>
+<span id="cb46-988"><a href="#cb46-988" aria-hidden="true" tabindex="-1"></a>        timeout<span class="op">=</span>_REQUEST_TIMEOUT_S,</span>
+<span id="cb46-989"><a href="#cb46-989" aria-hidden="true" tabindex="-1"></a>        limits<span class="op">=</span>limits,</span>
+<span id="cb46-990"><a href="#cb46-990" aria-hidden="true" tabindex="-1"></a>        follow_redirects<span class="op">=</span><span class="va">False</span>,</span>
+<span id="cb46-991"><a href="#cb46-991" aria-hidden="true" tabindex="-1"></a>    ) <span class="im">as</span> client:</span>
+<span id="cb46-992"><a href="#cb46-992" aria-hidden="true" tabindex="-1"></a>        runner_token <span class="op">=</span> _read_runner_token(config.runner_token_file)</span>
+<span id="cb46-993"><a href="#cb46-993" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> runner_token <span class="kw">is</span> <span class="va">None</span>:</span>
+<span id="cb46-994"><a href="#cb46-994" aria-hidden="true" tabindex="-1"></a>            runner_token <span class="op">=</span> <span class="cf">await</span> _register(config, client)</span>
+<span id="cb46-995"><a href="#cb46-995" aria-hidden="true" tabindex="-1"></a>        <span class="cf">else</span>:</span>
+<span id="cb46-996"><a href="#cb46-996" aria-hidden="true" tabindex="-1"></a>            pinned_key <span class="op">=</span> _read_owner_only_text_file(</span>
+<span id="cb46-997"><a href="#cb46-997" aria-hidden="true" tabindex="-1"></a>                config.capability_signing_key_file,</span>
+<span id="cb46-998"><a href="#cb46-998" aria-hidden="true" tabindex="-1"></a>                <span class="st">&quot;Control capability signing key&quot;</span>,</span>
+<span id="cb46-999"><a href="#cb46-999" aria-hidden="true" tabindex="-1"></a>            )</span>
+<span id="cb46-1000"><a href="#cb46-1000" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> pinned_key <span class="kw">is</span> <span class="va">None</span>:</span>
+<span id="cb46-1001"><a href="#cb46-1001" aria-hidden="true" tabindex="-1"></a>                <span class="cf">raise</span> <span class="pp">RuntimeError</span>(</span>
+<span id="cb46-1002"><a href="#cb46-1002" aria-hidden="true" tabindex="-1"></a>                    <span class="st">&quot;Control capability signing key is missing; runner re-registration is required&quot;</span></span>
+<span id="cb46-1003"><a href="#cb46-1003" aria-hidden="true" tabindex="-1"></a>                )</span>
+<span id="cb46-1004"><a href="#cb46-1004" aria-hidden="true" tabindex="-1"></a>            _validate_capability_signing_public_key(pinned_key)</span>
+<span id="cb46-1005"><a href="#cb46-1005" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb46-1006"><a href="#cb46-1006" aria-hidden="true" tabindex="-1"></a>        logger.info(<span class="st">&quot;Runner Noise identity loaded&quot;</span>)</span>
+<span id="cb46-1007"><a href="#cb46-1007" aria-hidden="true" tabindex="-1"></a>        heartbeat_task <span class="op">=</span> asyncio.create_task(</span>
+<span id="cb46-1008"><a href="#cb46-1008" aria-hidden="true" tabindex="-1"></a>            _heartbeat_loop(config, client, runner_token),</span>
+<span id="cb46-1009"><a href="#cb46-1009" aria-hidden="true" tabindex="-1"></a>            name<span class="op">=</span><span class="st">&quot;runner-heartbeat&quot;</span>,</span>
+<span id="cb46-1010"><a href="#cb46-1010" aria-hidden="true" tabindex="-1"></a>        )</span>
+<span id="cb46-1011"><a href="#cb46-1011" aria-hidden="true" tabindex="-1"></a>        relay_task <span class="op">=</span> asyncio.create_task(</span>
+<span id="cb46-1012"><a href="#cb46-1012" aria-hidden="true" tabindex="-1"></a>            _runner_relay_loop(config, runner_token),</span>
+<span id="cb46-1013"><a href="#cb46-1013" aria-hidden="true" tabindex="-1"></a>            name<span class="op">=</span><span class="st">&quot;runner-relay&quot;</span>,</span>
+<span id="cb46-1014"><a href="#cb46-1014" aria-hidden="true" tabindex="-1"></a>        )</span>
+<span id="cb46-1015"><a href="#cb46-1015" aria-hidden="true" tabindex="-1"></a>        tasks <span class="op">=</span> (heartbeat_task, relay_task)</span>
+<span id="cb46-1016"><a href="#cb46-1016" aria-hidden="true" tabindex="-1"></a>        <span class="cf">try</span>:</span>
+<span id="cb46-1017"><a href="#cb46-1017" aria-hidden="true" tabindex="-1"></a>            done, pending <span class="op">=</span> <span class="cf">await</span> asyncio.wait(</span>
+<span id="cb46-1018"><a href="#cb46-1018" aria-hidden="true" tabindex="-1"></a>                tasks,</span>
+<span id="cb46-1019"><a href="#cb46-1019" aria-hidden="true" tabindex="-1"></a>                return_when<span class="op">=</span>asyncio.FIRST_COMPLETED,</span>
+<span id="cb46-1020"><a href="#cb46-1020" aria-hidden="true" tabindex="-1"></a>            )</span>
+<span id="cb46-1021"><a href="#cb46-1021" aria-hidden="true" tabindex="-1"></a>            <span class="cf">for</span> task <span class="kw">in</span> pending:</span>
+<span id="cb46-1022"><a href="#cb46-1022" aria-hidden="true" tabindex="-1"></a>                task.cancel()</span>
+<span id="cb46-1023"><a href="#cb46-1023" aria-hidden="true" tabindex="-1"></a>            <span class="cf">await</span> asyncio.gather(<span class="op">*</span>pending, return_exceptions<span class="op">=</span><span class="va">True</span>)</span>
+<span id="cb46-1024"><a href="#cb46-1024" aria-hidden="true" tabindex="-1"></a>            <span class="cf">for</span> task <span class="kw">in</span> tasks:</span>
+<span id="cb46-1025"><a href="#cb46-1025" aria-hidden="true" tabindex="-1"></a>                <span class="cf">if</span> task <span class="kw">in</span> done:</span>
+<span id="cb46-1026"><a href="#cb46-1026" aria-hidden="true" tabindex="-1"></a>                    task.result()</span>
+<span id="cb46-1027"><a href="#cb46-1027" aria-hidden="true" tabindex="-1"></a>        <span class="cf">finally</span>:</span>
+<span id="cb46-1028"><a href="#cb46-1028" aria-hidden="true" tabindex="-1"></a>            <span class="cf">for</span> task <span class="kw">in</span> tasks:</span>
+<span id="cb46-1029"><a href="#cb46-1029" aria-hidden="true" tabindex="-1"></a>                <span class="cf">if</span> <span class="kw">not</span> task.done():</span>
+<span id="cb46-1030"><a href="#cb46-1030" aria-hidden="true" tabindex="-1"></a>                    task.cancel()</span>
+<span id="cb46-1031"><a href="#cb46-1031" aria-hidden="true" tabindex="-1"></a>            <span class="cf">await</span> asyncio.gather(<span class="op">*</span>tasks, return_exceptions<span class="op">=</span><span class="va">True</span>)</span>
+<span id="cb46-1032"><a href="#cb46-1032" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb46-1033"><a href="#cb46-1033" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb46-1034"><a href="#cb46-1034" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> main() <span class="op">-&gt;</span> <span class="va">None</span>:</span>
+<span id="cb46-1035"><a href="#cb46-1035" aria-hidden="true" tabindex="-1"></a>    <span class="co">&quot;&quot;&quot;Load configuration and run the cloud runner agent.&quot;&quot;&quot;</span></span>
+<span id="cb46-1036"><a href="#cb46-1036" aria-hidden="true" tabindex="-1"></a>    logging.basicConfig(</span>
+<span id="cb46-1037"><a href="#cb46-1037" aria-hidden="true" tabindex="-1"></a>        level<span class="op">=</span>logging.INFO,</span>
+<span id="cb46-1038"><a href="#cb46-1038" aria-hidden="true" tabindex="-1"></a>        <span class="bu">format</span><span class="op">=</span><span class="st">&quot;</span><span class="sc">%(asctime)s</span><span class="st"> - </span><span class="sc">%(name)s</span><span class="st"> - </span><span class="sc">%(levelname)s</span><span class="st"> - </span><span class="sc">%(message)s</span><span class="st">&quot;</span>,</span>
+<span id="cb46-1039"><a href="#cb46-1039" aria-hidden="true" tabindex="-1"></a>    )</span>
+<span id="cb46-1040"><a href="#cb46-1040" aria-hidden="true" tabindex="-1"></a>    config <span class="op">=</span> load_config()</span>
+<span id="cb46-1041"><a href="#cb46-1041" aria-hidden="true" tabindex="-1"></a>    logger.info(</span>
+<span id="cb46-1042"><a href="#cb46-1042" aria-hidden="true" tabindex="-1"></a>        <span class="st">&quot;Starting Yinshi cloud runner agent against </span><span class="sc">%s</span><span class="st"> with profile </span><span class="sc">%s</span><span class="st">&quot;</span>,</span>
+<span id="cb46-1043"><a href="#cb46-1043" aria-hidden="true" tabindex="-1"></a>        config.control_url,</span>
+<span id="cb46-1044"><a href="#cb46-1044" aria-hidden="true" tabindex="-1"></a>        config.storage_profile,</span>
+<span id="cb46-1045"><a href="#cb46-1045" aria-hidden="true" tabindex="-1"></a>    )</span>
+<span id="cb46-1046"><a href="#cb46-1046" aria-hidden="true" tabindex="-1"></a>    asyncio.run(run_agent(config))</span>
+<span id="cb46-1047"><a href="#cb46-1047" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb46-1048"><a href="#cb46-1048" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb46-1049"><a href="#cb46-1049" aria-hidden="true" tabindex="-1"></a><span class="cf">if</span> <span class="va">__name__</span> <span class="op">==</span> <span class="st">&quot;__main__&quot;</span>:</span>
+<span id="cb46-1050"><a href="#cb46-1050" aria-hidden="true" tabindex="-1"></a>    main()</span></code></pre></div>
 <h2 data-number="13.5" id="apidatadog_proxy.py"><span
 class="header-section-number">13.5</span> api/datadog_proxy.py</h2>
 <p>The Datadog proxy keeps browser telemetry intake on the Yinshi domain
