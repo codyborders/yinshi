@@ -765,11 +765,11 @@ async def test_prompt_journal_immediate_cancellation_wins_start_race(
 
 
 @pytest.mark.asyncio
-async def test_terminal_status_failure_rearms_orphan_recovery_before_next_start(
+async def test_terminal_status_failure_reconciles_before_same_process_reuse(
     db: sqlite3.Connection,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A failed terminal write makes the next start recover the orphaned run."""
+    """A failed terminal write must reconcile without false orphan recovery."""
     session_id = _seed_session(db)
     first_executor_finished = asyncio.Event()
     second_executor_started = asyncio.Event()
@@ -795,9 +795,12 @@ async def test_terminal_status_failure_rearms_orphan_recovery_before_next_start(
 
     journal = PromptJournal(executor=events)
     original_set_terminal_status = journal._set_terminal_status
+    terminal_attempts = 0
 
     def failing_set_terminal_status(request: Request, run_id: str, status: str) -> None:
-        raise sqlite3.OperationalError("terminal status write failed")
+        nonlocal terminal_attempts
+        terminal_attempts += 1
+        raise sqlite3.DatabaseError("database disk image is malformed")
 
     monkeypatch.setattr(journal, "_set_terminal_status", failing_set_terminal_status)
     first = await journal.start(
@@ -809,8 +812,9 @@ async def test_terminal_status_failure_rearms_orphan_recovery_before_next_start(
     first_task = journal._tasks[first.id]
     await asyncio.wait_for(first_executor_finished.wait(), timeout=1)
 
-    with pytest.raises(sqlite3.OperationalError, match="terminal status write failed"):
+    with pytest.raises(sqlite3.DatabaseError, match="database disk image is malformed"):
         await first_task
+    assert terminal_attempts == 1
     assert first.id not in journal._tasks
     assert (
         db.execute("SELECT status FROM prompt_runs WHERE id = ?", (first.id,)).fetchone()[0]
@@ -818,6 +822,14 @@ async def test_terminal_status_failure_rearms_orphan_recovery_before_next_start(
     )
 
     monkeypatch.setattr(journal, "_set_terminal_status", original_set_terminal_status)
+    batch = await journal.events(
+        request=journal_request,
+        session_id=session_id,
+        run_id=first.id,
+        next_sequence=0,
+    )
+    assert batch.status == "completed"
+    assert batch.events == ({"type": "result"},)
     second = await journal.start(
         request=journal_request,
         session_id=session_id,
@@ -831,16 +843,62 @@ async def test_terminal_status_failure_rearms_orphan_recovery_before_next_start(
         "SELECT event_json FROM prompt_events WHERE run_id = ? ORDER BY sequence",
         (first.id,),
     ).fetchall()
-    assert first_row["status"] == "interrupted"
-    assert [row["event_json"] for row in first_events] == [
-        '{"type":"result"}',
-        '{"error":"Prompt run was interrupted","type":"error"}',
-    ]
+    assert first_row["status"] == "completed"
+    assert [row["event_json"] for row in first_events] == ['{"type":"result"}']
     assert second.id != first.id
     assert executor_calls == 2
 
     release_second_executor.set()
     assert await _wait_for_terminal(journal, journal_request, session_id, second.id) == "completed"
+    await journal.close()
+
+
+@pytest.mark.asyncio
+async def test_terminal_status_retries_sqlite_busy_without_interrupting_run(
+    db: sqlite3.Connection,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A bounded SQLite busy window must not corrupt completed prompt status."""
+    session_id = _seed_session(db)
+
+    async def events(
+        request: Request,
+        selected_session_id: str,
+        body: Any,
+    ) -> AsyncIterator[dict[str, Any]]:
+        assert selected_session_id == session_id
+        yield {"type": "result"}
+
+    journal = PromptJournal(executor=events)
+    original_set_terminal_status = journal._set_terminal_status
+    attempts = 0
+
+    def busy_then_complete(request: Request, run_id: str, status: str) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise sqlite3.OperationalError("database is locked")
+        original_set_terminal_status(request, run_id, status)
+
+    monkeypatch.setattr(journal, "_set_terminal_status", busy_then_complete)
+    run = await journal.start(
+        request=_request(),
+        session_id=session_id,
+        idempotency_key=str(uuid.uuid4()),
+        body={"prompt": "complete after busy"},
+    )
+    task = journal._tasks[run.id]
+    await asyncio.wait_for(task, timeout=1)
+    batch = await journal.events(
+        request=_request(),
+        session_id=session_id,
+        run_id=run.id,
+        next_sequence=0,
+    )
+
+    assert attempts == 3
+    assert batch.status == "completed"
+    assert batch.events == ({"type": "result"},)
     await journal.close()
 
 

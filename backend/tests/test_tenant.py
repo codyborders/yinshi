@@ -200,6 +200,185 @@ def test_get_user_db_migrates_existing_user_db(tenant_env):
     assert "turn_status" in message_columns
 
 
+def test_current_user_schema_skips_reinitialization_on_ordinary_opens(tenant_env, monkeypatch):
+    """Current tenant databases must not rerun schema setup for each request."""
+    import yinshi.tenant as tenant_module
+    from yinshi.tenant import TenantContext, get_user_db, init_user_db
+
+    data_dir = os.path.join(tenant_env["user_data_dir"], "ab", "current123")
+    db_path = os.path.join(data_dir, "yinshi.db")
+    os.makedirs(data_dir, exist_ok=True)
+    context = TenantContext(
+        user_id="current123",
+        email="current@example.com",
+        data_dir=data_dir,
+        db_path=db_path,
+    )
+    init_user_db(db_path)
+
+    with sqlite3.connect(db_path) as database:
+        schema_version = database.execute("PRAGMA user_version").fetchone()[0]
+    assert schema_version > 0
+
+    def unexpected_schema_setup(_database: sqlite3.Connection) -> None:
+        raise AssertionError("ordinary opens must not rerun tenant schema setup")
+
+    monkeypatch.setattr(tenant_module, "_ensure_user_db_schema", unexpected_schema_setup)
+    for _ in range(2):
+        with get_user_db(context) as database:
+            assert database.execute("SELECT 1").fetchone()[0] == 1
+
+
+def test_replaced_user_database_at_same_path_is_initialized(tenant_env) -> None:
+    """Replacing a current database must invalidate process-local schema state."""
+    from yinshi.tenant import TenantContext, get_user_db, init_user_db
+
+    data_dir = os.path.join(tenant_env["user_data_dir"], "ab", "replaced123")
+    db_path = os.path.join(data_dir, "yinshi.db")
+    os.makedirs(data_dir, exist_ok=True)
+    context = TenantContext(
+        user_id="replaced123",
+        email="replaced@example.com",
+        data_dir=data_dir,
+        db_path=db_path,
+    )
+    init_user_db(db_path)
+    for suffix in ("", "-wal", "-shm"):
+        candidate = f"{db_path}{suffix}"
+        if os.path.exists(candidate):
+            os.unlink(candidate)
+    sqlite3.connect(db_path).close()
+
+    with get_user_db(context) as database:
+        tables = {
+            row[0]
+            for row in database.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+        schema_version = database.execute("PRAGMA user_version").fetchone()[0]
+
+    assert "prompt_runs" in tables
+    assert schema_version > 0
+
+
+def test_unrecognized_version_zero_user_database_fails_closed(tenant_env) -> None:
+    """An unrelated unversioned database must not be adopted as tenant storage."""
+    from yinshi.tenant import TenantContext, get_user_db
+
+    data_dir = os.path.join(tenant_env["user_data_dir"], "ab", "unrelated123")
+    db_path = os.path.join(data_dir, "yinshi.db")
+    os.makedirs(data_dir, exist_ok=True)
+    with sqlite3.connect(db_path) as database:
+        database.execute("CREATE TABLE unrelated_data (id INTEGER PRIMARY KEY)")
+        database.commit()
+    context = TenantContext(
+        user_id="unrelated123",
+        email="unrelated@example.com",
+        data_dir=data_dir,
+        db_path=db_path,
+    )
+
+    with pytest.raises(RuntimeError, match="legacy schema is not recognized"):
+        with get_user_db(context):
+            pass
+
+
+def test_incomplete_legacy_user_schema_fails_before_version_stamp(tenant_env) -> None:
+    """Legacy anchor names alone must not authorize an incompatible schema."""
+    from yinshi.tenant import TenantContext, get_user_db
+
+    data_dir = os.path.join(tenant_env["user_data_dir"], "ab", "incomplete123")
+    db_path = os.path.join(data_dir, "yinshi.db")
+    os.makedirs(data_dir, exist_ok=True)
+    with sqlite3.connect(db_path) as database:
+        database.execute("CREATE TABLE repos (id TEXT PRIMARY KEY)")
+        database.execute("CREATE TABLE messages (id TEXT PRIMARY KEY)")
+        database.commit()
+    context = TenantContext(
+        user_id="incomplete123",
+        email="incomplete@example.com",
+        data_dir=data_dir,
+        db_path=db_path,
+    )
+
+    with pytest.raises(RuntimeError, match="legacy schema is not recognized"):
+        with get_user_db(context):
+            pass
+    with sqlite3.connect(db_path) as database:
+        assert database.execute("PRAGMA user_version").fetchone()[0] == 0
+
+
+def test_legacy_user_schema_without_primary_keys_fails_closed(tenant_env) -> None:
+    """Matching legacy column names must not replace required primary keys."""
+    from yinshi.tenant import TenantContext, get_user_db
+
+    data_dir = os.path.join(tenant_env["user_data_dir"], "ab", "counterfeit123")
+    db_path = os.path.join(data_dir, "yinshi.db")
+    os.makedirs(data_dir, exist_ok=True)
+    with sqlite3.connect(db_path) as database:
+        database.execute("""CREATE TABLE repos (
+            id TEXT, created_at TEXT, updated_at TEXT, name TEXT,
+            remote_url TEXT, root_path TEXT, custom_prompt TEXT
+        )""")
+        database.execute("""CREATE TABLE messages (
+            id TEXT, created_at TEXT, session_id TEXT, role TEXT,
+            content TEXT, full_message TEXT, turn_id TEXT
+        )""")
+        database.commit()
+    context = TenantContext(
+        user_id="counterfeit123",
+        email="counterfeit@example.com",
+        data_dir=data_dir,
+        db_path=db_path,
+    )
+
+    with pytest.raises(RuntimeError, match="legacy schema is not recognized"):
+        with get_user_db(context):
+            pass
+    with sqlite3.connect(db_path) as database:
+        assert database.execute("PRAGMA user_version").fetchone()[0] == 0
+
+
+def test_user_schema_migration_failure_rolls_back_version_and_ddl(tenant_env, monkeypatch) -> None:
+    """A failed version-zero migration must not publish partial schema changes."""
+    import yinshi.tenant as tenant_module
+    from yinshi.tenant import TenantContext, get_user_db, init_user_db
+
+    data_dir = os.path.join(tenant_env["user_data_dir"], "ab", "rollback123")
+    db_path = os.path.join(data_dir, "yinshi.db")
+    os.makedirs(data_dir, exist_ok=True)
+    init_user_db(db_path)
+    with sqlite3.connect(db_path) as database:
+        database.execute("PRAGMA user_version = 0")
+        database.commit()
+    context = TenantContext(
+        user_id="rollback123",
+        email="rollback@example.com",
+        data_dir=data_dir,
+        db_path=db_path,
+    )
+
+    def fail_migration(database: sqlite3.Connection) -> None:
+        database.execute("ALTER TABLE repos ADD COLUMN partial_change TEXT")
+        raise RuntimeError("injected migration failure")
+
+    monkeypatch.setattr(tenant_module, "_migrate_user_db", fail_migration)
+    with pytest.raises(RuntimeError, match="injected migration failure"):
+        with get_user_db(context):
+            pass
+
+    with sqlite3.connect(db_path) as database:
+        version = database.execute("PRAGMA user_version").fetchone()[0]
+        columns = {row[1] for row in database.execute("PRAGMA table_info(repos)").fetchall()}
+        prompt_table = database.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'prompt_runs'"
+        ).fetchone()
+    assert version == 0
+    assert "partial_change" not in columns
+    assert prompt_table is not None
+
+
 def test_sqlcipher_connection_uses_driver_row_factory(tenant_env, monkeypatch):
     """SQLCipher connections must use the driver's Row type, not sqlite3.Row."""
     from types import SimpleNamespace
@@ -774,9 +953,13 @@ def test_init_user_db_recovers_rollback_before_optional_sqlcipher_fallback(
     data_dir.mkdir(parents=True)
     database_path = data_dir / "yinshi.db"
     rollback_path = Path(f"{database_path}.plaintext.rollback")
+    init_user_db(str(rollback_path))
     with sqlite3.connect(rollback_path) as connection:
         connection.execute("CREATE TABLE marker (value TEXT NOT NULL)")
         connection.execute("INSERT INTO marker VALUES ('durable')")
+        connection.execute("PRAGMA user_version = 0")
+        connection.commit()
+        connection.execute("PRAGMA journal_mode = DELETE")
     os.chmod(rollback_path, 0o600)
     tenant = TenantContext(
         user_id="abcdef",
@@ -1080,6 +1263,10 @@ def test_concurrent_initializers_migrate_plaintext_once(
         "yinshi.tenant._open_sqlcipher_connection",
         lambda _path, _key: sqlite3.connect(":memory:"),
     )
+    monkeypatch.setattr(
+        "yinshi.tenant._ensure_current_user_db_schema",
+        lambda _connection: None,
+    )
 
     with ThreadPoolExecutor(max_workers=2) as executor:
         first = executor.submit(init_user_db, str(database_path), tenant)
@@ -1098,6 +1285,29 @@ def test_concurrent_initializers_migrate_plaintext_once(
     assert not Path(f"{database_path}.encrypted.tmp").exists()
     assert not Path(f"{database_path}-wal").exists()
     assert not Path(f"{database_path}-shm").exists()
+
+
+def test_forked_child_resets_inherited_migration_locks(tenant_env) -> None:
+    """A child process must not inherit a permanently held migration guard."""
+    import multiprocessing
+
+    import yinshi.tenant as tenant_module
+    from yinshi.tenant import init_user_db
+
+    process_context = multiprocessing.get_context("fork")
+    database_path = Path(tenant_env["tmp_path"]) / "fork-reset.db"
+    tenant_module._MIGRATION_THREAD_LOCKS_GUARD.acquire()
+    try:
+        child = process_context.Process(target=init_user_db, args=(str(database_path),))
+        child.start()
+    finally:
+        tenant_module._MIGRATION_THREAD_LOCKS_GUARD.release()
+    child.join(timeout=5)
+    if child.is_alive():
+        child.terminate()
+        child.join(timeout=5)
+
+    assert child.exitcode == 0
 
 
 def test_independent_processes_serialize_plaintext_migration(
@@ -1148,6 +1358,10 @@ def test_independent_processes_serialize_plaintext_migration(
     monkeypatch.setattr(
         "yinshi.tenant._open_sqlcipher_connection",
         lambda _path, _key: sqlite3.connect(":memory:"),
+    )
+    monkeypatch.setattr(
+        "yinshi.tenant._ensure_current_user_db_schema",
+        lambda _connection: None,
     )
 
     first = process_context.Process(
@@ -1200,6 +1414,10 @@ def test_open_encrypted_database_removes_legacy_plaintext_backup(
     monkeypatch.setattr(
         "yinshi.tenant._open_sqlcipher_connection",
         lambda _path, _key: fake_connection,
+    )
+    monkeypatch.setattr(
+        "yinshi.tenant._ensure_current_user_db_schema",
+        lambda _connection: None,
     )
 
     connection = _open_user_connection(str(database_path), tenant)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import sqlite3
 import uuid
 from collections.abc import AsyncIterator, Callable
@@ -18,6 +19,8 @@ from yinshi.api.deps import get_db_for_request
 from yinshi.config import get_settings
 from yinshi.services.run_coordinator import get_run_coordinator
 
+logger = logging.getLogger(__name__)
+
 PromptExecutor = Callable[[Request, str, Any], AsyncIterator[dict[str, Any]]]
 _EVENT_BYTES_MAX = 1_048_576
 _EVENT_BATCH_BYTES_MAX = 48_000
@@ -26,6 +29,10 @@ _EVENT_BATCH_MAX = 100
 _ACTIVE_STATUSES = frozenset({"starting", "running", "stopping"})
 _TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled", "interrupted"})
 _RESOURCE_ID_LENGTH = 32
+_TERMINAL_STATUS_ATTEMPTS = 3
+_TERMINAL_STATUS_RETRY_DELAY_SECONDS = 0.05
+_SQLITE_BUSY_CODES = frozenset({sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED})
+_SQLITE_BUSY_MESSAGES = frozenset({"database is locked", "database table is locked"})
 
 
 class PromptRunNotFoundError(LookupError):
@@ -105,6 +112,7 @@ class PromptJournal:
         self._start_lock = asyncio.Lock()
         self._recovery_lock = asyncio.Lock()
         self._recovered_database_paths: set[str] = set()
+        self._pending_terminal_statuses: dict[str, tuple[str, str]] = {}
         self._closing = False
 
     async def start(
@@ -123,6 +131,7 @@ class PromptJournal:
         if body is None:
             raise TypeError("prompt body must not be None")
         await self._recover_database(request)
+        await self._reconcile_pending_for_database(request)
         async with self._start_lock:
             if self._closing:
                 raise RuntimeError("prompt journal is closing")
@@ -209,6 +218,7 @@ class PromptJournal:
         if type(next_sequence) is not int or next_sequence < 0:
             raise ValueError("next_sequence must be a non-negative integer")
         await self._recover_database(request)
+        await self._reconcile_pending_terminal_status(request, run_id)
 
         with get_db_for_request(request) as database:
             run = database.execute(
@@ -262,6 +272,7 @@ class PromptJournal:
         self._validate_resource_id(session_id, "session_id")
         self._validate_resource_id(run_id, "run_id")
         await self._recover_database(request)
+        await self._reconcile_pending_terminal_status(request, run_id)
         with get_db_for_request(request) as database:
             row = database.execute(
                 "SELECT id, session_id, status FROM prompt_runs WHERE id = ? AND session_id = ?",
@@ -355,12 +366,6 @@ class PromptJournal:
                     raise
             self._recovered_database_paths.add(database_path)
 
-    async def _rearm_database_recovery(self, request: Request) -> None:
-        """Require orphan recovery again after a terminal status write fails."""
-        database_path = self._database_path(request)
-        async with self._recovery_lock:
-            self._recovered_database_paths.discard(database_path)
-
     async def _consume(
         self,
         *,
@@ -407,10 +412,18 @@ class PromptJournal:
             finally:
                 try:
                     try:
-                        self._set_terminal_status(request, run_id, final_status)
+                        await self._persist_terminal_status(
+                            request,
+                            run_id,
+                            final_status,
+                        )
                     except Exception:
-                        with suppress(BaseException):
-                            await self._rearm_database_recovery(request)
+                        await self._remember_pending_terminal_status(
+                            request,
+                            run_id,
+                            final_status,
+                        )
+                        logger.exception("Prompt terminal status persistence failed")
                         raise
                 finally:
                     async with self._tasks_lock:
@@ -491,6 +504,70 @@ class PromptJournal:
             database.commit()
         if result.rowcount != 1:
             raise RuntimeError("prompt run status transition was rejected")
+
+    async def _remember_pending_terminal_status(
+        self,
+        request: Request,
+        run_id: str,
+        status: str,
+    ) -> None:
+        """Retain an intended terminal transition after persistence fails."""
+        pending = (self._database_path(request), status)
+        async with self._tasks_lock:
+            self._pending_terminal_statuses[run_id] = pending
+
+    async def _reconcile_pending_terminal_status(
+        self,
+        request: Request,
+        run_id: str,
+    ) -> None:
+        """Retry one retained terminal transition before returning its run."""
+        database_path = self._database_path(request)
+        async with self._tasks_lock:
+            pending = self._pending_terminal_statuses.get(run_id)
+        if pending is None or pending[0] != database_path:
+            return
+        await self._persist_terminal_status(request, run_id, pending[1])
+        async with self._tasks_lock:
+            if self._pending_terminal_statuses.get(run_id) == pending:
+                self._pending_terminal_statuses.pop(run_id, None)
+
+    async def _reconcile_pending_for_database(self, request: Request) -> None:
+        """Reconcile retained transitions before starting another prompt."""
+        database_path = self._database_path(request)
+        async with self._tasks_lock:
+            run_ids = tuple(
+                run_id
+                for run_id, pending in self._pending_terminal_statuses.items()
+                if pending[0] == database_path
+            )
+        for run_id in run_ids:
+            await self._reconcile_pending_terminal_status(request, run_id)
+
+    async def _persist_terminal_status(
+        self,
+        request: Request,
+        run_id: str,
+        status: str,
+    ) -> None:
+        """Persist one idempotent terminal transition across bounded lock contention."""
+        for attempt in range(_TERMINAL_STATUS_ATTEMPTS):
+            try:
+                self._set_terminal_status(request, run_id, status)
+                return
+            except Exception as exc:
+                if not self._is_sqlite_busy(exc) or attempt + 1 >= _TERMINAL_STATUS_ATTEMPTS:
+                    raise
+                await asyncio.sleep(_TERMINAL_STATUS_RETRY_DELAY_SECONDS * (attempt + 1))
+        raise AssertionError("Terminal status attempts must return or raise")
+
+    @staticmethod
+    def _is_sqlite_busy(exc: Exception) -> bool:
+        """Return whether an exception is exact SQLite lock contention."""
+        error_code = getattr(exc, "sqlite_errorcode", None)
+        if type(error_code) is int and error_code & 0xFF in _SQLITE_BUSY_CODES:
+            return True
+        return str(exc) in _SQLITE_BUSY_MESSAGES
 
     def _set_terminal_status(self, request: Request, run_id: str, status: str) -> None:
         if status not in _TERMINAL_STATUSES:

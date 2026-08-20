@@ -41,8 +41,43 @@ _STORAGE_ENCRYPTION_MARKER: Final[str] = ".yinshi-encrypted-storage"
 _SCHEMA_OBJECT_TYPES: Final[tuple[str, ...]] = ("index", "table", "trigger", "view")
 _MIGRATION_LOCK_SUFFIX: Final[str] = ".migration.lock"
 _PLAINTEXT_ROLLBACK_SUFFIX: Final[str] = ".plaintext.rollback"
-_MIGRATION_THREAD_LOCKS: Final[dict[str, threading.Lock]] = {}
-_MIGRATION_THREAD_LOCKS_GUARD: Final[threading.Lock] = threading.Lock()
+_USER_SCHEMA_VERSION: Final[int] = 1
+_LEGACY_USER_SCHEMA_COLUMNS: Final[dict[str, frozenset[str]]] = {
+    "messages": frozenset(
+        {"content", "created_at", "full_message", "id", "role", "session_id", "turn_id"}
+    ),
+    "repos": frozenset(
+        {"created_at", "custom_prompt", "id", "name", "remote_url", "root_path", "updated_at"}
+    ),
+}
+_LEGACY_USER_SCHEMA_PRIMARY_KEYS: Final[dict[str, tuple[str, ...]]] = {
+    "messages": ("id",),
+    "repos": ("id",),
+}
+_CURRENT_USER_SCHEMA_COLUMNS: Final[dict[str, frozenset[str]]] = {
+    **_LEGACY_USER_SCHEMA_COLUMNS,
+    "messages": _LEGACY_USER_SCHEMA_COLUMNS["messages"] | {"turn_status"},
+    "prompt_events": frozenset({"created_at", "event_json", "run_id", "sequence"}),
+    "prompt_runs": frozenset(
+        {"created_at", "id", "idempotency_key", "session_id", "status", "updated_at"}
+    ),
+    "repos": _LEGACY_USER_SCHEMA_COLUMNS["repos"] | {"agents_md", "installation_id"},
+    "sessions": frozenset(
+        {"created_at", "id", "model", "pi_context_version", "status", "updated_at", "workspace_id"}
+    ),
+    "workspaces": frozenset(
+        {"branch", "created_at", "id", "name", "path", "repo_id", "state", "updated_at"}
+    ),
+}
+_CURRENT_USER_SCHEMA_PRIMARY_KEYS: Final[dict[str, tuple[str, ...]]] = {
+    **_LEGACY_USER_SCHEMA_PRIMARY_KEYS,
+    "prompt_events": ("run_id", "sequence"),
+    "prompt_runs": ("id",),
+    "sessions": ("id",),
+    "workspaces": ("id",),
+}
+_MIGRATION_THREAD_LOCKS: dict[str, threading.Lock] = {}
+_MIGRATION_THREAD_LOCKS_GUARD: threading.Lock = threading.Lock()
 
 
 @dataclass
@@ -74,8 +109,6 @@ def validate_user_path(tenant: TenantContext, path: str) -> None:
 
 # User DB schema -- identical to main schema but WITHOUT owner_email
 USER_SCHEMA_SQL = f"""
-PRAGMA journal_mode = WAL;
-
 CREATE TABLE IF NOT EXISTS repos (
     id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
@@ -182,13 +215,98 @@ def _migrate_user_db(conn: sqlite3.Connection) -> None:
             "ALTER TABLE sessions ADD COLUMN pi_context_version INTEGER DEFAULT 0 NOT NULL"
         )
 
-    conn.commit()
+
+def _execute_user_schema_script(conn: sqlite3.Connection) -> None:
+    """Execute the static schema without the implicit commits from executescript."""
+    statement = ""
+    for line in USER_SCHEMA_SQL.splitlines(keepends=True):
+        statement += line
+        if sqlite3.complete_statement(statement):
+            if statement.strip():
+                conn.execute(statement)
+            statement = ""
+    if statement.strip():
+        raise RuntimeError("Tenant database schema script is incomplete")
 
 
 def _ensure_user_db_schema(conn: sqlite3.Connection) -> None:
     """Create missing tables and apply migrations for a per-user database."""
-    conn.executescript(USER_SCHEMA_SQL)
+    _execute_user_schema_script(conn)
     _migrate_user_db(conn)
+
+
+def _schema_has_required_columns(
+    conn: sqlite3.Connection,
+    required_columns: dict[str, frozenset[str]],
+) -> bool:
+    """Return whether each required table contains its required columns."""
+    for table_name, expected_columns in required_columns.items():
+        actual_columns = {
+            str(row[1]) for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+        }
+        if not expected_columns.issubset(actual_columns):
+            return False
+    return True
+
+
+def _schema_has_required_primary_keys(
+    conn: sqlite3.Connection,
+    required_primary_keys: dict[str, tuple[str, ...]],
+) -> bool:
+    """Return whether each required table has its ordered primary key."""
+    for table_name, expected_primary_key in required_primary_keys.items():
+        table_rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+        actual_primary_key = tuple(
+            str(row[1]) for row in sorted(table_rows, key=lambda row: int(row[5])) if row[5]
+        )
+        if actual_primary_key != expected_primary_key:
+            return False
+    return True
+
+
+def _validate_legacy_user_schema(conn: sqlite3.Connection) -> None:
+    """Accept an empty database or a recognized unversioned Yinshi database."""
+    user_tables = {str(row[0]) for row in conn.execute("""SELECT name FROM sqlite_master
+               WHERE type = 'table' AND name NOT LIKE 'sqlite_%'""").fetchall()}
+    if user_tables and (
+        not _schema_has_required_columns(conn, _LEGACY_USER_SCHEMA_COLUMNS)
+        or not _schema_has_required_primary_keys(conn, _LEGACY_USER_SCHEMA_PRIMARY_KEYS)
+    ):
+        raise RuntimeError("Tenant database legacy schema is not recognized")
+
+
+def _validate_current_user_schema(conn: sqlite3.Connection) -> None:
+    """Reject a migration result that lacks required version-one structure."""
+    if not _schema_has_required_columns(
+        conn, _CURRENT_USER_SCHEMA_COLUMNS
+    ) or not _schema_has_required_primary_keys(conn, _CURRENT_USER_SCHEMA_PRIMARY_KEYS):
+        raise RuntimeError("Tenant database current schema is incomplete")
+
+
+def _ensure_current_user_db_schema(conn: sqlite3.Connection) -> None:
+    """Initialize stale schema once while the caller holds the migration lock."""
+    version_row = conn.execute("PRAGMA user_version").fetchone()
+    if version_row is None or type(version_row[0]) is not int:
+        raise RuntimeError("Tenant database schema version is invalid")
+    schema_version = version_row[0]
+    if schema_version < 0 or schema_version > _USER_SCHEMA_VERSION:
+        raise RuntimeError("Tenant database schema version is unsupported")
+    if schema_version == _USER_SCHEMA_VERSION:
+        return
+
+    _validate_legacy_user_schema(conn)
+    journal_row = conn.execute("PRAGMA journal_mode = WAL").fetchone()
+    if journal_row is None or str(journal_row[0]).lower() != "wal":
+        raise RuntimeError("Tenant database WAL mode could not be enabled")
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        _ensure_user_db_schema(conn)
+        _validate_current_user_schema(conn)
+        conn.execute(f"PRAGMA user_version = {_USER_SCHEMA_VERSION}")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
 
 
 def _load_sqlcipher_module() -> ModuleType:
@@ -429,6 +547,17 @@ def _validate_encrypted_user_database(db_path: str, sqlcipher_key: bytes) -> Non
         connection.close()
 
 
+def _reset_migration_locks_after_fork() -> None:
+    """Replace inherited thread locks after a process fork."""
+    global _MIGRATION_THREAD_LOCKS, _MIGRATION_THREAD_LOCKS_GUARD
+    _MIGRATION_THREAD_LOCKS = {}
+    _MIGRATION_THREAD_LOCKS_GUARD = threading.Lock()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_reset_migration_locks_after_fork)
+
+
 def _migration_thread_lock(db_path: str) -> threading.Lock:
     """Return the process-local lock for one tenant database path."""
     canonical_path = os.path.realpath(os.path.abspath(db_path))
@@ -441,11 +570,12 @@ def _tenant_migration_lock(db_path: str) -> Iterator[None]:
     """Hold an owner-only advisory lock for tenant database migration work."""
     if not db_path:
         raise ValueError("db_path must not be empty")
-    lock_path = f"{db_path}{_MIGRATION_LOCK_SUFFIX}"
+    canonical_path = os.path.realpath(os.path.abspath(db_path))
+    lock_path = f"{canonical_path}{_MIGRATION_LOCK_SUFFIX}"
     open_flags = os.O_CREAT | os.O_RDWR
     open_flags |= getattr(os, "O_CLOEXEC", 0)
     open_flags |= getattr(os, "O_NOFOLLOW", 0)
-    thread_lock = _migration_thread_lock(db_path)
+    thread_lock = _migration_thread_lock(canonical_path)
 
     with thread_lock:
         try:
@@ -707,7 +837,13 @@ def _open_user_connection(
     with _tenant_migration_lock(db_path):
         _recover_plaintext_migration_rollback(db_path)
         if not encryption_enabled:
-            return _open_connection(db_path)
+            connection = _open_connection(db_path)
+            try:
+                _ensure_current_user_db_schema(connection)
+            except Exception:
+                connection.close()
+                raise
+            return connection
         if tenant is None:
             raise ValueError("tenant is required when tenant DB encryption is enabled")
         try:
@@ -716,12 +852,23 @@ def _open_user_connection(
             if encryption_required:
                 raise
             logger.warning("SQLCipher unavailable; opening tenant database without encryption")
-            return _open_connection(db_path)
+            connection = _open_connection(db_path)
+            try:
+                _ensure_current_user_db_schema(connection)
+            except Exception:
+                connection.close()
+                raise
+            return connection
 
         sqlcipher_key = _tenant_database_key(tenant)
         if os.path.exists(db_path):
             _migrate_plaintext_user_database(db_path, sqlcipher_key)
         connection = _open_sqlcipher_connection(db_path, sqlcipher_key)
+        try:
+            _ensure_current_user_db_schema(connection)
+        except Exception:
+            connection.close()
+            raise
         _remove_validated_migration_rollback(db_path)
         _remove_plaintext_migration_backups(db_path)
         return connection
@@ -731,7 +878,6 @@ def init_user_db(db_path: str, tenant: TenantContext | None = None) -> None:
     """Initialize a per-user SQLite database with the user schema."""
     conn = _open_user_connection(db_path, tenant)
     try:
-        _ensure_user_db_schema(conn)
         if os.path.exists(db_path):
             os.chmod(db_path, 0o600)
     finally:
@@ -743,7 +889,6 @@ def get_user_db(tenant: TenantContext) -> Iterator[sqlite3.Connection]:
     """Get a SQLite connection to a user's database."""
     conn = _open_user_connection(tenant.db_path, tenant)
     try:
-        _ensure_user_db_schema(conn)
         yield conn
     finally:
         conn.close()
