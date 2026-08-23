@@ -3,7 +3,7 @@
   "checkpoint_id": "91b00c0c46f1",
   "strategy": "manual-commit",
   "branch": "main",
-  "checkpoints_count": 2,
+  "checkpoints_count": 3,
   "files_touched": [
     "frontend/src/runtime/promptStream.test.ts",
     "frontend/src/runtime/promptStream.ts"
@@ -22,13 +22,20 @@
       "compact_transcript": "/91/b00c0c46f1/1/transcript.jsonl",
       "content_hash": "/91/b00c0c46f1/1/content_hash.txt",
       "prompt": "/91/b00c0c46f1/1/prompt.txt"
+    },
+    {
+      "metadata": "/91/b00c0c46f1/2/metadata.json",
+      "transcript": "/91/b00c0c46f1/2/full.jsonl",
+      "compact_transcript": "/91/b00c0c46f1/2/transcript.jsonl",
+      "content_hash": "/91/b00c0c46f1/2/content_hash.txt",
+      "prompt": "/91/b00c0c46f1/2/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 11178779,
+    "input_tokens": 11323915,
     "cache_creation_tokens": 0,
-    "cache_read_tokens": 268303104,
-    "output_tokens": 666794,
-    "api_call_count": 1678
+    "cache_read_tokens": 268736768,
+    "output_tokens": 671433,
+    "api_call_count": 1690
   }
 }
