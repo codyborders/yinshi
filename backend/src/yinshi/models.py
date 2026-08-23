@@ -462,13 +462,70 @@ class RunnerGitHubAccessIn(BaseModel):
 class RunnerGitHubAccessOut(BaseModel):
     """Response body for runner GitHub clone access resolution."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(
+        extra="forbid",
+        strict=True,
+        hide_input_in_errors=True,
+        from_attributes=True,
+    )
 
-    clone_url: str
-    repository_installation_id: int | None
-    installation_id: int | None
-    access_token: str | None
-    manage_url: str | None
+    clone_url: str = Field(..., min_length=1, max_length=4096)
+    repository_installation_id: int | None = Field(..., gt=0)
+    installation_id: int | None = Field(..., gt=0)
+    access_token: str | None = Field(
+        ...,
+        min_length=1,
+        max_length=8192,
+        repr=False,
+    )
+    manage_url: str | None = Field(..., min_length=1, max_length=4096)
+
+    @field_validator("clone_url", "access_token", "manage_url")
+    @classmethod
+    def validate_response_text(cls, value: str | None) -> str | None:
+        """Reject blank or padded broker response values."""
+        if value is None:
+            return None
+        if not value.strip() or value != value.strip():
+            raise ValueError("Runner GitHub access values must not be blank or padded")
+        return value
+
+
+class RunnerGitHubAccessErrorDetail(BaseModel):
+    """Structured GitHub access failure returned to a runner."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        strict=True,
+        hide_input_in_errors=True,
+    )
+
+    code: str = Field(..., min_length=1, max_length=128)
+    message: str = Field(..., min_length=1, max_length=2048)
+    connect_url: str | None = Field(..., min_length=1, max_length=4096)
+    manage_url: str | None = Field(..., min_length=1, max_length=4096)
+
+    @field_validator("code", "message", "connect_url", "manage_url")
+    @classmethod
+    def validate_error_text(cls, value: str | None) -> str | None:
+        """Reject blank or padded broker error values."""
+        if value is None:
+            return None
+        if not value.strip() or value != value.strip():
+            raise ValueError("Runner GitHub error values must not be blank or padded")
+        return value
+
+
+class RunnerGitHubAccessErrorOut(BaseModel):
+    """Envelope for a structured runner GitHub access failure."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        strict=True,
+        hide_input_in_errors=True,
+    )
+
+    detail: RunnerGitHubAccessErrorDetail
 
 
 class ProviderSetupFieldOut(BaseModel):

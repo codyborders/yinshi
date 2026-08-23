@@ -1,4 +1,5 @@
-import { api, ApiError, apiErrorFromPayload } from "../api/client";
+import { api } from "../api/client";
+import { ApiError, apiErrorFromPayload } from "../api/errors";
 import {
   createNoiseIkInitiator,
   createNoiseIkKeypair,

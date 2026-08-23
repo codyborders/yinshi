@@ -320,6 +320,7 @@ async def test_pi_config_import_uses_resolver_callback_when_present(
     """Import should use the app-state resolver callback when present."""
     captured_clone_tokens: list[str | None] = []
 
+    from yinshi.exceptions import GitHubAppError
     from yinshi.services.github_app import GitHubCloneAccess
 
     async def fake_clone_repo(url: str, dest: str, access_token: str | None = None) -> str:
@@ -339,7 +340,13 @@ async def test_pi_config_import_uses_resolver_callback_when_present(
 
     auth_client.app.state.github_clone_access_resolver = fake_resolver
 
-    with patch("yinshi.services.pi_config.clone_repo", side_effect=fake_clone_repo):
+    with (
+        patch("yinshi.services.pi_config.clone_repo", side_effect=fake_clone_repo),
+        patch(
+            "yinshi.services.pi_config.resolve_github_clone_access",
+            new=AsyncMock(side_effect=GitHubAppError("local resolver unavailable")),
+        ),
+    ):
         response = auth_client.post(
             "/api/settings/pi-config/github",
             json={"repo_url": "https://github.com/codyborders/my-pi.git"},
@@ -356,6 +363,7 @@ async def test_pi_config_sync_uses_resolver_callback_when_present(
     """Sync should use the app-state resolver callback when the config has a repo_url."""
     captured_sync_tokens: list[str | None] = []
 
+    from yinshi.exceptions import GitHubAppError
     from yinshi.services.github_app import GitHubCloneAccess
 
     async def fake_clone_repo(url: str, dest: str, access_token: str | None = None) -> str:
@@ -396,6 +404,10 @@ async def test_pi_config_sync_uses_resolver_callback_when_present(
         patch(
             "yinshi.services.pi_config._run_git",
             new=AsyncMock(return_value=""),
+        ),
+        patch(
+            "yinshi.services.pi_config.resolve_github_clone_access",
+            new=AsyncMock(side_effect=GitHubAppError("local resolver unavailable")),
         ),
     ):
         sync_response = auth_client.post("/api/settings/pi-config/sync")
@@ -985,6 +997,40 @@ def test_sync_failure_message_is_sanitized(auth_client: TestClient) -> None:
     assert payload is not None
     assert payload["status"] == "error"
     assert payload["error_message"] == "Sync failed. Check server logs for details."
+
+
+def test_sync_credential_failure_preserves_ready_status(auth_client: TestClient) -> None:
+    """Credential lookup failures should leave ready Pi configs retryable."""
+    from yinshi.exceptions import GitHubAppError
+    from yinshi.services.pi_config import _insert_pi_config_row, get_pi_config, sync_pi_config
+
+    tenant = getattr(auth_client, "yinshi_tenant")
+    _insert_pi_config_row(
+        tenant.user_id,
+        source_type="github",
+        source_label="example",
+        repo_url="https://github.com/example/pi-config.git",
+        status="ready",
+        available_categories=[],
+        enabled_categories=[],
+    )
+
+    async def failing_resolver(repo_url: str) -> None:
+        raise GitHubAppError("credential broker unavailable")
+
+    with pytest.raises(GitHubAppError):
+        asyncio.run(
+            sync_pi_config(
+                tenant.user_id,
+                tenant.data_dir,
+                clone_access_resolver=failing_resolver,
+            )
+        )
+
+    payload = get_pi_config(tenant.user_id)
+    assert payload is not None
+    assert payload["status"] == "ready"
+    assert payload["error_message"] is None
 
 
 def test_extract_archive_rejects_excessive_member_count(tmp_path) -> None:

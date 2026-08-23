@@ -64,16 +64,12 @@ const openaiModel = {
   max_tokens: 1000,
 };
 
-vi.mock("../../api/client", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../../api/client")>();
-  return {
-    ...actual,
-    api: {
-      get: (...args: unknown[]) => apiGetMock(...args),
-      patch: (...args: unknown[]) => apiPatchMock(...args),
-    },
-  };
-});
+vi.mock("../../api/client", () => ({
+  api: {
+    get: (...args: unknown[]) => apiGetMock(...args),
+    patch: (...args: unknown[]) => apiPatchMock(...args),
+  },
+}));
 
 vi.mock("../../components/ChatView", () => ({
   default: ({

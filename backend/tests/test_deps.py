@@ -7,6 +7,18 @@ import pytest
 from fastapi import HTTPException
 
 
+def test_github_clone_access_resolver_rejects_noncallable_state() -> None:
+    """Configured clone access resolvers must be callable."""
+    from yinshi.api.deps import get_github_clone_access_resolver
+
+    request = SimpleNamespace(
+        app=SimpleNamespace(state=SimpleNamespace(github_clone_access_resolver="invalid"))
+    )
+
+    with pytest.raises(RuntimeError, match="github_clone_access_resolver must be callable"):
+        get_github_clone_access_resolver(request)
+
+
 def test_get_user_email_returns_email():
     """Should return user_email from request state when present."""
     from yinshi.api.deps import get_user_email

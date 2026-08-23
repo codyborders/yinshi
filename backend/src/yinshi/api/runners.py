@@ -22,6 +22,7 @@ from yinshi.models import (
     CloudRunnerRegistrationOut,
     RunnerCapabilityCreateIn,
     RunnerCapabilityOut,
+    RunnerGitHubAccessErrorDetail,
     RunnerGitHubAccessIn,
     RunnerGitHubAccessOut,
     RunnerHeartbeatIn,
@@ -275,7 +276,7 @@ def heartbeat_cloud_runner(body: RunnerHeartbeatIn, request: Request) -> dict[st
 async def resolve_runner_github_access(
     body: RunnerGitHubAccessIn,
     request: Request,
-) -> dict[str, Any] | None:
+) -> RunnerGitHubAccessOut | None:
     """Resolve GitHub clone access for the runner owner using the bearer token."""
     runner_token = _bearer_token(request)
     try:
@@ -287,24 +288,19 @@ async def resolve_runner_github_access(
     try:
         clone_access = await _resolve_github_clone_access(user_id, body.remote_url)
     except GitHubAccessError as error:
+        error_detail = RunnerGitHubAccessErrorDetail(
+            code=error.code,
+            message=str(error),
+            connect_url=error.connect_url,
+            manage_url=error.manage_url,
+        )
         raise HTTPException(
             status_code=400,
-            detail={
-                "code": error.code,
-                "message": str(error),
-                "connect_url": error.connect_url,
-                "manage_url": error.manage_url,
-            },
+            detail=error_detail.model_dump(mode="json"),
         ) from error
     except GitHubAppError as error:
         logger.error("GitHub integration failed")
         raise HTTPException(status_code=502, detail="GitHub integration error") from error
     if clone_access is None:
         return None
-    return {
-        "access_token": clone_access.access_token,
-        "clone_url": clone_access.clone_url,
-        "installation_id": clone_access.installation_id,
-        "repository_installation_id": clone_access.repository_installation_id,
-        "manage_url": clone_access.manage_url,
-    }
+    return RunnerGitHubAccessOut.model_validate(clone_access)

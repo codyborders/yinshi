@@ -10,24 +10,20 @@ import secrets
 import sqlite3
 import stat
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from pathlib import Path
 from typing import Literal
 
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
-from yinshi.services.github_app import GitHubCloneAccess
+from yinshi.services.github_app import GitHubCloneAccessResolver
 from yinshi.tenant import TenantContext, get_user_db, init_user_db
 from yinshi.worker_auth import WorkerPrincipal, prepare_worker_principal_storage
 from yinshi.worker_runtime import WorkerHttpDispatcher
 
 EnvironmentSetter = Callable[[str, str], None]
 
-GitHubCloneAccessResolver = Callable[
-    [str],
-    Awaitable[GitHubCloneAccess | None],
-]
 RunnerUserDataEncryptionMode = Literal["disabled", "required"]
 _X25519_PRIVATE_KEY_LENGTH = 32
 _PROMPT_EVENT_COUNT_MAX = 100_000

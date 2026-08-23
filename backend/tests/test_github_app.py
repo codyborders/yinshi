@@ -81,6 +81,26 @@ def test_normalize_github_remote_supports_expected_inputs(
     assert remote.clone_url == expected_url
 
 
+def test_github_access_objects_hide_tokens_from_repr() -> None:
+    """GitHub credential holders should not reveal tokens in representations."""
+    from yinshi.services.github_app import GitHubCloneAccess, _CachedInstallationToken
+
+    clone_access = GitHubCloneAccess(
+        clone_url="https://github.com/owner/repo.git",
+        repository_installation_id=456,
+        installation_id=123,
+        access_token="short-lived-clone-secret",
+        manage_url=None,
+    )
+    cached_token = _CachedInstallationToken(
+        token="cached-installation-secret",
+        expires_at_epoch=9999999999.0,
+    )
+
+    assert "short-lived-clone-secret" not in repr(clone_access)
+    assert "cached-installation-secret" not in repr(cached_token)
+
+
 def test_normalize_github_remote_rejects_extra_path_segments() -> None:
     """normalize_github_remote should reject non-repo GitHub paths."""
     from yinshi.services.github_app import normalize_github_remote

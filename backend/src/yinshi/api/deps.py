@@ -3,11 +3,25 @@
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
+from typing import cast
 
 from fastapi import HTTPException, Request
 
 from yinshi.db import get_db
+from yinshi.services.github_app import GitHubCloneAccessResolver
 from yinshi.tenant import TenantContext, get_user_db
+
+
+def get_github_clone_access_resolver(
+    request: Request,
+) -> GitHubCloneAccessResolver | None:
+    """Return the configured runtime GitHub clone access resolver."""
+    resolver = getattr(request.app.state, "github_clone_access_resolver", None)
+    if resolver is None:
+        return None
+    if not callable(resolver):
+        raise RuntimeError("github_clone_access_resolver must be callable")
+    return cast(GitHubCloneAccessResolver, resolver)
 
 
 def get_tenant(request: Request) -> TenantContext | None:

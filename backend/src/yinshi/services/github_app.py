@@ -5,7 +5,8 @@ from __future__ import annotations
 import logging
 import re
 import time
-from dataclasses import dataclass
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -59,15 +60,21 @@ class GitHubCloneAccess:
     clone_url: str
     repository_installation_id: int | None
     installation_id: int | None
-    access_token: str | None
+    access_token: str | None = field(repr=False)
     manage_url: str | None
+
+
+GitHubCloneAccessResolver = Callable[
+    [str],
+    Awaitable[GitHubCloneAccess | None],
+]
 
 
 @dataclass(frozen=True)
 class _CachedInstallationToken:
     """A cached installation token plus its expiry timestamp."""
 
-    token: str
+    token: str = field(repr=False)
     expires_at_epoch: float
 
 

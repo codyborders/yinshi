@@ -97,6 +97,110 @@ def test_pi_config_import_strips_whitespace():
     assert body.repo_url == "owner/repo"
 
 
+def test_runner_github_access_success_rejects_coercible_ids():
+    """Runner broker success fields should use strict positive integers."""
+    import pytest
+    from pydantic import ValidationError
+
+    from yinshi.models import RunnerGitHubAccessOut
+
+    with pytest.raises(ValidationError):
+        RunnerGitHubAccessOut.model_validate(
+            {
+                "clone_url": "https://github.com/owner/repo.git",
+                "repository_installation_id": 456,
+                "installation_id": "123",
+                "access_token": "short-lived-token",
+                "manage_url": None,
+            }
+        )
+
+
+def test_runner_github_access_success_hides_token_from_repr():
+    """Runner broker success models should not reveal access tokens."""
+    from yinshi.models import RunnerGitHubAccessOut
+
+    response = RunnerGitHubAccessOut(
+        clone_url="https://github.com/owner/repo.git",
+        repository_installation_id=456,
+        installation_id=123,
+        access_token="short-lived-model-secret",
+        manage_url=None,
+    )
+
+    assert "short-lived-model-secret" not in repr(response)
+
+
+def test_runner_github_access_success_rejects_invalid_text_fields():
+    """Runner broker success text fields should be bounded and unpadded."""
+    import pytest
+    from pydantic import ValidationError
+
+    from yinshi.models import RunnerGitHubAccessOut
+
+    valid_payload = {
+        "clone_url": "https://github.com/owner/repo.git",
+        "repository_installation_id": 456,
+        "installation_id": 123,
+        "access_token": "short-lived-token",
+        "manage_url": None,
+    }
+    invalid_fields = (
+        ("clone_url", " "),
+        ("access_token", ""),
+        ("manage_url", "x" * 4097),
+    )
+    for field_name, invalid_value in invalid_fields:
+        payload = {**valid_payload, field_name: invalid_value}
+        with pytest.raises(ValidationError):
+            RunnerGitHubAccessOut.model_validate(payload)
+
+
+def test_runner_github_access_error_rejects_invalid_text_fields():
+    """Runner broker error fields should be strict, bounded, and unpadded."""
+    import pytest
+    from pydantic import ValidationError
+
+    from yinshi.models import RunnerGitHubAccessErrorOut
+
+    valid_detail = {
+        "code": "install_not_found",
+        "message": "Repository not installed",
+        "connect_url": None,
+        "manage_url": None,
+    }
+    invalid_fields = (
+        ("code", 123),
+        ("message", " "),
+        ("connect_url", "x" * 4097),
+    )
+    for field_name, invalid_value in invalid_fields:
+        payload = {"detail": {**valid_detail, field_name: invalid_value}}
+        with pytest.raises(ValidationError):
+            RunnerGitHubAccessErrorOut.model_validate(payload)
+
+
+def test_runner_github_access_error_rejects_extra_fields():
+    """Runner broker error envelopes should reject unknown protocol fields."""
+    import pytest
+    from pydantic import ValidationError
+
+    from yinshi.models import RunnerGitHubAccessErrorOut
+
+    with pytest.raises(ValidationError):
+        RunnerGitHubAccessErrorOut.model_validate(
+            {
+                "detail": {
+                    "code": "install_not_found",
+                    "message": "Repository not installed",
+                    "connect_url": None,
+                    "manage_url": None,
+                    "unexpected": "field",
+                }
+            }
+        )
+
+
 def test_pi_config_category_update_rejects_duplicates():
     """PiConfigCategoryUpdate should reject duplicate category names."""
     import pytest

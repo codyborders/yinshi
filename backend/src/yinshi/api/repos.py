@@ -3,14 +3,19 @@
 import logging
 import sqlite3
 import uuid
-from collections.abc import Awaitable, Callable
 from contextlib import nullcontext
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 
-from yinshi.api.deps import check_owner, get_db_for_request, get_tenant, get_user_email
+from yinshi.api.deps import (
+    check_owner,
+    get_db_for_request,
+    get_github_clone_access_resolver,
+    get_tenant,
+    get_user_email,
+)
 from yinshi.config import get_settings
 from yinshi.exceptions import (
     GitError,
@@ -101,12 +106,10 @@ async def _resolve_clone_access(
     remote_url: str,
 ) -> GitHubCloneAccess | None:
     """Resolve GitHub clone credentials for a remote, if applicable."""
-    resolver = getattr(request.app.state, "github_clone_access_resolver", None)
+    resolver = get_github_clone_access_resolver(request)
     if resolver is not None:
-        resolved_resolver = cast("Callable[[str], Awaitable[GitHubCloneAccess | None]]", resolver)
         try:
-            resolved = await resolved_resolver(remote_url)
-            return resolved
+            return await resolver(remote_url)
         except GitHubAccessError as error:
             raise _github_http_exception(error)
         except GitHubAppError as error:

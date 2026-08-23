@@ -30,6 +30,19 @@ def _set_runner_agent_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> No
     monkeypatch.setenv("YINSHI_RUNNER_ARTIFACT_ATTESTATION_FILE", str(attestation))
 
 
+def test_runner_agent_config_hides_registration_token_from_repr(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Runner agent configuration should not reveal registration tokens."""
+    _set_runner_agent_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("YINSHI_REGISTRATION_TOKEN", "runner-registration-secret")
+
+    config = runner_agent.load_config()
+
+    assert "runner-registration-secret" not in repr(config)
+
+
 @pytest.mark.parametrize("existing_mode", [None, 0o755])
 def test_managed_capability_preparation_enforces_owner_only_storage(
     monkeypatch: pytest.MonkeyPatch,
@@ -1130,8 +1143,70 @@ async def test_request_runner_github_access_400_error() -> None:
 
 
 @pytest.mark.asyncio
+async def test_request_runner_github_access_rejects_malformed_400_response() -> None:
+    """Unexpected structured-error fields fail closed."""
+    from yinshi.exceptions import GitHubAppError
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            400,
+            json={
+                "detail": {
+                    "code": "install_not_found",
+                    "message": "Repository not installed",
+                    "connect_url": None,
+                    "manage_url": None,
+                    "unexpected": "field",
+                }
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport, base_url="http://localhost:8000") as client:
+        with pytest.raises(GitHubAppError) as exc_info:
+            await runner_agent._request_runner_github_access(
+                client, "runner-token-123", "https://github.com/owner/repo.git"
+            )
+
+    assert type(exc_info.value) is GitHubAppError
+    assert str(exc_info.value) == "GitHub integration error"
+    assert exc_info.value.__cause__ is None
+
+
+@pytest.mark.asyncio
+async def test_request_runner_github_access_rejects_oversized_400_response() -> None:
+    """Oversized structured errors fail before their fields are parsed."""
+    from yinshi.exceptions import GitHubAppError
+
+    oversized_message = "x" * 66000
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            400,
+            json={
+                "detail": {
+                    "code": "install_not_found",
+                    "message": oversized_message,
+                    "connect_url": None,
+                    "manage_url": None,
+                }
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport, base_url="http://localhost:8000") as client:
+        with pytest.raises(GitHubAppError) as exc_info:
+            await runner_agent._request_runner_github_access(
+                client, "runner-token-123", "https://github.com/owner/repo.git"
+            )
+
+    assert type(exc_info.value) is GitHubAppError
+    assert str(exc_info.value) == "GitHub integration error"
+
+
+@pytest.mark.asyncio
 async def test_request_runner_github_access_rejects_oversized_response() -> None:
-    """Responses exceeding _MAX_RESPONSE_BYTES bytes raise a safe GitHubAppError."""
+    """Oversized broker responses raise a safe GitHubAppError."""
     from yinshi.exceptions import GitHubAppError
     from yinshi.models import RunnerGitHubAccessOut
 

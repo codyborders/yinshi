@@ -14,7 +14,7 @@ import secrets
 import stat
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlsplit, urlunsplit
@@ -26,14 +26,13 @@ from websockets.exceptions import ConnectionClosed, InvalidStatus
 from websockets.typing import Origin
 
 from yinshi.exceptions import GitHubAccessError, GitHubAppError
-from yinshi.models import RunnerGitHubAccessOut
+from yinshi.models import RunnerGitHubAccessErrorOut, RunnerGitHubAccessOut
 from yinshi.runner_worker import (
-    GitHubCloneAccessResolver,
     RunnerUserDataEncryptionMode,
     RunnerWorkerManager,
     validate_user_data_encryption_mode,
 )
-from yinshi.services.github_app import GitHubCloneAccess
+from yinshi.services.github_app import GitHubCloneAccess, GitHubCloneAccessResolver
 from yinshi.services.runner_agent_relay import (
     RunnerAgentRelayRuntime,
     RunnerRelaySessionError,
@@ -60,7 +59,7 @@ _DEFAULT_ARCHIL_SQLITE_DIR = f"{_DEFAULT_ARCHIL_SHARED_FILES_DIR}/sqlite"
 _DEFAULT_TOKEN_FILE = "/var/lib/yinshi/runner-token"
 _DEFAULT_HEARTBEAT_INTERVAL_S = 30.0
 _REQUEST_TIMEOUT_S = 15.0
-_MAX_RESPONSE_BYTES = 65536
+_RUNNER_GITHUB_ACCESS_RESPONSE_BYTES_MAX = 65536
 _REGISTRATION_TOKEN_ENV_PREFIX = "YINSHI_REGISTRATION_TOKEN="
 _SHA256_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
 _AWS_STORAGE_PROFILE: RunnerStorageProfile = "aws_ebs_s3_files"
@@ -158,7 +157,7 @@ class RunnerAgentConfig:
     """Environment-derived configuration for the cloud runner agent."""
 
     control_url: str
-    registration_token: str | None
+    registration_token: str | None = field(repr=False)
     runner_token_file: Path
     noise_private_key_file: Path
     data_protection_key_file: Path
@@ -744,56 +743,49 @@ async def _request_runner_github_access(
         raise GitHubAppError("remote_url must not be blank")
 
     try:
-        response = await client.post(
+        async with client.stream(
+            "POST",
             "/runner/github-access",
             json={"remote_url": remote_url.strip()},
             headers={"Authorization": f"Bearer {runner_token.strip()}"},
-        )
-    except httpx.RequestError:
+        ) as response:
+            response_status = response.status_code
+            response_body = bytearray()
+            async for response_chunk in response.aiter_bytes():
+                if (
+                    len(response_body) + len(response_chunk)
+                    > _RUNNER_GITHUB_ACCESS_RESPONSE_BYTES_MAX
+                ):
+                    raise GitHubAppError("GitHub integration error") from None
+                response_body.extend(response_chunk)
+    except GitHubAppError:
+        raise
+    except httpx.HTTPError:
         raise GitHubAppError("GitHub integration error") from None
 
-    if response.status_code >= 500:
+    if response_status >= 500:
         raise GitHubAppError("GitHub integration error") from None
 
-    if response.status_code == 400:
+    if response_status == 400:
         try:
-            body = response.json()
-        except Exception:
+            error_response = RunnerGitHubAccessErrorOut.model_validate_json(response_body)
+        except (json.JSONDecodeError, ValueError, UnicodeDecodeError, ValidationError):
             raise GitHubAppError("GitHub integration error") from None
-        if not isinstance(body, dict):
-            raise GitHubAppError("GitHub integration error") from None
-        payload = body.get("detail", body)
-        if not isinstance(payload, dict):
-            raise GitHubAppError("GitHub integration error") from None
-        code = payload.get("code")
-        message = payload.get("message")
-        if not isinstance(code, str) or not code:
-            raise GitHubAppError("GitHub integration error") from None
-        if not isinstance(message, str) or not message:
-            raise GitHubAppError("GitHub integration error") from None
-        connect_url = payload.get("connect_url")
-        manage_url = payload.get("manage_url")
-        for val in (connect_url, manage_url):
-            if val is not None and (not isinstance(val, str) or not val):
-                raise GitHubAppError("GitHub integration error") from None
+        error_detail = error_response.detail
         raise GitHubAccessError(
-            code=code,
-            message=message,
-            connect_url=connect_url,
-            manage_url=manage_url,
+            code=error_detail.code,
+            message=error_detail.message,
+            connect_url=error_detail.connect_url,
+            manage_url=error_detail.manage_url,
         ) from None
 
-    if response.status_code not in (200,):
+    if response_status != 200:
         raise GitHubAppError("GitHub integration error") from None
 
-    if len(response.content) > _MAX_RESPONSE_BYTES:
-        raise GitHubAppError("GitHub integration error") from None
-
-    text = response.text
-    if text.strip() == "null":
+    if response_body.strip() == b"null":
         return None
     try:
-        parsed = RunnerGitHubAccessOut.model_validate_json(text)
+        parsed = RunnerGitHubAccessOut.model_validate_json(response_body)
     except (json.JSONDecodeError, ValueError, UnicodeDecodeError, ValidationError):
         raise GitHubAppError("GitHub integration error") from None
     return GitHubCloneAccess(
@@ -1008,7 +1000,7 @@ async def _runner_relay_loop(
     github_clone_access_resolver: GitHubCloneAccessResolver | None = None
     if control_client is not None:
 
-        async def _build_resolver(
+        async def _resolve_worker_clone_access(
             remote_url: str,
         ) -> GitHubCloneAccess | None:
             return await _request_runner_github_access(
@@ -1017,7 +1009,7 @@ async def _runner_relay_loop(
                 remote_url,
             )
 
-        github_clone_access_resolver = _build_resolver
+        github_clone_access_resolver = _resolve_worker_clone_access
     try:
         if task_lease is not None:
             await task_lease.acquire()

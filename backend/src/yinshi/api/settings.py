@@ -3,12 +3,11 @@
 import asyncio
 import json
 import logging
-from collections.abc import Awaitable, Callable
-from typing import Any, cast
+from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, UploadFile
 
-from yinshi.api.deps import require_tenant
+from yinshi.api.deps import get_github_clone_access_resolver, require_tenant
 from yinshi.exceptions import (
     ContainerNotReadyError,
     ContainerStartError,
@@ -31,7 +30,6 @@ from yinshi.models import (
     ProviderConnectionOut,
 )
 from yinshi.rate_limit import limiter
-from yinshi.services.github_app import GitHubCloneAccess
 from yinshi.services.pi_config import (
     MAX_UPLOAD_BYTES,
     get_pi_config,
@@ -295,21 +293,6 @@ async def _fetch_imported_commands(
                 logger.error("sidecar disconnect failed")
 
 
-async def _resolve_callback_access(request: Request, repo_url: str) -> GitHubCloneAccess | None:
-    """Resolve access via the app-state callback if present."""
-    resolver = getattr(request.app.state, "github_clone_access_resolver", None)
-    if resolver is None:
-        return None
-    resolved_resolver = cast("Callable[[str], Awaitable[GitHubCloneAccess | None]]", resolver)
-    try:
-        return await resolved_resolver(repo_url)
-    except GitHubAccessError as error:
-        raise _github_http_exception(error) from error
-    except GitHubAppError as error:
-        logger.error("Callback resolution failed during Pi config import")
-        raise HTTPException(status_code=502, detail=str(error)) from error
-
-
 @router.post("/pi-config/github", response_model=PiConfigOut, status_code=201)
 async def import_github_pi_config(
     body: PiConfigImport,
@@ -318,14 +301,14 @@ async def import_github_pi_config(
 ) -> dict[str, Any]:
     """Start importing a Pi config from GitHub."""
     tenant = require_tenant(request)
-    access = await _resolve_callback_access(request, body.repo_url)
+    clone_access_resolver = get_github_clone_access_resolver(request)
     try:
         return await import_from_github(
             user_id=tenant.user_id,
             data_dir=tenant.data_dir,
             repo_url=body.repo_url,
             background_tasks=background_tasks,
-            access_token=access.access_token if access else None,
+            clone_access_resolver=clone_access_resolver,
         )
     except GitHubAccessError as error:
         raise _github_http_exception(error) from error
@@ -377,20 +360,12 @@ def update_pi_config_categories(
 async def sync_pi_config_route(request: Request) -> dict[str, Any]:
     """Sync the current user's GitHub-backed Pi config."""
     tenant = require_tenant(request)
-    config = get_pi_config(tenant.user_id)
-    repo_url: str | None = None
-    if config is not None and isinstance(config.get("repo_url"), str):
-        repo_url = config["repo_url"].strip() or None
-    access_token: str | None = None
-    if repo_url is not None:
-        access = await _resolve_callback_access(request, repo_url)
-        if access is not None:
-            access_token = access.access_token
+    clone_access_resolver = get_github_clone_access_resolver(request)
     try:
         return await sync_pi_config(
             user_id=tenant.user_id,
             data_dir=tenant.data_dir,
-            access_token=access_token,
+            clone_access_resolver=clone_access_resolver,
         )
     except GitHubAccessError as error:
         raise _github_http_exception(error) from error

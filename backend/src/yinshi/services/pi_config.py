@@ -23,7 +23,10 @@ from yinshi.exceptions import PiConfigError, PiConfigNotFoundError
 from yinshi.models import PI_CONFIG_CATEGORIES, PI_CONFIG_CATEGORY_ORDER
 from yinshi.services.control_encryption import decrypt_control_text, encrypt_control_text
 from yinshi.services.git import _git_askpass_env, _run_git, _validate_clone_url, clone_repo
-from yinshi.services.github_app import resolve_github_clone_access
+from yinshi.services.github_app import (
+    GitHubCloneAccessResolver,
+    resolve_github_clone_access,
+)
 from yinshi.services.user_settings import (
     _sanitize_pi_settings,
     clear_pi_settings,
@@ -747,9 +750,16 @@ def _extract_and_store_settings(
     set_pi_settings_enabled(user_id, enabled=settings_enabled)
 
 
-async def _resolve_clone_details(user_id: str, repo_url: str) -> tuple[str, str | None]:
+async def _resolve_clone_details(
+    user_id: str,
+    repo_url: str,
+    clone_access_resolver: GitHubCloneAccessResolver | None = None,
+) -> tuple[str, str | None]:
     """Normalize clone details and obtain credentials when GitHub access is available."""
-    clone_access = await resolve_github_clone_access(user_id, repo_url)
+    if clone_access_resolver is None:
+        clone_access = await resolve_github_clone_access(user_id, repo_url)
+    else:
+        clone_access = await clone_access_resolver(repo_url)
     if clone_access is None:
         _validate_clone_url(repo_url)
         return repo_url, None
@@ -824,7 +834,7 @@ async def import_from_github(
     data_dir: str,
     repo_url: str,
     background_tasks: BackgroundTasks,
-    access_token: str | None = None,
+    clone_access_resolver: GitHubCloneAccessResolver | None = None,
 ) -> dict[str, Any]:
     """Create a Pi config record and clone it in the background."""
     normalized_user_id = _validate_user_id(user_id)
@@ -832,12 +842,11 @@ async def import_from_github(
     if get_pi_config(normalized_user_id) is not None:
         raise PiConfigError("Pi config already exists")
 
-    clone_url, resolved_access_token = await _resolve_clone_details(
+    clone_url, access_token = await _resolve_clone_details(
         normalized_user_id,
         normalized_repo_url,
+        clone_access_resolver,
     )
-    # An explicit token must win over any token resolved from the GitHub app flow.
-    effective_access_token = access_token or resolved_access_token
     config = _insert_pi_config_row(
         normalized_user_id,
         source_type="github",
@@ -853,7 +862,7 @@ async def import_from_github(
         data_dir,
         clone_url,
         normalized_repo_url,
-        effective_access_token,
+        access_token,
     )
     return config
 
@@ -909,7 +918,7 @@ async def import_from_upload(
 async def sync_pi_config(
     user_id: str,
     data_dir: str,
-    access_token: str | None = None,
+    clone_access_resolver: GitHubCloneAccessResolver | None = None,
 ) -> dict[str, Any]:
     """Sync an existing GitHub-backed Pi config with its remote origin."""
     normalized_user_id = _validate_user_id(user_id)
@@ -923,6 +932,11 @@ async def sync_pi_config(
     if not isinstance(repo_url, str) or not repo_url:
         raise PiConfigError("GitHub Pi config is missing its repository URL")
 
+    clone_url, access_token = await _resolve_clone_details(
+        normalized_user_id,
+        repo_url,
+        clone_access_resolver,
+    )
     previous_available = _load_categories_json(row["available_categories"])
     previous_enabled = _load_categories_json(row["enabled_categories"])
     disabled_categories = set(previous_available) - set(previous_enabled)
@@ -940,12 +954,8 @@ async def sync_pi_config(
             raise PiConfigError("Pi config is not ready for sync")
         db.commit()
     try:
-        clone_url, resolved_access_token = await _resolve_clone_details(
-            normalized_user_id, repo_url
-        )
-        effective_access_token = access_token or resolved_access_token
-        await clone_repo(clone_url, str(config_root), access_token=effective_access_token)
-        with _git_askpass_env(effective_access_token) as git_env:
+        await clone_repo(clone_url, str(config_root), access_token=access_token)
+        with _git_askpass_env(access_token) as git_env:
             await _run_git(["reset", "--hard", "origin/HEAD"], cwd=str(config_root), env=git_env)
 
         _reset_runtime_artifacts_for_sync(config_root)
