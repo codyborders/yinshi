@@ -1,0 +1,157 @@
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+You are a delegated subagent running from a fork of the parent session. Treat the inherited conversation as reference-only context, not a live thread to continue. Do not continue or answer prior messages as if they are waiting for a reply. Your sole job is to execute the task below and return a focused result for that task using your tools.
+
+Task:
+You are sole writer. Fix managed runner process exit on transient heartbeat failure. Strict red-green TDD. Do not commit, push, deploy, or touch .pi-subagents/.
+
+Controlled production facts:
+- During active prompt run 9719e92d862c4df69aea5eae440dd1b1, control backend restarted.
+- Relay reconnect policy worked, but heartbeat POST landed during downtime and returned HTTP 502.
+- runner_agent._heartbeat_loop re-raised every non-401 HTTPStatusError.
+- run_agent uses FIRST_COMPLETED, so heartbeat task failure cancelled relay/worker ownership and exited the process.
+- Sprite supervisor restarted it, interrupting the active prompt.
+
+Required behavior:
+1. _heartbeat_loop must retry transient network HTTPError failures, HTTP 429, and HTTP 5xx with bounded exponential backoff.
+2. A successful heartbeat resets backoff and resumes normal heartbeat interval.
+3. HTTP 401 remains fatal with current sanitized token-rejected error.
+4. Other 4xx responses remain fatal with a sanitized local error.
+5. Response validation, capability signing key mismatch, invalid body, and non-HTTP exceptions remain fail-closed.
+6. Logs may include only safe status code or generic network category. No URL query, token, response body, user ID, or prompt data.
+7. Keep the existing worker manager, relay task, Sprite task lease, and active prompt alive during transient heartbeat outages.
+
+TDD:
+- Add a failing _heartbeat_loop test for one 502 followed by success without task exit. Use injected sleep or existing test patterns.
+- Implement minimum retry behavior and run green.
+- Add tests for network error, 429, bounded backoff, reset after success, 401 fatal, other 4xx fatal, and non-HTTP exception fail-closed.
+- Add a run_agent-level test proving a transient heartbeat failure does not cancel relay ownership if practical.
+- Run focused runner-agent tests, full backend pytest, Black, isort, flake8, mypy, and git diff --check.
+
+Return red failure, changed files, final commands, and residual risks.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+You are reviving a previous subagent conversation.
+
+Original run: b9007551
+Original agent: worker
+Original session file: /Users/user/.pi/agent/sessions/--Users-user-projects-yinshi--/2026-08-23T16-55-24-351Z_01a02f8c-61bf-7dcf-9474-93e8cf006df4.jsonl
+
+Use the stored session context as background. Answer the orchestrator's follow-up below. Do not assume the original child process is still alive.
+
+Follow-up:
+Reviewer found one blocker. Continue as sole writer. Do not commit or deploy.
+Add a failing test proving httpx.DecodingError remains fatal and does not sleep or retry. Then narrow generic network retry from httpx.HTTPError to httpx.TransportError. Keep HTTPStatusError handling first. Run focused tests, full backend suite, static checks, and git diff --check.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+- criterion-2: Return evidence sufficient for an independent acceptance review
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Review gate: required by reviewer.
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    },
+    {
+      "id": "criterion-2",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
