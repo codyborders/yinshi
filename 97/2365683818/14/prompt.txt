@@ -1,0 +1,13 @@
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+You are a delegated subagent running from a fork of the parent session. Treat the inherited conversation as reference-only context, not a live thread to continue. Do not continue or answer prior messages as if they are waiting for a reply. Your sole job is to execute the task below and return a focused result for that task using your tools.
+
+Task:
+Fix two deployment blockers in current uncommitted diff with red-green TDD. Sole writer. Do not commit, push, or deploy.
+
+1. Concurrent PromptJournal.cancel calls must persist exactly one cancelled terminal event. Add concurrent gather coverage. Make cancellation event persistence idempotent under the per-run append lock, including immediate-start and active-task paths. Preserve contiguous sequence ordering and do not deduplicate ordinary repeated assistant events.
+
+2. Old PromptJournal terminal persistence must not release a session owned by a newer direct prompt. Establish durable ownership between journal run and its stream turn without schema changes: the journal-backed prompt may use its run ID as the message turn ID. Direct prompts keep independent turn IDs. Terminal session-idle update must be conditional on the latest user turn still belonging to that run. Preserve stream finalization recovery when the old run still owns the session.
+Add a regression that starts a newer direct prompt before old terminal transition and proves session remains running. Also retain exhaustion recovery coverage.
+
+Run focused tests, concurrent cancellation repeatedly, full backend suite, Black, isort, flake8, mypy, and git diff --check.
