@@ -1,0 +1,174 @@
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+You are a delegated subagent running from a fork of the parent session. Treat the inherited conversation as reference-only context, not a live thread to continue. Do not continue or answer prior messages as if they are waiting for a reply. Your sole job is to execute the task below and return a focused result for that task using your tools.
+
+Task:
+Implement the production fix for the managed-runner prompt failure. You are the sole writer. Do not commit, push, or deploy.
+Use strict vertical red-green TDD. Modify source only with edit/write tools. Preserve untracked .pi-subagents.
+
+Confirmed incident facts:
+- Prompt event persistence hit exact SQLCipher OperationalError("disk I/O error") mid-connection on Sprite overlayfs.
+- Fresh opens then failed briefly. SQLCipher HMAC logs were secondary read failures.
+- Current integrity_check is ok and cipher_integrity_check has zero issues.
+- Plain unhandled HTTP 500 caused WorkerHttpDispatcher to close the relay transfer.
+- Existing three-open retry spans only 150 ms.
+
+Implement minimum scope:
+1. tenant.py: add a dedicated temporary tenant-storage exception and one exact SQLCipher transient classifier. Exhausted exact open failures raise this exception with cause. All key/authentication/HMAC/near-match errors remain immediate configured-key failures. Keep the current short open retries.
+2. api/deps.py: add a typed async fresh-connection operation helper. Run each blocking attempt with asyncio.to_thread. Roll back and discard on failure. Retry only the dedicated open exception or exact mid-operation disk I/O. Use a monotonic deadline near 20 seconds with async exponential backoff capped near one second. Cancellation must interrupt backoff.
+3. services/prompt_journal.py: adopt the helper only for prompt journal reads and writes. Cover event polling, event append, run/status transitions, terminal persistence, and run loading. Preserve existing busy handling. Add per-run append serialization. Allocate an intended event sequence once and retain serialized content across retry. Reconcile uncertain commit by checking the exact run/sequence row. Identical content means success. Different content fails closed. Do not duplicate or renumber events. Make requested status transitions idempotent after uncertain commits.
+4. api/prompt_runs.py: make the session lookup use the async helper and await it from prompt routes.
+5. main.py: map the dedicated temporary exception to bounded JSON HTTP 503 with Retry-After. Do not expose SQLCipher text, keys, paths, or user content.
+6. No frontend, relay protocol, schema, migration, WAL, backup, restore, rekey, storage-layout, or generic non-prompt endpoint changes.
+
+Required focused behavior tests in existing files:
+- test_tenant.py: exact classification, near-match fail closed, dedicated exhaustion and preserved cause.
+- test_deps.py: fresh connection after mid-operation fault, rollback/close, nonblocking event loop, cancellation, exhaustion.
+- test_prompt_journal.py: pre-insert recovery, uncertain commit exactly once, conflict failure, contiguous polling recovery, terminal status recovery.
+- test_prompt_runs_api.py: eventual 200 and structured 503.
+- test_worker_runtime.py: JSON 503 remains a normal response and next request still works.
+
+Read PYTHON.md and nearby tests. Keep functions small and typed. Run each focused red-green cycle, then the combined focused suite, full backend pytest, Black, isort, flake8, mypy, and git diff --check. Report exact red/green commands, changed files, final results, and residual risks.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+- criterion-2: Return evidence sufficient for an independent acceptance review
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Review gate: required by reviewer.
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    },
+    {
+      "id": "criterion-2",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+You are reviving a previous subagent conversation.
+
+Original run: 00b4d7e2
+Original agent: worker
+Original session file: /Users/user/.pi/agent/sessions/--Users-user-projects-yinshi--/2026-08-23T05-22-26-273Z_01a02d11-f361-7610-9130-3e5e5236341f.jsonl
+
+Use the stored session context as background. Answer the orchestrator's follow-up below. Do not assume the original child process is still alive.
+
+Follow-up:
+Continue as sole writer. Address every independent review blocker with red-green TDD. Do not commit, push, or deploy.
+
+Blocker 1: api/stream.py still has synchronous non-retrying prompt database writes. Production left sessions.status=running and an assistant message with turn_status NULL, partial content, and no full_message. Apply the async retry boundary to prompt session lookup/reservation, batched assistant writes, result persistence, failure cleanup, and final session/message persistence. Preserve exactly-once user message and assistant turn behavior after uncertain commits. Add focused stream tests that reproduce those live partial fields and verify full_message, turn_status, final content, and idle session after recovery.
+
+Blocker 2: asyncio.to_thread continues after caller cancellation. Change the helper so cancellation waits for the active thread attempt to finish before propagating. Shield the complete prompt-start critical section so a committed starting row always gets its background executor task before cancellation returns. Ensure append locks stay held until active writes finish. Add cancellation-during-active-attempt tests, not only backoff cancellation.
+
+Blocker 3: database retry work can exceed WorkerHttpDispatcher 30 seconds. Do not increase frontend or relay timeouts. Bound continuous outage handling so the worker emits JSON 503 before 30 seconds, including the route precheck plus journal operation. One blocking attempt must not create an unbounded wait. Use a request-scoped absolute retry budget where needed, while background prompt persistence receives a fresh bounded budget per operation. Add a worker-level timing/budget test.
+
+Note: remove per-run append locks after orphan cancellation and on journal close. Add cleanup coverage.
+
+Keep exact SQLCipher matching and all previous scope limits. Do not change schema, WAL, backup, restore, rekey, storage layout, frontend, or relay protocol. Run focused red-green tests, full backend pytest, Black, isort, flake8, mypy, and git diff --check. Report exact results and any remaining risk.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+- criterion-2: Return evidence sufficient for an independent acceptance review
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Review gate: required by reviewer.
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    },
+    {
+      "id": "criterion-2",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
