@@ -123,6 +123,107 @@ describe("runtime prompt stream", () => {
     }
   });
 
+  it("drains completed journal batches until the terminal event", async () => {
+    const runtimeTransport = transport();
+    vi.mocked(runtimeTransport.post).mockResolvedValue({
+      id: runId,
+      session_id: sessionId,
+      status: "starting",
+    });
+    vi.mocked(runtimeTransport.get)
+      .mockResolvedValueOnce({
+        run_id: runId,
+        status: "completed",
+        events: [
+          { type: "status", status: "started" },
+          { type: "message_update", message: "first batch" },
+        ],
+        next_sequence: 2,
+      })
+      .mockResolvedValueOnce({
+        run_id: runId,
+        status: "completed",
+        events: [
+          { type: "message_update", message: "second batch" },
+          { type: "result" },
+        ],
+        next_sequence: 4,
+      });
+
+    const handle = await startRuntimePrompt(runtimeTransport, sessionId, {
+      prompt: "hello",
+      idempotencyKey: "22222222-2222-4222-8222-222222222222",
+      pollDelayMs: 0,
+    });
+    const events = [];
+    for await (const event of handle.events()) {
+      events.push(event);
+    }
+
+    expect(events.map((event) => event.type)).toEqual([
+      "status",
+      "message_update",
+      "message_update",
+      "result",
+    ]);
+    expect(runtimeTransport.get).toHaveBeenNthCalledWith(
+      1,
+      `/api/sessions/${sessionId}/runs/${runId}/events/0`,
+    );
+    expect(runtimeTransport.get).toHaveBeenNthCalledWith(
+      2,
+      `/api/sessions/${sessionId}/runs/${runId}/events/2`,
+    );
+  });
+
+  it("drains failed journal batches before yielding the terminal error", async () => {
+    const runtimeTransport = transport();
+    vi.mocked(runtimeTransport.post).mockResolvedValue({
+      id: runId,
+      session_id: sessionId,
+      status: "starting",
+    });
+    vi.mocked(runtimeTransport.get)
+      .mockResolvedValueOnce({
+        run_id: runId,
+        status: "failed",
+        events: [{ type: "message_update", message: "durable content" }],
+        next_sequence: 1,
+      })
+      .mockResolvedValueOnce({
+        run_id: runId,
+        status: "failed",
+        events: [],
+        next_sequence: 1,
+      });
+
+    const handle = await startRuntimePrompt(runtimeTransport, sessionId, {
+      prompt: "hello",
+      idempotencyKey: "22222222-2222-4222-8222-222222222222",
+      pollDelayMs: 0,
+    });
+    const events = [];
+    for await (const event of handle.events()) {
+      events.push(event);
+    }
+
+    expect(events.map((event) => event.type)).toEqual([
+      "message_update",
+      "error",
+    ]);
+    expect(events[1]).toMatchObject({
+      error: "Prompt run ended with status failed",
+    });
+    expect(runtimeTransport.get).toHaveBeenNthCalledWith(
+      1,
+      `/api/sessions/${sessionId}/runs/${runId}/events/0`,
+    );
+    expect(runtimeTransport.get).toHaveBeenNthCalledWith(
+      2,
+      `/api/sessions/${sessionId}/runs/${runId}/events/1`,
+    );
+  });
+
   it("uses the remote polling interval for a managed runtime", async () => {
     vi.useFakeTimers();
     try {
