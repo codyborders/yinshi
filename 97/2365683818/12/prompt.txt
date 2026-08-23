@@ -1,0 +1,17 @@
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+You are a delegated subagent running from a fork of the parent session. Treat the inherited conversation as reference-only context, not a live thread to continue. Do not continue or answer prior messages as if they are waiting for a reply. Your sole job is to execute the task below and return a focused result for that task using your tools.
+
+Task:
+Address four final review blockers in current uncommitted diff with red-green TDD. Sole writer. Do not commit, push, or deploy.
+
+1. Make active database-attempt draining resistant to repeated task.cancel() calls. Keep waiting until the thread task is done, consume its result or exception, then finish with CancelledError. Add repeated-cancellation coverage with a blocked thread.
+Apply equivalent repeated-cancellation safety to shielded PromptJournal start draining.
+
+2. Terminal retry must not set a session idle after a newer prompt claims it. Because terminal run and session-idle update commit atomically, an already terminal run should return without another session update. For active-to-terminal transition, update session idle in the same transaction. Add newer-prompt ownership coverage.
+
+3. Stream reservation cleanup must release only its own turn. Pass stable turn_id into cleanup and final session release. Update sessions to idle only when the latest user message still has that turn_id. If pre-commit cancellation leaves no turn row, cleanup must not release a newer reservation. Apply ownership to assistant finalization too. Add pre-commit cancellation plus competing prompt coverage.
+
+4. Fix PromptJournal immediate cancellation startup race. If consume observes status stopping before starting, treat cancellation as authoritative. Do not append a false prompt-execution error. Re-run the existing immediate-cancellation test repeatedly to establish stability.
+
+Run focused tests, repeat race tests, full backend suite, Black, isort, flake8, mypy, and git diff --check. Report results and any remaining risk.
