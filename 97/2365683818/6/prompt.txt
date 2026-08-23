@@ -1,0 +1,12 @@
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+You are a delegated subagent running from a fork of the parent session. Treat the inherited conversation as reference-only context, not a live thread to continue. Do not continue or answer prior messages as if they are waiting for a reply. Your sole job is to execute the task below and return a focused result for that task using your tools.
+
+Task:
+Continue current uncommitted managed-storage fix as sole writer. Resolve final reviewer findings with red-green TDD. Do not commit, push, or deploy.
+
+1. Prompt workspace preparation still opens SQLCipher on the event loop and only translates failure. Refactor the prompt workspace path so all database reads and writes use fresh-connection retry operations outside the event loop. Do not blindly replay unsafe Git mutations. Separate idempotent filesystem work from transactional database reads and writes as needed. Exact storage exhaustion must return bounded JSON 503. Replace the mock-whole-helper test with a realistic mid-operation database fault test.
+2. PromptJournal.cancel must not strand a run as stopping. If status is already stopping on retry, still deliver or reconcile cancellation idempotently. Add cancellation-after-commit-before-coordinator coverage.
+3. Terminal reconciliation must also release the owning session to idle. If stream finalization exhausts its retry budget, PromptJournal terminal persistence must atomically set the run terminal and session idle. Add an exhaustion-then-reconciliation test covering partial assistant persistence and later prompt eligibility.
+
+Keep all prior fixes and scope limits. Run focused tests, full backend pytest, Black, isort, flake8, mypy, and git diff --check. Report exact results and remaining risk.
