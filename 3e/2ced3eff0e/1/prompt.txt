@@ -1,0 +1,80 @@
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+You are a delegated subagent running from a fork of the parent session. Treat the inherited conversation as reference-only context, not a live thread to continue. Do not continue or answer prior messages as if they are waiting for a reply. Your sole job is to execute the task below and return a focused result for that task using your tools.
+
+Task:
+You are sole writer. Fix production relay teardown race with strict red-green TDD. Do not commit, push, deploy, or touch untracked .pi-subagents/.
+
+Observed production facts:
+- Long managed prompt created more than 128 short encrypted relay transfers.
+- Delayed valid close control arrived after retired-ID count eviction.
+- Shared outbound runner relay closed, ensure_online restarted Sprite, and run became interrupted after assistant text was visible.
+- Control also raised RuntimeError: Cannot call send once a close message has been sent.
+
+Required behavior:
+1. In backend/src/yinshi/services/runner_relay.py, a canonical close control from the authenticated runner must be idempotent when no active transfer exists, even after retired-cache eviction. It must not affect active transfers owned by another runner.
+2. Apply symmetric behavior in backend/src/yinshi/services/runner_agent_relay.py for broker close controls.
+3. Keep unknown binary frames fatal. Keep malformed or noncanonical close controls rejected. Keep retirement caches bounded for late binary-frame suppression.
+4. Harden backend/src/yinshi/api/runner_relay.py against a second WebSocket close after teardown has already started. Do not mask real protocol failures.
+5. Preserve managed runtime liveness behavior. Do not change frontend protocol or limits.
+
+TDD:
+- First add one focused failing test for broker duplicate close after more than _RETIRED_TRANSFERS_MAX retirements. Run it and record clean red.
+- Implement minimum broker behavior and run green.
+- Repeat red-green for runner-agent symmetric behavior.
+- Add isolation, unknown-binary, malformed-control, endpoint shared-relay survival, and double-close cleanup regressions where existing public tests support them.
+- Add a high-churn test that exceeds 128 sequential transfers and confirms shared runner connection remains usable. Avoid slow sleep-based tests.
+- Run focused suites, then full backend pytest, Black, isort, flake8, mypy, and git diff --check.
+
+Return changed files, exact red results, final commands, and residual risks.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files, validation-output, diff-summary
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
