@@ -43,13 +43,17 @@ vi.mock("../../runtime/runtimeTransport", async (importOriginal) => {
   };
 });
 
-vi.mock("../../api/client", () => ({
-  api: {
-    get: (...args: unknown[]) => apiGetMock(...args),
-    post: (...args: unknown[]) => apiPostMock(...args),
-    delete: (...args: unknown[]) => apiDeleteMock(...args),
-  },
-}));
+vi.mock("../../api/client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../api/client")>();
+  return {
+    ...actual,
+    api: {
+      get: (...args: unknown[]) => apiGetMock(...args),
+      post: (...args: unknown[]) => apiPostMock(...args),
+      delete: (...args: unknown[]) => apiDeleteMock(...args),
+    },
+  };
+});
 
 import Settings from "../Settings";
 

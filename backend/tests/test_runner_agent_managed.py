@@ -10,6 +10,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 
 from yinshi import runner_agent
@@ -816,6 +817,96 @@ async def test_runner_relay_loop_returns_immediately_after_idle_expiry(
 
 
 @pytest.mark.asyncio
+async def test_runner_relay_loop_wires_broker_client_to_worker_manager(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The relay loop passes a control client that builds a resolver for RunnerWorkerManager."""
+    _set_runner_agent_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("YINSHI_RUNNER_STORAGE_PROFILE", "fly_sprites_posix")
+    monkeypatch.setenv("YINSHI_RUNNER_RELAY_IDLE_TIMEOUT_SECONDS", "12.5")
+    monkeypatch.setenv("YINSHI_RUNNER_SPRITE_TASK_LEASE", "enabled")
+    config = runner_agent.load_config()
+
+    class TaskLease:
+        instances: list[TaskLease] = []
+
+        def __init__(self) -> None:
+            self.acquire_count = 0
+            self.closed = False
+            self.instances.append(self)
+
+        async def acquire(self) -> None:
+            self.acquire_count += 1
+
+        async def aclose(self) -> None:
+            self.closed = True
+
+    class NoiseKeypair:
+        private_key = b"r" * 32
+
+    captured_kwargs: dict[str, object] = {}
+    serve_calls = 0
+
+    class WorkerManager:
+        def __init__(self, **kwargs: object) -> None:
+            captured_kwargs.clear()
+            captured_kwargs.update(kwargs)
+
+    broker_calls: list[tuple[object, str, str]] = []
+
+    async def mock_request_github_access(
+        client: object,
+        runner_token: str,
+        remote_url: str,
+    ) -> object:
+        broker_calls.append((client, runner_token, remote_url))
+        return None
+
+    async def serve(
+        relay_config: object,
+        runner_token: str,
+        worker_manager: object,
+        task_lease: object,
+    ) -> bool:
+        nonlocal serve_calls
+        serve_calls += 1
+        return True
+
+    async def unexpected_sleep(delay: float) -> None:
+        raise AssertionError(f"unexpected reconnect sleep: {delay}")
+
+    fake_client = type("FakeClient", (), {"base_url": "http://localhost:8000"})()
+
+    monkeypatch.setattr(
+        runner_agent,
+        "load_or_create_runner_noise_keypair",
+        lambda path: NoiseKeypair(),
+    )
+    monkeypatch.setattr(runner_agent, "RunnerWorkerManager", WorkerManager)
+    monkeypatch.setattr(runner_agent, "SpriteTaskLease", TaskLease)
+    monkeypatch.setattr(runner_agent, "_serve_runner_relay_connection", serve)
+    monkeypatch.setattr(runner_agent.asyncio, "sleep", unexpected_sleep)
+    monkeypatch.setattr(
+        runner_agent,
+        "_request_runner_github_access",
+        mock_request_github_access,
+    )
+
+    await runner_agent._runner_relay_loop(config, "runner-token", fake_client)
+
+    assert serve_calls == 1
+    resolver = captured_kwargs.get("github_clone_access_resolver")
+    assert callable(resolver)
+    await resolver("https://github.com/codyborders/my-pi.git")
+    assert len(broker_calls) == 1
+    recorded_client, recorded_token, recorded_url = broker_calls[0]
+    assert recorded_client is fake_client
+    assert recorded_token == "runner-token"
+    assert recorded_url == "https://github.com/codyborders/my-pi.git"
+
+
+@pytest.mark.asyncio
 async def test_runner_relay_loop_closes_task_client_on_fatal_error(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -953,3 +1044,114 @@ async def test_run_agent_stops_heartbeat_after_idle_relay_return(
     await asyncio.wait_for(runner_agent.run_agent(config), timeout=0.2)
 
     assert heartbeat_cancelled.is_set()
+
+
+@pytest.mark.asyncio
+async def test_request_runner_github_access_success() -> None:
+    """The broker client sends bearer auth and returns canonical fields."""
+    from yinshi.models import RunnerGitHubAccessOut
+
+    canonical = RunnerGitHubAccessOut(
+        clone_url="https://github.com/codyborders/my-pi.git",
+        access_token="ghp_fake",
+        installation_id=1234,
+        repository_installation_id=5678,
+        manage_url="https://github.com/apps/yinshi/installations/1234",
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert str(request.url.path) == "/runner/github-access"
+        assert request.headers.get("Authorization") == "Bearer runner-token-123"
+        body = json.loads(request.content)
+        assert body["remote_url"] == "https://github.com/codyborders/my-pi.git"
+        return httpx.Response(200, json=canonical.model_dump(mode="json"))
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport, base_url="http://localhost:8000") as client:
+        result = await runner_agent._request_runner_github_access(
+            client, "runner-token-123", "https://github.com/codyborders/my-pi.git"
+        )
+
+    assert result is not None
+    assert result.clone_url == "https://github.com/codyborders/my-pi.git"
+    assert result.access_token == "ghp_fake"
+    assert result.installation_id == 1234
+    assert result.repository_installation_id == 5678
+    assert result.manage_url == "https://github.com/apps/yinshi/installations/1234"
+
+
+@pytest.mark.asyncio
+async def test_request_runner_github_access_malformed_response() -> None:
+    """Malformed JSON in 200 response raises safe GitHubAppError."""
+    from yinshi.exceptions import GitHubAppError
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"not valid json{{")
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport, base_url="http://localhost:8000") as client:
+        with pytest.raises(GitHubAppError) as exc_info:
+            await runner_agent._request_runner_github_access(
+                client, "runner-token-123", "https://github.com/owner/repo.git"
+            )
+    assert "GitHub integration error" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_request_runner_github_access_400_error() -> None:
+    """Structured 400 response reconstructs GitHubAccessError with all fields."""
+    from yinshi.exceptions import GitHubAccessError
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            400,
+            json={
+                "detail": {
+                    "code": "install_not_found",
+                    "message": "Repository not installed",
+                    "connect_url": "https://github.com/apps/yinshi",
+                    "manage_url": "https://github.com/settings/installations",
+                }
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport, base_url="http://localhost:8000") as client:
+        with pytest.raises(GitHubAccessError) as exc_info:
+            await runner_agent._request_runner_github_access(
+                client, "runner-token-123", "https://github.com/owner/repo.git"
+            )
+    error = exc_info.value
+    assert error.code == "install_not_found"
+    assert str(error) == "Repository not installed"
+    assert error.connect_url == "https://github.com/apps/yinshi"
+    assert error.manage_url == "https://github.com/settings/installations"
+
+
+@pytest.mark.asyncio
+async def test_request_runner_github_access_rejects_oversized_response() -> None:
+    """Responses exceeding _MAX_RESPONSE_BYTES bytes raise a safe GitHubAppError."""
+    from yinshi.exceptions import GitHubAppError
+    from yinshi.models import RunnerGitHubAccessOut
+
+    canonical = RunnerGitHubAccessOut(
+        clone_url="https://github.com/owner/repo.git",
+        access_token="ghp_fake",
+        installation_id=1234,
+        repository_installation_id=5678,
+        manage_url=None,
+    )
+    body = canonical.model_dump_json()
+    padding = " " * 66000
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=(body + padding).encode())
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport, base_url="http://localhost:8000") as client:
+        with pytest.raises(GitHubAppError) as exc_info:
+            await runner_agent._request_runner_github_access(
+                client, "runner-token-123", "https://github.com/owner/repo.git"
+            )
+    assert "GitHub integration error" in str(exc_info.value)

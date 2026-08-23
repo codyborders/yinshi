@@ -20,15 +20,20 @@ from typing import Any, Literal
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
+from pydantic import ValidationError
 from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed, InvalidStatus
 from websockets.typing import Origin
 
+from yinshi.exceptions import GitHubAccessError, GitHubAppError
+from yinshi.models import RunnerGitHubAccessOut
 from yinshi.runner_worker import (
+    GitHubCloneAccessResolver,
     RunnerUserDataEncryptionMode,
     RunnerWorkerManager,
     validate_user_data_encryption_mode,
 )
+from yinshi.services.github_app import GitHubCloneAccess
 from yinshi.services.runner_agent_relay import (
     RunnerAgentRelayRuntime,
     RunnerRelaySessionError,
@@ -55,6 +60,7 @@ _DEFAULT_ARCHIL_SQLITE_DIR = f"{_DEFAULT_ARCHIL_SHARED_FILES_DIR}/sqlite"
 _DEFAULT_TOKEN_FILE = "/var/lib/yinshi/runner-token"
 _DEFAULT_HEARTBEAT_INTERVAL_S = 30.0
 _REQUEST_TIMEOUT_S = 15.0
+_MAX_RESPONSE_BYTES = 65536
 _REGISTRATION_TOKEN_ENV_PREFIX = "YINSHI_REGISTRATION_TOKEN="
 _SHA256_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
 _AWS_STORAGE_PROFILE: RunnerStorageProfile = "aws_ebs_s3_files"
@@ -726,6 +732,79 @@ async def _heartbeat(
     logger.info("Heartbeat accepted for Yinshi cloud runner")
 
 
+async def _request_runner_github_access(
+    client: httpx.AsyncClient,
+    runner_token: str,
+    remote_url: str,
+) -> GitHubCloneAccess | None:
+    """Resolve GitHub clone access via the runner control-plane broker."""
+    if not runner_token or not runner_token.strip():
+        raise GitHubAppError("runner token must not be blank")
+    if not remote_url or not remote_url.strip():
+        raise GitHubAppError("remote_url must not be blank")
+
+    try:
+        response = await client.post(
+            "/runner/github-access",
+            json={"remote_url": remote_url.strip()},
+            headers={"Authorization": f"Bearer {runner_token.strip()}"},
+        )
+    except httpx.RequestError:
+        raise GitHubAppError("GitHub integration error") from None
+
+    if response.status_code >= 500:
+        raise GitHubAppError("GitHub integration error") from None
+
+    if response.status_code == 400:
+        try:
+            body = response.json()
+        except Exception:
+            raise GitHubAppError("GitHub integration error") from None
+        if not isinstance(body, dict):
+            raise GitHubAppError("GitHub integration error") from None
+        payload = body.get("detail", body)
+        if not isinstance(payload, dict):
+            raise GitHubAppError("GitHub integration error") from None
+        code = payload.get("code")
+        message = payload.get("message")
+        if not isinstance(code, str) or not code:
+            raise GitHubAppError("GitHub integration error") from None
+        if not isinstance(message, str) or not message:
+            raise GitHubAppError("GitHub integration error") from None
+        connect_url = payload.get("connect_url")
+        manage_url = payload.get("manage_url")
+        for val in (connect_url, manage_url):
+            if val is not None and (not isinstance(val, str) or not val):
+                raise GitHubAppError("GitHub integration error") from None
+        raise GitHubAccessError(
+            code=code,
+            message=message,
+            connect_url=connect_url,
+            manage_url=manage_url,
+        ) from None
+
+    if response.status_code not in (200,):
+        raise GitHubAppError("GitHub integration error") from None
+
+    if len(response.content) > _MAX_RESPONSE_BYTES:
+        raise GitHubAppError("GitHub integration error") from None
+
+    text = response.text
+    if text.strip() == "null":
+        return None
+    try:
+        parsed = RunnerGitHubAccessOut.model_validate_json(text)
+    except (json.JSONDecodeError, ValueError, UnicodeDecodeError, ValidationError):
+        raise GitHubAppError("GitHub integration error") from None
+    return GitHubCloneAccess(
+        clone_url=parsed.clone_url,
+        repository_installation_id=parsed.repository_installation_id,
+        installation_id=parsed.installation_id,
+        access_token=parsed.access_token,
+        manage_url=parsed.manage_url,
+    )
+
+
 def _runner_relay_url(control_url: str) -> str:
     """Convert one validated HTTP control origin to its WebSocket relay URL."""
     parsed_url = urlsplit(control_url)
@@ -919,9 +998,26 @@ async def _serve_runner_relay_connection(
         await runtime.aclose()
 
 
-async def _runner_relay_loop(config: RunnerAgentConfig, runner_token: str) -> None:
+async def _runner_relay_loop(
+    config: RunnerAgentConfig,
+    runner_token: str,
+    control_client: httpx.AsyncClient | None = None,
+) -> None:
     """Reconnect the outbound relay with bounded backoff until cancelled."""
     task_lease = SpriteTaskLease() if config.sprite_task_lease else None
+    github_clone_access_resolver: GitHubCloneAccessResolver | None = None
+    if control_client is not None:
+
+        async def _build_resolver(
+            remote_url: str,
+        ) -> GitHubCloneAccess | None:
+            return await _request_runner_github_access(
+                control_client,
+                runner_token,
+                remote_url,
+            )
+
+        github_clone_access_resolver = _build_resolver
     try:
         if task_lease is not None:
             await task_lease.acquire()
@@ -937,6 +1033,7 @@ async def _runner_relay_loop(config: RunnerAgentConfig, runner_token: str) -> No
             user_data_directory=config.shared_files_dir / "users",
             data_protection_key=data_protection_key,
             user_data_encryption=config.user_data_encryption,
+            github_clone_access_resolver=github_clone_access_resolver,
         )
         reconnect_delay_seconds = 1.0
         while True:
@@ -1009,7 +1106,7 @@ async def run_agent(config: RunnerAgentConfig) -> None:
             name="runner-heartbeat",
         )
         relay_task = asyncio.create_task(
-            _runner_relay_loop(config, runner_token),
+            _runner_relay_loop(config, runner_token, client),
             name="runner-relay",
         )
         tasks = (heartbeat_task, relay_task)

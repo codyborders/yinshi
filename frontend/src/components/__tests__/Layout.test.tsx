@@ -10,12 +10,16 @@ vi.mock("../../hooks/useAuth", () => ({
   })),
 }));
 
-vi.mock("../../api/client", () => ({
-  api: {
-    get: vi.fn(() => Promise.resolve([])),
-    post: vi.fn(() => Promise.resolve({})),
-  },
-}));
+vi.mock("../../api/client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../api/client")>();
+  return {
+    ...actual,
+    api: {
+      get: vi.fn(() => Promise.resolve([])),
+      post: vi.fn(() => Promise.resolve({})),
+    },
+  };
+});
 
 import Layout from "../Layout";
 

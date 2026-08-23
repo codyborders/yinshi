@@ -10,13 +10,20 @@ from fastapi import APIRouter, HTTPException, Request, Response
 
 from yinshi.api.deps import require_tenant
 from yinshi.config import get_settings
-from yinshi.exceptions import RunnerAuthenticationError, RunnerRegistrationError
+from yinshi.exceptions import (
+    GitHubAccessError,
+    GitHubAppError,
+    RunnerAuthenticationError,
+    RunnerRegistrationError,
+)
 from yinshi.models import (
     CloudRunnerCreate,
     CloudRunnerOut,
     CloudRunnerRegistrationOut,
     RunnerCapabilityCreateIn,
     RunnerCapabilityOut,
+    RunnerGitHubAccessIn,
+    RunnerGitHubAccessOut,
     RunnerHeartbeatIn,
     RunnerHeartbeatOut,
     RunnerNoiseKeyConfirmationIn,
@@ -24,6 +31,7 @@ from yinshi.models import (
     RunnerRegisterOut,
 )
 from yinshi.rate_limit import limiter
+from yinshi.services.github_app import resolve_github_clone_access as _resolve_github_clone_access
 from yinshi.services.runner_capabilities import (
     RUNNER_PROTOCOL_VERSION,
     create_runner_capability,
@@ -33,6 +41,7 @@ from yinshi.services.runner_relay import (
     store_runner_transfer_grant,
 )
 from yinshi.services.runners import (
+    authenticate_runner_token,
     confirm_runner_noise_key,
     create_runner_registration,
     get_runner_for_user,
@@ -260,3 +269,42 @@ def heartbeat_cloud_runner(body: RunnerHeartbeatIn, request: Request) -> dict[st
     except (TypeError, ValueError) as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     return heartbeat
+
+
+@router.post("/runner/github-access", response_model=RunnerGitHubAccessOut | None)
+async def resolve_runner_github_access(
+    body: RunnerGitHubAccessIn,
+    request: Request,
+) -> dict[str, Any] | None:
+    """Resolve GitHub clone access for the runner owner using the bearer token."""
+    runner_token = _bearer_token(request)
+    try:
+        runner_info = authenticate_runner_token(runner_token)
+    except RunnerAuthenticationError as error:
+        raise HTTPException(status_code=401, detail=str(error)) from error
+
+    user_id = runner_info["user_id"]
+    try:
+        clone_access = await _resolve_github_clone_access(user_id, body.remote_url)
+    except GitHubAccessError as error:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": error.code,
+                "message": str(error),
+                "connect_url": error.connect_url,
+                "manage_url": error.manage_url,
+            },
+        ) from error
+    except GitHubAppError as error:
+        logger.error("GitHub integration failed")
+        raise HTTPException(status_code=502, detail="GitHub integration error") from error
+    if clone_access is None:
+        return None
+    return {
+        "access_token": clone_access.access_token,
+        "clone_url": clone_access.clone_url,
+        "installation_id": clone_access.installation_id,
+        "repository_installation_id": clone_access.repository_installation_id,
+        "manage_url": clone_access.manage_url,
+    }

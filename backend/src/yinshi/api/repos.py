@@ -3,9 +3,10 @@
 import logging
 import sqlite3
 import uuid
+from collections.abc import Awaitable, Callable
 from contextlib import nullcontext
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from fastapi import APIRouter, HTTPException, Request
 
@@ -100,6 +101,17 @@ async def _resolve_clone_access(
     remote_url: str,
 ) -> GitHubCloneAccess | None:
     """Resolve GitHub clone credentials for a remote, if applicable."""
+    resolver = getattr(request.app.state, "github_clone_access_resolver", None)
+    if resolver is not None:
+        resolved_resolver = cast("Callable[[str], Awaitable[GitHubCloneAccess | None]]", resolver)
+        try:
+            resolved = await resolved_resolver(remote_url)
+            return resolved
+        except GitHubAccessError as error:
+            raise _github_http_exception(error)
+        except GitHubAppError as error:
+            logger.error("GitHub integration failed during repository credential resolution")
+            raise HTTPException(status_code=502, detail=str(error))
     tenant = get_tenant(request)
     user_id = tenant.user_id if tenant else None
     try:

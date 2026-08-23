@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Any, Literal
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, Field, ValidationInfo, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
 
 from yinshi.model_catalog import DEFAULT_SESSION_MODEL, get_provider_metadata, normalize_model_ref
 
@@ -440,6 +440,35 @@ class RunnerHeartbeatOut(BaseModel):
     runner_id: str
     capability_signing_public_key: str
     status: Literal["online"] = "online"
+
+
+class RunnerGitHubAccessIn(BaseModel):
+    """Request body for runner-initiated GitHub clone access resolution."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    remote_url: str = Field(..., min_length=1, max_length=4096)
+
+    @field_validator("remote_url")
+    @classmethod
+    def validate_remote_url(cls, value: str) -> str:
+        """Reject blank or invalid remote URLs."""
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("remote_url must not be blank")
+        return normalized
+
+
+class RunnerGitHubAccessOut(BaseModel):
+    """Response body for runner GitHub clone access resolution."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    clone_url: str
+    repository_installation_id: int | None
+    installation_id: int | None
+    access_token: str | None
+    manage_url: str | None
 
 
 class ProviderSetupFieldOut(BaseModel):

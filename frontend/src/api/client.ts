@@ -294,7 +294,7 @@ function _normalizeErrorPayload(
   return normalized;
 }
 
-function _apiErrorFromPayload(status: number, payload: unknown): ApiError {
+export function apiErrorFromPayload(status: number, payload: unknown): ApiError {
   const normalized = _normalizeErrorPayload(payload);
   if (normalized?.message) {
     return new ApiError(status, normalized.message, normalized);
@@ -314,7 +314,7 @@ async function _readApiError(response: Response): Promise<ApiError> {
   const contentType = response.headers.get("content-type") || "";
   if (contentType.includes("application/json")) {
     const payload = await response.json().catch(() => null);
-    const error = _apiErrorFromPayload(response.status, payload);
+    const error = apiErrorFromPayload(response.status, payload);
     if (payload !== null) {
       return error;
     }
@@ -365,7 +365,7 @@ async function desktopHostedRequest<T>(
     throw new Error("Desktop hosted API returned an invalid status");
   }
   if (response.status < 200 || response.status > 299) {
-    throw _apiErrorFromPayload(response.status, response.body);
+    throw apiErrorFromPayload(response.status, response.body);
   }
   if (response.status === 204) {
     return undefined as T;

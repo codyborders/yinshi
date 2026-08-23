@@ -346,3 +346,61 @@ def test_runner_worker_manager_accepts_external_encrypted_storage_marker(
     assert dispatcher.user_id == "managed-account"
     assert marker_path.read_text(encoding="utf-8") == marker_contents
     assert list(encrypted_volume.rglob(".yinshi-encrypted-storage")) == [marker_path]
+
+
+@pytest.mark.asyncio
+async def test_runner_worker_manager_resolver_injected_into_repository_import(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    db: sqlite3.Connection,
+) -> None:
+    """The runner resolver callback is attached to worker state and consumed during clone."""
+    from yinshi.services.github_app import GitHubCloneAccess
+
+    mock_access = GitHubCloneAccess(
+        clone_url="https://github.com/codyborders/my-pi.git",
+        access_token="ghp_shortlived",
+        installation_id=123,
+        repository_installation_id=456,
+        manage_url="https://github.com/apps/yinshi/installations/123",
+    )
+
+    async def mock_resolver(remote_url: str) -> GitHubCloneAccess | None:
+        if "codyborders/my-pi" in remote_url:
+            return mock_access
+        return None
+
+    manager = RunnerWorkerManager(
+        data_directory=tmp_path / "resolver-worker",
+        data_protection_key=b"r" * 32,
+        github_clone_access_resolver=mock_resolver,
+        environment_setter=monkeypatch.setenv,
+    )
+
+    dispatcher = manager.dispatcher("test-account")
+    observed_access_tokens: list[str | None] = []
+
+    async def clone_repository(
+        remote_url: str,
+        destination: str,
+        *,
+        access_token: str | None,
+    ) -> str:
+        assert remote_url == "https://github.com/codyborders/my-pi.git"
+        observed_access_tokens.append(access_token)
+        Path(destination).mkdir(parents=True)
+        return destination
+
+    monkeypatch.setattr("yinshi.api.repos.clone_repo", clone_repository)
+    response = await dispatcher.request(
+        method="POST",
+        path="/api/repos",
+        body={
+            "remote_url": "https://github.com/codyborders/my-pi.git",
+            "name": "my-pi",
+        },
+    )
+    assert response.status_code == 201
+    body = response.body
+    assert body is not None
+    assert observed_access_tokens == ["ghp_shortlived"]

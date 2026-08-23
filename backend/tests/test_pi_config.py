@@ -301,6 +301,111 @@ def test_github_import_clones_in_background_and_keeps_git_metadata(
     }
 
 
+def _create_fake_pi_clone_private(dest: str) -> str:
+    """Create a minimal valid Pi clone for private repo testing."""
+    config_root = Path(dest)
+    (config_root / ".git").mkdir(exist_ok=True)
+    (config_root / "agent").mkdir(parents=True, exist_ok=True)
+    (config_root / "agent" / "settings.json").write_text(
+        json.dumps({"provider": {"region": "us"}}), encoding="utf-8"
+    )
+    (config_root / "agent" / "CLAUDE.md").write_text("private test", encoding="utf-8")
+    return dest
+
+
+@pytest.mark.asyncio
+async def test_pi_config_import_uses_resolver_callback_when_present(
+    auth_client: TestClient,
+) -> None:
+    """Import should use the app-state resolver callback when present."""
+    captured_clone_tokens: list[str | None] = []
+
+    from yinshi.services.github_app import GitHubCloneAccess
+
+    async def fake_clone_repo(url: str, dest: str, access_token: str | None = None) -> str:
+        captured_clone_tokens.append(access_token)
+        return _create_fake_pi_clone_private(dest)
+
+    async def fake_resolver(repo_url: str) -> GitHubCloneAccess | None:
+        if "codyborders/my-pi" in repo_url:
+            return GitHubCloneAccess(
+                clone_url=repo_url,
+                access_token="pi-short-lived",
+                installation_id=123,
+                repository_installation_id=456,
+                manage_url="https://github.com/apps/yinshi/installations/123",
+            )
+        return None
+
+    auth_client.app.state.github_clone_access_resolver = fake_resolver
+
+    with patch("yinshi.services.pi_config.clone_repo", side_effect=fake_clone_repo):
+        response = auth_client.post(
+            "/api/settings/pi-config/github",
+            json={"repo_url": "https://github.com/codyborders/my-pi.git"},
+        )
+
+    assert response.status_code == 201, f"Expected 201, got {response.status_code}: {response.text}"
+    assert captured_clone_tokens == ["pi-short-lived"]
+
+
+@pytest.mark.asyncio
+async def test_pi_config_sync_uses_resolver_callback_when_present(
+    auth_client: TestClient,
+) -> None:
+    """Sync should use the app-state resolver callback when the config has a repo_url."""
+    captured_sync_tokens: list[str | None] = []
+
+    from yinshi.services.github_app import GitHubCloneAccess
+
+    async def fake_clone_repo(url: str, dest: str, access_token: str | None = None) -> str:
+        captured_sync_tokens.append(access_token)
+        return _create_fake_pi_clone(dest)
+
+    async def fake_resolver(repo_url: str) -> GitHubCloneAccess | None:
+        if "codyborders/my-pi" in repo_url:
+            return GitHubCloneAccess(
+                clone_url=repo_url,
+                access_token="pi-short-lived",
+                installation_id=123,
+                repository_installation_id=456,
+                manage_url="https://github.com/apps/yinshi/installations/123",
+            )
+        return None
+
+    # First create a GitHub-backed config
+    with patch("yinshi.services.pi_config.clone_repo", side_effect=fake_clone_repo):
+        create_response = auth_client.post(
+            "/api/settings/pi-config/github",
+            json={"repo_url": "https://github.com/codyborders/my-pi.git"},
+        )
+    assert create_response.status_code == 201
+    config_response = auth_client.get("/api/settings/pi-config")
+    assert config_response.status_code == 200
+    assert config_response.json()["status"] == "ready"
+
+    # Set up resolver
+    captured_sync_tokens.clear()
+    auth_client.app.state.github_clone_access_resolver = fake_resolver
+
+    config_root = Path(getattr(auth_client, "yinshi_tenant").data_dir) / "pi-config"
+    (config_root / "AGENTS.md").unlink(missing_ok=True)
+
+    with (
+        patch("yinshi.services.pi_config.clone_repo", side_effect=fake_clone_repo),
+        patch(
+            "yinshi.services.pi_config._run_git",
+            new=AsyncMock(return_value=""),
+        ),
+    ):
+        sync_response = auth_client.post("/api/settings/pi-config/sync")
+
+    assert (
+        sync_response.status_code == 200
+    ), f"Expected 200, got {sync_response.status_code}: {sync_response.text}"
+    assert captured_sync_tokens == ["pi-short-lived"]
+
+
 def test_prompt_forwards_agent_dir_and_settings_payload(
     auth_client: TestClient,
     git_repo: str,

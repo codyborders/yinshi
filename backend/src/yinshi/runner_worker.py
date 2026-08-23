@@ -10,18 +10,24 @@ import secrets
 import sqlite3
 import stat
 import uuid
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Literal
 
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
+from yinshi.services.github_app import GitHubCloneAccess
 from yinshi.tenant import TenantContext, get_user_db, init_user_db
 from yinshi.worker_auth import WorkerPrincipal, prepare_worker_principal_storage
 from yinshi.worker_runtime import WorkerHttpDispatcher
 
 EnvironmentSetter = Callable[[str, str], None]
+
+GitHubCloneAccessResolver = Callable[
+    [str],
+    Awaitable[GitHubCloneAccess | None],
+]
 RunnerUserDataEncryptionMode = Literal["disabled", "required"]
 _X25519_PRIVATE_KEY_LENGTH = 32
 _PROMPT_EVENT_COUNT_MAX = 100_000
@@ -171,7 +177,10 @@ class RunnerWorkerManager:
         user_data_directory: Path | None = None,
         user_data_encryption: RunnerUserDataEncryptionMode = "disabled",
         environment_setter: EnvironmentSetter | None = None,
+        github_clone_access_resolver: GitHubCloneAccessResolver | None = None,
     ) -> None:
+        if github_clone_access_resolver is not None and not callable(github_clone_access_resolver):
+            raise TypeError("github_clone_access_resolver must be callable")
         if not isinstance(data_directory, Path):
             raise TypeError("data_directory must be a pathlib.Path")
         if not data_directory.is_absolute():
@@ -236,6 +245,7 @@ class RunnerWorkerManager:
         self._bearer_root = _derive_worker_bearer_root(storage_key)
         self._account_id: str | None = None
         self._dispatcher: WorkerHttpDispatcher | None = None
+        self._github_clone_access_resolver = github_clone_access_resolver
 
     def dispatcher(self, user_id: str) -> WorkerHttpDispatcher:
         """Return the sole account dispatcher, rejecting cross-account capabilities."""
@@ -307,6 +317,8 @@ class RunnerWorkerManager:
         _recover_interrupted_prompt_runs(principal.tenant)
         worker_app = create_app(mode="worker", worker_principal=principal)
         worker_app.state.container_manager = None
+        if self._github_clone_access_resolver is not None:
+            worker_app.state.github_clone_access_resolver = self._github_clone_access_resolver
         dispatcher = WorkerHttpDispatcher(app=worker_app, principal=principal)
         self._account_id = user_id
         self._dispatcher = dispatcher

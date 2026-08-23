@@ -1,4 +1,4 @@
-import { api } from "../api/client";
+import { api, ApiError, apiErrorFromPayload } from "../api/client";
 import {
   createNoiseIkInitiator,
   createNoiseIkKeypair,
@@ -80,15 +80,22 @@ export interface EncryptedRunnerConnection {
   close(): void;
 }
 
-export class RunnerRpcError extends Error {
-  readonly status: number;
+export class RunnerRpcError extends ApiError {
   readonly body: unknown;
 
   constructor(status: number, body: unknown) {
-    super(`Runner RPC failed with status ${status}`);
-    this.name = "RunnerRpcError";
-    this.status = status;
+    const parsed = apiErrorFromPayload(status, body);
+    super(
+      parsed.status,
+      parsed.message,
+      {
+        code: parsed.code,
+        connect_url: parsed.connectUrl,
+        manage_url: parsed.manageUrl,
+      },
+    );
     this.body = body;
+    this.name = "RunnerRpcError";
   }
 }
 

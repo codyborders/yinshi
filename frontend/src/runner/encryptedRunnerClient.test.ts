@@ -1,10 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { ApiError } from "../api/client";
 import {
   checkEncryptedRunnerHealth,
   connectEncryptedRunner,
   requestEncryptedRunner,
   type RunnerClientDependencies,
+  RunnerRpcError,
 } from "./encryptedRunnerClient";
 
 const runnerPublicKey = "MeAwP9ZBjS-MDni5HyLoyu0Pvkhlbc9HZ-SDT3Abj2I";
@@ -181,6 +183,26 @@ function dependencies(
 }
 
 describe("checkEncryptedRunnerHealth", () => {
+  it("RunnerRpcError extends ApiError and preserves structured fields", () => {
+    const body = {
+      detail: {
+        code: "github_access_not_granted",
+        message: "Grant repository access.",
+        connect_url: null,
+        manage_url: "/settings/github",
+      },
+    };
+    const error = new RunnerRpcError(400, body);
+    expect(error).toBeInstanceOf(RunnerRpcError);
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error.status).toBe(400);
+    expect(error.body).toBe(body);
+    expect(error.message).toBe("Grant repository access.");
+    expect(error.code).toBe("github_access_not_granted");
+    expect(error.connectUrl).toBe(null);
+    expect(error.manageUrl).toBe("/settings/github");
+  });
+
   it("keeps RPC payloads inside a capability-bound Noise transport", async () => {
     const socket = new FakeWebSocket();
     const clientDependencies = dependencies(socket);
