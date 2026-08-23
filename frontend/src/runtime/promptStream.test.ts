@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { RunnerRelayConnectionError } from "../runner/encryptedRunnerClient";
 import type { RuntimeTransport } from "./runtimeTransport";
 import { startRuntimePrompt } from "./promptStream";
 
@@ -60,6 +61,66 @@ describe("runtime prompt stream", () => {
       2,
       `/api/sessions/${sessionId}/runs/${runId}/events/1`,
     );
+  });
+
+  it("resumes from the durable sequence after a relay disconnect", async () => {
+    vi.useFakeTimers();
+    try {
+      const runtimeTransport = transport();
+      vi.mocked(runtimeTransport.post).mockResolvedValue({
+        id: runId,
+        session_id: sessionId,
+        status: "starting",
+      });
+      vi.mocked(runtimeTransport.get)
+        .mockResolvedValueOnce({
+          run_id: runId,
+          status: "running",
+          events: [{ type: "status", status: "started" }],
+          next_sequence: 1,
+        })
+        .mockRejectedValueOnce(
+          new RunnerRelayConnectionError(
+            "Runner relay closed before responding",
+          ),
+        )
+        .mockResolvedValueOnce({
+          run_id: runId,
+          status: "completed",
+          events: [{ type: "result" }],
+          next_sequence: 2,
+        });
+      const handle = await startRuntimePrompt(runtimeTransport, sessionId, {
+        prompt: "hello",
+        idempotencyKey: "22222222-2222-4222-8222-222222222222",
+        pollDelayMs: 0,
+      });
+      const events: string[] = [];
+      const collect = (async () => {
+        for await (const event of handle.events()) {
+          events.push(event.type);
+        }
+      })();
+
+      await vi.runAllTimersAsync();
+      await collect;
+
+      expect(events).toEqual(["status", "result"]);
+      expect(runtimeTransport.get).toHaveBeenNthCalledWith(
+        1,
+        `/api/sessions/${sessionId}/runs/${runId}/events/0`,
+      );
+      expect(runtimeTransport.get).toHaveBeenNthCalledWith(
+        2,
+        `/api/sessions/${sessionId}/runs/${runId}/events/1`,
+      );
+      expect(runtimeTransport.get).toHaveBeenNthCalledWith(
+        3,
+        `/api/sessions/${sessionId}/runs/${runId}/events/1`,
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("uses the remote polling interval for a managed runtime", async () => {
@@ -196,6 +257,42 @@ describe("runtime prompt stream", () => {
       await rejection;
       expect(clearTimeout).toHaveBeenCalledOnce();
       expect(runtimeTransport.get).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("surfaces the last relay error at the injected retry limit", async () => {
+    vi.useFakeTimers();
+    try {
+      const runtimeTransport = transport();
+      const firstError = new RunnerRelayConnectionError(
+        "Runner relay closed before responding",
+      );
+      const lastError = new RunnerRelayConnectionError(
+        "Runner relay response timed out",
+      );
+      vi.mocked(runtimeTransport.post).mockResolvedValue({
+        id: runId,
+        session_id: sessionId,
+        status: "starting",
+      });
+      vi.mocked(runtimeTransport.get)
+        .mockRejectedValueOnce(firstError)
+        .mockRejectedValueOnce(lastError);
+      const handle = await startRuntimePrompt(runtimeTransport, sessionId, {
+        prompt: "hello",
+        idempotencyKey: "22222222-2222-4222-8222-222222222222",
+        pollDelayMs: 0,
+        pollRetryLimit: 2,
+      });
+
+      const nextEvent = handle.events().next();
+      const rejection = expect(nextEvent).rejects.toBe(lastError);
+      await vi.runAllTimersAsync();
+
+      await rejection;
+      expect(runtimeTransport.get).toHaveBeenCalledTimes(2);
     } finally {
       vi.useRealTimers();
     }
@@ -371,6 +468,10 @@ describe("runtime prompt stream", () => {
     ["ordinary client status", Object.assign(new Error("not found"), { status: 404 })],
     ["abort", new DOMException("aborted", "AbortError")],
     ["generic transport error", new Error("identity changed")],
+    [
+      "untyped relay wording",
+      new Error("Runner relay closed before responding"),
+    ],
   ])("does not retry %s polling errors", async (_label, pollingError) => {
     const runtimeTransport = transport();
     vi.mocked(runtimeTransport.post).mockResolvedValue({

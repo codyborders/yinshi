@@ -6,6 +6,7 @@ import {
   connectEncryptedRunner,
   requestEncryptedRunner,
   type RunnerClientDependencies,
+  RunnerRelayConnectionError,
   RunnerRpcError,
 } from "./encryptedRunnerClient";
 
@@ -183,6 +184,16 @@ function dependencies(
 }
 
 describe("checkEncryptedRunnerHealth", () => {
+  it("marks relay transport failures with a stable error type", () => {
+    const error = new RunnerRelayConnectionError(
+      "Runner relay closed before responding",
+    );
+
+    expect(error).toBeInstanceOf(Error);
+    expect(error.name).toBe("RunnerRelayConnectionError");
+    expect(error.message).toBe("Runner relay closed before responding");
+  });
+
   it("RunnerRpcError extends ApiError and preserves structured fields", () => {
     const body = {
       detail: {
@@ -426,6 +437,61 @@ describe("checkEncryptedRunnerHealth", () => {
     }
   });
 
+  it("classifies a relay close before an RPC response as retryable", async () => {
+    const socket = new FakeWebSocket();
+    const originalSend = socket.send.bind(socket);
+    socket.send = (data) => {
+      if (socket.sent.length < 2) {
+        originalSend(data);
+        return;
+      }
+      socket.sent.push(data);
+      queueMicrotask(() =>
+        socket.dispatchEvent(
+          new CloseEvent("close", { code: 1006, wasClean: false }),
+        ),
+      );
+    };
+
+    const error = await checkEncryptedRunnerHealth(
+      runnerPublicKey,
+      dependencies(socket),
+    ).catch((failure: unknown) => failure);
+
+    expect(error).toBeInstanceOf(RunnerRelayConnectionError);
+    expect(error).toMatchObject({
+      message: "Runner relay closed before responding",
+    });
+  });
+
+  it("classifies a relay error before opening as retryable", async () => {
+    const pendingSocket = new EventTarget() as EventTarget & {
+      binaryType: BinaryType;
+      close(): void;
+      readonly readyState: number;
+      send(data: string | ArrayBufferLike | Blob | ArrayBufferView): void;
+    };
+    pendingSocket.binaryType = "blob";
+    Object.defineProperty(pendingSocket, "readyState", {
+      value: WebSocket.CONNECTING,
+    });
+    pendingSocket.close = vi.fn();
+    pendingSocket.send = vi.fn();
+    const clientDependencies = dependencies(new FakeWebSocket());
+    clientDependencies.openWebSocket = vi.fn(() => {
+      queueMicrotask(() => pendingSocket.dispatchEvent(new Event("error")));
+      return pendingSocket as unknown as WebSocket;
+    });
+
+    const error = await checkEncryptedRunnerHealth(
+      runnerPublicKey,
+      clientDependencies,
+    ).catch((failure: unknown) => failure);
+
+    expect(error).toBeInstanceOf(RunnerRelayConnectionError);
+    expect(error).toMatchObject({ message: "Runner relay could not be opened" });
+  });
+
   it("carries bounded large requests and responses through encrypted fragments", async () => {
     const socket = new FakeWebSocket();
     const responseBody = {
@@ -474,9 +540,16 @@ describe("checkEncryptedRunnerHealth", () => {
       };
     };
 
-    await expect(
-      checkEncryptedRunnerHealth(runnerPublicKey, clientDependencies),
-    ).rejects.toThrow("Runner RPC transport fragment is invalid");
+    const error = await checkEncryptedRunnerHealth(
+      runnerPublicKey,
+      clientDependencies,
+    ).catch((failure: unknown) => failure);
+
+    expect(error).toBeInstanceOf(Error);
+    expect(error).not.toBeInstanceOf(RunnerRelayConnectionError);
+    expect(error).toMatchObject({
+      message: "Runner RPC transport fragment is invalid",
+    });
     expect(socket.readyState).toBe(3);
   });
 

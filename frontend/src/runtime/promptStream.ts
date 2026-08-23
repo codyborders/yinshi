@@ -3,6 +3,7 @@ import {
   type SSEEvent,
   type ThinkingLevel,
 } from "../api/client";
+import { RunnerRelayConnectionError } from "../runner/encryptedRunnerClient";
 import type { RuntimeTransport } from "./runtimeTransport";
 
 const RESOURCE_ID_PATTERN = /^[0-9a-f]{32}$/;
@@ -148,7 +149,9 @@ async function delay(milliseconds: number, signal?: AbortSignal): Promise<void> 
 
 function shouldRetry(error: unknown): boolean {
   if (error instanceof DOMException && error.name === "AbortError") return false;
-  if (error instanceof TypeError) return true;
+  if (error instanceof TypeError || error instanceof RunnerRelayConnectionError) {
+    return true;
+  }
   if (error !== null && typeof error === "object" && "status" in error) {
     const status = (error as { status?: unknown }).status;
     return (
