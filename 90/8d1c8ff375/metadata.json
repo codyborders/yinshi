@@ -3,10 +3,14 @@
   "checkpoint_id": "908d1c8ff375",
   "strategy": "manual-commit",
   "branch": "main",
-  "checkpoints_count": 2,
+  "checkpoints_count": 6,
   "files_touched": [
+    "backend/src/yinshi/api/runner_relay.py",
     "backend/src/yinshi/services/managed_runtime_manager.py",
-    "backend/tests/test_managed_runtime_manager.py"
+    "backend/src/yinshi/services/runner_relay.py",
+    "backend/tests/test_managed_runtime_manager.py",
+    "backend/tests/test_runner_relay.py",
+    "backend/tests/test_runner_relay_maintenance_reconnect.py"
   ],
   "sessions": [
     {
@@ -22,13 +26,20 @@
       "compact_transcript": "/90/8d1c8ff375/1/transcript.jsonl",
       "content_hash": "/90/8d1c8ff375/1/content_hash.txt",
       "prompt": "/90/8d1c8ff375/1/prompt.txt"
+    },
+    {
+      "metadata": "/90/8d1c8ff375/2/metadata.json",
+      "transcript": "/90/8d1c8ff375/2/full.jsonl",
+      "compact_transcript": "/90/8d1c8ff375/2/transcript.jsonl",
+      "content_hash": "/90/8d1c8ff375/2/content_hash.txt",
+      "prompt": "/90/8d1c8ff375/2/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 18541289,
+    "input_tokens": 23023510,
     "cache_creation_tokens": 0,
-    "cache_read_tokens": 749475200,
-    "output_tokens": 1473298,
-    "api_call_count": 5045
+    "cache_read_tokens": 858838144,
+    "output_tokens": 1768403,
+    "api_call_count": 5777
   }
 }

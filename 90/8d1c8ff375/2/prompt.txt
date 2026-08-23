@@ -1,0 +1,323 @@
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+You are a delegated subagent running from a fork of the parent session. Treat the inherited conversation as reference-only context, not a live thread to continue. Do not continue or answer prior messages as if they are waiting for a reply. Your sole job is to execute the task below and return a focused result for that task using your tools.
+
+Task:
+You are sole writer. Fix recurring production prompt interruption with strict red-green TDD. Do not commit, push, deploy, or touch untracked .pi-subagents/.
+
+Confirmed production root:
+- Run 952845950ede4e4ab03055de53f11654 was active when outbound runner relay dropped.
+- Heartbeat was fresh and Sprite task lease active. No process crash or storage fault occurred first.
+- ManagedRuntimeManager._ensure_online immediately restarted yinshi-runner because broker relay membership was absent.
+- Runner agent already retries relay connection after one second. Control restart raced that retry and killed active prompt ownership.
+- Startup recovery then marked the prompt interrupted.
+
+Required behavior:
+1. Separate fresh heartbeat state from relay membership in ManagedRuntimeManager.
+2. Valid ready identity plus fresh online heartbeat plus missing relay must wait within existing readiness deadline for reconnect. It must not call restart_service solely because relay membership is absent.
+3. If relay reconnects, capability issuance succeeds without process restart.
+4. If heartbeat remains fresh but relay does not reconnect by deadline, raise existing sanitized timeout. Do not restart.
+5. Missing or stale heartbeat plus missing relay retains one restart and existing readiness checks.
+6. Concurrent ensure_online callers share the same reconnect wait. Cancelling one waiter must not cancel shared work.
+7. Identity, runtime, artifact, and BYOC checks remain fail-closed.
+8. Add safe decision logs without user, token, key, capability, transfer, or prompt data.
+9. Make all broker-owned WebSocket closes idempotent, including unregister, replacement, maintenance, runner-rejected transfer, byte-limit, and revocation paths. Preserve close codes and reasons. Suppress only already-closed close failures.
+10. Add safe runner-relay disconnect-code logging in API path. Do not log peer reason text or secrets.
+
+TDD sequence:
+- First add a failing fresh-heartbeat reconnect test in test_managed_runtime_manager.py. Run it and record clean red.
+- Implement minimum reconnect-first behavior and run green.
+- Add red-green tests for timeout without restart, stale-heartbeat restart, shared wait, cancellation, and identity change during wait.
+- Add red-green strict WebSocket tests proving broker cleanup survives already-closed and concurrent closes.
+- Add disconnect-code logging tests if existing API test structure supports them.
+- Run focused affected suites, full backend pytest, Black, isort, flake8, mypy, and git diff --check.
+
+Keep changes narrow. Frontend protocol and endpoint contracts must not change. Return changed files, exact red failures, final commands, and residual risks.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+You are reviving a previous subagent conversation.
+
+Original run: 05e1d403
+Original agent: worker
+Original session file: /Users/user/.pi/agent/sessions/--Users-user-projects-yinshi--/2026-08-23T15-15-49-628Z_01a02f31-36fb-7a22-951f-57f9e962de1b.jsonl
+
+Use the stored session context as background. Answer the orchestrator's follow-up below. Do not assume the original child process is still alive.
+
+Follow-up:
+Reviewer found one boundary defect. Continue as sole writer. Do not commit or deploy.
+Add one exact-deadline regression first. The injected sleep advances clock to the readiness deadline and makes relay plus heartbeat valid during that final sleep. Confirm current code fails because it checks timeout before refreshing state.
+Then change the reconnect loop to refresh and validate current runtime, identity, heartbeat, and relay after each sleep before applying timeout. A valid reconnect exactly at deadline must succeed. A still-disconnected runner at deadline must still time out with no restart while heartbeat is fresh.
+Run the new test, affected manager tests, full backend suite, static checks, and git diff --check. Return results.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+- criterion-2: Return evidence sufficient for an independent acceptance review
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Review gate: required by reviewer.
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    },
+    {
+      "id": "criterion-2",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+You are reviving a previous subagent conversation.
+
+Original run: 202a5742
+Original agent: worker
+Original session file: /Users/user/.pi/agent/sessions/--Users-user-projects-yinshi--/2026-08-23T15-15-49-628Z_01a02f31-36fb-7a22-951f-57f9e962de1b.jsonl
+
+Use the stored session context as background. Answer the orchestrator's follow-up below. Do not assume the original child process is still alive.
+
+Follow-up:
+Two independent review blockers remain. Continue as sole writer. Do not commit or deploy.
+
+Blocker 1: RunnerRelayBroker.register_runner publishes a new connection before fallible old-socket cleanup or maintenance send. If either raises, is_runner_connected stays true even though API registration never completed. Add clean-red tests for replacement close failure and maintenance send failure. Then ensure an incompletely registered connection never becomes visible to is_runner_connected or attach_client, and rolls back only its own connection on failure. Preserve replacement safety and all close-error handling. A readiness flag on _RunnerConnection is acceptable.
+
+Blocker 2: exact deadline may succeed, but a sleep that overshoots the readiness deadline must not issue capability. Add a clean-red overshoot test where sleep advances to deadline plus 0.1 seconds and reconnects. It must raise ManagedRuntimeTimeoutError with no restart. Keep exact-deadline success. Make time ordering explicit and bounded.
+
+Run focused tests, full backend pytest, Black, isort, flake8, mypy, and git diff --check. Return red failures and final results.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+- criterion-2: Return evidence sufficient for an independent acceptance review
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Review gate: required by reviewer.
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    },
+    {
+      "id": "criterion-2",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+You are reviving a previous subagent conversation.
+
+Original run: b85ce87b
+Original agent: worker
+Original session file: /Users/user/.pi/agent/sessions/--Users-user-projects-yinshi--/2026-08-23T15-15-49-628Z_01a02f31-36fb-7a22-951f-57f9e962de1b.jsonl
+
+Use the stored session context as background. Answer the orchestrator's follow-up below. Do not assume the original child process is still alive.
+
+Follow-up:
+Two final review blockers. Continue as sole writer. Do not commit or deploy.
+
+1. Once _ensure_online enters reconnect-first wait because either heartbeat or relay was valid initially, it must never transition to process restart during that same wake. A heartbeat near freshness boundary can age out after one sleep while relay remains absent. Add clean-red regression and keep waiting to bounded timeout with zero restart. A later independent ensure_online call may restart if it begins with both signals absent.
+
+2. Post-restart readiness loop checks connectivity before deadline. Add clean-red overshoot test where sleep advances past restart deadline and both signals become valid. It must time out, while exact-deadline success remains allowed if that is current contract. Use bounded remaining sleep and reject only observed_at greater than deadline before issuing capability.
+
+Implement minimum fixes. Run focused tests, full backend pytest, Black, isort, flake8, mypy, and git diff --check. Return red failures and final results.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+- criterion-2: Return evidence sufficient for an independent acceptance review
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Review gate: required by reviewer.
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    },
+    {
+      "id": "criterion-2",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
