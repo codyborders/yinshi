@@ -1,0 +1,65 @@
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+You are a delegated subagent running from a fork of the parent session. Treat the inherited conversation as reference-only context, not a live thread to continue. Do not continue or answer prior messages as if they are waiting for a reply. Your sole job is to execute the task below and return a focused result for that task using your tools.
+
+Task:
+Continue the current uncommitted managed-storage fix as sole writer. Address every second-review finding with red-green TDD. Do not commit, push, or deploy.
+
+1. In api/deps.py, caller cancellation must remain CancelledError even when the active thread attempt later raises. Wait for thread completion, consume its exception safely, then re-raise the original cancellation. Add a test where the active operation raises after cancellation.
+2. Apply the same cancellation rule to the shielded PromptJournal start task. Add a test where _start_serialized raises after caller cancellation.
+3. Repair orphan starting runs. If initial create commits but storage retries exhaust before executor registration, a later start with the same idempotency key must detect the existing starting row without a local task and register exactly one executor for that same run ID. Add a focused regression test covering first-call exhaustion and later recovery.
+4. Every reservation cleanup in api/stream.py must use a fresh background retry budget. Cancellation must remain authoritative after cleanup. Add expired-foreground-budget coverage with one temporary cleanup failure and assert session returns idle.
+5. Remove remaining direct prompt database failure paths. Wrap cancel_session lookup with the async helper. For ensure_workspace_checkout_for_tenant, add a narrow fresh-connection async retry or exact temporary-error translation that produces bounded JSON 503 without replaying unsafe non-idempotent work. Prefer retry only if the workspace operation is already idempotent. Add focused route coverage for exact mid-operation disk I/O.
+
+Keep prior behavior and scope limits. Fix analogous cancellation exception masking if found. Preserve .pi-subagents. Run focused tests, full backend pytest, Black, isort, flake8, mypy, and git diff --check. Report exact results and remaining risk.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
