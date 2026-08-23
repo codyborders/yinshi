@@ -36,6 +36,7 @@ _SQLCIPHER_MODULE_NAMES: Final[tuple[str, ...]] = (
 )
 _SQLCIPHER_OPEN_ATTEMPTS: Final[int] = 3
 _SQLCIPHER_OPEN_RETRY_DELAY_SECONDS: Final[float] = 0.05
+_SQLITE_PLAINTEXT_HEADER: Final[bytes] = b"SQLite format 3\x00"
 _STORAGE_ENCRYPTION_MARKER: Final[str] = ".yinshi-encrypted-storage"
 _SCHEMA_OBJECT_TYPES: Final[tuple[str, ...]] = ("index", "table", "trigger", "view")
 _MIGRATION_LOCK_SUFFIX: Final[str] = ".migration.lock"
@@ -81,6 +82,10 @@ _MIGRATION_THREAD_LOCKS_GUARD: threading.Lock = threading.Lock()
 
 class TenantDatabaseTemporarilyUnavailable(RuntimeError):
     """Tenant database storage could not complete an exact transient operation."""
+
+
+class _TenantDatabaseKeyOrFormatError(RuntimeError):
+    """A keyed database could not be authenticated as SQLCipher."""
 
 
 @dataclass
@@ -408,7 +413,7 @@ def _open_sqlcipher_connection(db_path: str, sqlcipher_key: bytes) -> sqlite3.Co
                     "Tenant database storage is temporarily unavailable"
                 ) from exc
             if not is_transient:
-                raise RuntimeError(
+                raise _TenantDatabaseKeyOrFormatError(
                     "Tenant database could not be opened with the configured key"
                 ) from exc
             time.sleep(_SQLCIPHER_OPEN_RETRY_DELAY_SECONDS * (attempt + 1))
@@ -416,9 +421,66 @@ def _open_sqlcipher_connection(db_path: str, sqlcipher_key: bytes) -> sqlite3.Co
     raise AssertionError("SQLCipher connection attempts must return or raise")
 
 
+def _read_database_header(db_path: str) -> bytes | None:
+    """Read one trusted regular database header without following links."""
+    try:
+        path_stat = os.lstat(db_path)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise RuntimeError("Tenant database header could not be inspected") from exc
+    if (
+        stat.S_ISLNK(path_stat.st_mode)
+        or not stat.S_ISREG(path_stat.st_mode)
+        or path_stat.st_uid != os.geteuid()
+        or path_stat.st_nlink != 1
+    ):
+        raise RuntimeError("Tenant database must be a trusted regular file")
+
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    flags |= getattr(os, "O_NONBLOCK", 0)
+    try:
+        descriptor = os.open(db_path, flags)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise RuntimeError("Tenant database header could not be inspected") from exc
+    try:
+        opened_stat = os.fstat(descriptor)
+        current_path_stat = os.lstat(db_path)
+        if (
+            not stat.S_ISREG(opened_stat.st_mode)
+            or stat.S_ISLNK(current_path_stat.st_mode)
+            or not stat.S_ISREG(current_path_stat.st_mode)
+            or opened_stat.st_uid != os.geteuid()
+            or current_path_stat.st_uid != os.geteuid()
+            or opened_stat.st_nlink != 1
+            or current_path_stat.st_nlink != 1
+            or (opened_stat.st_dev, opened_stat.st_ino)
+            != (current_path_stat.st_dev, current_path_stat.st_ino)
+        ):
+            raise RuntimeError("Tenant database must be a trusted regular file")
+        return os.read(descriptor, len(_SQLITE_PLAINTEXT_HEADER))
+    except RuntimeError:
+        raise
+    except OSError as exc:
+        raise RuntimeError("Tenant database header could not be inspected") from exc
+    finally:
+        try:
+            os.close(descriptor)
+        except OSError as exc:
+            raise RuntimeError("Tenant database header could not be inspected") from exc
+
+
+def _database_has_plaintext_header(db_path: str) -> bool:
+    """Return whether a database starts with the canonical plaintext header."""
+    return _read_database_header(db_path) == _SQLITE_PLAINTEXT_HEADER
+
+
 def _plaintext_database_readable(db_path: str) -> bool:
-    """Return whether a database can be opened by plaintext stdlib SQLite."""
-    if not os.path.exists(db_path):
+    """Return whether a canonical plaintext database opens with stdlib SQLite."""
+    if not _database_has_plaintext_header(db_path):
         return False
     try:
         conn = _open_connection(db_path)
@@ -864,6 +926,9 @@ def _open_user_connection(
         except RuntimeError:
             if encryption_required:
                 raise
+            database_header = _read_database_header(db_path)
+            if database_header is not None and database_header != _SQLITE_PLAINTEXT_HEADER:
+                raise RuntimeError("Tenant database cannot be opened without SQLCipher") from None
             logger.warning("SQLCipher unavailable; opening tenant database without encryption")
             connection = _open_connection(db_path)
             try:
@@ -874,9 +939,15 @@ def _open_user_connection(
             return connection
 
         sqlcipher_key = _tenant_database_key(tenant)
-        if os.path.exists(db_path):
+        try:
+            connection = _open_sqlcipher_connection(db_path, sqlcipher_key)
+        except TenantDatabaseTemporarilyUnavailable:
+            raise
+        except _TenantDatabaseKeyOrFormatError:
+            if not _database_has_plaintext_header(db_path):
+                raise
             _migrate_plaintext_user_database(db_path, sqlcipher_key)
-        connection = _open_sqlcipher_connection(db_path, sqlcipher_key)
+            connection = _open_sqlcipher_connection(db_path, sqlcipher_key)
         try:
             _ensure_current_user_db_schema(connection)
         except Exception:

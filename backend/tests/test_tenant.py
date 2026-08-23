@@ -859,6 +859,13 @@ def test_init_user_db_preserves_plaintext_database_when_wal_checkpoint_is_busy(
     monkeypatch.setattr(tenant_module, "_tenant_database_key", lambda _tenant: b"k" * 32)
     monkeypatch.setattr(
         tenant_module,
+        "_open_sqlcipher_connection",
+        lambda _path, _key: (_ for _ in ()).throw(
+            tenant_module._TenantDatabaseKeyOrFormatError("plaintext database")
+        ),
+    )
+    monkeypatch.setattr(
+        tenant_module,
         "_remove_sqlite_sidecars",
         lambda _path: events.append("remove-sidecars"),
     )
@@ -1232,6 +1239,7 @@ def test_concurrent_initializers_migrate_plaintext_once(
     import threading
     from concurrent.futures import ThreadPoolExecutor
 
+    import yinshi.tenant as tenant_module
     from yinshi.config import get_settings
     from yinshi.tenant import TenantContext, init_user_db
 
@@ -1263,13 +1271,15 @@ def test_concurrent_initializers_migrate_plaintext_once(
         assert allow_migration.wait(timeout=5)
         Path(path).write_bytes(b"encrypted-primary")
 
+    def open_sqlcipher(path: str, _key: bytes):
+        if Path(path).read_bytes() != b"encrypted-primary":
+            raise tenant_module._TenantDatabaseKeyOrFormatError("plaintext database")
+        return sqlite3.connect(":memory:")
+
     monkeypatch.setattr("yinshi.tenant._tenant_database_key", lambda _tenant: b"k" * 32)
     monkeypatch.setattr("yinshi.tenant._load_sqlcipher_module", lambda: object())
     monkeypatch.setattr("yinshi.tenant._migrate_plaintext_user_database", migrate)
-    monkeypatch.setattr(
-        "yinshi.tenant._open_sqlcipher_connection",
-        lambda _path, _key: sqlite3.connect(":memory:"),
-    )
+    monkeypatch.setattr("yinshi.tenant._open_sqlcipher_connection", open_sqlcipher)
     monkeypatch.setattr(
         "yinshi.tenant._ensure_current_user_db_schema",
         lambda _connection: None,
@@ -1324,6 +1334,7 @@ def test_independent_processes_serialize_plaintext_migration(
     """Independent processes should wait for one plaintext migration owner."""
     import multiprocessing
 
+    import yinshi.tenant as tenant_module
     from yinshi.config import get_settings
     from yinshi.tenant import TenantContext, init_user_db
 
@@ -1359,13 +1370,15 @@ def test_independent_processes_serialize_plaintext_migration(
         assert allow_migration.wait(timeout=5)
         Path(path).write_bytes(b"encrypted-primary")
 
+    def open_sqlcipher(path: str, _key: bytes):
+        if Path(path).read_bytes() != b"encrypted-primary":
+            raise tenant_module._TenantDatabaseKeyOrFormatError("plaintext database")
+        return sqlite3.connect(":memory:")
+
     monkeypatch.setattr("yinshi.tenant._tenant_database_key", lambda _tenant: b"k" * 32)
     monkeypatch.setattr("yinshi.tenant._load_sqlcipher_module", lambda: object())
     monkeypatch.setattr("yinshi.tenant._migrate_plaintext_user_database", migrate)
-    monkeypatch.setattr(
-        "yinshi.tenant._open_sqlcipher_connection",
-        lambda _path, _key: sqlite3.connect(":memory:"),
-    )
+    monkeypatch.setattr("yinshi.tenant._open_sqlcipher_connection", open_sqlcipher)
     monkeypatch.setattr(
         "yinshi.tenant._ensure_current_user_db_schema",
         lambda _connection: None,
@@ -1391,6 +1404,417 @@ def test_independent_processes_serialize_plaintext_migration(
     assert second.exitcode == 0
     assert migration_count.value == 1
     assert database_path.read_bytes() == b"encrypted-primary"
+
+
+def test_real_encrypted_database_opens_before_plaintext_detection(
+    tenant_env,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A valid keyed database should bypass every plaintext detector."""
+    import yinshi.tenant as tenant_module
+    from yinshi.config import get_settings
+    from yinshi.tenant import TenantContext, _open_sqlcipher_connection, get_user_db
+
+    monkeypatch.setenv("TENANT_DB_ENCRYPTION", "required")
+    get_settings.cache_clear()
+    data_directory = Path(tenant_env["user_data_dir"]) / "ab" / "abcdef"
+    data_directory.mkdir(parents=True)
+    database_path = data_directory / "yinshi.db"
+    key = b"k" * 32
+    encrypted_connection = _open_sqlcipher_connection(str(database_path), key)
+    tenant_module._ensure_current_user_db_schema(encrypted_connection)
+    encrypted_connection.close()
+    tenant = TenantContext(
+        user_id="abcdef",
+        email="user@example.com",
+        data_dir=str(data_directory),
+        db_path=str(database_path),
+    )
+
+    def reject_plaintext_detection(*_args):
+        raise AssertionError("valid encrypted database must bypass plaintext detection")
+
+    monkeypatch.setattr(tenant_module, "_tenant_database_key", lambda _tenant: key)
+    monkeypatch.setattr(
+        tenant_module,
+        "_plaintext_database_readable",
+        reject_plaintext_detection,
+    )
+    monkeypatch.setattr(
+        tenant_module,
+        "_read_database_header",
+        reject_plaintext_detection,
+    )
+
+    with get_user_db(tenant) as connection:
+        assert connection.execute("SELECT count(*) FROM sqlite_master").fetchone() is not None
+
+
+def test_plaintext_header_inspection_rejects_symlink_before_sqlite(
+    tenant_env,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Header inspection must reject symlinks before any SQLite API."""
+    import yinshi.tenant as tenant_module
+
+    target_path = Path(tenant_env["tmp_path"]) / "target.db"
+    with sqlite3.connect(target_path) as connection:
+        connection.execute("CREATE TABLE marker (value TEXT NOT NULL)")
+    database_path = Path(tenant_env["tmp_path"]) / "symlink.db"
+    database_path.symlink_to(target_path)
+
+    def reject_stdlib_open(_path: str):
+        raise AssertionError("stdlib SQLite must not open a symlink")
+
+    monkeypatch.setattr(tenant_module, "_open_connection", reject_stdlib_open)
+
+    with pytest.raises(RuntimeError, match="trusted regular file"):
+        tenant_module._plaintext_database_readable(str(database_path))
+
+
+def test_database_header_file_error_is_sanitized(
+    tenant_env,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Header I/O failures should propagate without exposing database paths."""
+    import yinshi.tenant as tenant_module
+
+    database_path = Path(tenant_env["tmp_path"]) / "unreadable.db"
+    database_path.write_bytes(b"SQLite format 3\x00")
+
+    def reject_open(_path: str, _flags: int):
+        raise PermissionError("private provider detail")
+
+    monkeypatch.setattr(tenant_module.os, "open", reject_open)
+
+    with pytest.raises(RuntimeError, match="header could not be inspected") as raised:
+        tenant_module._read_database_header(str(database_path))
+
+    assert str(database_path) not in str(raised.value)
+    assert isinstance(raised.value.__cause__, PermissionError)
+
+
+def test_database_header_close_error_is_sanitized(
+    tenant_env,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Header descriptor close failures should become sanitized runtime errors."""
+    import yinshi.tenant as tenant_module
+
+    database_path = Path(tenant_env["tmp_path"]) / "close-error.db"
+    database_path.write_bytes(b"SQLite format 3\x00")
+    original_close = tenant_module.os.close
+
+    def close_then_fail(descriptor: int) -> None:
+        original_close(descriptor)
+        raise OSError("private provider detail")
+
+    monkeypatch.setattr(tenant_module.os, "close", close_then_fail)
+
+    with pytest.raises(RuntimeError, match="header could not be inspected") as raised:
+        tenant_module._read_database_header(str(database_path))
+
+    assert str(database_path) not in str(raised.value)
+    assert isinstance(raised.value.__cause__, OSError)
+
+
+def test_plaintext_header_opens_stdlib_sqlite_for_migration_probe(
+    tenant_env,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Canonical plaintext databases should retain stdlib validation."""
+    import yinshi.tenant as tenant_module
+
+    database_path = Path(tenant_env["tmp_path"]) / "plaintext-header.db"
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("CREATE TABLE marker (value TEXT NOT NULL)")
+    assert database_path.read_bytes()[:16] == b"SQLite format 3\x00"
+    opened_paths: list[str] = []
+    original_open_connection = tenant_module._open_connection
+
+    def track_stdlib_open(path: str):
+        opened_paths.append(path)
+        return original_open_connection(path)
+
+    monkeypatch.setattr(tenant_module, "_open_connection", track_stdlib_open)
+
+    assert tenant_module._plaintext_database_readable(str(database_path)) is True
+    assert opened_paths == [str(database_path)]
+
+
+def test_get_user_db_encrypted_header_only_uses_sqlcipher(
+    tenant_env,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An encrypted primary should only be opened through SQLCipher."""
+    import yinshi.tenant as tenant_module
+    from yinshi.config import get_settings
+    from yinshi.tenant import TenantContext, get_user_db
+
+    monkeypatch.setenv("TENANT_DB_ENCRYPTION", "required")
+    get_settings.cache_clear()
+    data_directory = Path(tenant_env["user_data_dir"]) / "ab" / "abcdef"
+    data_directory.mkdir(parents=True)
+    database_path = data_directory / "yinshi.db"
+    encrypted_contents = b"encrypted-primary" * 2
+    database_path.write_bytes(encrypted_contents)
+    tenant = TenantContext(
+        user_id="abcdef",
+        email="user@example.com",
+        data_dir=str(data_directory),
+        db_path=str(database_path),
+    )
+    sqlcipher_connection = sqlite3.connect(":memory:")
+    sqlcipher_opens: list[tuple[str, bytes]] = []
+
+    def reject_stdlib_open(_path: str):
+        raise AssertionError("stdlib SQLite must not open a non-plaintext primary")
+
+    def reject_plaintext_migration(*_args):
+        raise AssertionError("non-plaintext primary must not enter plaintext migration")
+
+    def open_sqlcipher(path: str, key: bytes):
+        sqlcipher_opens.append((path, key))
+        return sqlcipher_connection
+
+    monkeypatch.setattr(tenant_module, "_open_connection", reject_stdlib_open)
+    monkeypatch.setattr(
+        tenant_module,
+        "_copy_plaintext_user_database",
+        reject_plaintext_migration,
+    )
+    monkeypatch.setattr(
+        tenant_module,
+        "_remove_sqlite_sidecars",
+        reject_plaintext_migration,
+    )
+    monkeypatch.setattr(tenant_module, "_tenant_database_key", lambda _tenant: b"k" * 32)
+    monkeypatch.setattr(tenant_module, "_load_sqlcipher_module", lambda: object())
+    monkeypatch.setattr(tenant_module, "_open_sqlcipher_connection", open_sqlcipher)
+    monkeypatch.setattr(
+        tenant_module,
+        "_ensure_current_user_db_schema",
+        lambda _connection: None,
+    )
+
+    with get_user_db(tenant) as connection:
+        assert connection.execute("SELECT 1").fetchone()[0] == 1
+
+    assert sqlcipher_opens == [(str(database_path), b"k" * 32)]
+    assert database_path.read_bytes() == encrypted_contents
+
+
+@pytest.mark.parametrize(
+    "contents",
+    [
+        pytest.param(b"SQLite format 3", id="truncated"),
+        pytest.param(b"SQLite format 3X", id="near-match"),
+        pytest.param(b"\x00" * 32, id="random"),
+    ],
+)
+def test_get_user_db_malformed_headers_fail_closed(
+    tenant_env,
+    monkeypatch: pytest.MonkeyPatch,
+    contents: bytes,
+) -> None:
+    """Malformed primaries must fail keyed validation without stdlib fallback."""
+    import yinshi.tenant as tenant_module
+    from yinshi.config import get_settings
+    from yinshi.tenant import TenantContext, get_user_db
+
+    monkeypatch.setenv("TENANT_DB_ENCRYPTION", "required")
+    get_settings.cache_clear()
+    data_directory = Path(tenant_env["user_data_dir"]) / "ab" / "abcdef"
+    data_directory.mkdir(parents=True)
+    database_path = data_directory / "yinshi.db"
+    database_path.write_bytes(contents)
+    tenant = TenantContext(
+        user_id="abcdef",
+        email="user@example.com",
+        data_dir=str(data_directory),
+        db_path=str(database_path),
+    )
+
+    def reject_stdlib_open(_path: str):
+        raise AssertionError("stdlib SQLite must not open a malformed primary")
+
+    def reject_keyed_open(_path: str, _key: bytes):
+        raise tenant_module._TenantDatabaseKeyOrFormatError("invalid keyed database")
+
+    monkeypatch.setattr(tenant_module, "_open_connection", reject_stdlib_open)
+    monkeypatch.setattr(tenant_module, "_tenant_database_key", lambda _tenant: b"k" * 32)
+    monkeypatch.setattr(tenant_module, "_load_sqlcipher_module", lambda: object())
+    monkeypatch.setattr(tenant_module, "_open_sqlcipher_connection", reject_keyed_open)
+
+    with pytest.raises(RuntimeError, match="invalid keyed database"):
+        with get_user_db(tenant):
+            pass
+
+    assert database_path.read_bytes() == contents
+
+
+def test_transient_keyed_open_failure_bypasses_plaintext_detection(
+    tenant_env,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Temporary keyed-open failures should propagate without migration checks."""
+    import yinshi.tenant as tenant_module
+    from yinshi.config import get_settings
+    from yinshi.tenant import (
+        TenantContext,
+        TenantDatabaseTemporarilyUnavailable,
+        get_user_db,
+    )
+
+    monkeypatch.setenv("TENANT_DB_ENCRYPTION", "required")
+    get_settings.cache_clear()
+    data_directory = Path(tenant_env["user_data_dir"]) / "ab" / "abcdef"
+    data_directory.mkdir(parents=True)
+    database_path = data_directory / "yinshi.db"
+    database_path.write_bytes(b"SQLite format 3\x00" + b"x" * 32)
+    tenant = TenantContext(
+        user_id="abcdef",
+        email="user@example.com",
+        data_dir=str(data_directory),
+        db_path=str(database_path),
+    )
+    temporary_error = TenantDatabaseTemporarilyUnavailable("temporary storage failure")
+
+    def reject_plaintext_header(_path: str):
+        raise AssertionError("temporary failure must bypass plaintext detection")
+
+    monkeypatch.setattr(tenant_module, "_tenant_database_key", lambda _tenant: b"k" * 32)
+    monkeypatch.setattr(tenant_module, "_load_sqlcipher_module", lambda: object())
+    monkeypatch.setattr(
+        tenant_module,
+        "_open_sqlcipher_connection",
+        lambda _path, _key: (_ for _ in ()).throw(temporary_error),
+    )
+    monkeypatch.setattr(
+        tenant_module,
+        "_database_has_plaintext_header",
+        reject_plaintext_header,
+    )
+
+    with pytest.raises(TenantDatabaseTemporarilyUnavailable) as raised:
+        with get_user_db(tenant):
+            pass
+
+    assert raised.value is temporary_error
+
+
+def test_wrong_key_encrypted_database_fails_without_stdlib_fallback(
+    tenant_env,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Wrong-key validation should fail without a plaintext SQLite open."""
+    import yinshi.tenant as tenant_module
+    from yinshi.config import get_settings
+    from yinshi.tenant import TenantContext, _open_sqlcipher_connection, get_user_db
+
+    monkeypatch.setenv("TENANT_DB_ENCRYPTION", "required")
+    get_settings.cache_clear()
+    data_directory = Path(tenant_env["user_data_dir"]) / "ab" / "abcdef"
+    data_directory.mkdir(parents=True)
+    database_path = data_directory / "yinshi.db"
+    encrypted_connection = _open_sqlcipher_connection(str(database_path), b"a" * 32)
+    tenant_module._ensure_current_user_db_schema(encrypted_connection)
+    encrypted_connection.close()
+    tenant = TenantContext(
+        user_id="abcdef",
+        email="user@example.com",
+        data_dir=str(data_directory),
+        db_path=str(database_path),
+    )
+
+    def reject_stdlib_open(_path: str):
+        raise AssertionError("wrong-key database must not open with stdlib SQLite")
+
+    monkeypatch.setattr(tenant_module, "_open_connection", reject_stdlib_open)
+    monkeypatch.setattr(tenant_module, "_tenant_database_key", lambda _tenant: b"b" * 32)
+
+    with pytest.raises(RuntimeError, match="configured key"):
+        with get_user_db(tenant):
+            pass
+
+
+def test_concurrent_encrypted_open_avoids_stdlib_during_active_operation(
+    tenant_env,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A live encrypted operation must not overlap any stdlib database open."""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    import yinshi.tenant as tenant_module
+    from yinshi.config import get_settings
+    from yinshi.tenant import TenantContext, get_user_db
+
+    monkeypatch.setenv("TENANT_DB_ENCRYPTION", "required")
+    get_settings.cache_clear()
+    data_directory = Path(tenant_env["user_data_dir"]) / "ab" / "abcdef"
+    data_directory.mkdir(parents=True)
+    database_path = data_directory / "yinshi.db"
+    database_path.write_bytes(b"encrypted-primary" * 32)
+    tenant = TenantContext(
+        user_id="abcdef",
+        email="user@example.com",
+        data_dir=str(data_directory),
+        db_path=str(database_path),
+    )
+    operation_active = threading.Event()
+    release_operation = threading.Event()
+
+    class FakeSqlcipherConnection:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def execute(self, statement: str):
+            if statement == "HOLD":
+                operation_active.set()
+                assert release_operation.wait(timeout=5)
+            return SimpleNamespace(fetchone=lambda: (1,))
+
+        def close(self) -> None:
+            self.closed = True
+
+    opened_connections: list[FakeSqlcipherConnection] = []
+
+    def reject_stdlib_open(_path: str):
+        raise AssertionError("stdlib SQLite must not open an encrypted primary")
+
+    def open_sqlcipher(_path: str, _key: bytes) -> FakeSqlcipherConnection:
+        connection = FakeSqlcipherConnection()
+        opened_connections.append(connection)
+        return connection
+
+    def open_and_close() -> bool:
+        with get_user_db(tenant) as connection:
+            return connection.execute("SELECT 1").fetchone()[0] == 1
+
+    monkeypatch.setattr(tenant_module, "_open_connection", reject_stdlib_open)
+    monkeypatch.setattr(tenant_module, "_tenant_database_key", lambda _tenant: b"k" * 32)
+    monkeypatch.setattr(tenant_module, "_load_sqlcipher_module", lambda: object())
+    monkeypatch.setattr(tenant_module, "_open_sqlcipher_connection", open_sqlcipher)
+    monkeypatch.setattr(
+        tenant_module,
+        "_ensure_current_user_db_schema",
+        lambda _connection: None,
+    )
+
+    with get_user_db(tenant) as first_connection:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            active_operation = executor.submit(first_connection.execute, "HOLD")
+            assert operation_active.wait(timeout=5)
+            try:
+                concurrent_open = executor.submit(open_and_close)
+                assert concurrent_open.result(timeout=5) is True
+            finally:
+                release_operation.set()
+            active_operation.result(timeout=5)
+
+    assert len(opened_connections) == 2
+    assert all(connection.closed for connection in opened_connections)
 
 
 def test_open_encrypted_database_removes_legacy_plaintext_backup(
@@ -1431,6 +1855,43 @@ def test_open_encrypted_database_removes_legacy_plaintext_backup(
 
     assert connection is fake_connection
     assert not backup_path.exists()
+
+
+def test_optional_sqlcipher_unavailable_rejects_existing_encrypted_database(
+    tenant_env,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Optional mode must not open an encrypted primary with stdlib SQLite."""
+    import yinshi.tenant as tenant_module
+    from yinshi.config import get_settings
+    from yinshi.tenant import TenantContext, get_user_db
+
+    monkeypatch.setenv("TENANT_DB_ENCRYPTION", "enabled")
+    get_settings.cache_clear()
+    data_directory = Path(tenant_env["user_data_dir"]) / "ab" / "abcdef"
+    data_directory.mkdir(parents=True)
+    database_path = data_directory / "yinshi.db"
+    database_path.write_bytes(b"encrypted-primary" * 2)
+    tenant = TenantContext(
+        user_id="abcdef",
+        email="user@example.com",
+        data_dir=str(data_directory),
+        db_path=str(database_path),
+    )
+
+    def reject_stdlib_open(_path: str):
+        raise AssertionError("stdlib SQLite must not open an encrypted primary")
+
+    monkeypatch.setattr(
+        tenant_module,
+        "_load_sqlcipher_module",
+        lambda: (_ for _ in ()).throw(RuntimeError("SQLCipher unavailable")),
+    )
+    monkeypatch.setattr(tenant_module, "_open_connection", reject_stdlib_open)
+
+    with pytest.raises(RuntimeError, match="cannot be opened without SQLCipher"):
+        with get_user_db(tenant):
+            pass
 
 
 def test_required_tenant_db_encryption_fails_without_sqlcipher(tenant_env, monkeypatch):
