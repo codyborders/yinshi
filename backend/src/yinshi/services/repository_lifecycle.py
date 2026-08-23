@@ -13,7 +13,7 @@ import stat
 import threading
 import uuid
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -168,6 +168,25 @@ def repository_lifecycle_root(
     return Path(tenant.data_dir)
 
 
+async def _open_lock_file_async(lock_root: Path, repo_id: str) -> int:
+    """Open one lock descriptor without blocking or leaking after cancellation."""
+    attempt = asyncio.create_task(asyncio.to_thread(_open_lock_file, lock_root, repo_id))
+    try:
+        return await asyncio.shield(attempt)
+    except asyncio.CancelledError:
+        while not attempt.done():
+            try:
+                await asyncio.shield(attempt)
+            except asyncio.CancelledError:
+                continue
+            except BaseException:
+                break
+        if not attempt.cancelled():
+            with suppress(BaseException):
+                os.close(attempt.result())
+        raise
+
+
 async def _acquire_file_lock(lock_fd: int) -> None:
     """Acquire an advisory lock with cancellation-friendly polling."""
     while True:
@@ -196,7 +215,7 @@ async def repository_lifecycle(repo_id: str, lock_root: Path) -> AsyncIterator[N
     try:
         await state.lock.acquire()
         acquired = True
-        lock_fd = _open_lock_file(lock_root, repo_id)
+        lock_fd = await _open_lock_file_async(lock_root, repo_id)
         await _acquire_file_lock(lock_fd)
         yield
     finally:

@@ -7,7 +7,7 @@ import secrets
 import string
 import tempfile
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -149,6 +149,26 @@ def _git_askpass_env(access_token: str | None) -> Iterator[dict[str, str] | None
         }
 
 
+async def _terminate_and_drain_git_process(process: asyncio.subprocess.Process) -> None:
+    """Kill and drain one piped Git child before returning."""
+    if process.returncode is None:
+        try:
+            process.kill()
+        except ProcessLookupError:
+            pass
+    drain_task = asyncio.create_task(process.communicate())
+    while not drain_task.done():
+        try:
+            await asyncio.shield(drain_task)
+        except asyncio.CancelledError:
+            continue
+        except BaseException:
+            break
+    if not drain_task.cancelled():
+        with suppress(BaseException):
+            drain_task.result()
+
+
 async def _run_git(
     args: list[str],
     cwd: str | None = None,
@@ -183,9 +203,11 @@ async def _run_git(
             proc.communicate(),
             timeout=_GIT_COMMAND_TIMEOUT_S,
         )
+    except asyncio.CancelledError:
+        await _terminate_and_drain_git_process(proc)
+        raise
     except TimeoutError as exc:
-        proc.kill()
-        await proc.wait()
+        await _terminate_and_drain_git_process(proc)
         raise GitError(f"git {args[0]} timed out") from exc
     if proc.returncode != 0:
         logger.error("Git operation %s failed", args[0])

@@ -32,6 +32,7 @@ from yinshi.runner_worker import (
     RunnerWorkerManager,
     validate_user_data_encryption_mode,
 )
+from yinshi.services.event_loop_watchdog import EventLoopWatchdog
 from yinshi.services.github_app import GitHubCloneAccess, GitHubCloneAccessResolver
 from yinshi.services.runner_agent_relay import (
     RunnerAgentRelayRuntime,
@@ -1089,53 +1090,65 @@ async def _heartbeat_loop(
 
 async def run_agent(config: RunnerAgentConfig) -> None:
     """Run heartbeats and outbound encrypted relay until either fails."""
-    limits = httpx.Limits(max_connections=4, max_keepalive_connections=2)
-    async with httpx.AsyncClient(
-        base_url=config.control_url,
-        timeout=_REQUEST_TIMEOUT_S,
-        limits=limits,
-        follow_redirects=False,
-    ) as client:
-        runner_token = _read_runner_token(config.runner_token_file)
-        if runner_token is None:
-            runner_token = await _register(config, client)
-        else:
-            pinned_key = _read_owner_only_text_file(
-                config.capability_signing_key_file,
-                "Control capability signing key",
-            )
-            if pinned_key is None:
-                raise RuntimeError(
-                    "Control capability signing key is missing; runner re-registration is required"
+    watchdog = EventLoopWatchdog()
+    watchdog.start()
+    watchdog_task = asyncio.create_task(
+        watchdog.run(),
+        name="runner-event-loop-watchdog",
+    )
+    try:
+        limits = httpx.Limits(max_connections=4, max_keepalive_connections=2)
+        async with httpx.AsyncClient(
+            base_url=config.control_url,
+            timeout=_REQUEST_TIMEOUT_S,
+            limits=limits,
+            follow_redirects=False,
+        ) as client:
+            runner_token = _read_runner_token(config.runner_token_file)
+            if runner_token is None:
+                runner_token = await _register(config, client)
+            else:
+                pinned_key = _read_owner_only_text_file(
+                    config.capability_signing_key_file,
+                    "Control capability signing key",
                 )
-            _validate_capability_signing_public_key(pinned_key)
+                if pinned_key is None:
+                    raise RuntimeError(
+                        "Control capability signing key is missing; runner re-registration is required"
+                    )
+                _validate_capability_signing_public_key(pinned_key)
 
-        logger.info("Runner Noise identity loaded")
-        heartbeat_task = asyncio.create_task(
-            _heartbeat_loop(config, client, runner_token),
-            name="runner-heartbeat",
-        )
-        relay_task = asyncio.create_task(
-            _runner_relay_loop(config, runner_token, client),
-            name="runner-relay",
-        )
-        tasks = (heartbeat_task, relay_task)
-        try:
-            done, pending = await asyncio.wait(
-                tasks,
-                return_when=asyncio.FIRST_COMPLETED,
+            logger.info("Runner Noise identity loaded")
+            heartbeat_task = asyncio.create_task(
+                _heartbeat_loop(config, client, runner_token),
+                name="runner-heartbeat",
             )
-            for task in pending:
-                task.cancel()
-            await asyncio.gather(*pending, return_exceptions=True)
-            for task in tasks:
-                if task in done:
-                    task.result()
-        finally:
-            for task in tasks:
-                if not task.done():
+            relay_task = asyncio.create_task(
+                _runner_relay_loop(config, runner_token, client),
+                name="runner-relay",
+            )
+            tasks = (heartbeat_task, relay_task)
+            try:
+                done, pending = await asyncio.wait(
+                    tasks,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                for task in pending:
                     task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
+                await asyncio.gather(*pending, return_exceptions=True)
+                for task in tasks:
+                    if task in done:
+                        task.result()
+            finally:
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+    finally:
+        watchdog.stop()
+        if not watchdog_task.done():
+            watchdog_task.cancel()
+        await asyncio.gather(watchdog_task, return_exceptions=True)
 
 
 def main() -> None:

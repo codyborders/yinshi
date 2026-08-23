@@ -473,6 +473,71 @@ def _read_database_header(db_path: str) -> bytes | None:
             raise RuntimeError("Tenant database header could not be inspected") from exc
 
 
+def _trusted_database_identity(db_path: str) -> tuple[int, int] | None:
+    """Return one trusted regular database identity without reading its contents."""
+    try:
+        path_stat = os.lstat(db_path)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise RuntimeError("Tenant database could not be inspected") from exc
+    if (
+        stat.S_ISLNK(path_stat.st_mode)
+        or not stat.S_ISREG(path_stat.st_mode)
+        or path_stat.st_uid != os.geteuid()
+        or path_stat.st_nlink != 1
+    ):
+        raise RuntimeError("Tenant database must be a trusted regular file")
+    return path_stat.st_dev, path_stat.st_ino
+
+
+def _plaintext_migration_residue_exists(db_path: str) -> bool:
+    """Return whether migration cleanup must run under the migration lock."""
+    if os.path.lexists(f"{db_path}{_PLAINTEXT_ROLLBACK_SUFFIX}"):
+        return True
+    database_path = Path(db_path)
+    pattern = f"{database_path.name}.plaintext.*.bak"
+    return next(database_path.parent.glob(pattern), None) is not None
+
+
+def _current_user_schema_is_ready(connection: sqlite3.Connection) -> bool:
+    """Return whether an authenticated connection has the current schema version."""
+    version_row = connection.execute("PRAGMA user_version").fetchone()
+    return (
+        version_row is not None
+        and type(version_row[0]) is int
+        and version_row[0] == _USER_SCHEMA_VERSION
+    )
+
+
+def _open_current_encrypted_user_database(
+    db_path: str,
+    sqlcipher_key: bytes,
+) -> sqlite3.Connection | None:
+    """Open a ready encrypted primary without entering migration state."""
+    database_identity = _trusted_database_identity(db_path)
+    if database_identity is None or _plaintext_migration_residue_exists(db_path):
+        return None
+    try:
+        connection = _open_sqlcipher_connection(db_path, sqlcipher_key)
+    except TenantDatabaseTemporarilyUnavailable:
+        raise
+    except _TenantDatabaseKeyOrFormatError:
+        return None
+    try:
+        if not _current_user_schema_is_ready(connection):
+            connection.close()
+            return None
+        current_identity = _trusted_database_identity(db_path)
+        if current_identity != database_identity or _plaintext_migration_residue_exists(db_path):
+            connection.close()
+            return None
+        return connection
+    except Exception:
+        connection.close()
+        raise
+
+
 def _database_has_plaintext_header(db_path: str) -> bool:
     """Return whether a database starts with the canonical plaintext header."""
     return _read_database_header(db_path) == _SQLITE_PLAINTEXT_HEADER
@@ -909,6 +974,23 @@ def _open_user_connection(
         _ensure_user_data_encryption_marker(tenant)
     encryption_enabled = tenant_db_encryption_enabled(settings)
     encryption_required = tenant_db_encryption_required(settings)
+    sqlcipher_key: bytes | None = None
+    sqlcipher_available = False
+    if encryption_enabled:
+        if tenant is None:
+            raise ValueError("tenant is required when tenant DB encryption is enabled")
+        try:
+            _load_sqlcipher_module()
+        except RuntimeError:
+            if encryption_required:
+                raise
+        else:
+            sqlcipher_available = True
+            sqlcipher_key = _tenant_database_key(tenant)
+            connection = _open_current_encrypted_user_database(db_path, sqlcipher_key)
+            if connection is not None:
+                return connection
+
     with _tenant_migration_lock(db_path):
         _recover_plaintext_migration_rollback(db_path)
         if not encryption_enabled:
@@ -919,13 +1001,7 @@ def _open_user_connection(
                 connection.close()
                 raise
             return connection
-        if tenant is None:
-            raise ValueError("tenant is required when tenant DB encryption is enabled")
-        try:
-            _load_sqlcipher_module()
-        except RuntimeError:
-            if encryption_required:
-                raise
+        if not sqlcipher_available:
             database_header = _read_database_header(db_path)
             if database_header is not None and database_header != _SQLITE_PLAINTEXT_HEADER:
                 raise RuntimeError("Tenant database cannot be opened without SQLCipher") from None
@@ -938,7 +1014,7 @@ def _open_user_connection(
                 raise
             return connection
 
-        sqlcipher_key = _tenant_database_key(tenant)
+        assert sqlcipher_key is not None
         try:
             connection = _open_sqlcipher_connection(db_path, sqlcipher_key)
         except TenantDatabaseTemporarilyUnavailable:

@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
+import threading
+from contextlib import contextmanager
 from types import SimpleNamespace
 
+import httpx
 import pytest
-from fastapi import HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.testclient import TestClient
 
 from yinshi.api import terminal_channels
 from yinshi.services.terminal_journal import TerminalEventBatch
@@ -107,6 +112,100 @@ def _request(manager: FakeContainerManager | None) -> Request:
             ),
         }
     )
+
+
+@pytest.mark.asyncio
+async def test_terminal_start_database_open_does_not_block_event_loop(
+    auth_client: TestClient,
+    git_repo: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Terminal startup should keep unrelated async work responsive."""
+    from yinshi.api import deps
+
+    repo = auth_client.post(
+        "/api/repos",
+        json={"name": "terminal-demo", "local_path": git_repo},
+    ).json()
+    workspace = auth_client.post(f"/api/repos/{repo['id']}/workspaces", json={}).json()
+    tenant = getattr(auth_client, "yinshi_tenant")
+    application = FastAPI()
+
+    @application.middleware("http")
+    async def attach_tenant(request: Request, call_next):
+        request.state.tenant = tenant
+        return await call_next(request)
+
+    application.include_router(terminal_channels.router)
+    original_database_for_request = deps.get_db_for_request
+    release_operation = threading.Event()
+    stop_ticker = asyncio.Event()
+    ticks = 0
+
+    @contextmanager
+    def blocking_database_for_request(request: Request):
+        assert release_operation.wait(timeout=2)
+        with original_database_for_request(request) as database:
+            yield database
+
+    class PublicTerminalJournal:
+        async def start(self, **_kwargs: object) -> str:
+            return "terminal-id"
+
+    async def prepare_workspace(
+        _tenant: TenantContext,
+        _workspace_id: str,
+        run_database_operation,
+    ):
+        await run_database_operation(lambda database: database.execute("SELECT 1").fetchone())
+        return SimpleNamespace(
+            agents_md=None,
+            repo_root_path=git_repo,
+            workspace_path=git_repo,
+        )
+
+    async def resolve_runtime(*_args: object, **_kwargs: object):
+        return SimpleNamespace(socket_path=None, runtime_id=workspace["id"])
+
+    async def ticker() -> None:
+        nonlocal ticks
+        while not stop_ticker.is_set():
+            ticks += 1
+            await asyncio.sleep(0.01)
+
+    monkeypatch.setattr(deps, "get_db_for_request", blocking_database_for_request)
+    monkeypatch.setattr(
+        terminal_channels,
+        "get_db_for_request",
+        blocking_database_for_request,
+        raising=False,
+    )
+    monkeypatch.setattr(terminal_channels, "_journal", lambda _request: PublicTerminalJournal())
+    monkeypatch.setattr(
+        terminal_channels,
+        "prepare_tenant_workspace_runtime_paths",
+        prepare_workspace,
+    )
+    monkeypatch.setattr(terminal_channels, "resolve_tenant_sidecar_context", resolve_runtime)
+    release_timer = threading.Timer(0.2, release_operation.set)
+    release_timer.start()
+    ticker_task = asyncio.create_task(ticker())
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=application),
+            base_url="http://testserver",
+        ) as client:
+            response = await client.post(
+                f"/api/workspaces/{workspace['id']}/terminals",
+                json={"cols": 80, "rows": 24},
+            )
+    finally:
+        stop_ticker.set()
+        await ticker_task
+        release_timer.cancel()
+
+    assert response.status_code == 201, response.text
+    assert ticks >= 5
 
 
 @pytest.mark.asyncio

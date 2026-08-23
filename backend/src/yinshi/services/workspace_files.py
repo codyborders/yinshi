@@ -7,7 +7,7 @@ import difflib
 import errno
 import os
 import stat
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator, Literal
@@ -304,6 +304,37 @@ def _change_kind(status: str) -> ChangeKind:
     return "unknown"
 
 
+async def _drain_cancelled_process(process: asyncio.subprocess.Process) -> None:
+    """Kill and drain one piped child despite repeated caller cancellation."""
+    if process.returncode is None:
+        try:
+            process.kill()
+        except ProcessLookupError:
+            pass
+    drain_task = asyncio.create_task(process.communicate())
+    while not drain_task.done():
+        try:
+            await asyncio.shield(drain_task)
+        except asyncio.CancelledError:
+            continue
+        except BaseException:
+            break
+    if not drain_task.cancelled():
+        with suppress(BaseException):
+            drain_task.result()
+
+
+async def _communicate_process(
+    process: asyncio.subprocess.Process,
+) -> tuple[bytes, bytes]:
+    """Communicate with one child and drain it before cancellation escapes."""
+    try:
+        return await process.communicate()
+    except asyncio.CancelledError:
+        await _drain_cancelled_process(process)
+        raise
+
+
 def _parse_porcelain_z(output: bytes) -> tuple[ChangedFile, ...]:
     """Parse null-delimited Git porcelain v1 status output."""
     records = [
@@ -337,7 +368,7 @@ def _parse_porcelain_z(output: bytes) -> tuple[ChangedFile, ...]:
 
 async def changed_files(workspace_path: str) -> tuple[ChangedFile, ...]:
     """Return visible changed files from Git status for one workspace."""
-    root = _workspace_root(workspace_path)
+    root = await asyncio.to_thread(_workspace_root, workspace_path)
     process = await asyncio.create_subprocess_exec(
         "/usr/bin/git",
         "-C",
@@ -349,10 +380,10 @@ async def changed_files(workspace_path: str) -> tuple[ChangedFile, ...]:
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    stdout, stderr = await process.communicate()
+    stdout, stderr = await _communicate_process(process)
     if process.returncode != 0:
         raise GitError(stderr.decode("utf-8", errors="replace") or "git status failed")
-    return _parse_porcelain_z(stdout)
+    return await asyncio.to_thread(_parse_porcelain_z, stdout)
 
 
 def changed_files_to_dicts(changes: tuple[ChangedFile, ...]) -> list[dict[str, object]]:
@@ -440,10 +471,11 @@ async def _changed_file_for_path(root: Path, display_path: str) -> ChangedFile |
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    stdout, stderr = await process.communicate()
+    stdout, stderr = await _communicate_process(process)
     if process.returncode != 0:
         raise GitError(stderr.decode("utf-8", errors="replace") or "git status failed")
-    return next(iter(_parse_porcelain_z(stdout)), None)
+    changes = await asyncio.to_thread(_parse_porcelain_z, stdout)
+    return next(iter(changes), None)
 
 
 async def _head_file_text(root: Path, display_path: str) -> str | None:
@@ -457,7 +489,7 @@ async def _head_file_text(root: Path, display_path: str) -> str | None:
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    stdout, _ = await process.communicate()
+    stdout, _ = await _communicate_process(process)
     if process.returncode != 0:
         return None
     if len(stdout) > _MAX_TEXT_BYTES:
@@ -467,23 +499,15 @@ async def _head_file_text(root: Path, display_path: str) -> str | None:
     return stdout.decode("utf-8", errors="replace")
 
 
-async def diff_file(workspace_path: str, relative_path: str) -> str:
-    """Return a text diff using stable worktree reads and Git object data."""
+def _diff_paths(workspace_path: str, relative_path: str) -> tuple[Path, str]:
+    """Resolve validated paths used by one workspace diff."""
     root = _workspace_root(workspace_path)
     file_path = validate_visible_relative_path(workspace_path, relative_path)
-    display_path = file_path.relative_to(root).as_posix()
-    matching_change = await _changed_file_for_path(root, display_path)
-    if matching_change is not None and matching_change.kind == "deleted":
-        current_content = ""
-    else:
-        current_content = read_text_file(workspace_path, display_path)
+    return root, file_path.relative_to(root).as_posix()
 
-    committed_content = await _head_file_text(root, display_path)
-    if committed_content is None:
-        if matching_change is None:
-            raise GitError("file does not exist in Git HEAD")
-        committed_content = ""
 
+def _render_diff(display_path: str, committed_content: str, current_content: str) -> str:
+    """Render one bounded unified diff outside the event loop."""
     diff_lines = difflib.unified_diff(
         committed_content.splitlines(),
         current_content.splitlines(),
@@ -492,6 +516,37 @@ async def diff_file(workspace_path: str, relative_path: str) -> str:
         lineterm="",
     )
     return "\n".join(diff_lines)
+
+
+async def diff_file(workspace_path: str, relative_path: str) -> str:
+    """Return a text diff using stable worktree reads and Git object data."""
+    root, display_path = await asyncio.to_thread(
+        _diff_paths,
+        workspace_path,
+        relative_path,
+    )
+    matching_change = await _changed_file_for_path(root, display_path)
+    if matching_change is not None and matching_change.kind == "deleted":
+        current_content = ""
+    else:
+        current_content = await asyncio.to_thread(
+            read_text_file,
+            workspace_path,
+            display_path,
+        )
+
+    committed_content = await _head_file_text(root, display_path)
+    if committed_content is None:
+        if matching_change is None:
+            raise GitError("file does not exist in Git HEAD")
+        committed_content = ""
+
+    return await asyncio.to_thread(
+        _render_diff,
+        display_path,
+        committed_content,
+        current_content,
+    )
 
 
 def _install_secret_hook_guard(hook_path: Path, marker: str, guard_script: str) -> None:

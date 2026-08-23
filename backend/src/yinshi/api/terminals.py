@@ -9,8 +9,9 @@ import os
 import stat
 from typing import Any, cast
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
 
+from yinshi.api.deps import run_db_operation_for_request
 from yinshi.auth import auth_disabled, get_session_identity, resolve_tenant_from_session_token
 from yinshi.config import get_settings
 from yinshi.exceptions import (
@@ -33,7 +34,7 @@ from yinshi.services.sidecar_runtime import (
     tenant_container_activity,
 )
 from yinshi.services.workspace_runtime_paths import prepare_tenant_workspace_runtime_paths
-from yinshi.tenant import TenantContext, get_user_db
+from yinshi.tenant import TenantContext
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -69,6 +70,13 @@ def _tenant_from_websocket(websocket: WebSocket) -> TenantContext | None:
     return resolve_tenant_from_session_token(token)
 
 
+async def _session_identity(session_token: str) -> tuple[str, str] | None:
+    """Resolve one auth session without blocking terminal event processing."""
+    if not session_token:
+        raise ValueError("session_token must not be empty")
+    return await asyncio.to_thread(get_session_identity, session_token)
+
+
 async def _send_sidecar(
     writer: asyncio.StreamWriter,
     message: dict[str, Any],
@@ -99,7 +107,7 @@ async def _proxy_browser_to_sidecar(
     """Forward input while the originating auth session remains active."""
     while True:
         payload = await websocket.receive_json()
-        if session_token is not None and get_session_identity(session_token) is None:
+        if session_token is not None and await _session_identity(session_token) is None:
             await websocket.close(code=_TERMINAL_CLOSE_POLICY)
             return
         if not isinstance(payload, dict):
@@ -156,7 +164,9 @@ async def _monitor_terminal_session(
     deadline = loop.time() + connection_lifetime_s_max
     while True:
         remaining_s = deadline - loop.time()
-        session_revoked = revocation_event.is_set() or get_session_identity(session_token) is None
+        session_revoked = revocation_event.is_set()
+        if not session_revoked:
+            session_revoked = await _session_identity(session_token) is None
         if remaining_s <= 0 or session_revoked:
             await websocket.close(code=_TERMINAL_CLOSE_POLICY)
             return
@@ -174,7 +184,7 @@ async def _proxy_sidecar_to_browser(
     """Forward terminal events while the originating session remains active."""
     while True:
         message = await _read_sidecar(reader)
-        if session_token is not None and get_session_identity(session_token) is None:
+        if session_token is not None and await _session_identity(session_token) is None:
             await websocket.close(code=_TERMINAL_CLOSE_POLICY)
             return
         if message is None:
@@ -196,7 +206,11 @@ async def _run_desktop_terminal_proxy(
     if not workspace_id:
         raise ValueError("workspace_id must not be empty")
     try:
-        socket_information = os.stat(context.socket_path, follow_symlinks=False)
+        socket_information = await asyncio.to_thread(
+            os.stat,
+            context.socket_path,
+            follow_symlinks=False,
+        )
     except OSError:
         await websocket.close(code=_TERMINAL_CLOSE_UNAVAILABLE)
         return
@@ -279,7 +293,10 @@ async def workspace_terminal(websocket: WebSocket, workspace_id: str) -> None:
 
     if getattr(websocket.app.state, "mode", None) == "desktop":
         try:
-            desktop_context = resolve_desktop_terminal_context(workspace_id)
+            desktop_context = await asyncio.to_thread(
+                resolve_desktop_terminal_context,
+                workspace_id,
+            )
         except (LookupError, PermissionError, TypeError, ValueError):
             await websocket.close(code=_TERMINAL_CLOSE_POLICY)
             return
@@ -287,7 +304,7 @@ async def workspace_terminal(websocket: WebSocket, workspace_id: str) -> None:
         return
 
     session_token = websocket.cookies.get("yinshi_session")
-    tenant = _tenant_from_websocket(websocket)
+    tenant = await asyncio.to_thread(_tenant_from_websocket, websocket)
     if tenant is None or not session_token:
         await websocket.close(code=_TERMINAL_CLOSE_POLICY)
         return
@@ -297,9 +314,16 @@ async def workspace_terminal(websocket: WebSocket, workspace_id: str) -> None:
         await websocket.close(code=_TERMINAL_CLOSE_UNAVAILABLE)
         return
 
+    websocket.state.tenant = tenant
     try:
-        with get_user_db(tenant) as db:
-            paths = await prepare_tenant_workspace_runtime_paths(db, tenant, workspace_id)
+        paths = await prepare_tenant_workspace_runtime_paths(
+            tenant,
+            workspace_id,
+            lambda operation: run_db_operation_for_request(
+                cast(Request, websocket),
+                operation,
+            ),
+        )
     except (PermissionError, WorkspaceNotFoundError, TypeError, ValueError):
         await websocket.close(code=_TERMINAL_CLOSE_POLICY)
         return
@@ -330,7 +354,11 @@ async def workspace_terminal(websocket: WebSocket, workspace_id: str) -> None:
         return
 
     try:
-        effective_cwd = remap_path_for_container(workspace_path, tenant.data_dir)
+        effective_cwd = await asyncio.to_thread(
+            remap_path_for_container,
+            workspace_path,
+            tenant.data_dir,
+        )
     except ValueError:
         await websocket.close(code=_TERMINAL_CLOSE_POLICY)
         return
@@ -355,7 +383,7 @@ async def workspace_terminal(websocket: WebSocket, workspace_id: str) -> None:
             if init_message is not None and init_message.get("type") != "init_status":
                 await websocket.send_json(init_message)
 
-            identity = get_session_identity(session_token)
+            identity = await _session_identity(session_token)
             if identity is None:
                 await websocket.close(code=_TERMINAL_CLOSE_POLICY)
                 return

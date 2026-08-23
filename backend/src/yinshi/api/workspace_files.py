@@ -2,20 +2,22 @@
 
 from __future__ import annotations
 
+import asyncio
 import errno
 import logging
 import os
 import sqlite3
 import stat
-from collections.abc import Iterator
-from typing import Any, BinaryIO, cast
+from collections.abc import Callable, Iterator
+from contextlib import suppress
+from typing import Any, BinaryIO, TypeVar, cast
 from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from yinshi.api.deps import check_workspace_owner, get_db_for_request, get_tenant
+from yinshi.api.deps import check_workspace_owner, get_tenant, run_db_operation_for_request
 from yinshi.exceptions import GitError, WorkspaceNotFoundError
 from yinshi.services.workspace_files import (
     _open_workspace_parent,
@@ -32,6 +34,8 @@ from yinshi.services.workspace_runtime_paths import prepare_tenant_workspace_run
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+_T = TypeVar("_T")
 
 _EXPECTED_FILE_ERRORS = (
     FileNotFoundError,
@@ -62,8 +66,33 @@ def _workspace_row(db: sqlite3.Connection, workspace_id: str, request: Request) 
     return cast(sqlite3.Row, row)
 
 
+async def _drain_local_attempt(attempt: asyncio.Task[_T]) -> None:
+    """Wait through repeated cancellation until local work finishes."""
+    while not attempt.done():
+        try:
+            await asyncio.shield(attempt)
+        except asyncio.CancelledError:
+            continue
+        except BaseException:
+            break
+    if not attempt.cancelled():
+        with suppress(BaseException):
+            attempt.result()
+
+
+async def _run_local_operation(operation: Callable[[], _T]) -> _T:
+    """Run blocking local work without abandoning it after cancellation."""
+    if not callable(operation):
+        raise TypeError("operation must be callable")
+    attempt = asyncio.create_task(asyncio.to_thread(operation))
+    try:
+        return await asyncio.shield(attempt)
+    except asyncio.CancelledError:
+        await _drain_local_attempt(attempt)
+        raise
+
+
 async def _prepare_workspace_files(
-    db: sqlite3.Connection,
     workspace_id: str,
     request: Request,
 ) -> str:
@@ -71,7 +100,11 @@ async def _prepare_workspace_files(
     tenant = get_tenant(request)
     if tenant is not None:
         try:
-            paths = await prepare_tenant_workspace_runtime_paths(db, tenant, workspace_id)
+            paths = await prepare_tenant_workspace_runtime_paths(
+                tenant,
+                workspace_id,
+                lambda operation: run_db_operation_for_request(request, operation),
+            )
         except PermissionError:
             raise
         except OSError as exc:
@@ -81,11 +114,13 @@ async def _prepare_workspace_files(
             ) from exc
         return paths.workspace_path
 
-    row = _workspace_row(db, workspace_id, request)
-    workspace_path = str(row["path"])
-    repo_root_path = str(row["root_path"])
+    def load_paths(db: sqlite3.Connection) -> tuple[str, str]:
+        row = _workspace_row(db, workspace_id, request)
+        return str(row["path"]), str(row["root_path"])
+
+    workspace_path, repo_root_path = await run_db_operation_for_request(request, load_paths)
     try:
-        ensure_secret_guardrails(repo_root_path)
+        await _run_local_operation(lambda: ensure_secret_guardrails(repo_root_path))
     except OSError as exc:
         raise HTTPException(status_code=409, detail="Failed to prepare secret guardrails") from exc
     return workspace_path
@@ -117,9 +152,8 @@ def _http_file_error(exc: Exception, workspace_id: str) -> HTTPException:
 async def get_workspace_file_tree(workspace_id: str, request: Request) -> dict[str, Any]:
     """Return a bounded visible nested file tree for one workspace."""
     try:
-        with get_db_for_request(request) as db:
-            workspace_path = await _prepare_workspace_files(db, workspace_id, request)
-        nodes = build_file_tree(workspace_path)
+        workspace_path = await _prepare_workspace_files(workspace_id, request)
+        nodes = await _run_local_operation(lambda: build_file_tree(workspace_path))
     except Exception as exc:
         raise _http_file_error(exc, workspace_id) from exc
     return {"files": file_tree_to_dicts(nodes)}
@@ -129,8 +163,7 @@ async def get_workspace_file_tree(workspace_id: str, request: Request) -> dict[s
 async def get_workspace_changed_files(workspace_id: str, request: Request) -> dict[str, Any]:
     """Return visible Git status changes for one workspace."""
     try:
-        with get_db_for_request(request) as db:
-            workspace_path = await _prepare_workspace_files(db, workspace_id, request)
+        workspace_path = await _prepare_workspace_files(workspace_id, request)
         changes = await changed_files(workspace_path)
     except Exception as exc:
         raise _http_file_error(exc, workspace_id) from exc
@@ -145,9 +178,9 @@ async def preview_workspace_file(
 ) -> dict[str, str]:
     """Return text content for one visible workspace file."""
     try:
-        with get_db_for_request(request) as db:
-            workspace_path = await _prepare_workspace_files(db, workspace_id, request)
-        return {"path": path, "content": read_text_file(workspace_path, path)}
+        workspace_path = await _prepare_workspace_files(workspace_id, request)
+        content = await _run_local_operation(lambda: read_text_file(workspace_path, path))
+        return {"path": path, "content": content}
     except Exception as exc:
         raise _http_file_error(exc, workspace_id) from exc
 
@@ -160,8 +193,7 @@ async def diff_workspace_file(
 ) -> dict[str, str]:
     """Return a Git diff for one visible workspace file."""
     try:
-        with get_db_for_request(request) as db:
-            workspace_path = await _prepare_workspace_files(db, workspace_id, request)
+        workspace_path = await _prepare_workspace_files(workspace_id, request)
         return {"path": path, "diff": await diff_file(workspace_path, path)}
     except Exception as exc:
         raise _http_file_error(exc, workspace_id) from exc
@@ -176,9 +208,8 @@ async def edit_workspace_file(
 ) -> dict[str, str]:
     """Replace one visible workspace text file from the browser editor."""
     try:
-        with get_db_for_request(request) as db:
-            workspace_path = await _prepare_workspace_files(db, workspace_id, request)
-        write_text_file(workspace_path, path, body.content)
+        workspace_path = await _prepare_workspace_files(workspace_id, request)
+        await _run_local_operation(lambda: write_text_file(workspace_path, path, body.content))
     except Exception as exc:
         raise _http_file_error(exc, workspace_id) from exc
     return {"path": path, "status": "saved"}
@@ -198,18 +229,14 @@ def _stream_open_file(file_handle: BinaryIO) -> Iterator[bytes]:
         file_handle.close()
 
 
-@router.get("/api/workspaces/{workspace_id}/files/download")
-async def download_workspace_file(
-    workspace_id: str,
-    request: Request,
-    path: str = Query(..., min_length=1, max_length=4096),
-) -> StreamingResponse:
-    """Download one visible workspace file through a stable descriptor."""
-    file_handle: BinaryIO | None = None
+def _open_stable_download(
+    workspace_path: str,
+    path: str,
+) -> tuple[BinaryIO, str, os.stat_result]:
+    """Open one regular workspace file through a stable descriptor."""
+    file_flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC
+    file_descriptor: int | None = None
     try:
-        with get_db_for_request(request) as db:
-            workspace_path = await _prepare_workspace_files(db, workspace_id, request)
-        file_flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC
         with _open_workspace_parent(workspace_path, path) as (parent_fd, file_name):
             try:
                 file_descriptor = os.open(file_name, file_flags, dir_fd=parent_fd)
@@ -219,9 +246,47 @@ async def download_workspace_file(
                 raise
         file_stat = os.fstat(file_descriptor)
         if not stat.S_ISREG(file_stat.st_mode):
-            os.close(file_descriptor)
             raise FileNotFoundError("file does not exist")
         file_handle = os.fdopen(file_descriptor, "rb", closefd=True)
+        file_descriptor = None
+        return file_handle, file_name, file_stat
+    except BaseException:
+        if file_descriptor is not None:
+            with suppress(OSError):
+                os.close(file_descriptor)
+        raise
+
+
+async def _open_stable_download_async(
+    workspace_path: str,
+    path: str,
+) -> tuple[BinaryIO, str, os.stat_result]:
+    """Open a stable descriptor and close it when its caller is cancelled."""
+    attempt = asyncio.create_task(asyncio.to_thread(_open_stable_download, workspace_path, path))
+    try:
+        return await asyncio.shield(attempt)
+    except asyncio.CancelledError:
+        await _drain_local_attempt(attempt)
+        if not attempt.cancelled() and attempt.exception() is None:
+            file_handle, _file_name, _file_stat = attempt.result()
+            file_handle.close()
+        raise
+
+
+@router.get("/api/workspaces/{workspace_id}/files/download")
+async def download_workspace_file(
+    workspace_id: str,
+    request: Request,
+    path: str = Query(..., min_length=1, max_length=4096),
+) -> StreamingResponse:
+    """Download one visible workspace file through a stable descriptor."""
+    file_handle: BinaryIO | None = None
+    try:
+        workspace_path = await _prepare_workspace_files(workspace_id, request)
+        file_handle, file_name, file_stat = await _open_stable_download_async(
+            workspace_path,
+            path,
+        )
     except Exception as exc:
         if file_handle is not None:
             file_handle.close()

@@ -1,5 +1,6 @@
 """Tests for git service operations."""
 
+import asyncio
 import os
 
 import pytest
@@ -136,6 +137,92 @@ async def test_run_git_uses_immutable_binary_without_ambient_credentials(monkeyp
     assert environment["GIT_CONFIG_GLOBAL"] == "/dev/null"
     assert "SSH_AUTH_SOCK" not in environment
     assert "ANTHROPIC_API_KEY" not in environment
+
+
+@pytest.mark.asyncio
+async def test_run_git_cancellation_reaps_child_before_returning(monkeypatch):
+    """Cancelling Git should kill and reap its child before cancellation returns."""
+    from yinshi.services import git as git_service
+
+    communication_started = asyncio.Event()
+    calls: list[str] = []
+
+    class FakeProcess:
+        """Keep one child active until cancellation cleanup kills it."""
+
+        returncode: int | None = None
+        communication_count = 0
+
+        async def communicate(self):
+            self.communication_count += 1
+            calls.append("communicate")
+            if self.communication_count == 1:
+                communication_started.set()
+                await asyncio.Event().wait()
+            calls.append("drained")
+            return b"", b""
+
+        def kill(self) -> None:
+            calls.append("kill")
+            self.returncode = -9
+
+    process = FakeProcess()
+
+    async def fake_create_subprocess_exec(*_command, **_options):
+        return process
+
+    monkeypatch.setattr(
+        git_service.asyncio,
+        "create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+
+    task = asyncio.create_task(git_service._run_git(["status"]))
+    await communication_started.wait()
+    task.cancel()
+    result = await asyncio.gather(task, return_exceptions=True)
+
+    assert isinstance(result[0], asyncio.CancelledError)
+    assert calls == ["communicate", "kill", "communicate", "drained"]
+
+
+@pytest.mark.asyncio
+async def test_run_git_timeout_kills_and_drains_child(monkeypatch):
+    """Timed-out Git should kill and drain its child before reporting failure."""
+    from yinshi.services import git as git_service
+
+    calls: list[str] = []
+
+    class FakeProcess:
+        returncode: int | None = None
+        communication_count = 0
+
+        async def communicate(self):
+            self.communication_count += 1
+            calls.append("communicate")
+            if self.communication_count == 1:
+                await asyncio.Event().wait()
+            calls.append("drained")
+            return b"", b""
+
+        def kill(self) -> None:
+            calls.append("kill")
+            self.returncode = -9
+
+    async def fake_create_subprocess_exec(*_command, **_options):
+        return FakeProcess()
+
+    monkeypatch.setattr(git_service, "_GIT_COMMAND_TIMEOUT_S", 0.01)
+    monkeypatch.setattr(
+        git_service.asyncio,
+        "create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+
+    with pytest.raises(GitError, match="git status timed out"):
+        await git_service._run_git(["status"])
+
+    assert calls == ["communicate", "kill", "communicate", "drained"]
 
 
 @pytest.mark.asyncio

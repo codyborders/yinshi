@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import os
@@ -9,11 +10,11 @@ import posixpath
 import re
 import shutil
 import stat
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import cast
+from typing import TypeVar, cast
 
 from fastapi import Request
 
@@ -30,6 +31,8 @@ from yinshi.utils.paths import is_path_inside
 
 logger = logging.getLogger(__name__)
 
+_T = TypeVar("_T")
+
 
 @dataclass(frozen=True, slots=True)
 class TenantSidecarContext:
@@ -40,6 +43,19 @@ class TenantSidecarContext:
     settings_payload: dict[str, object] | None
     runtime_id: str | None = None
     pi_session_file: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _TenantSidecarPreparation:
+    """Local runtime inputs prepared before async container interaction."""
+
+    container_enabled: bool
+    runtime_id: str | None
+    pi_session_file: str | None
+    runtime_agent_dir: str | None
+    settings_payload: dict[str, object] | None
+    container_mounts: tuple[ContainerMount, ...] | None
+    environment: dict[str, str] | None
 
 
 _RUNTIME_ID_RE = re.compile(r"^[0-9a-f]{32}$")
@@ -439,23 +455,38 @@ def _container_mounts_for_runtime(
     return tuple(mounts)
 
 
-async def resolve_tenant_sidecar_context(
-    request: Request,
-    tenant: TenantContext | None,
-    runtime_session_id: str | None = None,
-    repo_agents_md: str | None = None,
-    repo_root_path: str | None = None,
-    workspace_path: str | None = None,
-    workspace_id: str | None = None,
-) -> TenantSidecarContext:
-    """Resolve the socket path and Pi runtime inputs for one request."""
-    if tenant is None:
-        return TenantSidecarContext(
-            socket_path=None,
-            agent_dir=None,
-            settings_payload=None,
-        )
+async def _run_local_preparation(operation: Callable[[], _T]) -> _T:
+    """Run local preparation and drain it before propagating cancellation."""
+    if not callable(operation):
+        raise TypeError("operation must be callable")
+    attempt = asyncio.create_task(asyncio.to_thread(operation))
+    try:
+        return await asyncio.shield(attempt)
+    except asyncio.CancelledError:
+        while not attempt.done():
+            try:
+                await asyncio.shield(attempt)
+            except asyncio.CancelledError:
+                continue
+            except BaseException:
+                break
+        if not attempt.cancelled():
+            with suppress(BaseException):
+                attempt.result()
+        raise
 
+
+def _prepare_tenant_sidecar_context(
+    tenant: TenantContext,
+    runtime_session_id: str | None,
+    repo_agents_md: str | None,
+    repo_root_path: str | None,
+    workspace_path: str | None,
+    workspace_id: str | None,
+) -> _TenantSidecarPreparation:
+    """Resolve database and filesystem inputs without container interaction."""
+    if tenant is None:
+        raise ValueError("tenant is required")
     settings = get_settings()
     runtime_inputs = resolve_effective_pi_runtime(
         tenant.user_id,
@@ -479,22 +510,8 @@ async def resolve_tenant_sidecar_context(
         tenant.data_dir,
         container_enabled=settings.container_enabled,
     )
-
-    if not settings.container_enabled:
-        return TenantSidecarContext(
-            socket_path=None,
-            agent_dir=runtime_agent_dir,
-            settings_payload=runtime_inputs.settings_payload,
-            runtime_id=runtime_id,
-            pi_session_file=pi_session_file,
-        )
-
-    container_manager = getattr(request.app.state, "container_manager", None)
-    if container_manager is None:
-        raise ContainerStartError("Container manager is not initialized")
-
     container_mounts = None
-    if narrow_mounts:
+    if settings.container_enabled and narrow_mounts:
         container_mounts = _container_mounts_for_runtime(
             tenant,
             agent_dir=runtime_inputs.agent_dir,
@@ -502,19 +519,70 @@ async def resolve_tenant_sidecar_context(
             workspace_path=workspace_path,
             workspace_id=runtime_id,
         )
+    return _TenantSidecarPreparation(
+        container_enabled=settings.container_enabled,
+        runtime_id=runtime_id,
+        pi_session_file=pi_session_file,
+        runtime_agent_dir=runtime_agent_dir,
+        settings_payload=runtime_inputs.settings_payload,
+        container_mounts=container_mounts,
+        environment=workspace_runtime_environment(runtime_id),
+    )
+
+
+async def resolve_tenant_sidecar_context(
+    request: Request,
+    tenant: TenantContext | None,
+    runtime_session_id: str | None = None,
+    repo_agents_md: str | None = None,
+    repo_root_path: str | None = None,
+    workspace_path: str | None = None,
+    workspace_id: str | None = None,
+) -> TenantSidecarContext:
+    """Resolve the socket path and Pi runtime inputs for one request."""
+    if tenant is None:
+        return TenantSidecarContext(
+            socket_path=None,
+            agent_dir=None,
+            settings_payload=None,
+        )
+
+    preparation = await _run_local_preparation(
+        lambda: _prepare_tenant_sidecar_context(
+            tenant,
+            runtime_session_id,
+            repo_agents_md,
+            repo_root_path,
+            workspace_path,
+            workspace_id,
+        )
+    )
+    if not preparation.container_enabled:
+        return TenantSidecarContext(
+            socket_path=None,
+            agent_dir=preparation.runtime_agent_dir,
+            settings_payload=preparation.settings_payload,
+            runtime_id=preparation.runtime_id,
+            pi_session_file=preparation.pi_session_file,
+        )
+
+    container_manager = getattr(request.app.state, "container_manager", None)
+    if container_manager is None:
+        raise ContainerStartError("Container manager is not initialized")
+
     container_info = await container_manager.ensure_container(
         tenant.user_id,
         tenant.data_dir,
-        mounts=container_mounts,
-        runtime_id=runtime_id,
-        environment=workspace_runtime_environment(runtime_id),
+        mounts=preparation.container_mounts,
+        runtime_id=preparation.runtime_id,
+        environment=preparation.environment,
     )
     return TenantSidecarContext(
         socket_path=container_info.socket_path,
-        agent_dir=runtime_agent_dir,
-        settings_payload=runtime_inputs.settings_payload,
-        runtime_id=runtime_id,
-        pi_session_file=pi_session_file,
+        agent_dir=preparation.runtime_agent_dir,
+        settings_payload=preparation.settings_payload,
+        runtime_id=preparation.runtime_id,
+        pi_session_file=preparation.pi_session_file,
     )
 
 

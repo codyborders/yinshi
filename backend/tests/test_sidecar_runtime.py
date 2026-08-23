@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -14,10 +15,70 @@ from yinshi.exceptions import ContainerNotReadyError
 from yinshi.services.container import ContainerInfo, ContainerManager, ContainerMount
 from yinshi.services.sidecar_runtime import (
     _container_mounts_for_runtime,
+    resolve_tenant_sidecar_context,
     tenant_container_activity,
     workspace_runtime_environment,
 )
 from yinshi.tenant import TenantContext
+
+
+@pytest.mark.asyncio
+async def test_sidecar_local_preparation_does_not_block_event_loop(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Runtime configuration should leave unrelated async work responsive."""
+    from yinshi.config import Settings
+    from yinshi.services import sidecar_runtime
+    from yinshi.services.pi_config import PiRuntimeInputs
+
+    settings = Settings(
+        container_enabled=False,
+        google_client_id="test-client",
+        google_client_secret="test-secret",
+        managed_runtime_provider="disabled",
+        _env_file=None,
+    )
+    tenant = TenantContext(
+        user_id="a" * 32,
+        email="test@example.com",
+        data_dir=str(tmp_path),
+        db_path=str(tmp_path / "yinshi.db"),
+    )
+    request = Request(
+        {
+            "type": "http",
+            "app": SimpleNamespace(state=SimpleNamespace(container_manager=None)),
+        }
+    )
+    release_operation = threading.Event()
+    stop_ticker = asyncio.Event()
+    ticks = 0
+
+    def blocking_runtime(*_args: object, **_kwargs: object) -> PiRuntimeInputs:
+        assert release_operation.wait(timeout=2)
+        return PiRuntimeInputs(agent_dir=None, settings_payload={"model": "test"})
+
+    async def ticker() -> None:
+        nonlocal ticks
+        while not stop_ticker.is_set():
+            ticks += 1
+            await asyncio.sleep(0.01)
+
+    monkeypatch.setattr(sidecar_runtime, "get_settings", lambda: settings)
+    monkeypatch.setattr(sidecar_runtime, "resolve_effective_pi_runtime", blocking_runtime)
+    release_timer = threading.Timer(0.2, release_operation.set)
+    release_timer.start()
+    ticker_task = asyncio.create_task(ticker())
+    try:
+        context = await resolve_tenant_sidecar_context(request, tenant)
+    finally:
+        stop_ticker.set()
+        await ticker_task
+        release_timer.cancel()
+
+    assert context.settings_payload == {"model": "test"}
+    assert ticks >= 5
 
 
 @pytest.mark.asyncio

@@ -1450,6 +1450,109 @@ def test_real_encrypted_database_opens_before_plaintext_detection(
         assert connection.execute("SELECT count(*) FROM sqlite_master").fetchone() is not None
 
 
+def test_current_encrypted_database_open_bypasses_migration_work(
+    tenant_env,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A current encrypted database should open without migration work."""
+    import yinshi.tenant as tenant_module
+    from yinshi.config import get_settings
+    from yinshi.tenant import TenantContext, _open_sqlcipher_connection, get_user_db
+
+    monkeypatch.setenv("TENANT_DB_ENCRYPTION", "required")
+    get_settings.cache_clear()
+    data_directory = Path(tenant_env["user_data_dir"]) / "ab" / "abcdef"
+    data_directory.mkdir(parents=True)
+    database_path = data_directory / "yinshi.db"
+    key = b"k" * 32
+    encrypted_connection = _open_sqlcipher_connection(str(database_path), key)
+    tenant_module._ensure_current_user_db_schema(encrypted_connection)
+    encrypted_connection.close()
+    tenant = TenantContext(
+        user_id="abcdef",
+        email="user@example.com",
+        data_dir=str(data_directory),
+        db_path=str(database_path),
+    )
+
+    def reject_migration_work(*_args, **_kwargs):
+        raise AssertionError("current encrypted database must bypass migration work")
+
+    monkeypatch.setattr(tenant_module, "_tenant_database_key", lambda _tenant: key)
+    monkeypatch.setattr(tenant_module, "_tenant_migration_lock", reject_migration_work)
+    monkeypatch.setattr(
+        tenant_module,
+        "_recover_plaintext_migration_rollback",
+        reject_migration_work,
+    )
+    monkeypatch.setattr(
+        tenant_module,
+        "_ensure_current_user_db_schema",
+        reject_migration_work,
+    )
+    monkeypatch.setattr(
+        tenant_module,
+        "_remove_validated_migration_rollback",
+        reject_migration_work,
+    )
+    monkeypatch.setattr(
+        tenant_module,
+        "_remove_plaintext_migration_backups",
+        reject_migration_work,
+    )
+    monkeypatch.setattr(tenant_module, "_read_database_header", reject_migration_work)
+    monkeypatch.setattr(
+        tenant_module,
+        "_plaintext_database_readable",
+        reject_migration_work,
+    )
+
+    with get_user_db(tenant) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 1
+
+
+def test_stale_encrypted_database_enters_migration_lock(
+    tenant_env,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stale encrypted database should initialize under the migration lock."""
+    from contextlib import contextmanager
+
+    import yinshi.tenant as tenant_module
+    from yinshi.config import get_settings
+    from yinshi.tenant import TenantContext, _open_sqlcipher_connection, get_user_db
+
+    monkeypatch.setenv("TENANT_DB_ENCRYPTION", "required")
+    get_settings.cache_clear()
+    data_directory = Path(tenant_env["user_data_dir"]) / "ab" / "abcdef"
+    data_directory.mkdir(parents=True)
+    database_path = data_directory / "yinshi.db"
+    key = b"k" * 32
+    _open_sqlcipher_connection(str(database_path), key).close()
+    tenant = TenantContext(
+        user_id="abcdef",
+        email="user@example.com",
+        data_dir=str(data_directory),
+        db_path=str(database_path),
+    )
+    original_migration_lock = tenant_module._tenant_migration_lock
+    locked_paths: list[str] = []
+
+    @contextmanager
+    def track_migration_lock(path: str):
+        locked_paths.append(path)
+        with original_migration_lock(path):
+            yield
+
+    monkeypatch.setattr(tenant_module, "_tenant_database_key", lambda _tenant: key)
+    monkeypatch.setattr(tenant_module, "_tenant_migration_lock", track_migration_lock)
+
+    with get_user_db(tenant) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 1
+
+    assert locked_paths == [str(database_path)]
+
+
 def test_plaintext_header_inspection_rejects_symlink_before_sqlite(
     tenant_env,
     monkeypatch: pytest.MonkeyPatch,
@@ -1564,7 +1667,6 @@ def test_get_user_db_encrypted_header_only_uses_sqlcipher(
         data_dir=str(data_directory),
         db_path=str(database_path),
     )
-    sqlcipher_connection = sqlite3.connect(":memory:")
     sqlcipher_opens: list[tuple[str, bytes]] = []
 
     def reject_stdlib_open(_path: str):
@@ -1575,7 +1677,9 @@ def test_get_user_db_encrypted_header_only_uses_sqlcipher(
 
     def open_sqlcipher(path: str, key: bytes):
         sqlcipher_opens.append((path, key))
-        return sqlcipher_connection
+        connection = sqlite3.connect(":memory:")
+        connection.execute("PRAGMA user_version = 1")
+        return connection
 
     monkeypatch.setattr(tenant_module, "_open_connection", reject_stdlib_open)
     monkeypatch.setattr(
@@ -1822,6 +1926,9 @@ def test_open_encrypted_database_removes_legacy_plaintext_backup(
     monkeypatch,
 ) -> None:
     """Validated encrypted primaries should trigger cleanup of migration residue."""
+    from contextlib import contextmanager
+
+    import yinshi.tenant as tenant_module
     from yinshi.config import get_settings
     from yinshi.tenant import TenantContext, _open_user_connection
 
@@ -1840,7 +1947,17 @@ def test_open_encrypted_database_removes_legacy_plaintext_backup(
         db_path=str(database_path),
     )
     fake_connection = object()
+    original_migration_lock = tenant_module._tenant_migration_lock
+    locked_paths: list[str] = []
+
+    @contextmanager
+    def track_migration_lock(path: str):
+        locked_paths.append(path)
+        with original_migration_lock(path):
+            yield
+
     monkeypatch.setattr("yinshi.tenant._tenant_database_key", lambda _tenant: b"k" * 32)
+    monkeypatch.setattr(tenant_module, "_tenant_migration_lock", track_migration_lock)
     monkeypatch.setattr("yinshi.tenant._load_sqlcipher_module", lambda: object())
     monkeypatch.setattr(
         "yinshi.tenant._open_sqlcipher_connection",
@@ -1854,6 +1971,7 @@ def test_open_encrypted_database_removes_legacy_plaintext_backup(
     connection = _open_user_connection(str(database_path), tenant)
 
     assert connection is fake_connection
+    assert locked_paths == [str(database_path)]
     assert not backup_path.exists()
 
 

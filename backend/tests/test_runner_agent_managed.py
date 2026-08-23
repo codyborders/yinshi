@@ -161,6 +161,40 @@ def test_runner_agent_managed_lifecycle_defaults_are_disabled(
     assert config.data_protection_key_file == config.sqlite_dir / ".yinshi-data-protection-key"
 
 
+async def test_runner_agent_stops_loop_diagnostics_after_startup_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Runner startup failures should cancel diagnostics after arming them first."""
+    _set_runner_agent_env(monkeypatch, tmp_path)
+    config = runner_agent.load_config()
+    calls: list[str] = []
+
+    class FakeWatchdog:
+        def start(self) -> None:
+            calls.append("start")
+
+        async def run(self) -> None:
+            calls.append("run")
+            await asyncio.Event().wait()
+
+        def stop(self) -> None:
+            calls.append("stop")
+
+    def fail_token_read(_path: Path) -> str | None:
+        calls.append("token")
+        raise RuntimeError("token read failed")
+
+    monkeypatch.setattr(runner_agent, "EventLoopWatchdog", FakeWatchdog)
+    monkeypatch.setattr(runner_agent, "_read_runner_token", fail_token_read)
+
+    with pytest.raises(RuntimeError, match="token read failed"):
+        await runner_agent.run_agent(config)
+
+    assert calls[0:2] == ["start", "token"]
+    assert calls[-1] == "stop"
+
+
 def test_runner_agent_startup_log_excludes_private_paths(
     caplog: pytest.LogCaptureFixture,
     monkeypatch: pytest.MonkeyPatch,

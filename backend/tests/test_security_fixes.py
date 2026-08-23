@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -286,6 +287,71 @@ async def test_terminal_proxy_stops_output_after_session_revocation(
 
     assert websocket.close_code == 1008
     assert websocket.messages == []
+
+
+@pytest.mark.asyncio
+async def test_terminal_auth_lookup_does_not_block_event_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Terminal proxy authentication should leave unrelated async work responsive."""
+    import yinshi.api.terminals as terminals
+
+    release_lookup = threading.Event()
+    stop_ticker = asyncio.Event()
+    ticks = 0
+
+    def blocking_identity(_token: str) -> tuple[str, str]:
+        assert release_lookup.wait(timeout=2)
+        return "user-id", "session-id"
+
+    class OneMessageWebSocket:
+        def __init__(self) -> None:
+            self.receive_count = 0
+
+        async def receive_json(self) -> dict[str, str]:
+            self.receive_count += 1
+            if self.receive_count > 1:
+                raise RuntimeError("proxy complete")
+            return {"type": "ping"}
+
+        async def send_json(self, _message: dict[str, object]) -> None:
+            return None
+
+        async def close(self, _code: int) -> None:
+            return None
+
+    class EmptyWriter:
+        def write(self, _data: bytes) -> None:
+            return None
+
+        async def drain(self) -> None:
+            return None
+
+    async def ticker() -> None:
+        nonlocal ticks
+        while not stop_ticker.is_set():
+            ticks += 1
+            await asyncio.sleep(0.01)
+
+    monkeypatch.setattr(terminals, "get_session_identity", blocking_identity)
+    release_timer = threading.Timer(0.2, release_lookup.set)
+    release_timer.start()
+    ticker_task = asyncio.create_task(ticker())
+    try:
+        with pytest.raises(RuntimeError, match="proxy complete"):
+            await terminals._proxy_browser_to_sidecar(
+                OneMessageWebSocket(),
+                EmptyWriter(),
+                "terminal-id",
+                {"cwd": "/workspace"},
+                "session-token",
+            )
+    finally:
+        stop_ticker.set()
+        await ticker_task
+        release_timer.cancel()
+
+    assert ticks >= 5
 
 
 # --- SEC-H3: Sessions PATCH must use _UPDATABLE_COLUMNS guard ---

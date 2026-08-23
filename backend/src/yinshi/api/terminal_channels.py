@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any, Literal
@@ -9,7 +10,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
-from yinshi.api.deps import get_db_for_request, get_tenant
+from yinshi.api.deps import get_tenant, run_db_operation_for_request
 from yinshi.config import get_settings
 from yinshi.exceptions import (
     ContainerNotReadyError,
@@ -87,12 +88,11 @@ async def _terminal_context(
 ) -> tuple[str, Any, str, str, str | None]:
     user_id, tenant = _tenant_identity(request)
     try:
-        with get_db_for_request(request) as database:
-            paths = await prepare_tenant_workspace_runtime_paths(
-                database,
-                tenant,
-                workspace_id,
-            )
+        paths = await prepare_tenant_workspace_runtime_paths(
+            tenant,
+            workspace_id,
+            lambda operation: run_db_operation_for_request(request, operation),
+        )
         runtime = await resolve_tenant_sidecar_context(
             request,
             tenant,
@@ -106,7 +106,11 @@ async def _terminal_context(
             effective_cwd = paths.workspace_path
         else:
             socket_path = runtime.socket_path
-            effective_cwd = remap_path_for_container(paths.workspace_path, tenant.data_dir)
+            effective_cwd = await asyncio.to_thread(
+                remap_path_for_container,
+                paths.workspace_path,
+                tenant.data_dir,
+            )
     except (PermissionError, WorkspaceNotFoundError):
         raise HTTPException(status_code=404, detail="Workspace not found") from None
     except (ContainerStartError, ContainerNotReadyError, GitError, OSError, ValueError):
