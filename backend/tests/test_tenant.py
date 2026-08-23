@@ -497,12 +497,15 @@ def test_sqlcipher_connection_retries_disk_io_during_connect(tenant_env, monkeyp
     assert sleep.call_args_list == [call(0.05)]
 
 
-def test_sqlcipher_connection_fails_closed_after_connect_disk_io(
+def test_sqlcipher_connection_reports_temporary_storage_after_connect_disk_io(
     tenant_env,
     monkeypatch,
 ):
-    """Persistent connect failures must retain the configured-key boundary."""
-    from yinshi.tenant import _open_sqlcipher_connection
+    """Persistent exact disk failures must retain their temporary-storage cause."""
+    from yinshi.tenant import (
+        TenantDatabaseTemporarilyUnavailable,
+        _open_sqlcipher_connection,
+    )
 
     class FakeOperationalError(Exception):
         pass
@@ -518,12 +521,13 @@ def test_sqlcipher_connection_fails_closed_after_connect_disk_io(
     monkeypatch.setattr("yinshi.tenant._load_sqlcipher_module", lambda: fake_module)
     monkeypatch.setattr("yinshi.tenant.time.sleep", sleep)
 
-    with pytest.raises(RuntimeError, match="configured key") as error:
+    with pytest.raises(TenantDatabaseTemporarilyUnavailable) as error:
         _open_sqlcipher_connection(
             str(tenant_env["tmp_path"] / "cipher.db"),
             b"1" * 32,
         )
 
+    assert str(error.value) == "Tenant database storage is temporarily unavailable"
     assert isinstance(error.value.__cause__, FakeOperationalError)
     assert connect.call_count == 3
     assert sleep.call_args_list == [call(0.05), call(0.1)]
@@ -560,12 +564,15 @@ def test_sqlcipher_connection_does_not_retry_near_match_disk_error(
     sleep.assert_not_called()
 
 
-def test_sqlcipher_connection_fails_closed_after_persistent_disk_io(
+def test_sqlcipher_connection_reports_temporary_storage_after_persistent_disk_io(
     tenant_env,
     monkeypatch,
 ):
-    """Repeated disk failures must retain the configured-key error boundary."""
-    from yinshi.tenant import _open_sqlcipher_connection
+    """Repeated validation disk failures must retain their temporary-storage cause."""
+    from yinshi.tenant import (
+        TenantDatabaseTemporarilyUnavailable,
+        _open_sqlcipher_connection,
+    )
 
     class FakeOperationalError(Exception):
         pass
@@ -596,7 +603,7 @@ def test_sqlcipher_connection_fails_closed_after_persistent_disk_io(
     monkeypatch.setattr("yinshi.tenant._load_sqlcipher_module", lambda: fake_module)
     monkeypatch.setattr("yinshi.tenant.time.sleep", sleep)
 
-    with pytest.raises(RuntimeError, match="configured key") as error:
+    with pytest.raises(TenantDatabaseTemporarilyUnavailable) as error:
         _open_sqlcipher_connection(
             str(tenant_env["tmp_path"] / "cipher.db"),
             b"1" * 32,

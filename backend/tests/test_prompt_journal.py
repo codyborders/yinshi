@@ -9,11 +9,13 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
+import threading
 import uuid
 from collections.abc import AsyncIterator, Iterator
 from contextlib import contextmanager
 from types import SimpleNamespace
 from typing import Any, cast
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import Request
@@ -82,6 +84,192 @@ async def _wait_for_terminal(
             return batch.status
         await asyncio.sleep(0)
     raise AssertionError("prompt journal did not reach a terminal state")
+
+
+@pytest.mark.asyncio
+async def test_event_append_reconciles_uncertain_commit_exactly_once(
+    db: sqlite3.Connection,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A committed event remains single when storage reports failure after commit."""
+    from yinshi.api import deps
+    from yinshi.tenant import TenantDatabaseTemporarilyUnavailable
+
+    session_id = _seed_session(db)
+    run_id = uuid.uuid4().hex
+    db.execute(
+        """INSERT INTO prompt_runs (id, session_id, idempotency_key, status)
+           VALUES (?, ?, ?, 'running')""",
+        (run_id, session_id, str(uuid.uuid4())),
+    )
+    db.commit()
+    original = deps.run_db_operation_for_request
+    reported_failure = False
+
+    async def uncertain_commit(request, operation, **kwargs):
+        def wrapped(database):
+            nonlocal reported_failure
+            result = operation(database)
+            if not reported_failure:
+                reported_failure = True
+                raise TenantDatabaseTemporarilyUnavailable(
+                    "Tenant database storage is temporarily unavailable"
+                ) from sqlite3.OperationalError("disk I/O error")
+            return result
+
+        return await original(request, wrapped, **kwargs)
+
+    monkeypatch.setattr(prompt_journal, "run_db_operation_for_request", uncertain_commit)
+    monkeypatch.setattr(deps, "_TENANT_DB_RETRY_DELAY_SECONDS", 0.0)
+    journal = PromptJournal()
+
+    await journal._append_event(_request(), run_id, {"type": "assistant", "text": "done"})
+
+    rows = db.execute(
+        "SELECT sequence, event_json FROM prompt_events WHERE run_id = ?",
+        (run_id,),
+    ).fetchall()
+    assert [(row["sequence"], json.loads(row["event_json"])) for row in rows] == [
+        (0, {"text": "done", "type": "assistant"})
+    ]
+
+
+@pytest.mark.asyncio
+async def test_terminal_status_reconciles_uncertain_commit(
+    db: sqlite3.Connection,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A terminal transition is idempotent when commit success is uncertain."""
+    from yinshi.api import deps
+    from yinshi.tenant import TenantDatabaseTemporarilyUnavailable
+
+    session_id = _seed_session(db)
+    run_id = uuid.uuid4().hex
+    db.execute(
+        """INSERT INTO prompt_runs (id, session_id, idempotency_key, status)
+           VALUES (?, ?, ?, 'running')""",
+        (run_id, session_id, str(uuid.uuid4())),
+    )
+    db.commit()
+    original = deps.run_db_operation_for_request
+    reported_failure = False
+
+    async def uncertain_commit(request, operation, **kwargs):
+        def wrapped(database):
+            nonlocal reported_failure
+            result = operation(database)
+            if not reported_failure:
+                reported_failure = True
+                raise TenantDatabaseTemporarilyUnavailable(
+                    "Tenant database storage is temporarily unavailable"
+                ) from sqlite3.OperationalError("disk I/O error")
+            return result
+
+        return await original(request, wrapped, **kwargs)
+
+    monkeypatch.setattr(prompt_journal, "run_db_operation_for_request", uncertain_commit)
+    monkeypatch.setattr(deps, "_TENANT_DB_RETRY_DELAY_SECONDS", 0.0)
+    journal = PromptJournal()
+
+    await journal._set_terminal_status(_request(), run_id, "completed")
+
+    status = db.execute("SELECT status FROM prompt_runs WHERE id = ?", (run_id,)).fetchone()[0]
+    assert status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_terminal_status_transition_does_not_release_newer_direct_prompt(
+    db: sqlite3.Connection,
+) -> None:
+    """An old active run cannot release a newer direct prompt reservation."""
+    session_id = _seed_session(db)
+    old_run_id = uuid.uuid4().hex
+    newer_turn_id = uuid.uuid4().hex
+    db.execute(
+        """INSERT INTO prompt_runs (id, session_id, idempotency_key, status)
+           VALUES (?, ?, ?, 'running')""",
+        (old_run_id, session_id, str(uuid.uuid4())),
+    )
+    db.execute(
+        "INSERT INTO messages (session_id, role, content, turn_id) VALUES (?, 'user', ?, ?)",
+        (session_id, "old journal prompt", old_run_id),
+    )
+    db.execute(
+        "INSERT INTO messages (session_id, role, content, turn_id) VALUES (?, 'user', ?, ?)",
+        (session_id, "new direct prompt", newer_turn_id),
+    )
+    db.execute("UPDATE sessions SET status = 'running' WHERE id = ?", (session_id,))
+    db.commit()
+
+    journal = PromptJournal()
+    await journal._set_terminal_status(_request(), old_run_id, "completed")
+
+    row = db.execute(
+        """SELECT prompt_runs.status AS run_status, sessions.status AS session_status
+           FROM prompt_runs JOIN sessions ON sessions.id = prompt_runs.session_id
+           WHERE prompt_runs.id = ?""",
+        (old_run_id,),
+    ).fetchone()
+    assert row["run_status"] == "completed"
+    assert row["session_status"] == "running"
+    await journal.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("requested_status", ["completed", "failed"])
+async def test_terminal_status_reconciles_cancelled_after_uncertain_stopping_commit(
+    db: sqlite3.Connection,
+    monkeypatch: pytest.MonkeyPatch,
+    requested_status: str,
+) -> None:
+    """An uncertain stopping transition preserves its authoritative cancellation."""
+    from yinshi.api import deps
+    from yinshi.tenant import TenantDatabaseTemporarilyUnavailable
+
+    session_id = _seed_session(db)
+    run_id = uuid.uuid4().hex
+    db.execute("UPDATE sessions SET status = 'running' WHERE id = ?", (session_id,))
+    db.execute(
+        """INSERT INTO prompt_runs (id, session_id, idempotency_key, status)
+           VALUES (?, ?, ?, 'stopping')""",
+        (run_id, session_id, str(uuid.uuid4())),
+    )
+    db.execute(
+        "INSERT INTO messages (session_id, role, content, turn_id) VALUES (?, 'user', ?, ?)",
+        (session_id, "cancel me", run_id),
+    )
+    db.commit()
+    original = deps.run_db_operation_for_request
+    reported_failure = False
+
+    async def uncertain_commit(request, operation, **kwargs):
+        def wrapped(database):
+            nonlocal reported_failure
+            result = operation(database)
+            if not reported_failure:
+                reported_failure = True
+                raise TenantDatabaseTemporarilyUnavailable(
+                    "Tenant database storage is temporarily unavailable"
+                ) from sqlite3.OperationalError("disk I/O error")
+            return result
+
+        return await original(request, wrapped, **kwargs)
+
+    monkeypatch.setattr(prompt_journal, "run_db_operation_for_request", uncertain_commit)
+    monkeypatch.setattr(deps, "_TENANT_DB_RETRY_DELAY_SECONDS", 0.0)
+    journal = PromptJournal()
+
+    await journal._set_terminal_status(_request(), run_id, requested_status)
+
+    row = db.execute(
+        """SELECT prompt_runs.status AS run_status, sessions.status AS session_status
+           FROM prompt_runs JOIN sessions ON sessions.id = prompt_runs.session_id
+           WHERE prompt_runs.id = ?""",
+        (run_id,),
+    ).fetchone()
+    assert reported_failure is True
+    assert row["run_status"] == "cancelled"
+    assert row["session_status"] == "idle"
 
 
 @pytest.mark.asyncio
@@ -264,7 +452,7 @@ async def test_prompt_journal_stops_reading_rows_at_page_byte_limit(
         with original_get_db(request) as database:
             yield InstrumentedConnection(database)
 
-    monkeypatch.setattr(prompt_journal, "get_db_for_request", instrumented_get_db)
+    monkeypatch.setattr("yinshi.api.deps.get_db_for_request", instrumented_get_db)
     journal = PromptJournal()
     batch = await journal.events(
         request=_request(),
@@ -444,6 +632,123 @@ async def test_prompt_journal_serializes_concurrent_idempotent_starts(
 
 
 @pytest.mark.asyncio
+async def test_prompt_journal_start_cancellation_consumes_registration_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Caller cancellation wins when shielded start later raises."""
+    start_entered = asyncio.Event()
+    release_start = asyncio.Event()
+    journal = PromptJournal()
+
+    async def fail_start(**_kwargs: Any) -> None:
+        start_entered.set()
+        await release_start.wait()
+        raise RuntimeError("registration failed")
+
+    monkeypatch.setattr(journal, "_recover_database", AsyncMock())
+    monkeypatch.setattr(journal, "_reconcile_pending_for_database", AsyncMock())
+    monkeypatch.setattr(journal, "_start_serialized", fail_start)
+    task = asyncio.create_task(
+        journal.start(
+            request=_request(),
+            session_id=uuid.uuid4().hex,
+            idempotency_key=str(uuid.uuid4()),
+            body={"prompt": "hello"},
+        )
+    )
+    await asyncio.wait_for(start_entered.wait(), timeout=1)
+
+    task.cancel()
+    await asyncio.sleep(0)
+    task.cancel()
+    await asyncio.sleep(0)
+    assert task.done() is False
+
+    release_start.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await journal.close()
+
+
+@pytest.mark.asyncio
+async def test_prompt_journal_recovers_committed_start_before_registration(
+    db: sqlite3.Connection,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A later idempotent start registers one orphaned starting run."""
+    from yinshi.tenant import TenantDatabaseTemporarilyUnavailable
+
+    session_id = _seed_session(db)
+    idempotency_key = str(uuid.uuid4())
+    executor_calls = 0
+    release_executor = asyncio.Event()
+
+    async def blocked_events(
+        request: Request,
+        selected_session_id: str,
+        body: Any,
+    ) -> AsyncIterator[dict[str, Any]]:
+        nonlocal executor_calls
+        assert selected_session_id == session_id
+        executor_calls += 1
+        await release_executor.wait()
+        yield {"type": "result"}
+
+    operation_calls = 0
+
+    async def commit_then_fail(_request: Request, operation: Any, **_kwargs: Any) -> Any:
+        nonlocal operation_calls
+        operation_calls += 1
+        result = operation(db)
+        if operation_calls == 1:
+            raise TenantDatabaseTemporarilyUnavailable(
+                "Tenant database storage is temporarily unavailable"
+            )
+        return result
+
+    journal = PromptJournal(executor=blocked_events)
+    monkeypatch.setattr(journal, "_recover_database", AsyncMock())
+    monkeypatch.setattr(journal, "_reconcile_pending_for_database", AsyncMock())
+    monkeypatch.setattr(prompt_journal, "run_db_operation_for_request", commit_then_fail)
+    journal_request = _request()
+
+    with pytest.raises(TenantDatabaseTemporarilyUnavailable):
+        await journal.start(
+            request=journal_request,
+            session_id=session_id,
+            idempotency_key=idempotency_key,
+            body={"prompt": "hello"},
+        )
+    stored_run = db.execute(
+        "SELECT id, status FROM prompt_runs WHERE idempotency_key = ?",
+        (idempotency_key,),
+    ).fetchone()
+    assert stored_run is not None
+    assert stored_run["status"] == "starting"
+    assert journal._tasks == {}
+
+    recovered = await journal.start(
+        request=journal_request,
+        session_id=session_id,
+        idempotency_key=idempotency_key,
+        body={"prompt": "hello"},
+    )
+    repeated = await journal.start(
+        request=journal_request,
+        session_id=session_id,
+        idempotency_key=idempotency_key,
+        body={"prompt": "hello"},
+    )
+    await asyncio.sleep(0)
+
+    assert recovered.id == stored_run["id"]
+    assert repeated.id == recovered.id
+    assert executor_calls == 1
+    release_executor.set()
+    await journal.close()
+
+
+@pytest.mark.asyncio
 async def test_prompt_journal_start_cannot_outlive_close(
     db: sqlite3.Connection,
     monkeypatch: pytest.MonkeyPatch,
@@ -517,6 +822,10 @@ async def test_prompt_journal_recovers_orphaned_run_on_first_tenant_request(
             "INSERT INTO prompt_events (run_id, sequence, event_json) VALUES (?, 0, ?)",
             (run_id, '{"type":"status"}'),
         )
+        db.execute(
+            "INSERT INTO messages (session_id, role, content, turn_id) VALUES (?, 'user', ?, ?)",
+            (session_id, "interrupted prompt", run_id),
+        )
 
     journal_request = _request()
     journal = PromptJournal()
@@ -569,6 +878,8 @@ async def test_prompt_journal_cancellation_closes_executor_iterator(
         event: dict[str, Any],
         *,
         unless_terminal: bool = False,
+        deduplicate: bool = False,
+        background: bool = False,
     ) -> None:
         if not unless_terminal:
             append_started.set()
@@ -578,6 +889,8 @@ async def test_prompt_journal_cancellation_closes_executor_iterator(
             run_id,
             event,
             unless_terminal=unless_terminal,
+            deduplicate=deduplicate,
+            background=background,
         )
 
     monkeypatch.setattr(journal, "_append_event", blocked_append_event)
@@ -674,6 +987,7 @@ async def test_executor_iterator_close_failure_keeps_terminal_cleanup(
     assert batch.status == "interrupted"
     assert batch.events == ({"error": "Prompt run was interrupted", "type": "error"},)
     assert journal._tasks == {}
+    assert journal._append_locks == {}
 
 
 @pytest.mark.asyncio
@@ -724,11 +1038,71 @@ async def test_prompt_journal_close_marks_active_run_interrupted(
 
 
 @pytest.mark.asyncio
+async def test_prompt_start_cancellation_waits_for_executor_registration(
+    db: sqlite3.Connection,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A committed starting row receives its executor before cancellation returns."""
+    session_id = _seed_session(db)
+    operation_finished = threading.Event()
+    release_operation = threading.Event()
+    original = prompt_journal.run_db_operation_for_request
+    operation_count = 0
+
+    async def delayed_operation(request, operation, **kwargs):
+        nonlocal operation_count
+        operation_count += 1
+        if operation_count == 1:
+            return await original(request, operation, **kwargs)
+
+        def wrapped(database):
+            result = operation(database)
+            operation_finished.set()
+            release_operation.wait(timeout=1)
+            return result
+
+        return await original(request, wrapped, **kwargs)
+
+    async def blocked_events(
+        request: Request,
+        selected_session_id: str,
+        body: Any,
+    ) -> AsyncIterator[dict[str, Any]]:
+        await asyncio.Event().wait()
+        yield {"type": "result"}
+
+    monkeypatch.setattr(prompt_journal, "run_db_operation_for_request", delayed_operation)
+    journal = PromptJournal(executor=blocked_events)
+    start_task = asyncio.create_task(
+        journal.start(
+            request=_request(),
+            session_id=session_id,
+            idempotency_key=str(uuid.uuid4()),
+            body={"prompt": "commit before cancel"},
+        )
+    )
+    assert await asyncio.to_thread(operation_finished.wait, 1)
+
+    start_task.cancel()
+    await asyncio.sleep(0)
+    assert start_task.done() is False
+
+    release_operation.set()
+    with pytest.raises(asyncio.CancelledError):
+        await start_task
+    assert len(journal._tasks) == 1
+    await journal.close()
+
+
+@pytest.mark.asyncio
 async def test_prompt_journal_immediate_cancellation_wins_start_race(
     db: sqlite3.Connection,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Cancellation before executor startup never turns into a failed run."""
     session_id = _seed_session(db)
+    status_started = asyncio.Event()
+    release_status = asyncio.Event()
 
     async def never_started_events(
         request: Request,
@@ -740,17 +1114,40 @@ async def test_prompt_journal_immediate_cancellation_wins_start_race(
 
     journal_request = _request()
     journal = PromptJournal(executor=never_started_events)
+    original_set_status = journal._set_status
+
+    async def paused_set_status(*args: Any, **kwargs: Any) -> None:
+        status_started.set()
+        await release_status.wait()
+        await original_set_status(*args, **kwargs)
+
+    monkeypatch.setattr(journal, "_set_status", paused_set_status)
     run = await journal.start(
         request=journal_request,
         session_id=session_id,
         idempotency_key=str(uuid.uuid4()),
         body={"prompt": "stop now"},
     )
-    cancelled = await journal.cancel(
-        request=journal_request,
-        session_id=session_id,
-        run_id=run.id,
+    await status_started.wait()
+    cancel_task = asyncio.create_task(
+        journal.cancel(
+            request=journal_request,
+            session_id=session_id,
+            run_id=run.id,
+        )
     )
+    for _ in range(100):
+        status = db.execute(
+            "SELECT status FROM prompt_runs WHERE id = ?",
+            (run.id,),
+        ).fetchone()["status"]
+        if status == "stopping":
+            break
+        await asyncio.sleep(0)
+    else:
+        raise AssertionError("prompt run did not enter stopping state")
+    release_status.set()
+    cancelled = await cancel_task
     batch = await journal.events(
         request=journal_request,
         session_id=session_id,
@@ -761,6 +1158,7 @@ async def test_prompt_journal_immediate_cancellation_wins_start_race(
     assert cancelled.status == "cancelled"
     assert batch.status == "cancelled"
     assert batch.events == ({"reason": "user_stop", "type": "cancelled"},)
+    assert journal._append_locks == {}
     await journal.close()
 
 
@@ -797,7 +1195,13 @@ async def test_terminal_status_failure_reconciles_before_same_process_reuse(
     original_set_terminal_status = journal._set_terminal_status
     terminal_attempts = 0
 
-    def failing_set_terminal_status(request: Request, run_id: str, status: str) -> None:
+    async def failing_set_terminal_status(
+        request: Request,
+        run_id: str,
+        status: str,
+        *,
+        background: bool = False,
+    ) -> None:
         nonlocal terminal_attempts
         terminal_attempts += 1
         raise sqlite3.DatabaseError("database disk image is malformed")
@@ -873,12 +1277,23 @@ async def test_terminal_status_retries_sqlite_busy_without_interrupting_run(
     original_set_terminal_status = journal._set_terminal_status
     attempts = 0
 
-    def busy_then_complete(request: Request, run_id: str, status: str) -> None:
+    async def busy_then_complete(
+        request: Request,
+        run_id: str,
+        status: str,
+        *,
+        background: bool = False,
+    ) -> None:
         nonlocal attempts
         attempts += 1
         if attempts < 3:
             raise sqlite3.OperationalError("database is locked")
-        original_set_terminal_status(request, run_id, status)
+        await original_set_terminal_status(
+            request,
+            run_id,
+            status,
+            background=background,
+        )
 
     monkeypatch.setattr(journal, "_set_terminal_status", busy_then_complete)
     run = await journal.start(
@@ -903,10 +1318,11 @@ async def test_terminal_status_retries_sqlite_busy_without_interrupting_run(
 
 
 @pytest.mark.asyncio
-async def test_prompt_journal_cancellation_is_idempotent_before_sidecar_registration(
+async def test_prompt_journal_cancel_retry_delivers_stop_after_uncertain_commit(
     db: sqlite3.Connection,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Immediate repeated cancellation leaves one durable cancelled event."""
+    """Retrying a committed stopping transition still cancels its executor."""
     session_id = _seed_session(db)
     executor_started = asyncio.Event()
 
@@ -915,6 +1331,92 @@ async def test_prompt_journal_cancellation_is_idempotent_before_sidecar_registra
         selected_session_id: str,
         body: Any,
     ) -> AsyncIterator[dict[str, Any]]:
+        assert selected_session_id == session_id
+        executor_started.set()
+        await asyncio.Event().wait()
+        yield {"type": "result"}
+
+    journal_request = _request()
+    journal = PromptJournal(executor=blocked_events)
+    run = await journal.start(
+        request=journal_request,
+        session_id=session_id,
+        idempotency_key=str(uuid.uuid4()),
+        body={"prompt": "stop after uncertain commit"},
+    )
+    await executor_started.wait()
+
+    original = prompt_journal.run_db_operation_for_request
+    interrupt_once = True
+
+    async def interrupt_after_stop_commit(request, operation, **kwargs):
+        nonlocal interrupt_once
+        result = await original(request, operation, **kwargs)
+        if (
+            interrupt_once
+            and isinstance(result, tuple)
+            and result[0].id == run.id
+            and result[0].status == "stopping"
+        ):
+            interrupt_once = False
+            raise asyncio.CancelledError
+        return result
+
+    monkeypatch.setattr(
+        prompt_journal,
+        "run_db_operation_for_request",
+        interrupt_after_stop_commit,
+    )
+    with pytest.raises(asyncio.CancelledError):
+        await journal.cancel(
+            request=journal_request,
+            session_id=session_id,
+            run_id=run.id,
+        )
+    stored_status = db.execute(
+        "SELECT status FROM prompt_runs WHERE id = ?",
+        (run.id,),
+    ).fetchone()["status"]
+    assert stored_status == "stopping"
+
+    monkeypatch.setattr(prompt_journal, "run_db_operation_for_request", original)
+    cancelled = await journal.cancel(
+        request=journal_request,
+        session_id=session_id,
+        run_id=run.id,
+    )
+    batch = await journal.events(
+        request=journal_request,
+        session_id=session_id,
+        run_id=run.id,
+        next_sequence=0,
+    )
+
+    assert cancelled.status == "cancelled"
+    assert batch.status == "cancelled"
+    assert batch.events == ({"reason": "user_stop", "type": "cancelled"},)
+    await journal.close()
+
+
+@pytest.mark.asyncio
+async def test_prompt_journal_concurrent_cancellation_is_idempotent_for_active_task(
+    db: sqlite3.Connection,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Concurrent active-task cancellation stores one terminal event."""
+    coordinator = SimpleNamespace(request_cancel=AsyncMock(return_value=False))
+    monkeypatch.setattr(prompt_journal, "get_run_coordinator", lambda: coordinator)
+    session_id = _seed_session(db)
+    executor_started = asyncio.Event()
+    repeated_event = {"type": "assistant", "text": "same"}
+
+    async def blocked_events(
+        request: Request,
+        selected_session_id: str,
+        body: Any,
+    ) -> AsyncIterator[dict[str, Any]]:
+        yield repeated_event
+        yield repeated_event
         executor_started.set()
         await asyncio.Event().wait()
         yield {"type": "result"}
@@ -929,15 +1431,17 @@ async def test_prompt_journal_cancellation_is_idempotent_before_sidecar_registra
     )
     await executor_started.wait()
 
-    first_cancel = await journal.cancel(
-        request=journal_request,
-        session_id=session_id,
-        run_id=run.id,
-    )
-    repeated_cancel = await journal.cancel(
-        request=journal_request,
-        session_id=session_id,
-        run_id=run.id,
+    cancelled_runs = await asyncio.gather(
+        journal.cancel(
+            request=journal_request,
+            session_id=session_id,
+            run_id=run.id,
+        ),
+        journal.cancel(
+            request=journal_request,
+            session_id=session_id,
+            run_id=run.id,
+        ),
     )
     batch = await journal.events(
         request=journal_request,
@@ -946,8 +1450,58 @@ async def test_prompt_journal_cancellation_is_idempotent_before_sidecar_registra
         next_sequence=0,
     )
 
-    assert first_cancel.status == "cancelled"
-    assert repeated_cancel.status == "cancelled"
+    assert [run.status for run in cancelled_runs] == ["cancelled", "cancelled"]
+    assert batch.status == "cancelled"
+    assert batch.events == (
+        repeated_event,
+        repeated_event,
+        {"reason": "user_stop", "type": "cancelled"},
+    )
+    assert batch.next_sequence == 3
+    await journal.close()
+
+
+@pytest.mark.asyncio
+async def test_prompt_journal_concurrent_cancellation_is_idempotent_while_starting(
+    db: sqlite3.Connection,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Concurrent pre-executor cancellation stores one terminal event."""
+    coordinator = SimpleNamespace(request_cancel=AsyncMock(return_value=False))
+    monkeypatch.setattr(prompt_journal, "get_run_coordinator", lambda: coordinator)
+    session_id = _seed_session(db)
+    run_id = uuid.uuid4().hex
+    journal_request = _request()
+    journal = PromptJournal()
+    await journal._recover_database(journal_request)
+    db.execute(
+        """INSERT INTO prompt_runs (id, session_id, idempotency_key, status)
+           VALUES (?, ?, ?, 'starting')""",
+        (run_id, session_id, str(uuid.uuid4())),
+    )
+    db.commit()
+
+    cancelled_runs = await asyncio.gather(
+        journal.cancel(
+            request=journal_request,
+            session_id=session_id,
+            run_id=run_id,
+        ),
+        journal.cancel(
+            request=journal_request,
+            session_id=session_id,
+            run_id=run_id,
+        ),
+    )
+    batch = await journal.events(
+        request=journal_request,
+        session_id=session_id,
+        run_id=run_id,
+        next_sequence=0,
+    )
+
+    assert [run.status for run in cancelled_runs] == ["cancelled", "cancelled"]
     assert batch.status == "cancelled"
     assert batch.events == ({"reason": "user_stop", "type": "cancelled"},)
+    assert batch.next_sequence == 1
     await journal.close()

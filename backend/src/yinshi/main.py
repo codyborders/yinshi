@@ -71,7 +71,7 @@ from yinshi.services.relay_process_lock import RelayProcessLock
 from yinshi.services.runner_relay import runner_relay_broker
 from yinshi.services.sprites import SpritesClient
 from yinshi.services.terminal_journal import TerminalJournal
-from yinshi.tenant import TenantContext
+from yinshi.tenant import TenantContext, TenantDatabaseTemporarilyUnavailable
 from yinshi.worker_auth import (
     WorkerPrincipal,
     WorkerPrincipalMiddleware,
@@ -716,6 +716,18 @@ def managed_health() -> JSONResponse:
     return JSONResponse(status_code=200, content={"status": "ok"})
 
 
+async def _temporary_tenant_storage_handler(
+    _request: Request,
+    _exc: TenantDatabaseTemporarilyUnavailable,
+) -> JSONResponse:
+    """Return a bounded retryable response without exposing database details."""
+    return JSONResponse(
+        status_code=503,
+        content={"detail": "Tenant storage is temporarily unavailable"},
+        headers={"Retry-After": "1"},
+    )
+
+
 def create_app(
     *,
     mode: AppMode = "hosted",
@@ -767,6 +779,10 @@ def create_app(
     application.add_exception_handler(
         RateLimitExceeded,
         cast(Any, _rate_limit_exceeded_handler),
+    )
+    application.add_exception_handler(
+        TenantDatabaseTemporarilyUnavailable,
+        cast(Any, _temporary_tenant_storage_handler),
     )
     _configure_middleware(
         application,

@@ -13,13 +13,18 @@ import sys
 import uuid
 from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from dataclasses import dataclass
-from typing import Any, Literal, cast
+from typing import Any, Literal, TypeVar, cast
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 
-from yinshi.api.deps import check_owner, get_db_for_request, get_tenant, get_user_email
+from yinshi.api.deps import (
+    check_owner,
+    get_tenant,
+    get_user_email,
+    run_db_operation_for_request,
+)
 from yinshi.auth import get_session_identity
 from yinshi.config import get_settings
 from yinshi.exceptions import (
@@ -49,6 +54,10 @@ from yinshi.services.provider_connections import (
     resolve_provider_connection,
     update_provider_connection_secret,
 )
+from yinshi.services.repository_lifecycle import (
+    repository_lifecycle,
+    repository_lifecycle_root,
+)
 from yinshi.services.run_coordinator import get_run_coordinator
 from yinshi.services.sidecar import SidecarClient, create_sidecar_connection
 from yinshi.services.sidecar_runtime import (
@@ -57,10 +66,17 @@ from yinshi.services.sidecar_runtime import (
     resolve_tenant_sidecar_context,
     touch_tenant_container,
 )
-from yinshi.services.workspace import ensure_workspace_checkout_for_tenant
+from yinshi.services.workspace import (
+    WorkspaceCheckoutState,
+    apply_workspace_checkout_preparation,
+    load_workspace_checkout_state,
+    prepare_workspace_checkout_for_tenant,
+)
+from yinshi.tenant import TenantContext
 from yinshi.utils.paths import is_path_inside
 
 logger = logging.getLogger(__name__)
+_T = TypeVar("_T")
 router = APIRouter()
 
 # Batch DB writes every N chunks to reduce I/O
@@ -822,6 +838,140 @@ async def _resolve_execution_context(
     )
 
 
+async def _prompt_database_operation(
+    request: Request,
+    operation: Callable[[sqlite3.Connection], _T],
+    *,
+    background: bool = False,
+) -> _T:
+    """Run prompt persistence with foreground or per-operation retry budget."""
+    return await run_db_operation_for_request(
+        request,
+        operation,
+        shared_request_budget=not background,
+    )
+
+
+def _release_prompt_session_if_owned(
+    database: sqlite3.Connection,
+    session_id: str,
+    turn_id: str,
+) -> None:
+    """Release a session only while its latest user message owns this turn."""
+    database.execute(
+        """UPDATE sessions SET status = 'idle'
+           WHERE id = ? AND status = 'running'
+             AND ? = (
+                 SELECT turn_id FROM messages
+                 WHERE session_id = ? AND role = 'user'
+                 ORDER BY rowid DESC LIMIT 1
+             )""",
+        (session_id, turn_id, session_id),
+    )
+
+
+async def _set_prompt_session_idle(
+    request: Request,
+    session_id: str,
+    turn_id: str,
+    *,
+    background: bool = False,
+) -> None:
+    """Idempotently release one owned prompt session reservation."""
+
+    def release(database: sqlite3.Connection) -> None:
+        _release_prompt_session_if_owned(database, session_id, turn_id)
+        database.commit()
+
+    await _prompt_database_operation(request, release, background=background)
+
+
+async def _cleanup_cancelled_prompt_reservation(
+    request: Request,
+    session_id: str,
+    turn_id: str,
+) -> None:
+    """Release an owned reservation without replacing caller cancellation."""
+    try:
+        await _set_prompt_session_idle(request, session_id, turn_id, background=True)
+    except Exception:
+        logger.exception("Prompt reservation cleanup failed during cancellation")
+
+
+async def _persist_assistant_turn(
+    request: Request,
+    *,
+    message_id: str,
+    session_id: str,
+    turn_id: str,
+    content: str,
+    full_message: str | None = None,
+    turn_status: str | None = None,
+    finalize_session: bool = False,
+) -> None:
+    """Upsert one assistant turn and optionally release its session atomically."""
+
+    def persist(database: sqlite3.Connection) -> None:
+        row = database.execute(
+            "SELECT session_id, role, turn_id FROM messages WHERE id = ?",
+            (message_id,),
+        ).fetchone()
+        if row is None:
+            database.execute(
+                """INSERT INTO messages
+                   (id, session_id, role, content, full_message, turn_id, turn_status)
+                   VALUES (?, ?, 'assistant', ?, ?, ?, ?)""",
+                (message_id, session_id, content, full_message, turn_id, turn_status),
+            )
+        else:
+            if row["session_id"] != session_id or row["role"] != "assistant":
+                raise RuntimeError("assistant message identity conflict")
+            if row["turn_id"] != turn_id:
+                raise RuntimeError("assistant message turn conflict")
+            database.execute(
+                """UPDATE messages SET content = ?, full_message = COALESCE(?, full_message),
+                   turn_status = COALESCE(?, turn_status) WHERE id = ?""",
+                (content, full_message, turn_status, message_id),
+            )
+        if finalize_session:
+            _release_prompt_session_if_owned(database, session_id, turn_id)
+        database.commit()
+
+    await _prompt_database_operation(request, persist, background=True)
+
+
+async def _prepare_prompt_workspace_checkout(
+    request: Request,
+    tenant: TenantContext,
+    workspace_id: str,
+) -> dict[str, Any]:
+    """Prepare and apply prompt checkout state under its repository lock."""
+
+    def load_checkout(database: sqlite3.Connection) -> WorkspaceCheckoutState:
+        return load_workspace_checkout_state(database, workspace_id)
+
+    checkout_state = await _prompt_database_operation(request, load_checkout)
+    lock_root = await _prompt_database_operation(
+        request,
+        lambda database: repository_lifecycle_root(database, tenant),
+    )
+    async with repository_lifecycle(checkout_state.repo_id, lock_root):
+        locked_checkout_state = await _prompt_database_operation(request, load_checkout)
+        if locked_checkout_state.repo_id != checkout_state.repo_id:
+            raise WorkspaceNotFoundError("Workspace repository changed during preparation")
+        checkout_preparation = await prepare_workspace_checkout_for_tenant(
+            tenant,
+            locked_checkout_state,
+        )
+        return await _prompt_database_operation(
+            request,
+            lambda database: apply_workspace_checkout_preparation(
+                database,
+                checkout_preparation,
+            ),
+        )
+
+
 @router.post("/api/sessions/{session_id}/prompt")
 @limiter.limit("120/hour")
 async def prompt_session(
@@ -840,18 +990,22 @@ async def prompt_session(
         tenant is not None and request.app.state.mode != "worker" and desktop_device_id is None
     )
     auth_session_token = request.cookies.get("yinshi_session") if requires_auth_session else None
-    with get_db_for_request(request) as db:
-        session = _lookup_session(db, session_id, request)
-        if session and tenant:
-            try:
-                await ensure_workspace_checkout_for_tenant(
-                    db,
-                    tenant,
-                    session["workspace_id"],
-                )
-            except (GitError, RepoNotFoundError, WorkspaceNotFoundError) as exc:
-                raise HTTPException(status_code=409, detail=str(exc))
-            session = _lookup_session(db, session_id, request)
+
+    def lookup_session(database: sqlite3.Connection) -> sqlite3.Row | None:
+        return _lookup_session(database, session_id, request)
+
+    session = await _prompt_database_operation(request, lookup_session)
+    if session and tenant:
+        workspace_id = session["workspace_id"]
+        try:
+            await _prepare_prompt_workspace_checkout(
+                request,
+                tenant,
+                workspace_id,
+            )
+        except (GitError, RepoNotFoundError, WorkspaceNotFoundError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        session = await _prompt_database_operation(request, lookup_session)
 
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -862,38 +1016,59 @@ async def prompt_session(
     if session["status"] == "running":
         raise HTTPException(status_code=409, detail="Session already has an active stream")
 
-    with get_db_for_request(request) as db:
-        _ensure_promptable_pi_context(db, session)
+    await _prompt_database_operation(
+        request,
+        lambda database: _ensure_promptable_pi_context(database, session),
+    )
 
     workspace_path = session["workspace_path"]
     remote_url = session["remote_url"] if "remote_url" in session.keys() else None
     installation_id = session["installation_id"] if "installation_id" in session.keys() else None
     model = normalize_model_ref(body.model or session["model"])
     prompt = body.prompt
-    turn_id = uuid.uuid4().hex
+    from yinshi.services.prompt_journal import get_active_prompt_run_id
 
-    # Atomically claim the session for this stream. The WHERE clause
-    # ensures only one concurrent request can transition idle -> running.
-    with get_db_for_request(request) as db:
-        result = db.execute(
+    turn_id = get_active_prompt_run_id() or uuid.uuid4().hex
+
+    # Atomically claim the session and persist one deterministic user turn.
+    def reserve_prompt(database: sqlite3.Connection) -> None:
+        existing = database.execute(
+            """SELECT content FROM messages
+               WHERE session_id = ? AND role = 'user' AND turn_id = ?""",
+            (session_id, turn_id),
+        ).fetchone()
+        status_row = database.execute(
+            "SELECT status FROM sessions WHERE id = ?",
+            (session_id,),
+        ).fetchone()
+        if status_row is None:
+            raise HTTPException(status_code=404, detail="Session not found")
+        if existing is not None:
+            if existing["content"] != prompt or status_row["status"] != "running":
+                raise RuntimeError("prompt reservation identity conflict")
+            return
+        result = database.execute(
             "UPDATE sessions SET status = 'running' WHERE id = ? AND status = 'idle'",
             (session_id,),
         )
         if result.rowcount == 0:
             raise HTTPException(status_code=409, detail="Session already has an active stream")
-
-        db.execute(
+        database.execute(
             "INSERT INTO messages (session_id, role, content, turn_id) VALUES (?, 'user', ?, ?)",
             (session_id, prompt, turn_id),
         )
-        # Update workspace name on first prompt (when name == branch)
         if session["workspace_name"] == session["workspace_branch"]:
-            display_name = _summarize_prompt(prompt)
-            db.execute(
+            database.execute(
                 "UPDATE workspaces SET name = ? WHERE id = ?",
-                (display_name, session["workspace_id"]),
+                (_summarize_prompt(prompt), session["workspace_id"]),
             )
-        db.commit()
+        database.commit()
+
+    try:
+        await _prompt_database_operation(request, reserve_prompt)
+    except asyncio.CancelledError:
+        await _cleanup_cancelled_prompt_reservation(request, session_id, turn_id)
+        raise
 
     try:
         context = await _resolve_execution_context(
@@ -911,20 +1086,10 @@ async def prompt_session(
             agents_md=session["agents_md"] if "agents_md" in session.keys() else None,
         )
     except asyncio.CancelledError:
-        with get_db_for_request(request) as db:
-            db.execute(
-                "UPDATE sessions SET status = 'idle' WHERE id = ?",
-                (session_id,),
-            )
-            db.commit()
+        await _cleanup_cancelled_prompt_reservation(request, session_id, turn_id)
         raise
     except Exception:
-        with get_db_for_request(request) as db:
-            db.execute(
-                "UPDATE sessions SET status = 'idle' WHERE id = ?",
-                (session_id,),
-            )
-            db.commit()
+        await _set_prompt_session_idle(request, session_id, turn_id, background=True)
         raise
 
     logger.info(
@@ -1059,23 +1224,15 @@ async def prompt_session(
 
                         # Batched incremental persistence
                         if accumulated and chunk_count % _PERSIST_BATCH_SIZE == 0:
-                            with get_db_for_request(request) as db:
-                                if assistant_msg_id is None:
-                                    assistant_msg_id = uuid.uuid4().hex
-                                    db.execute(
-                                        (
-                                            "INSERT INTO messages "
-                                            "(id, session_id, role, content, turn_id) "
-                                            "VALUES (?, ?, 'assistant', ?, ?)"
-                                        ),
-                                        (assistant_msg_id, session_id, accumulated, turn_id),
-                                    )
-                                else:
-                                    db.execute(
-                                        "UPDATE messages SET content = ? WHERE id = ?",
-                                        (accumulated, assistant_msg_id),
-                                    )
-                                db.commit()
+                            if assistant_msg_id is None:
+                                assistant_msg_id = uuid.uuid4().hex
+                            await _persist_assistant_turn(
+                                request,
+                                message_id=assistant_msg_id,
+                                session_id=session_id,
+                                turn_id=turn_id,
+                                content=accumulated,
+                            )
 
                     # On result, capture usage and finalize with full_message
                     if data.get("type") == "result":
@@ -1090,25 +1247,17 @@ async def prompt_session(
                         ), "result event must be present in stored turn"
                         # Ensure an assistant message row exists even for
                         # short responses (< batch size) or tool-only turns.
-                        with get_db_for_request(request) as db:
-                            if assistant_msg_id is None:
-                                assistant_msg_id = uuid.uuid4().hex
-                                db.execute(
-                                    (
-                                        "INSERT INTO messages "
-                                        "(id, session_id, role, content, turn_id) "
-                                        "VALUES (?, ?, 'assistant', ?, ?)"
-                                    ),
-                                    (assistant_msg_id, session_id, accumulated, turn_id),
-                                )
-                            db.execute(
-                                (
-                                    "UPDATE messages SET full_message = ?, "
-                                    "turn_status = ? WHERE id = ?"
-                                ),
-                                (stored_turn, turn_status, assistant_msg_id),
-                            )
-                            db.commit()
+                        if assistant_msg_id is None:
+                            assistant_msg_id = uuid.uuid4().hex
+                        await _persist_assistant_turn(
+                            request,
+                            message_id=assistant_msg_id,
+                            session_id=session_id,
+                            turn_id=turn_id,
+                            content=accumulated,
+                            full_message=stored_turn,
+                            turn_status=turn_status,
+                        )
 
                     # Yield the SSE event with the inner data
                     yield f"data: {json.dumps(data)}\n\n"
@@ -1156,40 +1305,27 @@ async def prompt_session(
             finalization_error: BaseException | None = None
 
             try:
-                with get_db_for_request(request) as db:
-                    stored_turn = _serialize_stored_turn(turn_events)
-                    if assistant_msg_id is None:
-                        if accumulated or stored_turn is not None:
-                            assistant_msg_id = uuid.uuid4().hex
-                            db.execute(
-                                (
-                                    "INSERT INTO messages "
-                                    "(id, session_id, role, content, full_message, "
-                                    "turn_id, turn_status) "
-                                    "VALUES (?, ?, 'assistant', ?, ?, ?, ?)"
-                                ),
-                                (
-                                    assistant_msg_id,
-                                    session_id,
-                                    accumulated,
-                                    stored_turn,
-                                    turn_id,
-                                    turn_status,
-                                ),
-                            )
-                    else:
-                        db.execute(
-                            (
-                                "UPDATE messages SET content = ?, full_message = ?, "
-                                "turn_status = ? WHERE id = ?"
-                            ),
-                            (accumulated, stored_turn, turn_status, assistant_msg_id),
-                        )
-                    db.execute(
-                        "UPDATE sessions SET status = 'idle' WHERE id = ?",
-                        (session_id,),
+                stored_turn = _serialize_stored_turn(turn_events)
+                if assistant_msg_id is None and (accumulated or stored_turn is not None):
+                    assistant_msg_id = uuid.uuid4().hex
+                if assistant_msg_id is None:
+                    await _set_prompt_session_idle(
+                        request,
+                        session_id,
+                        turn_id,
+                        background=True,
                     )
-                    db.commit()
+                else:
+                    await _persist_assistant_turn(
+                        request,
+                        message_id=assistant_msg_id,
+                        session_id=session_id,
+                        turn_id=turn_id,
+                        content=accumulated,
+                        full_message=stored_turn,
+                        turn_status=turn_status,
+                        finalize_session=True,
+                    )
             except BaseException as exc:
                 logger.error("Prompt persistence finalization failed")
                 if active_error is None:
@@ -1257,8 +1393,10 @@ async def prompt_session(
 @router.post("/api/sessions/{session_id}/cancel")
 async def cancel_session(session_id: str, request: Request) -> dict[str, str]:
     """Cancel the active sidecar operation for a session."""
-    with get_db_for_request(request) as db:
-        session = _lookup_session(db, session_id, request)
+    session = await _prompt_database_operation(
+        request,
+        lambda database: _lookup_session(database, session_id, request),
+    )
 
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")

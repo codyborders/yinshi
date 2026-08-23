@@ -36,7 +36,6 @@ _SQLCIPHER_MODULE_NAMES: Final[tuple[str, ...]] = (
 )
 _SQLCIPHER_OPEN_ATTEMPTS: Final[int] = 3
 _SQLCIPHER_OPEN_RETRY_DELAY_SECONDS: Final[float] = 0.05
-_SQLCIPHER_TRANSIENT_OPEN_ERRORS: Final[frozenset[str]] = frozenset({"disk I/O error"})
 _STORAGE_ENCRYPTION_MARKER: Final[str] = ".yinshi-encrypted-storage"
 _SCHEMA_OBJECT_TYPES: Final[tuple[str, ...]] = ("index", "table", "trigger", "view")
 _MIGRATION_LOCK_SUFFIX: Final[str] = ".migration.lock"
@@ -78,6 +77,10 @@ _CURRENT_USER_SCHEMA_PRIMARY_KEYS: Final[dict[str, tuple[str, ...]]] = {
 }
 _MIGRATION_THREAD_LOCKS: dict[str, threading.Lock] = {}
 _MIGRATION_THREAD_LOCKS_GUARD: threading.Lock = threading.Lock()
+
+
+class TenantDatabaseTemporarilyUnavailable(RuntimeError):
+    """Tenant database storage could not complete an exact transient operation."""
 
 
 @dataclass
@@ -342,6 +345,25 @@ def _tenant_database_key(tenant: TenantContext) -> bytes:
     return derive_subkey(user_dek, purpose="tenant-sqlcipher", context=tenant.user_id)
 
 
+def _is_transient_sqlcipher_error(exc: BaseException, module: ModuleType) -> bool:
+    """Return whether one driver exception is the exact temporary storage error."""
+    operational_error = getattr(module, "OperationalError", sqlite3.OperationalError)
+    if not isinstance(operational_error, type) or not issubclass(operational_error, Exception):
+        return False
+    return isinstance(exc, operational_error) and str(exc) == "disk I/O error"
+
+
+def is_temporary_tenant_database_error(exc: BaseException) -> bool:
+    """Return whether a database operation failed from exact temporary storage I/O."""
+    if isinstance(exc, TenantDatabaseTemporarilyUnavailable):
+        return True
+    try:
+        module = _load_sqlcipher_module()
+    except RuntimeError:
+        return False
+    return _is_transient_sqlcipher_error(exc, module)
+
+
 def _open_sqlcipher_connection(db_path: str, sqlcipher_key: bytes) -> sqlite3.Connection:
     """Open a SQLCipher-backed SQLite connection and validate the key immediately."""
     if not isinstance(db_path, str):
@@ -365,17 +387,6 @@ def _open_sqlcipher_connection(db_path: str, sqlcipher_key: bytes) -> sqlite3.Co
         Exception,
     ):
         sqlcipher_database_error = sqlite3.DatabaseError
-    sqlcipher_operational_error = getattr(
-        sqlcipher_module,
-        "OperationalError",
-        sqlite3.OperationalError,
-    )
-    if not isinstance(sqlcipher_operational_error, type) or not issubclass(
-        sqlcipher_operational_error,
-        Exception,
-    ):
-        sqlcipher_operational_error = sqlite3.OperationalError
-
     for attempt in range(_SQLCIPHER_OPEN_ATTEMPTS):
         conn: sqlite3.Connection | None = None
         try:
@@ -391,10 +402,12 @@ def _open_sqlcipher_connection(db_path: str, sqlcipher_key: bytes) -> sqlite3.Co
         except (sqlite3.DatabaseError, sqlcipher_database_error) as exc:
             if conn is not None:
                 conn.close()
-            is_transient = isinstance(exc, sqlcipher_operational_error) and (
-                str(exc) in _SQLCIPHER_TRANSIENT_OPEN_ERRORS
-            )
-            if not is_transient or attempt + 1 >= _SQLCIPHER_OPEN_ATTEMPTS:
+            is_transient = _is_transient_sqlcipher_error(exc, sqlcipher_module)
+            if is_transient and attempt + 1 >= _SQLCIPHER_OPEN_ATTEMPTS:
+                raise TenantDatabaseTemporarilyUnavailable(
+                    "Tenant database storage is temporarily unavailable"
+                ) from exc
+            if not is_transient:
                 raise RuntimeError(
                     "Tenant database could not be opened with the configured key"
                 ) from exc

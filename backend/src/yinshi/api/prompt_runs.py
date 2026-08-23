@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import sqlite3
 import uuid
 from typing import Any, Literal, cast
 
 from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, Field, field_validator
 
-from yinshi.api.deps import check_session_owner, get_db_for_request
+from yinshi.api.deps import check_session_owner, run_db_operation_for_request
 from yinshi.api.stream import PromptRequest
 from yinshi.services.prompt_journal import (
     PromptEventBatch,
@@ -68,8 +69,8 @@ def _prompt_journal(request: Request) -> PromptJournal:
     return journal
 
 
-def _require_session(request: Request, session_id: str) -> None:
-    with get_db_for_request(request) as database:
+async def _require_session(request: Request, session_id: str) -> None:
+    def require(database: sqlite3.Connection) -> None:
         row = database.execute(
             "SELECT id FROM sessions WHERE id = ?",
             (session_id,),
@@ -77,6 +78,8 @@ def _require_session(request: Request, session_id: str) -> None:
         if row is None:
             raise HTTPException(status_code=404, detail="Session not found")
         check_session_owner(database, session_id, request)
+
+    await run_db_operation_for_request(request, require)
 
 
 def _run_response(run: PromptRun) -> PromptRunResponse:
@@ -107,7 +110,7 @@ async def start_prompt_run(
     request: Request,
 ) -> PromptRunResponse:
     """Start one durable prompt run or return its idempotent predecessor."""
-    _require_session(request, session_id)
+    await _require_session(request, session_id)
     prompt_body = PromptRequest(
         prompt=body.prompt,
         model=body.model,
@@ -138,7 +141,7 @@ async def get_prompt_events(
     request: Request,
 ) -> PromptEventBatchResponse:
     """Return one bounded contiguous journal page from the supplied cursor."""
-    _require_session(request, session_id)
+    await _require_session(request, session_id)
     try:
         batch = await _prompt_journal(request).events(
             request=request,
@@ -161,7 +164,7 @@ async def cancel_prompt_run(
     request: Request,
 ) -> PromptRunResponse:
     """Cancel one run idempotently without depending on a live HTTP stream."""
-    _require_session(request, session_id)
+    await _require_session(request, session_id)
     try:
         run = await _prompt_journal(request).cancel(
             request=request,

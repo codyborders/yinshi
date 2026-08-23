@@ -3,6 +3,7 @@
 import logging
 import os
 import sqlite3
+from dataclasses import dataclass
 from typing import Any, cast
 
 from yinshi.config import get_settings
@@ -39,6 +40,32 @@ from yinshi.tenant import TenantContext
 from yinshi.utils.paths import is_path_inside
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class WorkspaceCheckoutState:
+    """Database snapshot needed to prepare one tenant workspace checkout."""
+
+    workspace_id: str
+    repo_id: str
+    repo_path: str
+    remote_url: str | None
+    installation_id: int | None
+    workspaces: tuple[tuple[str, str], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class WorkspaceCheckoutPreparation:
+    """Deterministic database updates produced by filesystem preparation."""
+
+    workspace_id: str
+    repo_id: str
+    repo_path: str
+    remote_url: str | None
+    installation_id: int | None
+    workspace_paths: tuple[tuple[str, str], ...]
+    update_repo_metadata: bool
+    repaired_repo: bool
 
 
 def _fetch_repo(db: sqlite3.Connection, repo_id: str) -> sqlite3.Row:
@@ -202,6 +229,138 @@ async def _trusted_repo_needs_refresh(
     if current_remote_url is None:
         return True
     return current_remote_url.rstrip("/") != normalized_remote.clone_url.rstrip("/")
+
+
+def load_workspace_checkout_state(
+    db: sqlite3.Connection,
+    workspace_id: str,
+) -> WorkspaceCheckoutState:
+    """Load immutable checkout inputs in one database operation."""
+    workspace = _fetch_workspace(db, workspace_id)
+    repo_id = workspace["repo_id"]
+    assert repo_id, "workspace repo_id must not be empty"
+    repo = _fetch_repo(db, repo_id)
+    repo_path = repo["root_path"]
+    assert repo_path, "repo root_path must not be empty"
+    workspaces = db.execute(
+        "SELECT id, branch FROM workspaces WHERE repo_id = ? ORDER BY created_at ASC",
+        (repo_id,),
+    ).fetchall()
+    workspace_branches: list[tuple[str, str]] = []
+    for row in workspaces:
+        branch = row["branch"]
+        if not branch:
+            raise WorkspaceNotFoundError(f"Workspace {row['id']} is missing its branch name")
+        workspace_branches.append((row["id"], branch))
+    return WorkspaceCheckoutState(
+        workspace_id=workspace_id,
+        repo_id=repo_id,
+        repo_path=repo_path,
+        remote_url=repo["remote_url"],
+        installation_id=(repo["installation_id"] if "installation_id" in repo.keys() else None),
+        workspaces=tuple(workspace_branches),
+    )
+
+
+async def prepare_workspace_checkout_for_tenant(
+    tenant: TenantContext,
+    state: WorkspaceCheckoutState,
+) -> WorkspaceCheckoutPreparation:
+    """Prepare idempotent filesystem state without holding a database connection."""
+    source_repo_is_available = await validate_local_repo(state.repo_path)
+    if _tenant_path_is_trusted(tenant, state.repo_path):
+        if source_repo_is_available and not await _trusted_repo_needs_refresh(
+            state.repo_path,
+            state.remote_url,
+            state.installation_id,
+        ):
+            return WorkspaceCheckoutPreparation(
+                workspace_id=state.workspace_id,
+                repo_id=state.repo_id,
+                repo_path=state.repo_path,
+                remote_url=state.remote_url,
+                installation_id=state.installation_id,
+                workspace_paths=(),
+                update_repo_metadata=False,
+                repaired_repo=False,
+            )
+
+        remote_url, _, installation_id = await _refresh_repo_remote_metadata(
+            tenant,
+            state.repo_path,
+            state.remote_url,
+            state.installation_id,
+        )
+        remote_was_updated = await _sync_repo_checkout_remote(state.repo_path, remote_url)
+        metadata_changed = (
+            remote_url != state.remote_url or installation_id != state.installation_id
+        )
+        return WorkspaceCheckoutPreparation(
+            workspace_id=state.workspace_id,
+            repo_id=state.repo_id,
+            repo_path=state.repo_path,
+            remote_url=remote_url,
+            installation_id=installation_id,
+            workspace_paths=(),
+            update_repo_metadata=remote_was_updated or metadata_changed,
+            repaired_repo=False,
+        )
+
+    target_repo_path = _tenant_repo_path(tenant, state.repo_id)
+    remote_url, access_token, installation_id = await _refresh_repo_remote_metadata(
+        tenant,
+        state.repo_path,
+        state.remote_url,
+        state.installation_id,
+    )
+    await _materialize_repo_checkout(
+        state.repo_path,
+        target_repo_path,
+        remote_url,
+        access_token=access_token,
+    )
+    workspace_paths: list[tuple[str, str]] = []
+    for workspace_id, branch in state.workspaces:
+        target_workspace_path = _workspace_path(target_repo_path, branch)
+        await restore_worktree(target_repo_path, target_workspace_path, branch)
+        workspace_paths.append((workspace_id, target_workspace_path))
+    return WorkspaceCheckoutPreparation(
+        workspace_id=state.workspace_id,
+        repo_id=state.repo_id,
+        repo_path=target_repo_path,
+        remote_url=remote_url,
+        installation_id=installation_id,
+        workspace_paths=tuple(workspace_paths),
+        update_repo_metadata=True,
+        repaired_repo=True,
+    )
+
+
+def apply_workspace_checkout_preparation(
+    db: sqlite3.Connection,
+    preparation: WorkspaceCheckoutPreparation,
+) -> dict[str, Any]:
+    """Apply deterministic checkout metadata updates in one transaction."""
+    if preparation.update_repo_metadata:
+        for workspace_id, workspace_path in preparation.workspace_paths:
+            db.execute(
+                "UPDATE workspaces SET path = ? WHERE id = ?",
+                (workspace_path, workspace_id),
+            )
+        db.execute(
+            """UPDATE repos
+               SET root_path = ?, remote_url = ?, installation_id = ? WHERE id = ?""",
+            (
+                preparation.repo_path,
+                preparation.remote_url,
+                preparation.installation_id,
+                preparation.repo_id,
+            ),
+        )
+        db.commit()
+        if preparation.repaired_repo:
+            logger.info("Repaired repository into tenant storage")
+    return dict(_fetch_workspace(db, preparation.workspace_id))
 
 
 async def ensure_repo_checkout_for_tenant(

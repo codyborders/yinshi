@@ -72,3 +72,29 @@ def test_prompt_run_start_and_sequence_reconnect(
         "result",
     ]
     assert batch_body["next_sequence"] == 3
+
+
+def test_prompt_event_storage_outage_returns_retryable_json(
+    auth_client: TestClient,
+    git_repo: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Exhausted tenant storage returns bounded JSON instead of closing transport."""
+    from yinshi.main import app
+    from yinshi.tenant import TenantDatabaseTemporarilyUnavailable
+
+    stack = create_full_stack(auth_client, git_repo, name="storage-outage")
+    session_id = stack["session"]["id"]
+
+    class UnavailableJournal(PromptJournal):
+        async def events(self, **_kwargs):
+            raise TenantDatabaseTemporarilyUnavailable(
+                "Tenant database storage is temporarily unavailable"
+            )
+
+    monkeypatch.setattr(app.state, "prompt_journal", UnavailableJournal())
+    response = auth_client.get(f"/api/sessions/{session_id}/runs/{uuid.uuid4().hex}/events/0")
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "Tenant storage is temporarily unavailable"}
+    assert response.headers["retry-after"] == "1"
