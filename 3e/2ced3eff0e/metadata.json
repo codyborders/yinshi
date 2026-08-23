@@ -3,7 +3,7 @@
   "checkpoint_id": "3e2ced3eff0e",
   "strategy": "manual-commit",
   "branch": "main",
-  "checkpoints_count": 2,
+  "checkpoints_count": 3,
   "files_touched": [
     "backend/src/yinshi/api/runner_relay.py",
     "backend/src/yinshi/services/runner_agent_relay.py",
@@ -25,13 +25,20 @@
       "compact_transcript": "/3e/2ced3eff0e/1/transcript.jsonl",
       "content_hash": "/3e/2ced3eff0e/1/content_hash.txt",
       "prompt": "/3e/2ced3eff0e/1/prompt.txt"
+    },
+    {
+      "metadata": "/3e/2ced3eff0e/2/metadata.json",
+      "transcript": "/3e/2ced3eff0e/2/full.jsonl",
+      "compact_transcript": "/3e/2ced3eff0e/2/transcript.jsonl",
+      "content_hash": "/3e/2ced3eff0e/2/content_hash.txt",
+      "prompt": "/3e/2ced3eff0e/2/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 7146865,
+    "input_tokens": 10752394,
     "cache_creation_tokens": 0,
-    "cache_read_tokens": 176963584,
-    "output_tokens": 473497,
-    "api_call_count": 1154
+    "cache_read_tokens": 264910592,
+    "output_tokens": 707091,
+    "api_call_count": 1725
   }
 }
