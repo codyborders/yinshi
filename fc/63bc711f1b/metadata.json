@@ -1,0 +1,41 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "fc63bc711f1b",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "backend/src/yinshi/api/repos.py",
+    "backend/src/yinshi/api/runners.py",
+    "backend/src/yinshi/api/settings.py",
+    "backend/src/yinshi/models.py",
+    "backend/src/yinshi/runner_agent.py",
+    "backend/src/yinshi/runner_worker.py",
+    "backend/tests/test_pi_config.py",
+    "backend/tests/test_runner_agent_managed.py",
+    "backend/tests/test_runner_worker.py",
+    "backend/tests/test_runners_append.py",
+    "frontend/src/api/client.ts",
+    "frontend/src/components/__tests__/Layout.test.tsx",
+    "frontend/src/pages/__tests__/Session.test.tsx",
+    "frontend/src/pages/__tests__/Settings.test.tsx",
+    "frontend/src/runner/encryptedRunnerClient.test.ts",
+    "frontend/src/runner/encryptedRunnerClient.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/fc/63bc711f1b/0/metadata.json",
+      "transcript": "/fc/63bc711f1b/0/full.jsonl",
+      "compact_transcript": "/fc/63bc711f1b/0/transcript.jsonl",
+      "content_hash": "/fc/63bc711f1b/0/content_hash.txt",
+      "prompt": "/fc/63bc711f1b/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 810912,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 28282240,
+    "output_tokens": 63565,
+    "api_call_count": 161
+  }
+}
