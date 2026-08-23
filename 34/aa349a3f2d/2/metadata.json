@@ -1,0 +1,87 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "34aa349a3f2d",
+  "session_id": "session",
+  "strategy": "manual-commit",
+  "created_at": "2026-08-23T19:02:35.00995Z",
+  "branch": "main",
+  "checkpoints_count": 4,
+  "save_step_count": 5,
+  "files_touched": [
+    "backend/src/yinshi/tenant.py",
+    "backend/tests/test_tenant.py"
+  ],
+  "agent": "Pi",
+  "model": "gpt-5.6-sol",
+  "turn_id": "31ce3365f287",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 156877,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 1271808,
+    "output_tokens": 17411,
+    "api_call_count": 26
+  },
+  "session_metrics": {
+    "turn_count": 29
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-08-23T19:02:34.901865Z",
+    "agent_lines": 545,
+    "agent_removed": 13,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 545,
+    "total_lines_changed": 558,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 134,
+      "user_lines_removed": 0,
+      "agent_lines_added": 167153,
+      "agent_lines_removed": 2,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/2b249159_reviewer_0_input.md": 58,
+        ".pi-subagents/artifacts/2b249159_reviewer_0_transcript.jsonl": 2,
+        ".pi-subagents/artifacts/950a06e0_reviewer_0_input.md": 57,
+        ".pi-subagents/artifacts/950a06e0_reviewer_0_transcript.jsonl": 2,
+        ".pi-subagents/missions/a604b9e0-2db1-40f5-a7aa-1607e571bce6.json": 15
+      }
+    },
+    {
+      "checkpoint_number": 3,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 4,
+      "user_lines_added": 476,
+      "user_lines_removed": 0,
+      "agent_lines_added": 168335,
+      "agent_lines_removed": 13,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/67921a57_reviewer_input.md": 65,
+        ".pi-subagents/artifacts/67921a57_reviewer_transcript.jsonl": 2,
+        ".pi-subagents/artifacts/80d06ac3_reviewer_input.md": 65,
+        ".pi-subagents/artifacts/80d06ac3_reviewer_transcript.jsonl": 2,
+        ".pi-subagents/artifacts/b56cee8d_worker_input.md": 79,
+        ".pi-subagents/artifacts/b56cee8d_worker_transcript.jsonl": 215,
+        ".pi-subagents/missions/0c949902-fcd9-4f12-b6ad-a37654b33255.json": 24,
+        ".pi-subagents/missions/57d6a710-526d-4d42-a57b-1d4fcef24940.json": 24
+      }
+    },
+    {
+      "checkpoint_number": 5,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
+}
