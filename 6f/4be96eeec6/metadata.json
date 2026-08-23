@@ -1,0 +1,46 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "6f4be96eeec6",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 3,
+  "files_touched": [
+    "backend/src/yinshi/api/deps.py",
+    "backend/src/yinshi/api/repos.py",
+    "backend/src/yinshi/api/runners.py",
+    "backend/src/yinshi/api/settings.py",
+    "backend/src/yinshi/models.py",
+    "backend/src/yinshi/runner_agent.py",
+    "backend/src/yinshi/runner_worker.py",
+    "backend/src/yinshi/services/github_app.py",
+    "backend/src/yinshi/services/pi_config.py",
+    "backend/tests/test_deps.py",
+    "backend/tests/test_github_app.py",
+    "backend/tests/test_models.py",
+    "backend/tests/test_pi_config.py",
+    "backend/tests/test_runner_agent_managed.py",
+    "backend/tests/test_runners_append.py",
+    "frontend/src/api/client.ts",
+    "frontend/src/api/errors.ts",
+    "frontend/src/components/__tests__/Layout.test.tsx",
+    "frontend/src/pages/__tests__/Session.test.tsx",
+    "frontend/src/pages/__tests__/Settings.test.tsx",
+    "frontend/src/runner/encryptedRunnerClient.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/6f/4be96eeec6/0/metadata.json",
+      "transcript": "/6f/4be96eeec6/0/full.jsonl",
+      "compact_transcript": "/6f/4be96eeec6/0/transcript.jsonl",
+      "content_hash": "/6f/4be96eeec6/0/content_hash.txt",
+      "prompt": "/6f/4be96eeec6/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 1436326,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 36023168,
+    "output_tokens": 92470,
+    "api_call_count": 245
+  }
+}
