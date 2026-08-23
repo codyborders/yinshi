@@ -7,6 +7,7 @@ routed by random transfer UUID without granting relay access to plaintext.
 from __future__ import annotations
 
 import asyncio
+import logging
 import uuid
 
 import pytest
@@ -39,6 +40,20 @@ class FakeWebSocket:
         self.closes.append((code, reason))
 
 
+class StrictCloseWebSocket(FakeWebSocket):
+    """Reject a repeated close like Starlette after close transmission."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.closed = False
+
+    async def close(self, code: int = 1000, reason: str | None = None) -> None:
+        if self.closed:
+            raise RuntimeError('Cannot call "send" once a close message has been sent.')
+        self.closed = True
+        await super().close(code=code, reason=reason)
+
+
 def _grant(*, byte_limit: int = 65_536) -> RunnerTransferGrant:
     return RunnerTransferGrant(
         transfer_id=str(uuid.uuid4()),
@@ -59,6 +74,183 @@ async def test_relay_reports_current_runner_connection() -> None:
     assert broker.is_runner_connected("runner-1") is True
     await broker.unregister_runner("runner-1", runner)
     assert broker.is_runner_connected("runner-1") is False
+
+
+@pytest.mark.asyncio
+async def test_relay_unregister_survives_an_already_closed_client() -> None:
+    """Runner cleanup remains complete when a client already sent its close."""
+    broker = RunnerRelayBroker()
+    runner = StrictCloseWebSocket()
+    client = StrictCloseWebSocket()
+    grant = _grant()
+    await broker.register_runner(grant.runner_id, runner)
+    await broker.attach_client(grant, client)
+    await client.close(code=1000, reason="Browser disconnected")
+
+    await broker.unregister_runner(grant.runner_id, runner)
+
+    assert broker.is_runner_connected(grant.runner_id) is False
+    with pytest.raises(RunnerRelayAuthorizationError, match="not attached"):
+        await broker.client_frame(grant.transfer_id, b"detached")
+
+
+@pytest.mark.asyncio
+async def test_relay_replacement_close_failure_does_not_publish_candidate() -> None:
+    """A failed stale-socket close cannot expose an incomplete replacement."""
+
+    close_started = asyncio.Event()
+    release_close = asyncio.Event()
+
+    class FailingCloseWebSocket(FakeWebSocket):
+        async def close(self, code: int = 1000, reason: str | None = None) -> None:
+            close_started.set()
+            await release_close.wait()
+            raise RuntimeError("replacement close failed")
+
+    broker = RunnerRelayBroker()
+    old_runner = FailingCloseWebSocket()
+    candidate = FakeWebSocket()
+    await broker.register_runner("runner-1", old_runner)
+
+    registration = asyncio.create_task(broker.register_runner("runner-1", candidate))
+    await close_started.wait()
+    assert broker.is_runner_connected("runner-1") is False
+    with pytest.raises(RunnerRelayAuthorizationError, match="not connected"):
+        await broker.attach_client(_grant(), FakeWebSocket())
+    release_close.set()
+    with pytest.raises(RuntimeError, match="replacement close failed"):
+        await registration
+
+    assert broker.is_runner_connected("runner-1") is False
+    with pytest.raises(RunnerRelayAuthorizationError, match="not connected"):
+        await broker.attach_client(_grant(), FakeWebSocket())
+
+
+@pytest.mark.asyncio
+async def test_relay_failed_registration_preserves_later_replacement() -> None:
+    """A failed candidate rollback cannot remove a later healthy connection."""
+    close_started = asyncio.Event()
+    release_close = asyncio.Event()
+
+    class DelayedFailingCloseWebSocket(FakeWebSocket):
+        async def close(self, code: int = 1000, reason: str | None = None) -> None:
+            close_started.set()
+            await release_close.wait()
+            raise RuntimeError("old close failed")
+
+    broker = RunnerRelayBroker()
+    old_runner = DelayedFailingCloseWebSocket()
+    first_candidate = FakeWebSocket()
+    final_runner = FakeWebSocket()
+    await broker.register_runner("runner-1", old_runner)
+
+    failed_registration = asyncio.create_task(broker.register_runner("runner-1", first_candidate))
+    await close_started.wait()
+    await broker.register_runner("runner-1", final_runner)
+    release_close.set()
+    with pytest.raises(RuntimeError, match="old close failed"):
+        await failed_registration
+
+    assert broker.is_runner_connected("runner-1") is True
+    grant = _grant()
+    await broker.attach_client(grant, FakeWebSocket())
+    assert final_runner.text_frames == [f'{{"transfer_id":"{grant.transfer_id}","type":"open"}}']
+
+
+@pytest.mark.asyncio
+async def test_relay_replacement_survives_already_closed_sockets() -> None:
+    """Connection replacement cleans old state after both sockets closed."""
+    broker = RunnerRelayBroker()
+    old_runner = StrictCloseWebSocket()
+    replacement_runner = StrictCloseWebSocket()
+    client = StrictCloseWebSocket()
+    grant = _grant()
+    await broker.register_runner(grant.runner_id, old_runner)
+    await broker.attach_client(grant, client)
+    await old_runner.close(code=1000, reason="Transport ended")
+    await client.close(code=1000, reason="Browser ended")
+
+    await broker.register_runner(grant.runner_id, replacement_runner)
+
+    assert broker.is_runner_connected(grant.runner_id) is True
+    with pytest.raises(RunnerRelayAuthorizationError, match="not attached"):
+        await broker.client_frame(grant.transfer_id, b"detached")
+
+
+@pytest.mark.asyncio
+async def test_relay_maintenance_survives_an_already_closed_client() -> None:
+    """Maintenance fencing completes after a browser close raced cleanup."""
+    broker = RunnerRelayBroker()
+    runner = StrictCloseWebSocket()
+    client = StrictCloseWebSocket()
+    grant = _grant()
+    job_id = str(uuid.uuid4())
+    await broker.register_runner(grant.runner_id, runner)
+    await broker.attach_client(grant, client)
+    await client.close(code=1000, reason="Browser ended")
+
+    waiter = asyncio.create_task(
+        broker.quiesce_runner(grant.runner_id, job_id=job_id, timeout_seconds=1.0)
+    )
+    await asyncio.sleep(0)
+    await broker.runner_quiesced(grant.runner_id, job_id)
+    await waiter
+
+    assert runner.text_frames[-1] == f'{{"job_id":"{job_id}","type":"quiesce"}}'
+
+
+@pytest.mark.asyncio
+async def test_relay_rejected_transfer_survives_an_already_closed_client() -> None:
+    """Runner rejection retires one transfer after the browser closed first."""
+    broker = RunnerRelayBroker()
+    runner = StrictCloseWebSocket()
+    client = StrictCloseWebSocket()
+    grant = _grant()
+    await broker.register_runner(grant.runner_id, runner)
+    await broker.attach_client(grant, client)
+    await client.close(code=1000, reason="Browser ended")
+
+    await broker.runner_closed_transfer(grant.runner_id, grant.transfer_id)
+
+    assert broker.is_runner_connected(grant.runner_id) is True
+
+
+@pytest.mark.asyncio
+async def test_relay_revocation_survives_already_closed_sockets() -> None:
+    """Runner revocation remains complete after transport close races."""
+    broker = RunnerRelayBroker()
+    runner = StrictCloseWebSocket()
+    client = StrictCloseWebSocket()
+    grant = _grant()
+    await broker.register_runner(grant.runner_id, runner)
+    await broker.attach_client(grant, client)
+    await runner.close(code=1000, reason="Transport ended")
+    await client.close(code=1000, reason="Browser ended")
+
+    await broker.disconnect_runner(grant.runner_id)
+
+    assert broker.is_runner_connected(grant.runner_id) is False
+
+
+@pytest.mark.asyncio
+async def test_relay_does_not_suppress_unrelated_close_failure() -> None:
+    """Only Starlette's completed-close failure is safe to suppress."""
+
+    class BrokenCloseWebSocket(FakeWebSocket):
+        async def close(self, code: int = 1000, reason: str | None = None) -> None:
+            raise RuntimeError("close transport failed")
+
+    broker = RunnerRelayBroker()
+    runner = FakeWebSocket()
+    client = BrokenCloseWebSocket()
+    grant = _grant()
+    await broker.register_runner(grant.runner_id, runner)
+    await broker.attach_client(grant, client)
+
+    with pytest.raises(RuntimeError, match="close transport failed"):
+        await broker.unregister_runner(grant.runner_id, runner)
+
+    assert broker.is_runner_connected(grant.runner_id) is False
 
 
 @pytest.mark.asyncio
@@ -249,6 +441,26 @@ async def test_relay_closes_a_transfer_when_client_backpressure_fills() -> None:
 
 
 @pytest.mark.asyncio
+async def test_relay_byte_limit_survives_an_already_closed_client() -> None:
+    """Byte-limit cleanup retires a transfer after browser close races."""
+    broker = RunnerRelayBroker()
+    runner = StrictCloseWebSocket()
+    client = StrictCloseWebSocket()
+    grant = _grant(byte_limit=16)
+    await broker.register_runner(grant.runner_id, runner)
+    await broker.attach_client(grant, client)
+    await client.close(code=1000, reason="Browser ended")
+
+    await broker.runner_frame(
+        grant.runner_id,
+        uuid.UUID(grant.transfer_id).bytes + b"x" * 17,
+    )
+
+    assert broker.is_runner_connected(grant.runner_id) is True
+    assert runner.text_frames[-1] == (f'{{"transfer_id":"{grant.transfer_id}","type":"close"}}')
+
+
+@pytest.mark.asyncio
 async def test_relay_enforces_shared_byte_budget_and_runner_replacement() -> None:
     """Oversized sessions fail and stale runner sockets lose authority."""
     broker = RunnerRelayBroker()
@@ -274,6 +486,32 @@ async def test_relay_enforces_shared_byte_budget_and_runner_replacement() -> Non
             grant.runner_id,
             uuid.UUID(grant.transfer_id).bytes + b"c",
         )
+
+
+def test_runner_websocket_logs_only_sanitized_disconnect_code(
+    auth_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Runner disconnect logs expose only one normalized close code."""
+    from yinshi.api import runner_relay as runner_relay_api
+
+    monkeypatch.setattr(
+        runner_relay_api,
+        "authenticate_runner_token",
+        lambda _token: {"runner_id": "secret-runner-id"},
+    )
+
+    with caplog.at_level(logging.INFO, logger="yinshi.api.runner_relay"):
+        with auth_client.websocket_connect(
+            "/runner/relay",
+            headers={"Authorization": "Bearer secret-runner-token"},
+        ) as runner_socket:
+            runner_socket.receive_json()
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert messages == ["Runner relay disconnected code=1000"]
+    assert "secret" not in " ".join(messages)
 
 
 def test_runner_websocket_sends_welcome_before_recovered_maintenance(

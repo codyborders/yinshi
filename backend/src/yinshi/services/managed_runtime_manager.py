@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -60,6 +61,8 @@ _STATE_ERROR_MESSAGE = "Managed runtime state is invalid"
 _MAINTENANCE_ERROR_MESSAGE = "Managed runtime maintenance is active"
 _IDENTITY_ERROR_MESSAGE = "Managed runtime identity changed"
 _PROVISIONING_HEARTBEAT_INTERVAL_SECONDS = 30.0
+
+logger = logging.getLogger(__name__)
 
 _Result = TypeVar("_Result")
 
@@ -372,9 +375,42 @@ class ManagedRuntimeManager:
     async def _ensure_online(self, user_id: str) -> OnlineManagedRunner:
         """Wake one ready managed runtime and return its validated identity."""
         runtime, runner, expected_noise_key = self._load_ready_runner(user_id)
-        if self._runner_is_connected(runtime, runner):
+        heartbeat_current = self._runner_heartbeat_is_current(runner)
+        relay_connected = self._runner_relay_is_connected(runtime)
+        if heartbeat_current and relay_connected:
+            logger.info("Managed runtime wake decision=connected")
             return OnlineManagedRunner(runtime.runner_id, expected_noise_key)
 
+        reconnect_deadline = self._now() + self._readiness_timeout
+        if heartbeat_current or relay_connected:
+            logger.info("Managed runtime wake decision=wait_reconnect")
+            while True:
+                remaining_seconds = (reconnect_deadline - self._now()).total_seconds()
+                if remaining_seconds <= 0:
+                    logger.info("Managed runtime wake decision=timeout")
+                    raise ManagedRuntimeTimeoutError(_TIMEOUT_ERROR_MESSAGE)
+                await self._sleep(min(self._poll_interval_seconds, remaining_seconds))
+                current_runtime, runner, current_noise_key = self._load_ready_runner(user_id)
+                self._validate_wake_identity(
+                    runtime,
+                    expected_noise_key,
+                    current_runtime,
+                    current_noise_key,
+                )
+                heartbeat_current = self._runner_heartbeat_is_current(runner)
+                relay_connected = self._runner_relay_is_connected(current_runtime)
+                observed_at = self._now()
+                if observed_at > reconnect_deadline:
+                    logger.info("Managed runtime wake decision=timeout")
+                    raise ManagedRuntimeTimeoutError(_TIMEOUT_ERROR_MESSAGE)
+                if heartbeat_current and relay_connected:
+                    logger.info("Managed runtime wake decision=reconnected")
+                    return OnlineManagedRunner(runtime.runner_id, expected_noise_key)
+                if observed_at == reconnect_deadline:
+                    logger.info("Managed runtime wake decision=timeout")
+                    raise ManagedRuntimeTimeoutError(_TIMEOUT_ERROR_MESSAGE)
+
+        logger.info("Managed runtime wake decision=restart_stale")
         try:
             await self._provider.restart_service(
                 runtime.sprite_name,
@@ -387,18 +423,42 @@ class ManagedRuntimeManager:
         deadline = self._now() + self._readiness_timeout
         while True:
             current_runtime, runner, current_noise_key = self._load_ready_runner(user_id)
-            if (
-                current_runtime.runner_id != runtime.runner_id
-                or current_runtime.sprite_name != runtime.sprite_name
-            ):
-                raise ManagedRuntimeStateError(_STATE_ERROR_MESSAGE)
-            if current_noise_key != expected_noise_key:
-                raise ManagedRuntimeIdentityError(_IDENTITY_ERROR_MESSAGE)
-            if self._runner_is_connected(current_runtime, runner):
-                return OnlineManagedRunner(runtime.runner_id, expected_noise_key)
-            if self._now() >= deadline:
+            self._validate_wake_identity(
+                runtime,
+                expected_noise_key,
+                current_runtime,
+                current_noise_key,
+            )
+            heartbeat_current = self._runner_heartbeat_is_current(runner)
+            relay_connected = self._runner_relay_is_connected(current_runtime)
+            observed_at = self._now()
+            if observed_at > deadline:
+                logger.info("Managed runtime wake decision=timeout")
                 raise ManagedRuntimeTimeoutError(_TIMEOUT_ERROR_MESSAGE)
-            await self._sleep(self._poll_interval_seconds)
+            if heartbeat_current and relay_connected:
+                logger.info("Managed runtime wake decision=connected_after_restart")
+                return OnlineManagedRunner(runtime.runner_id, expected_noise_key)
+            if observed_at == deadline:
+                logger.info("Managed runtime wake decision=timeout")
+                raise ManagedRuntimeTimeoutError(_TIMEOUT_ERROR_MESSAGE)
+            remaining_seconds = (deadline - observed_at).total_seconds()
+            await self._sleep(min(self._poll_interval_seconds, remaining_seconds))
+
+    @staticmethod
+    def _validate_wake_identity(
+        expected_runtime: ManagedRuntimeStatus,
+        expected_noise_key: str,
+        current_runtime: ManagedRuntimeStatus,
+        current_noise_key: str,
+    ) -> None:
+        """Reject runtime or confirmed identity changes during one wake."""
+        if (
+            current_runtime.runner_id != expected_runtime.runner_id
+            or current_runtime.sprite_name != expected_runtime.sprite_name
+        ):
+            raise ManagedRuntimeStateError(_STATE_ERROR_MESSAGE)
+        if current_noise_key != expected_noise_key:
+            raise ManagedRuntimeIdentityError(_IDENTITY_ERROR_MESSAGE)
 
     def _load_ready_runner(
         self,
@@ -431,19 +491,29 @@ class ManagedRuntimeManager:
         runner: dict[str, Any],
     ) -> bool:
         """Return whether heartbeat and relay state authorize immediate use."""
-        now = self._now()
+        return self._runner_heartbeat_is_current(runner) and self._runner_relay_is_connected(
+            runtime
+        )
+
+    def _runner_relay_is_connected(self, runtime: ManagedRuntimeStatus) -> bool:
+        """Return whether the authenticated relay is currently attached."""
+        try:
+            return self._is_runner_connected(runtime.runner_id)
+        except Exception:
+            raise ManagedRuntimeStateError(_STATE_ERROR_MESSAGE) from None
+
+    def _runner_heartbeat_is_current(self, runner: dict[str, Any]) -> bool:
+        """Return whether persisted runner liveness is current."""
         try:
             heartbeat_at = _datetime_from_storage(runner.get("last_heartbeat_at"))
-            connected = self._is_runner_connected(runtime.runner_id)
         except Exception:
             raise ManagedRuntimeStateError(_STATE_ERROR_MESSAGE) from None
         if heartbeat_at is None:
             return False
-        heartbeat_age = (now - heartbeat_at).total_seconds()
+        heartbeat_age = (self._now() - heartbeat_at).total_seconds()
         return (
             runner.get("status") == "online"
             and 0 <= heartbeat_age <= _HEARTBEAT_ONLINE_WINDOW_SECONDS
-            and connected
         )
 
     def _online_task_finished(

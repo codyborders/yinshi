@@ -119,6 +119,33 @@ def test_relay_restart_recovers_database_backed_maintenance_fence(
 
 
 @pytest.mark.asyncio
+async def test_registration_maintenance_send_failure_leaves_no_runner_connection() -> None:
+    """A failed recovered fence send cannot expose an incomplete runner."""
+
+    class FailingSendWebSocket(FakeWebSocket):
+        async def send_text(self, data: str) -> None:
+            raise RuntimeError("maintenance send failed")
+
+    job_id = str(uuid.uuid4())
+    broker = RunnerRelayBroker(
+        get_running_operation=lambda runner_id: _running_operation(runner_id, job_id)
+    )
+
+    with pytest.raises(RuntimeError, match="maintenance send failed"):
+        await broker.register_runner("runner-1", FailingSendWebSocket())
+
+    assert broker.is_runner_connected("runner-1") is False
+    grant = RunnerTransferGrant(
+        transfer_id=str(uuid.uuid4()),
+        runner_id="runner-1",
+        expires_at=1_900_000_300,
+        max_session_bytes=65_536,
+    )
+    with pytest.raises(RunnerRelayAuthorizationError, match="not connected"):
+        await broker.attach_client(grant, FakeWebSocket())
+
+
+@pytest.mark.asyncio
 async def test_registration_lookup_failure_leaves_no_runner_connection() -> None:
     """A durable lookup failure must not publish the new runner connection."""
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Awaitable, Callable
 
@@ -165,6 +166,16 @@ def _store_ready_runtime(
         )
         database.commit()
     return claim.runtime.runner_id, claim.runtime.sprite_name, noise_key
+
+
+def _set_runner_heartbeat(runner_id: str, heartbeat_at: datetime) -> None:
+    """Set one runner heartbeat timestamp for wake-policy tests."""
+    with get_control_db() as database:
+        database.execute(
+            "UPDATE user_runners SET last_heartbeat_at = ? WHERE id = ?",
+            (heartbeat_at.isoformat(), runner_id),
+        )
+        database.commit()
 
 
 async def test_startup_reconciliation_fails_abandoned_without_external_calls(
@@ -823,51 +834,44 @@ async def test_provider_wait_heartbeat_prevents_overlapping_stale_claim(
         await request
 
 
-async def test_concurrent_ensure_online_calls_share_one_restart(
+async def test_concurrent_ensure_online_calls_share_one_reconnect_wait(
     auth_client,
 ) -> None:
-    """Concurrent waiters must share one manager-owned wake operation."""
+    """Concurrent capability callers share one non-destructive reconnect wait."""
     tenant = getattr(auth_client, "yinshi_tenant")
     wake_now = datetime.now(timezone.utc)
     runner_id, _, noise_key = _store_ready_runtime(tenant.user_id, wake_now)
-    provider_started = asyncio.Event()
-    release_provider = asyncio.Event()
+    sleep_started = asyncio.Event()
+    release_sleep = asyncio.Event()
     connected = False
+    sleep_calls = 0
 
-    class BlockingProvider(FakeProvider):
-        async def restart_service(
-            self,
-            name: str,
-            *,
-            service_name: str,
-            monitor_duration: float | None,
-        ) -> None:
-            await super().restart_service(
-                name,
-                service_name=service_name,
-                monitor_duration=monitor_duration,
-            )
-            provider_started.set()
-            await release_provider.wait()
+    async def sleep(seconds: float) -> None:
+        nonlocal sleep_calls
+        assert seconds == 1.0
+        sleep_calls += 1
+        sleep_started.set()
+        await release_sleep.wait()
 
     def is_runner_connected(candidate_runner_id: str) -> bool:
         assert candidate_runner_id == runner_id
         return connected
 
-    provider = BlockingProvider()
+    provider = FakeProvider()
     manager = _manager(
         provider,
         FakeInstaller(),
         is_runner_connected=is_runner_connected,
         clock=lambda: wake_now,
+        sleep=sleep,
     )
 
     first = asyncio.create_task(manager.ensure_online(tenant.user_id))
-    await provider_started.wait()
+    await sleep_started.wait()
     second = asyncio.create_task(manager.ensure_online(tenant.user_id))
     await asyncio.sleep(0)
     connected = True
-    release_provider.set()
+    release_sleep.set()
 
     first_runner, second_runner = await asyncio.gather(first, second)
     await manager.aclose()
@@ -875,37 +879,27 @@ async def test_concurrent_ensure_online_calls_share_one_restart(
     assert first_runner.runner_id == runner_id
     assert first_runner.runner_public_key == noise_key
     assert second_runner == first_runner
-    assert [call[0] for call in provider.calls].count("restart") == 1
+    assert sleep_calls == 1
+    assert provider.calls == []
 
 
 async def test_cancelled_ensure_online_waiter_does_not_cancel_shared_wake(
     auth_client,
 ) -> None:
-    """Cancelling one waiter must preserve wake work for another waiter."""
+    """Cancelling one waiter must preserve reconnect work for another waiter."""
     tenant = getattr(auth_client, "yinshi_tenant")
     wake_now = datetime.now(timezone.utc)
     runner_id, _, _ = _store_ready_runtime(tenant.user_id, wake_now)
-    provider_started = asyncio.Event()
-    release_provider = asyncio.Event()
+    sleep_started = asyncio.Event()
+    release_sleep = asyncio.Event()
     connected = False
 
-    class BlockingProvider(FakeProvider):
-        async def restart_service(
-            self,
-            name: str,
-            *,
-            service_name: str,
-            monitor_duration: float | None,
-        ) -> None:
-            await super().restart_service(
-                name,
-                service_name=service_name,
-                monitor_duration=monitor_duration,
-            )
-            provider_started.set()
-            await release_provider.wait()
+    async def sleep(seconds: float) -> None:
+        assert seconds == 1.0
+        sleep_started.set()
+        await release_sleep.wait()
 
-    provider = BlockingProvider()
+    provider = FakeProvider()
     manager = _manager(
         provider,
         FakeInstaller(),
@@ -913,23 +907,24 @@ async def test_cancelled_ensure_online_waiter_does_not_cancel_shared_wake(
             candidate_runner_id == runner_id and connected
         ),
         clock=lambda: wake_now,
+        sleep=sleep,
     )
 
     cancelled_waiter = asyncio.create_task(manager.ensure_online(tenant.user_id))
-    await provider_started.wait()
+    await sleep_started.wait()
     surviving_waiter = asyncio.create_task(manager.ensure_online(tenant.user_id))
     await asyncio.sleep(0)
     cancelled_waiter.cancel()
     with pytest.raises(asyncio.CancelledError):
         await cancelled_waiter
     connected = True
-    release_provider.set()
+    release_sleep.set()
 
     result = await surviving_waiter
     await manager.aclose()
 
     assert result.runner_id == runner_id
-    assert [call[0] for call in provider.calls].count("restart") == 1
+    assert provider.calls == []
 
 
 async def test_provision_rejects_running_managed_backup(
@@ -978,6 +973,148 @@ async def test_ensure_online_rejects_running_managed_backup(
 
 
 @pytest.mark.asyncio
+async def test_ensure_online_waits_for_fresh_runner_relay_without_restart(
+    auth_client,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A fresh runner heartbeat gives its relay time to reconnect."""
+    tenant = getattr(auth_client, "yinshi_tenant")
+    current = datetime.now(timezone.utc)
+    runner_id, _, noise_key = _store_ready_runtime(tenant.user_id, current)
+    connected = False
+    sleeps: list[float] = []
+
+    async def sleep(seconds: float) -> None:
+        nonlocal current, connected
+        sleeps.append(seconds)
+        current += timedelta(seconds=seconds)
+        connected = True
+
+    provider = FakeProvider()
+    manager = _manager(
+        provider,
+        FakeInstaller(),
+        is_runner_connected=lambda candidate_runner_id: (
+            candidate_runner_id == runner_id and connected
+        ),
+        clock=lambda: current,
+        sleep=sleep,
+    )
+
+    with caplog.at_level(
+        logging.INFO,
+        logger="yinshi.services.managed_runtime_manager",
+    ):
+        runner = await manager.ensure_online(tenant.user_id)
+    await manager.aclose()
+
+    assert runner.runner_id == runner_id
+    assert runner.runner_public_key == noise_key
+    assert sleeps == [1.0]
+    assert provider.calls == []
+    decisions = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "yinshi.services.managed_runtime_manager"
+    ]
+    assert decisions == [
+        "Managed runtime wake decision=wait_reconnect",
+        "Managed runtime wake decision=reconnected",
+    ]
+    assert tenant.user_id not in " ".join(decisions)
+    assert runner_id not in " ".join(decisions)
+
+
+@pytest.mark.asyncio
+async def test_ensure_online_accepts_reconnect_exactly_at_deadline(
+    auth_client,
+) -> None:
+    """The final permitted sleep may establish both liveness signals."""
+    tenant = getattr(auth_client, "yinshi_tenant")
+    started_at = datetime.now(timezone.utc)
+    current = started_at
+    runner_id, _, noise_key = _store_ready_runtime(tenant.user_id, current)
+    deadline = started_at + timedelta(seconds=10)
+    connected = False
+    sleeps: list[float] = []
+
+    async def sleep(seconds: float) -> None:
+        nonlocal current, connected
+        sleeps.append(seconds)
+        current += timedelta(seconds=seconds)
+        if current == deadline:
+            _set_runner_heartbeat(runner_id, current)
+            connected = True
+
+    provider = FakeProvider()
+    manager = _manager(
+        provider,
+        FakeInstaller(),
+        is_runner_connected=lambda candidate_runner_id: (
+            candidate_runner_id == runner_id and connected
+        ),
+        clock=lambda: current,
+        sleep=sleep,
+    )
+
+    runner = await manager.ensure_online(tenant.user_id)
+    await manager.aclose()
+
+    assert runner.runner_id == runner_id
+    assert runner.runner_public_key == noise_key
+    assert current == deadline
+    assert sleeps == [1.0] * 10
+    assert provider.calls == []
+
+
+@pytest.mark.asyncio
+async def test_ensure_online_rejects_reconnect_after_deadline_overshoot(
+    auth_client,
+) -> None:
+    """A reconnect after the final bounded sleep is too late for capability use."""
+    from yinshi.services.managed_runtime_manager import ManagedRuntimeTimeoutError
+
+    tenant = getattr(auth_client, "yinshi_tenant")
+    started_at = datetime.now(timezone.utc)
+    current = started_at
+    runner_id, _, _ = _store_ready_runtime(tenant.user_id, current)
+    deadline = started_at + timedelta(seconds=10)
+    connected = False
+    sleeps: list[float] = []
+
+    async def sleep(seconds: float) -> None:
+        nonlocal current, connected
+        sleeps.append(seconds)
+        overshoot = 0.1 if len(sleeps) == 10 else 0.0
+        current += timedelta(seconds=seconds + overshoot)
+        if current > deadline:
+            _set_runner_heartbeat(runner_id, current)
+            connected = True
+
+    provider = FakeProvider()
+    manager = _manager(
+        provider,
+        FakeInstaller(),
+        is_runner_connected=lambda candidate_runner_id: (
+            candidate_runner_id == runner_id and connected
+        ),
+        clock=lambda: current,
+        sleep=sleep,
+    )
+
+    with pytest.raises(
+        ManagedRuntimeTimeoutError,
+        match="^Managed runtime wake timed out$",
+    ):
+        await manager.ensure_online(tenant.user_id)
+    await manager.aclose()
+
+    assert current == deadline + timedelta(seconds=0.1)
+    assert sleeps == [1.0] * 10
+    assert provider.calls == []
+
+
+@pytest.mark.asyncio
 async def test_ensure_online_returns_connected_runtime_without_restart(
     auth_client,
 ) -> None:
@@ -1012,6 +1149,165 @@ async def test_ensure_online_returns_connected_runtime_without_restart(
     assert connected_runner_ids == [runner_id]
 
 
+async def test_ensure_online_waits_for_heartbeat_when_relay_is_connected(
+    auth_client,
+) -> None:
+    """A connected relay lets a stale heartbeat recover without process restart."""
+    tenant = getattr(auth_client, "yinshi_tenant")
+    current = datetime.now(timezone.utc)
+    runner_id, _, noise_key = _store_ready_runtime(tenant.user_id, current)
+    _set_runner_heartbeat(runner_id, current - timedelta(minutes=10))
+    sleeps: list[float] = []
+
+    async def sleep(seconds: float) -> None:
+        nonlocal current
+        sleeps.append(seconds)
+        current += timedelta(seconds=seconds)
+        _set_runner_heartbeat(runner_id, current)
+
+    provider = FakeProvider()
+    manager = _manager(
+        provider,
+        FakeInstaller(),
+        is_runner_connected=lambda candidate_runner_id: (candidate_runner_id == runner_id),
+        clock=lambda: current,
+        sleep=sleep,
+    )
+
+    runner = await manager.ensure_online(tenant.user_id)
+    await manager.aclose()
+
+    assert runner.runner_id == runner_id
+    assert runner.runner_public_key == noise_key
+    assert sleeps == [1.0]
+    assert provider.calls == []
+
+
+async def test_ensure_online_restarts_runner_with_stale_heartbeat(
+    auth_client,
+) -> None:
+    """A stale heartbeat still authorizes one bounded service restart."""
+    tenant = getattr(auth_client, "yinshi_tenant")
+    current = datetime.now(timezone.utc)
+    runner_id, sprite_name, noise_key = _store_ready_runtime(tenant.user_id, current)
+    _set_runner_heartbeat(runner_id, current - timedelta(minutes=10))
+    connected = False
+
+    async def sleep(seconds: float) -> None:
+        nonlocal current, connected
+        assert seconds == 1.0
+        current += timedelta(seconds=seconds)
+        _set_runner_heartbeat(runner_id, current)
+        connected = True
+
+    provider = FakeProvider()
+    manager = _manager(
+        provider,
+        FakeInstaller(),
+        is_runner_connected=lambda candidate_runner_id: (
+            candidate_runner_id == runner_id and connected
+        ),
+        clock=lambda: current,
+        sleep=sleep,
+    )
+
+    runner = await manager.ensure_online(tenant.user_id)
+    await manager.aclose()
+
+    assert runner.runner_id == runner_id
+    assert runner.runner_public_key == noise_key
+    assert provider.calls == [("restart", (sprite_name, "yinshi-runner", None))]
+
+
+async def test_ensure_online_accepts_post_restart_readiness_at_exact_deadline(
+    auth_client,
+) -> None:
+    """Restart recovery may become ready on its final bounded instant."""
+    tenant = getattr(auth_client, "yinshi_tenant")
+    started_at = datetime.now(timezone.utc)
+    current = started_at
+    runner_id, sprite_name, noise_key = _store_ready_runtime(tenant.user_id, current)
+    _set_runner_heartbeat(runner_id, current - timedelta(minutes=10))
+    deadline = started_at + timedelta(seconds=10)
+    connected = False
+    sleeps: list[float] = []
+
+    async def sleep(seconds: float) -> None:
+        nonlocal current, connected
+        sleeps.append(seconds)
+        current += timedelta(seconds=seconds)
+        if current == deadline:
+            _set_runner_heartbeat(runner_id, current)
+            connected = True
+
+    provider = FakeProvider()
+    manager = _manager(
+        provider,
+        FakeInstaller(),
+        is_runner_connected=lambda candidate_runner_id: (
+            candidate_runner_id == runner_id and connected
+        ),
+        clock=lambda: current,
+        sleep=sleep,
+    )
+
+    runner = await manager.ensure_online(tenant.user_id)
+    await manager.aclose()
+
+    assert runner.runner_id == runner_id
+    assert runner.runner_public_key == noise_key
+    assert current == deadline
+    assert sleeps == [1.0] * 10
+    assert provider.calls == [("restart", (sprite_name, "yinshi-runner", None))]
+
+
+async def test_ensure_online_rejects_post_restart_deadline_overshoot(
+    auth_client,
+) -> None:
+    """Restart recovery that arrives after its bounded deadline is rejected."""
+    from yinshi.services.managed_runtime_manager import ManagedRuntimeTimeoutError
+
+    tenant = getattr(auth_client, "yinshi_tenant")
+    started_at = datetime.now(timezone.utc)
+    current = started_at
+    runner_id, sprite_name, _ = _store_ready_runtime(tenant.user_id, current)
+    _set_runner_heartbeat(runner_id, current - timedelta(minutes=10))
+    deadline = started_at + timedelta(seconds=10)
+    connected = False
+    sleeps: list[float] = []
+
+    async def sleep(seconds: float) -> None:
+        nonlocal current, connected
+        sleeps.append(seconds)
+        overshoot = 0.1 if len(sleeps) == 10 else 0.0
+        current += timedelta(seconds=seconds + overshoot)
+        if current > deadline:
+            _set_runner_heartbeat(runner_id, current)
+            connected = True
+
+    provider = FakeProvider()
+    manager = _manager(
+        provider,
+        FakeInstaller(),
+        is_runner_connected=lambda candidate_runner_id: (
+            candidate_runner_id == runner_id and connected
+        ),
+        clock=lambda: current,
+        sleep=sleep,
+    )
+
+    with pytest.raises(
+        ManagedRuntimeTimeoutError,
+        match="^Managed runtime wake timed out$",
+    ):
+        await manager.ensure_online(tenant.user_id)
+    await manager.aclose()
+
+    assert current == deadline + timedelta(seconds=0.1)
+    assert sleeps == [1.0] * 10
+    assert provider.calls == [("restart", (sprite_name, "yinshi-runner", None))]
+
+
 async def test_ensure_online_maps_provider_failure_without_changing_ready_runtime(
     auth_client,
 ) -> None:
@@ -1021,7 +1317,8 @@ async def test_ensure_online_maps_provider_failure_without_changing_ready_runtim
 
     tenant = getattr(auth_client, "yinshi_tenant")
     wake_now = datetime.now(timezone.utc)
-    _store_ready_runtime(tenant.user_id, wake_now)
+    runner_id, _, _ = _store_ready_runtime(tenant.user_id, wake_now)
+    _set_runner_heartbeat(runner_id, wake_now - timedelta(minutes=10))
     provider = FakeProvider()
     provider.fail_operation = "restart"
     manager = _manager(
@@ -1045,6 +1342,43 @@ async def test_ensure_online_maps_provider_failure_without_changing_ready_runtim
     assert runtime.last_error is None
 
 
+async def test_ensure_online_reconnect_wait_never_restarts_after_liveness_ages_out(
+    auth_client,
+) -> None:
+    """One reconnect-first wake stays non-destructive until its deadline."""
+    from yinshi.services.managed_runtime_manager import ManagedRuntimeTimeoutError
+
+    tenant = getattr(auth_client, "yinshi_tenant")
+    current = datetime.now(timezone.utc)
+    runner_id, _, _ = _store_ready_runtime(tenant.user_id, current)
+    _set_runner_heartbeat(runner_id, current - timedelta(seconds=119.5))
+    sleeps: list[float] = []
+
+    async def sleep(seconds: float) -> None:
+        nonlocal current
+        sleeps.append(seconds)
+        current += timedelta(seconds=seconds)
+
+    provider = FakeProvider()
+    manager = _manager(
+        provider,
+        FakeInstaller(),
+        is_runner_connected=lambda runner_id: False,
+        clock=lambda: current,
+        sleep=sleep,
+    )
+
+    with pytest.raises(
+        ManagedRuntimeTimeoutError,
+        match="^Managed runtime wake timed out$",
+    ):
+        await manager.ensure_online(tenant.user_id)
+    await manager.aclose()
+
+    assert sleeps == [1.0] * 10
+    assert provider.calls == []
+
+
 async def test_ensure_online_times_out_while_relay_connection_is_absent(
     auth_client,
 ) -> None:
@@ -1065,8 +1399,9 @@ async def test_ensure_online_times_out_while_relay_connection_is_absent(
         sleeps.append(seconds)
         current += timedelta(seconds=seconds)
 
+    provider = FakeProvider()
     manager = _manager(
-        FakeProvider(),
+        provider,
         FakeInstaller(),
         is_runner_connected=lambda runner_id: False,
         clock=clock,
@@ -1081,6 +1416,7 @@ async def test_ensure_online_times_out_while_relay_connection_is_absent(
     await manager.aclose()
 
     assert sleeps == [1.0] * 10
+    assert provider.calls == []
     runtime = get_managed_runtime_status(tenant.user_id)
     assert runtime is not None
     assert runtime.lifecycle_status == "ready"
@@ -1090,7 +1426,7 @@ async def test_ensure_online_times_out_while_relay_connection_is_absent(
 async def test_ensure_online_rejects_changed_identity_immediately(
     auth_client,
 ) -> None:
-    """A changed confirmed identity fails before sleeping or checking connection."""
+    """A changed confirmed identity fails during the reconnect wait."""
     from yinshi.services.managed_runners import get_managed_runtime_status
     from yinshi.services.managed_runtime_manager import ManagedRuntimeIdentityError
 
@@ -1099,39 +1435,30 @@ async def test_ensure_online_rejects_changed_identity_immediately(
     runner_id, _, _ = _store_ready_runtime(tenant.user_id, wake_now)
     changed_key = base64.urlsafe_b64encode(b"x" * 32).rstrip(b"=").decode("ascii")
 
-    class ChangingProvider(FakeProvider):
-        async def restart_service(
-            self,
-            name: str,
-            *,
-            service_name: str,
-            monitor_duration: float | None,
-        ) -> None:
-            await super().restart_service(
-                name,
-                service_name=service_name,
-                monitor_duration=monitor_duration,
+    sleep_calls = 0
+
+    async def change_identity(seconds: float) -> None:
+        nonlocal sleep_calls
+        assert seconds == 1.0
+        sleep_calls += 1
+        with get_control_db() as database:
+            database.execute(
+                """
+                UPDATE user_runners
+                SET noise_public_key = ?, noise_public_key_confirmed_at = ?
+                WHERE id = ?
+                """,
+                (changed_key, wake_now.isoformat(), runner_id),
             )
-            with get_control_db() as database:
-                database.execute(
-                    """
-                    UPDATE user_runners
-                    SET noise_public_key = ?, noise_public_key_confirmed_at = ?
-                    WHERE id = ?
-                    """,
-                    (changed_key, wake_now.isoformat(), runner_id),
-                )
-                database.commit()
+            database.commit()
 
-    async def fail_sleep(seconds: float) -> None:
-        raise AssertionError("identity change must fail before sleep")
-
+    provider = FakeProvider()
     manager = _manager(
-        ChangingProvider(),
+        provider,
         FakeInstaller(),
         is_runner_connected=lambda runner_id: False,
         clock=lambda: wake_now,
-        sleep=fail_sleep,
+        sleep=change_identity,
     )
 
     with pytest.raises(
@@ -1141,6 +1468,8 @@ async def test_ensure_online_rejects_changed_identity_immediately(
         await manager.ensure_online(tenant.user_id)
     await manager.aclose()
 
+    assert sleep_calls == 1
+    assert provider.calls == []
     runtime = get_managed_runtime_status(tenant.user_id)
     assert runtime is not None
     assert runtime.lifecycle_status == "ready"

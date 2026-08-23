@@ -22,6 +22,7 @@ _RELAY_QUEUE_FRAMES_MAX = 16
 _RUNNER_SESSIONS_MAX = 32
 _RETIRED_TRANSFERS_MAX = 128
 _RETIRED_TRANSFER_TTL_SECONDS = 300.0
+_CLOSE_ALREADY_SENT_ERROR = 'Cannot call "send" once a close message has been sent.'
 
 
 class RunnerRelayAuthorizationError(ValueError):
@@ -46,6 +47,20 @@ class RelayWebSocket(Protocol):
     async def send_bytes(self, data: bytes) -> None: ...
 
     async def close(self, code: int = 1000, reason: str | None = None) -> None: ...
+
+
+async def _close_websocket(
+    websocket: RelayWebSocket,
+    *,
+    code: int,
+    reason: str,
+) -> None:
+    """Close one relay socket while tolerating only completed close transmission."""
+    try:
+        await websocket.close(code=code, reason=reason)
+    except RuntimeError as error:
+        if str(error) != _CLOSE_ALREADY_SENT_ERROR:
+            raise
 
 
 def _require_transfer_id(transfer_id: str) -> str:
@@ -164,6 +179,7 @@ def claim_runner_transfer_grant(
 @dataclass(slots=True)
 class _RunnerConnection:
     websocket: RelayWebSocket
+    ready: bool = False
     send_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     sessions: set[str] = field(default_factory=set)
     retired_transfers: OrderedDict[str, float] = field(default_factory=OrderedDict)
@@ -217,10 +233,11 @@ class RunnerRelayBroker:
         self._clients: dict[str, _ClientConnection] = {}
 
     def is_runner_connected(self, runner_id: str) -> bool:
-        """Return whether this event loop currently owns a runner socket."""
+        """Return whether this event loop owns one fully registered runner socket."""
         if not isinstance(runner_id, str) or not runner_id:
             raise ValueError("runner_id must not be empty")
-        return runner_id in self._runners
+        runner = self._runners.get(runner_id)
+        return runner is not None and runner.ready
 
     async def register_runner(self, runner_id: str, websocket: RelayWebSocket) -> None:
         """Register one current outbound runner connection, replacing stale state."""
@@ -231,6 +248,7 @@ class RunnerRelayBroker:
         )
         durable_job_id = None if durable_operation is None else durable_operation.job_id
         clients_to_close: list[_ClientConnection] = []
+        candidate = _RunnerConnection(websocket=websocket)
         async with self._lock:
             previous = self._runners.get(runner_id)
             if previous is not None:
@@ -239,7 +257,7 @@ class RunnerRelayBroker:
                     if client is not None:
                         self._close_client_queue(client)
                         clients_to_close.append(client)
-            self._runners[runner_id] = _RunnerConnection(websocket=websocket)
+            self._runners[runner_id] = candidate
             maintenance = self._maintenance.get(runner_id)
             maintenance_job_id = None if maintenance is None else maintenance.job_id
             if durable_job_id is not None and maintenance is None:
@@ -249,14 +267,31 @@ class RunnerRelayBroker:
                     acknowledgement,
                 )
                 maintenance_job_id = durable_job_id
-        if previous is not None:
-            await previous.websocket.close(code=4001, reason="Runner connection replaced")
-        for client in clients_to_close:
-            await client.websocket.close(code=4002, reason="Runner connection replaced")
-        if maintenance_job_id is not None:
-            control_message = '{"job_id":"' + maintenance_job_id + '","type":"quiesce"}'
-            async with self._runners[runner_id].send_lock:
-                await websocket.send_text(control_message)
+        try:
+            if previous is not None:
+                await _close_websocket(
+                    previous.websocket,
+                    code=4001,
+                    reason="Runner connection replaced",
+                )
+            for client in clients_to_close:
+                await _close_websocket(
+                    client.websocket,
+                    code=4002,
+                    reason="Runner connection replaced",
+                )
+            if maintenance_job_id is not None:
+                control_message = '{"job_id":"' + maintenance_job_id + '","type":"quiesce"}'
+                async with candidate.send_lock:
+                    await websocket.send_text(control_message)
+        except BaseException:
+            async with self._lock:
+                if self._runners.get(runner_id) is candidate:
+                    del self._runners[runner_id]
+            raise
+        async with self._lock:
+            if self._runners.get(runner_id) is candidate:
+                candidate.ready = True
 
     async def unregister_runner(self, runner_id: str, websocket: RelayWebSocket) -> None:
         """Remove only the matching runner connection and close attached clients."""
@@ -272,7 +307,11 @@ class RunnerRelayBroker:
                     self._close_client_queue(client)
                     clients_to_close.append(client)
         for client in clients_to_close:
-            await client.websocket.close(code=4002, reason="Runner disconnected")
+            await _close_websocket(
+                client.websocket,
+                code=4002,
+                reason="Runner disconnected",
+            )
 
     async def quiesce_runner(
         self,
@@ -316,7 +355,11 @@ class RunnerRelayBroker:
                     self._close_client_queue(client)
                     clients_to_close.append(client)
         for client in clients_to_close:
-            await client.websocket.close(code=4006, reason="Runner entered maintenance")
+            await _close_websocket(
+                client.websocket,
+                code=4006,
+                reason="Runner entered maintenance",
+            )
         control_message = '{"job_id":"' + normalized_job_id + '","type":"quiesce"}'
         try:
             async with runner.send_lock:
@@ -367,7 +410,7 @@ class RunnerRelayBroker:
             raise TypeError("grant must be RunnerTransferGrant")
         async with self._lock:
             runner = self._runners.get(grant.runner_id)
-            if runner is None:
+            if runner is None or not runner.ready:
                 raise RunnerRelayAuthorizationError("Runner is not connected")
             if grant.runner_id in self._maintenance:
                 raise RunnerRelayAuthorizationError("Runner maintenance is active")
@@ -442,7 +485,11 @@ class RunnerRelayBroker:
             runner.sessions.discard(normalized_transfer_id)
             self._retire_transfer(runner, normalized_transfer_id)
             self._close_client_queue(client)
-        await client.websocket.close(code=4004, reason="Runner rejected transfer")
+        await _close_websocket(
+            client.websocket,
+            code=4004,
+            reason="Runner rejected transfer",
+        )
 
     async def runner_frame(self, runner_id: str, framed_ciphertext: bytes) -> None:
         """Queue one bounded runner ciphertext frame for its attached client."""
@@ -482,7 +529,11 @@ class RunnerRelayBroker:
             control_message = '{"transfer_id":"' + transfer_id + '","type":"close"}'
             async with runner.send_lock:
                 await runner.websocket.send_text(control_message)
-            await client.websocket.close(code=4005, reason=close_reason)
+            await _close_websocket(
+                client.websocket,
+                code=4005,
+                reason=close_reason,
+            )
 
     async def send_client_frames(self, transfer_id: str) -> None:
         """Drain runner ciphertext to one client until task cancellation."""
@@ -512,9 +563,17 @@ class RunnerRelayBroker:
                 if client is not None:
                     self._close_client_queue(client)
                     clients_to_close.append(client)
-        await runner.websocket.close(code=4003, reason="Runner revoked")
+        await _close_websocket(
+            runner.websocket,
+            code=4003,
+            reason="Runner revoked",
+        )
         for client in clients_to_close:
-            await client.websocket.close(code=4003, reason="Runner revoked")
+            await _close_websocket(
+                client.websocket,
+                code=4003,
+                reason="Runner revoked",
+            )
 
     def _retire_transfer(
         self,
