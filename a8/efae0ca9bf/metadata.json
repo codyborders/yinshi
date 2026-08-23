@@ -3,19 +3,22 @@
   "checkpoint_id": "a8efae0ca9bf",
   "strategy": "manual-commit",
   "branch": "main",
-  "checkpoints_count": 4,
+  "checkpoints_count": 5,
   "files_touched": [
     "backend/src/yinshi/api/terminal_channels.py",
     "backend/src/yinshi/api/terminals.py",
     "backend/src/yinshi/api/workspace_files.py",
     "backend/src/yinshi/runner_agent.py",
     "backend/src/yinshi/services/event_loop_watchdog.py",
+    "backend/src/yinshi/services/git.py",
     "backend/src/yinshi/services/repository_lifecycle.py",
     "backend/src/yinshi/services/workspace_runtime_paths.py",
     "backend/src/yinshi/tenant.py",
     "backend/tests/test_event_loop_watchdog.py",
+    "backend/tests/test_git.py",
     "backend/tests/test_repository_lifecycle.py",
     "backend/tests/test_runner_agent_managed.py",
+    "backend/tests/test_security_fixes.py",
     "backend/tests/test_tenant.py",
     "backend/tests/test_terminal_channels.py",
     "backend/tests/test_workspace_files.py",
@@ -42,13 +45,20 @@
       "compact_transcript": "/a8/efae0ca9bf/2/transcript.jsonl",
       "content_hash": "/a8/efae0ca9bf/2/content_hash.txt",
       "prompt": "/a8/efae0ca9bf/2/prompt.txt"
+    },
+    {
+      "metadata": "/a8/efae0ca9bf/3/metadata.json",
+      "transcript": "/a8/efae0ca9bf/3/full.jsonl",
+      "compact_transcript": "/a8/efae0ca9bf/3/transcript.jsonl",
+      "content_hash": "/a8/efae0ca9bf/3/content_hash.txt",
+      "prompt": "/a8/efae0ca9bf/3/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 18423033,
+    "input_tokens": 24547539,
     "cache_creation_tokens": 0,
-    "cache_read_tokens": 471070080,
-    "output_tokens": 1178504,
-    "api_call_count": 2951
+    "cache_read_tokens": 626344960,
+    "output_tokens": 1568684,
+    "api_call_count": 3925
   }
 }

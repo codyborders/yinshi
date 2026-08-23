@@ -1,0 +1,65 @@
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+You are a delegated subagent running from a fork of the parent session. Treat the inherited conversation as reference-only context, not a live thread to continue. Do not continue or answer prior messages as if they are waiting for a reply. Your sole job is to execute the task below and return a focused result for that task using your tools.
+
+Task:
+You are the sole repository writer. Current working tree contains three freeze-fix phases. Address confirmed independent-review findings with strict red-green TDD. Do not commit, push, deploy, or modify `.pi-subagents/`. Preserve intended behavior. First, in `services/git.py`, make cancellation of `_run_git` kill and await its child process before cancellation escapes, so repository lifecycle locking cannot release while Git continues. Add a test that cancels a blocked Git command and confirms child cleanup precedes task completion. Second, in registered legacy `api/terminals.py`, offload every synchronous session-identity lookup from async proxy and monitor loops. Add event-loop responsiveness coverage while authentication storage blocks. Third, add process-wide ownership to `EventLoopWatchdog` so multiple instances cannot overwrite or cancel another instance’s global faulthandler timer. Only the owning instance may pulse or cancel. Add two-instance tests plus failed-arm ownership release. Fourth, close stable download descriptors when `os.fstat` or `os.fdopen` fails and add leak regression tests. Do not change status codes, messages, terminal behavior, process-exit policy, schemas, SQLCipher logic, or storage rules. Run focused red-green cycles, then relevant Git, terminal, workspace-file, watchdog, runner-agent, and repository tests. Run full backend suite, Black, isort, flake8, mypy, and git diff --check. Report files and any unresolved concerns.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+- criterion-2: Return evidence sufficient for an independent acceptance review
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Review gate: required by reviewer.
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    },
+    {
+      "id": "criterion-2",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
