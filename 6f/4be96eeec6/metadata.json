@@ -3,7 +3,7 @@
   "checkpoint_id": "6f4be96eeec6",
   "strategy": "manual-commit",
   "branch": "main",
-  "checkpoints_count": 3,
+  "checkpoints_count": 5,
   "files_touched": [
     "backend/src/yinshi/api/deps.py",
     "backend/src/yinshi/api/repos.py",
@@ -34,13 +34,20 @@
       "compact_transcript": "/6f/4be96eeec6/0/transcript.jsonl",
       "content_hash": "/6f/4be96eeec6/0/content_hash.txt",
       "prompt": "/6f/4be96eeec6/0/prompt.txt"
+    },
+    {
+      "metadata": "/6f/4be96eeec6/1/metadata.json",
+      "transcript": "/6f/4be96eeec6/1/full.jsonl",
+      "compact_transcript": "/6f/4be96eeec6/1/transcript.jsonl",
+      "content_hash": "/6f/4be96eeec6/1/content_hash.txt",
+      "prompt": "/6f/4be96eeec6/1/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 1436326,
+    "input_tokens": 2956110,
     "cache_creation_tokens": 0,
-    "cache_read_tokens": 36023168,
-    "output_tokens": 92470,
-    "api_call_count": 245
+    "cache_read_tokens": 84009216,
+    "output_tokens": 223707,
+    "api_call_count": 623
   }
 }

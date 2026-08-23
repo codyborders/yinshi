@@ -1,0 +1,242 @@
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+You are a delegated subagent running from a fork of the parent session. Treat the inherited conversation as reference-only context, not a live thread to continue. Do not continue or answer prior messages as if they are waiting for a reply. Your sole job is to execute the task below and return a focused result for that task using your tools.
+
+Task:
+Implement every actionable finding from the Codex software-design review of current HEAD.
+You are the sole writer. Do not commit or push. Preserve unrelated .pi-subagents.
+Confirm current HEAD subject is `Route private GitHub access through runner broker` before editing.
+Follow repository rules and TDD Guard. For new behavior, add one focused test, observe the expected failure, then add minimum production code. Use edit or write for source files.
+
+Backend protocol and secret handling:
+- Replace buffered broker POST handling in runner_agent.py with bounded streaming. Enforce the byte limit before parsing every status, including HTTP 400. Rename the limit to identify runner GitHub access response bytes.
+- Add strict Pydantic success, error-detail, and error-envelope models. Forbid extra fields. Reject blank, oversized, coercible, or invalid ID fields. Hide input values in validation errors. Mark access_token repr=False.
+- Parse broker HTTP 400 through the strict error envelope. Convert malformed responses to the existing generic GitHubAppError without chained parser details.
+- Make api/runners.py construct the strict error detail and success models. Preserve endpoint path, status codes, null behavior, and JSON field names.
+- Move GitHubCloneAccessResolver from runner_worker.py into services/github_app.py. Mark GitHubCloneAccess.access_token and cached installation tokens repr=False. Mark RunnerAgentConfig.registration_token repr=False.
+- Rename `_build_resolver` in runner_agent.py to `_resolve_worker_clone_access`.
+- Add focused tests for oversized HTTP 400 rejection, strict malformed error rejection, and secret-free object representations.
+
+Pi config module ownership:
+- Centralize typed app-state resolver lookup in api/deps.py. Validate that a configured value is callable.
+- Make services/pi_config.py own clone-access resolution. Add an optional GitHubCloneAccessResolver to import_from_github and sync_pi_config, and pass it into the internal clone-detail resolution.
+- When an injected resolver exists, do not call the local control-plane resolver. Use the returned canonical clone URL and token.
+- Resolve sync access before changing status to syncing. Credential errors must leave an existing ready config ready.
+- Remove route-level token extraction and duplicated app-state casts from api/settings.py. Pass the typed resolver into service operations. Use the centralized getter in api/repos.py.
+- Keep hosted, desktop, direct-worker, background import, error mapping, and stored credential-free URL behavior unchanged.
+- Strengthen focused Pi tests so a valid injected resolver succeeds even if the local resolver is unavailable. Add a test that sync credential failure leaves status ready.
+
+Frontend module ownership:
+- Move ApiError, structured error normalization, and apiErrorFromPayload from api/client.ts into new api/errors.ts.
+- Re-export ApiError and apiErrorFromPayload from api/client.ts for compatibility.
+- Import shared error behavior directly from api/errors.ts in encryptedRunnerClient.ts.
+- Restore simple complete api/client mocks in Layout.test.tsx, Session.test.tsx, and Settings.test.tsx. They must not import the real transport module.
+- Keep RunnerRpcError inheritance, structured fields, retry behavior, and user-visible messages unchanged.
+
+Test structure:
+- Rename backend/tests/test_runners_append.py to backend/tests/test_runner_github_access.py.
+- Replace repeated runner creation and registration setup with one typed fixture or helper. Keep all assertions.
+
+Run focused Red-Green commands during work. Then run full backend pytest, Black, isort, flake8, mypy, full frontend Vitest, TypeScript typecheck, production build, and git diff --check.
+Report changed files, commands, results, and any remaining risk.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+You are reviving a previous subagent conversation.
+
+Original run: 79bc2a2f
+Original agent: worker
+Original session file: /Users/user/.pi/agent/sessions/--Users-user-projects-yinshi--/2026-08-23T03-17-27-840Z_01a02c9f-88a0-7db3-9018-75b9b6faf831.jsonl
+
+Use the stored session context as background. Answer the orchestrator's follow-up below. Do not assume the original child process is still alive.
+
+Follow-up:
+Continue from current host working tree and finish the approved Codex design fixes. Do not commit or push.
+Do not attempt the test-file rename again. The supervisor will handle that blocked file operation.
+Finish fixture cleanup in backend/tests/test_runners_append.py, including clear type annotations and removal of remaining repeated registration setup. Keep existing assertions.
+Update the stale oversized-response test description so it does not name the removed constant.
+Inspect every current diff for correctness. Confirm frontend/src/api/errors.ts is complete and all direct imports and compatibility re-exports are correct.
+Run the full backend pytest suite, not a custom order combining runner_agent tests before API fixture tests. The repository has a known global-app import-order issue in that artificial ordering. Do not alter app architecture for that unrelated issue.
+Run Black, isort, flake8, and mypy for every changed Python file. Run full frontend Vitest, TypeScript typecheck, production build, and git diff --check.
+Fix any real failures with narrow edits. Preserve .pi-subagents. Report exact results and remaining risks.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+- criterion-2: Return evidence sufficient for an independent acceptance review
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Review gate: required by reviewer.
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    },
+    {
+      "id": "criterion-2",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+You are reviving a previous subagent conversation.
+
+Original run: 185001b2
+Original agent: worker
+Original session file: /Users/user/.pi/agent/sessions/--Users-user-projects-yinshi--/2026-08-23T03-17-27-840Z_01a02c9f-88a0-7db3-9018-75b9b6faf831.jsonl
+
+Use the stored session context as background. Answer the orchestrator's follow-up below. Do not assume the original child process is still alive.
+
+Follow-up:
+User explicitly authorized one TDD exception for this non-behavioral rename.
+Rename backend/tests/test_runners_append.py to backend/tests/test_runner_github_access.py with git mv.
+Do not change file content. Do not commit or push.
+Run the renamed test file and git diff --check. Report results.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
