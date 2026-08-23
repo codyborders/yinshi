@@ -1,0 +1,57 @@
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+You are a delegated subagent running from a fork of the parent session. Treat the inherited conversation as reference-only context, not a live thread to continue. Do not continue or answer prior messages as if they are waiting for a reply. Your sole job is to execute the task below and return a focused result for that task using your tools.
+
+Task:
+You are the sole repository writer. Current working tree contains phase 1 and phase 2 fixes for a production runner freeze. Preserve them. Implement phase 3 only. Do not commit, push, deploy, or modify `.pi-subagents/`. Use strict red-green TDD. Add independent managed-runner event-loop stall diagnostics. Preferred design: a small service around `faulthandler.dump_traceback_later` that arms an all-thread stderr dump after 15 seconds, while a healthy async pulse rearms it every 5 seconds. If the runner event loop blocks, the native faulthandler timer must dump all thread stacks without waiting for that loop. Produce at most one dump per continuous stall, then rearm after recovery. Start diagnostics before heartbeat, relay, and Sprite task activity in `run_agent`; always stop and cancel the pending timer during normal shutdown, startup failure, and cancellation. Do not force process exit, send fatal signals, inspect databases, include configuration values, log tokens, or change recovery policy. Handle unavailable or disabled faulthandler safely. Keep state local and idempotent. Add public tests for arming, healthy rearming, a simulated missed pulse, one dump per stall, recovery, shutdown cancellation, and integration with managed runner startup failure. Run focused tests first, then all runner-agent managed tests, full backend tests if time permits, Black, isort, flake8, mypy, and git diff --check. Also run a static audit confirming no direct `get_db_for_request()` remains in registered async terminal-channel, legacy terminal, or workspace-file handlers. Report changed files and remaining risks. Stop after phase 3.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
