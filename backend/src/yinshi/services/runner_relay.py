@@ -427,16 +427,16 @@ class RunnerRelayBroker:
             await runner.websocket.send_bytes(framed_ciphertext)
 
     async def runner_closed_transfer(self, runner_id: str, transfer_id: str) -> None:
-        """Close one failed transfer without disrupting other runner sessions."""
+        """Close one transfer idempotently without disrupting other runner sessions."""
         normalized_transfer_id = _require_transfer_id(transfer_id)
         async with self._lock:
             runner = self._runners.get(runner_id)
             if runner is None:
                 raise RunnerRelayAuthorizationError("Runner relay transfer is not attached")
             client = self._clients.get(normalized_transfer_id)
-            if client is None or client.grant.runner_id != runner_id:
-                if self._is_retired_transfer(runner, normalized_transfer_id):
-                    return
+            if client is None:
+                return
+            if client.grant.runner_id != runner_id:
                 raise RunnerRelayAuthorizationError("Runner relay transfer is not attached")
             del self._clients[normalized_transfer_id]
             runner.sessions.discard(normalized_transfer_id)

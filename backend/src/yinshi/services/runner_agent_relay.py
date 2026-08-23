@@ -184,9 +184,7 @@ class RunnerAgentRelayRuntime:
         transfer_id = _canonical_uuid(payload.get("transfer_id"), "transfer_id")
         if message_type == "close":
             if self._sessions.pop(transfer_id, None) is None:
-                if self._is_retired_transfer(transfer_id):
-                    return
-                raise ValueError("Runner relay transfer is not open")
+                return
             self._retire_transfer(transfer_id)
             if self._task_lease is not None:
                 await self._task_lease.release()

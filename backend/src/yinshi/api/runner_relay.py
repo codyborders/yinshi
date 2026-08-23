@@ -7,6 +7,7 @@ import contextlib
 import json
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from starlette.websockets import WebSocketState
 
 from yinshi.exceptions import RunnerAuthenticationError
 from yinshi.services.runner_relay import (
@@ -21,6 +22,13 @@ _CLIENT_AUTH_TIMEOUT_SECONDS = 10.0
 _CLIENT_CONNECTION_MAX_SECONDS = 3_600.0
 _CLIENT_CONNECTION_LIMIT = asyncio.Semaphore(128)
 _CLIENT_SLOT_TIMEOUT_SECONDS = 0.05
+
+
+async def _close_websocket(websocket: WebSocket, *, code: int, reason: str) -> None:
+    """Send one close frame unless another teardown path already sent it."""
+    if websocket.application_state is WebSocketState.DISCONNECTED:
+        return
+    await websocket.close(code=code, reason=reason)
 
 
 def _runner_bearer_token(websocket: WebSocket) -> str:
@@ -40,7 +48,11 @@ async def runner_relay_socket(websocket: WebSocket) -> None:
     try:
         runner = authenticate_runner_token(_runner_bearer_token(websocket))
     except (RunnerAuthenticationError, TypeError, ValueError):
-        await websocket.close(code=4401, reason="Runner authentication failed")
+        await _close_websocket(
+            websocket,
+            code=4401,
+            reason="Runner authentication failed",
+        )
         return
 
     runner_id = runner["runner_id"]
@@ -85,16 +97,28 @@ async def runner_relay_socket(websocket: WebSocket) -> None:
                         continue
                     raise ValueError("invalid runner relay control")
                 except (json.JSONDecodeError, RunnerRelayAuthorizationError, ValueError):
-                    await websocket.close(code=4400, reason="Runner relay control was rejected")
+                    await _close_websocket(
+                        websocket,
+                        code=4400,
+                        reason="Runner relay control was rejected",
+                    )
                     break
             ciphertext = message.get("bytes")
             if not isinstance(ciphertext, bytes):
-                await websocket.close(code=4400, reason="Binary relay frames are required")
+                await _close_websocket(
+                    websocket,
+                    code=4400,
+                    reason="Binary relay frames are required",
+                )
                 break
             try:
                 await runner_relay_broker.runner_frame(runner_id, ciphertext)
             except (RunnerRelayAuthorizationError, TypeError, ValueError):
-                await websocket.close(code=4400, reason="Runner relay frame was rejected")
+                await _close_websocket(
+                    websocket,
+                    code=4400,
+                    reason="Runner relay frame was rejected",
+                )
                 break
     except WebSocketDisconnect:
         pass
@@ -111,7 +135,11 @@ async def client_relay_socket(websocket: WebSocket, transfer_id: str) -> None:
             timeout=_CLIENT_SLOT_TIMEOUT_SECONDS,
         )
     except TimeoutError:
-        await websocket.close(code=4429, reason="Runner relay connection limit reached")
+        await _close_websocket(
+            websocket,
+            code=4429,
+            reason="Runner relay connection limit reached",
+        )
         return
     sender_task: asyncio.Task[None] | None = None
     attached = False
@@ -134,13 +162,25 @@ async def client_relay_socket(websocket: WebSocket, transfer_id: str) -> None:
                     break
                 ciphertext = message.get("bytes")
                 if not isinstance(ciphertext, bytes):
-                    await websocket.close(code=4400, reason="Binary relay frames are required")
+                    await _close_websocket(
+                        websocket,
+                        code=4400,
+                        reason="Binary relay frames are required",
+                    )
                     break
                 await runner_relay_broker.client_frame(transfer_id, ciphertext)
     except TimeoutError:
-        await websocket.close(code=4408, reason="Runner relay timed out")
+        await _close_websocket(
+            websocket,
+            code=4408,
+            reason="Runner relay timed out",
+        )
     except (RunnerRelayAuthorizationError, TypeError, ValueError):
-        await websocket.close(code=4403, reason="Runner relay authorization failed")
+        await _close_websocket(
+            websocket,
+            code=4403,
+            reason="Runner relay authorization failed",
+        )
     except WebSocketDisconnect:
         pass
     finally:

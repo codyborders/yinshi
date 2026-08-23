@@ -10,6 +10,7 @@ import asyncio
 import uuid
 
 import pytest
+from fastapi import WebSocket
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
@@ -171,6 +172,65 @@ async def test_relay_ignores_late_frames_for_a_detached_transfer() -> None:
 
 
 @pytest.mark.asyncio
+async def test_relay_accepts_delayed_runner_close_after_retirement_eviction() -> None:
+    """A delayed valid close must not terminate the shared runner relay."""
+    broker = RunnerRelayBroker()
+    runner = FakeWebSocket()
+    await broker.register_runner("runner-1", runner)
+    oldest_grant = _grant()
+    oldest_client = FakeWebSocket()
+    await broker.attach_client(oldest_grant, oldest_client)
+    await broker.detach_client(oldest_grant.transfer_id, oldest_client)
+
+    for _ in range(128):
+        grant = _grant()
+        client = FakeWebSocket()
+        await broker.attach_client(grant, client)
+        await broker.detach_client(grant.transfer_id, client)
+
+    await broker.runner_closed_transfer("runner-1", oldest_grant.transfer_id)
+
+    current_grant = _grant()
+    current_client = FakeWebSocket()
+    await broker.attach_client(current_grant, current_client)
+    await broker.client_frame(current_grant.transfer_id, b"still-usable")
+
+    assert broker.is_runner_connected("runner-1") is True
+    assert runner.binary_frames[-1] == (
+        uuid.UUID(current_grant.transfer_id).bytes + b"still-usable"
+    )
+
+
+@pytest.mark.asyncio
+async def test_relay_rejects_close_for_another_runners_active_transfer() -> None:
+    """One runner cannot close or mutate another runner's active transfer."""
+    broker = RunnerRelayBroker()
+    first_runner = FakeWebSocket()
+    second_runner = FakeWebSocket()
+    client = FakeWebSocket()
+    transfer_id = str(uuid.uuid4())
+    grant = RunnerTransferGrant(
+        transfer_id=transfer_id,
+        runner_id="runner-2",
+        expires_at=1_900_000_300,
+        max_session_bytes=65_536,
+    )
+    await broker.register_runner("runner-1", first_runner)
+    await broker.register_runner("runner-2", second_runner)
+    await broker.attach_client(grant, client)
+
+    with pytest.raises(RunnerRelayAuthorizationError, match="not attached"):
+        await broker.runner_closed_transfer("runner-1", transfer_id)
+    await broker.client_frame(transfer_id, b"still-owned-by-runner-2")
+
+    assert broker.is_runner_connected("runner-1") is True
+    assert broker.is_runner_connected("runner-2") is True
+    assert second_runner.binary_frames == [
+        uuid.UUID(transfer_id).bytes + b"still-owned-by-runner-2"
+    ]
+
+
+@pytest.mark.asyncio
 async def test_relay_closes_a_transfer_when_client_backpressure_fills() -> None:
     """One slow client cannot create an unbounded runner-to-client queue."""
     broker = RunnerRelayBroker()
@@ -250,6 +310,84 @@ def test_runner_websocket_sends_welcome_before_recovered_maintenance(
         assert runner_socket.receive_json() == {"job_id": job_id, "type": "quiesce"}
 
 
+def test_runner_websocket_survives_an_idempotent_unknown_close(
+    auth_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A valid delayed close must leave the shared runner socket usable."""
+    from yinshi.api import runner_relay as runner_relay_api
+
+    broker = RunnerRelayBroker()
+    transfer_id = str(uuid.uuid4())
+    grant = RunnerTransferGrant(
+        transfer_id=transfer_id,
+        runner_id="runner-1",
+        expires_at=1_900_000_300,
+        max_session_bytes=65_536,
+    )
+    monkeypatch.setattr(
+        runner_relay_api,
+        "authenticate_runner_token",
+        lambda _token: {"runner_id": "runner-1"},
+    )
+    monkeypatch.setattr(runner_relay_api, "runner_relay_broker", broker)
+    monkeypatch.setattr(
+        runner_relay_api,
+        "claim_runner_transfer_grant",
+        lambda _transfer_id, _capability: grant,
+    )
+
+    with auth_client.websocket_connect(
+        "/runner/relay",
+        headers={"Authorization": "Bearer runner-token"},
+    ) as runner_socket:
+        assert runner_socket.receive_json() == {
+            "runner_id": "runner-1",
+            "type": "welcome",
+        }
+        runner_socket.send_json({"transfer_id": str(uuid.uuid4()), "type": "close"})
+        with auth_client.websocket_connect(f"/api/runner/relay/{transfer_id}") as client_socket:
+            client_socket.send_text("capability")
+            assert runner_socket.receive_text() == (
+                f'{{"transfer_id":"{transfer_id}","type":"open"}}'
+            )
+            assert client_socket.receive_json() == {"type": "ready"}
+
+
+def test_runner_websocket_rejects_malformed_close_control(
+    auth_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Idempotent close handling must still reject extra control fields."""
+    from yinshi.api import runner_relay as runner_relay_api
+
+    monkeypatch.setattr(
+        runner_relay_api,
+        "authenticate_runner_token",
+        lambda _token: {"runner_id": "runner-1"},
+    )
+
+    with auth_client.websocket_connect(
+        "/runner/relay",
+        headers={"Authorization": "Bearer runner-token"},
+    ) as runner_socket:
+        assert runner_socket.receive_json() == {
+            "runner_id": "runner-1",
+            "type": "welcome",
+        }
+        runner_socket.send_json(
+            {
+                "extra": True,
+                "transfer_id": str(uuid.uuid4()),
+                "type": "close",
+            }
+        )
+        with pytest.raises(WebSocketDisconnect) as disconnect:
+            runner_socket.receive_bytes()
+
+    assert disconnect.value.code == 4400
+
+
 def test_runner_websocket_routes_quiesced_acknowledgement(
     auth_client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
@@ -285,6 +423,73 @@ def test_runner_websocket_routes_quiesced_acknowledgement(
         runner_socket.send_json({"job_id": job_id, "type": "quiesced"})
 
     assert acknowledgements == [("runner-1", job_id)]
+
+
+def test_client_websocket_does_not_close_twice_after_concurrent_teardown(
+    auth_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Concurrent broker teardown must not trigger a second close send."""
+    from yinshi.api import runner_relay as runner_relay_api
+
+    transfer_id = str(uuid.uuid4())
+    grant = RunnerTransferGrant(
+        transfer_id=transfer_id,
+        runner_id="runner-1",
+        expires_at=1_900_000_300,
+        max_session_bytes=65_536,
+    )
+    client_websocket: WebSocket | None = None
+
+    async def attach_client(_grant: RunnerTransferGrant, websocket: WebSocket) -> None:
+        nonlocal client_websocket
+        client_websocket = websocket
+
+    async def client_frame(_transfer_id: str, _ciphertext: bytes) -> None:
+        assert client_websocket is not None
+        await client_websocket.close(code=4004, reason="Runner rejected transfer")
+        raise RunnerRelayAuthorizationError("Runner relay client is not attached")
+
+    async def send_client_frames(_transfer_id: str) -> None:
+        return None
+
+    async def detach_client(_transfer_id: str, _websocket: WebSocket) -> None:
+        return None
+
+    monkeypatch.setattr(
+        runner_relay_api,
+        "claim_runner_transfer_grant",
+        lambda _transfer_id, _capability: grant,
+    )
+    monkeypatch.setattr(
+        runner_relay_api.runner_relay_broker,
+        "attach_client",
+        attach_client,
+    )
+    monkeypatch.setattr(
+        runner_relay_api.runner_relay_broker,
+        "client_frame",
+        client_frame,
+    )
+    monkeypatch.setattr(
+        runner_relay_api.runner_relay_broker,
+        "send_client_frames",
+        send_client_frames,
+    )
+    monkeypatch.setattr(
+        runner_relay_api.runner_relay_broker,
+        "detach_client",
+        detach_client,
+    )
+
+    with auth_client.websocket_connect(f"/api/runner/relay/{transfer_id}") as client_socket:
+        client_socket.send_text("capability")
+        assert client_socket.receive_json() == {"type": "ready"}
+        client_socket.send_bytes(b"opaque-client-frame")
+        with pytest.raises(WebSocketDisconnect) as disconnect:
+            client_socket.receive_bytes()
+
+    assert disconnect.value.code == 4004
 
 
 def test_websocket_relay_authenticates_runner_and_exact_capability(

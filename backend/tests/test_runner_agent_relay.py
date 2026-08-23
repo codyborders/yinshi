@@ -104,7 +104,41 @@ async def test_runner_relay_runtime_accepts_duplicate_close_after_retirement(
     await runtime.handle_control(close_message)
     await runtime.handle_control(close_message)
 
-    with pytest.raises(ValueError, match="not open"):
+    await runtime.handle_control(json.dumps({"transfer_id": str(uuid.uuid4()), "type": "close"}))
+    assert not runtime.active_transfer_ids
+
+    with pytest.raises(ValueError, match="shape"):
         await runtime.handle_control(
-            json.dumps({"transfer_id": str(uuid.uuid4()), "type": "close"})
+            json.dumps({"extra": True, "transfer_id": transfer_id, "type": "close"})
         )
+    with pytest.raises(ValueError, match="canonical"):
+        await runtime.handle_control(
+            json.dumps(
+                {
+                    "transfer_id": "00000000-0000-4000-A000-000000000000",
+                    "type": "close",
+                }
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_runner_relay_runtime_accepts_delayed_close_after_retirement_eviction(
+    tmp_path: Path,
+    db: sqlite3.Connection,
+) -> None:
+    """A delayed broker close remains harmless after bounded history eviction."""
+    runtime = _runtime(tmp_path)
+    oldest_transfer_id = str(uuid.uuid4())
+    await runtime.handle_control(json.dumps({"runner_id": "runner-1", "type": "welcome"}))
+    await runtime.handle_control(json.dumps({"transfer_id": oldest_transfer_id, "type": "open"}))
+    await runtime.handle_control(json.dumps({"transfer_id": oldest_transfer_id, "type": "close"}))
+
+    for _ in range(128):
+        transfer_id = str(uuid.uuid4())
+        await runtime.handle_control(json.dumps({"transfer_id": transfer_id, "type": "open"}))
+        await runtime.handle_control(json.dumps({"transfer_id": transfer_id, "type": "close"}))
+
+    await runtime.handle_control(json.dumps({"transfer_id": oldest_transfer_id, "type": "close"}))
+
+    assert not runtime.active_transfer_ids
