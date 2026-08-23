@@ -1,0 +1,139 @@
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+You are a delegated subagent running from a fork of the parent session. Treat the inherited conversation as reference-only context, not a live thread to continue. Do not continue or answer prior messages as if they are waiting for a reply. Your sole job is to execute the task below and return a focused result for that task using your tools.
+
+Task:
+You are the sole repository writer. Fix phase 1 of a production managed-runner freeze using strict red-green TDD. Do not commit, push, deploy, or modify `.pi-subagents/`. Read project instructions and nearby code/tests first. Production facts: every runner task stopped while process stayed alive. Prompt journal work was already offloaded. Every established encrypted tenant database open still acquired `_tenant_migration_lock` around SQLCipher opening, current-schema checks, rollback checks, and cleanup. High-frequency event persistence plus browser polling creates lock contention. Add public-boundary regression tests in `backend/tests/test_tenant.py` that fail first. Implement a safe SQLCipher-first fast path in `backend/src/yinshi/tenant.py` for an existing trusted regular encrypted database with current schema and no rollback or legacy migration residue. It must bypass `_tenant_migration_lock` and perform no mutation or plaintext inspection. Missing databases, exact-header plaintext databases, stale schemas, trusted rollback artifacts, or migration cleanup must enter the existing locked path. Wrong keys, HMAC failures, malformed encrypted files, transient exact disk I/O failures, and SQLCipher-unavailable required mode must preserve current fail-closed behavior. Recheck state under lock. Preserve schemas, WAL behavior, keys, backups, restore behavior, paths, permissions, multiprocess migration safety, and optional encryption fallback. Do not cache path state across opens. Run focused tenant tests after each red-green cycle. Then run all `test_tenant.py` tests plus Black, isort, flake8, mypy for changed code. Report exact changed files, tests, commands, and remaining risks. Stop after phase 1.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+- criterion-2: Return evidence sufficient for an independent acceptance review
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Review gate: required by reviewer.
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    },
+    {
+      "id": "criterion-2",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+You are reviving a previous subagent conversation.
+
+Original run: fd9fa7b0
+Original agent: worker
+Original session file: /Users/user/.pi/agent/sessions/--Users-user-projects-yinshi--/2026-08-23T21-30-24-098Z_01a03088-25e2-73c0-bbca-431d020d51f2.jsonl
+
+Use the stored session context as background. Answer the orchestrator's follow-up below. Do not assume the original child process is still alive.
+
+Follow-up:
+Continue as sole writer with phase 2. Keep phase 1 changes. Do not commit, push, deploy, or modify `.pi-subagents/`. Use strict red-green TDD through public HTTP or WebSocket behavior. Root condition: active-prompt browser polling invokes async terminal and workspace-file routes. Those routes synchronously enter `get_db_for_request`; a contended tenant migration lock can then freeze runner heartbeat, relay processing, and Sprite task refresh. First add focused tests that block database opening or local filesystem work and confirm an independent event-loop ticker still advances. Then remove every direct `get_db_for_request()` call from registered async active-prompt terminal and workspace-file paths. Include `api/terminal_channels.py`, `api/workspace_files.py`, and registered legacy `api/terminals.py`. Preserve automatic tenant checkout repair by reusing `load_workspace_checkout_state`, `prepare_workspace_checkout_for_tenant`, `apply_workspace_checkout_preparation`, and `repository_lifecycle`. Factor one shared request-level workspace runtime helper if that keeps behavior consistent. Open and close each SQLite connection entirely inside `run_db_operation_for_request`; never carry a connection across `await` or between threads. Reload checkout state under repository lifecycle locking and reject repository identity changes as existing prompt preparation does. Preserve desktop and non-tenant ownership behavior. Offload synchronous tree building, file reads, file writes, guardrail installation, stable download descriptor preparation, and any terminal-local filesystem work from async handlers. Keep async Git operations async. Preserve endpoint paths, status codes, response models, error mapping, download headers and descriptor stability, terminal ordering, leases, cursor behavior, path containment, secret filtering, hosted/desktop/direct-worker compatibility, and cancellation behavior. Refactor services/workspace_runtime_paths.py only as needed to split database-only loading from async preparation. Reuse existing prompt checkout behavior rather than creating a competing path. Run each focused red then green, then terminal, workspace-file, workspace-runtime, stream-cleanup, and relevant API tests. Run Black, isort, flake8, mypy, and git diff --check. Report changed files and remaining risks. Stop after phase 2.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+- criterion-2: Return evidence sufficient for an independent acceptance review
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Review gate: required by reviewer.
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    },
+    {
+      "id": "criterion-2",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
