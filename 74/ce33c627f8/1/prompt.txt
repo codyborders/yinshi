@@ -1,0 +1,84 @@
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+You are a delegated subagent running from a fork of the parent session. Treat the inherited conversation as reference-only context, not a live thread to continue. Do not continue or answer prior messages as if they are waiting for a reply. Your sole job is to execute the task below and return a focused result for that task using your tools.
+
+Task:
+You are sole writer. Fix frontend prompt polling after a transient managed relay disconnect. Strict red-green TDD. Do not commit, push, deploy, or touch .pi-subagents/.
+
+Controlled production test facts after backend reconnect-first fix:
+- Active run d0ef47db08494093a4b1cbd4f5316d4c started and ran `sleep 150`.
+- Control backend restart dropped relay at 16:34:07.
+- Manager logged wait_reconnect then reconnected. No Sprite runner restart occurred.
+- Runner process continued and finalized the prompt at 16:36:13 with turn_status completed.
+- Terminal and file polling recovered, but prompt event polling stopped after relay close. Browser displayed `Runner relay closed before responding` and never fetched prompt events after reconnect.
+
+Root in frontend:
+- promptStream.shouldRetry retries TypeError and HTTP 429/5xx only.
+- encryptedRunnerClient rejects relay close/error/timeout with generic Error.
+- terminalChannel retries these transport errors, but promptStream treats them as permanent.
+
+Required behavior:
+1. Add an exported typed retryable relay transport error in encryptedRunnerClient.ts.
+2. Use it only for socket open, close, error, and timeout failures before opening or responding. Do not classify malformed frames, capability validation, Noise handshake/decrypt, unsupported payloads, RunnerRpcError 4xx, or protocol violations as retryable.
+3. promptStream.shouldRetry must retry that typed transport error using its existing bounded retry count and delay. Do not match error message strings.
+4. Preserve abort handling, HTTP retry rules, sequence continuation, terminal status handling, BYOC behavior, and public UI error text.
+5. A single relay drop during prompt event polling must reconnect through RuntimeTransport, resume from the same nextSequence, and deliver terminal result without duplicate events.
+
+TDD:
+- First add one failing promptStream test using the typed error or the minimal placeholder needed to reach the assertion. Confirm clean red.
+- Implement the typed error and retry classification, then green.
+- Add tests for retry limit, sequence continuation, no duplicate events, and protocol Error non-retry.
+- Run focused encryptedRunnerClient, promptStream, and runtimeTransport tests. Then full frontend Vitest, typecheck, build, and git diff --check.
+
+Return changed files, exact red failure, final commands, and residual risks.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```

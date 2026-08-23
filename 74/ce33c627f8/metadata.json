@@ -3,8 +3,13 @@
   "checkpoint_id": "74ce33c627f8",
   "strategy": "manual-commit",
   "branch": "main",
-  "checkpoints_count": 1,
-  "files_touched": null,
+  "checkpoints_count": 2,
+  "files_touched": [
+    "frontend/src/runner/encryptedRunnerClient.test.ts",
+    "frontend/src/runner/encryptedRunnerClient.ts",
+    "frontend/src/runtime/promptStream.test.ts",
+    "frontend/src/runtime/promptStream.ts"
+  ],
   "sessions": [
     {
       "metadata": "/74/ce33c627f8/0/metadata.json",
@@ -12,13 +17,20 @@
       "compact_transcript": "/74/ce33c627f8/0/transcript.jsonl",
       "content_hash": "/74/ce33c627f8/0/content_hash.txt",
       "prompt": "/74/ce33c627f8/0/prompt.txt"
+    },
+    {
+      "metadata": "/74/ce33c627f8/1/metadata.json",
+      "transcript": "/74/ce33c627f8/1/full.jsonl",
+      "compact_transcript": "/74/ce33c627f8/1/transcript.jsonl",
+      "content_hash": "/74/ce33c627f8/1/content_hash.txt",
+      "prompt": "/74/ce33c627f8/1/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 4294173,
+    "input_tokens": 8849115,
     "cache_creation_tokens": 0,
-    "cache_read_tokens": 105289472,
-    "output_tokens": 267806,
-    "api_call_count": 673
+    "cache_read_tokens": 212645888,
+    "output_tokens": 544402,
+    "api_call_count": 1368
   }
 }
