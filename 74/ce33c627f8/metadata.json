@@ -3,7 +3,7 @@
   "checkpoint_id": "74ce33c627f8",
   "strategy": "manual-commit",
   "branch": "main",
-  "checkpoints_count": 2,
+  "checkpoints_count": 3,
   "files_touched": [
     "frontend/src/runner/encryptedRunnerClient.test.ts",
     "frontend/src/runner/encryptedRunnerClient.ts",
@@ -24,13 +24,20 @@
       "compact_transcript": "/74/ce33c627f8/1/transcript.jsonl",
       "content_hash": "/74/ce33c627f8/1/content_hash.txt",
       "prompt": "/74/ce33c627f8/1/prompt.txt"
+    },
+    {
+      "metadata": "/74/ce33c627f8/2/metadata.json",
+      "transcript": "/74/ce33c627f8/2/full.jsonl",
+      "compact_transcript": "/74/ce33c627f8/2/transcript.jsonl",
+      "content_hash": "/74/ce33c627f8/2/content_hash.txt",
+      "prompt": "/74/ce33c627f8/2/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 8849115,
+    "input_tokens": 8920137,
     "cache_creation_tokens": 0,
-    "cache_read_tokens": 212645888,
-    "output_tokens": 544402,
-    "api_call_count": 1368
+    "cache_read_tokens": 213073408,
+    "output_tokens": 550181,
+    "api_call_count": 1381
   }
 }
