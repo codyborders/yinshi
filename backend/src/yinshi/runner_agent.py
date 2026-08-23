@@ -58,6 +58,7 @@ _DEFAULT_ARCHIL_SHARED_FILES_DIR = "/mnt/archil/yinshi"
 _DEFAULT_ARCHIL_SQLITE_DIR = f"{_DEFAULT_ARCHIL_SHARED_FILES_DIR}/sqlite"
 _DEFAULT_TOKEN_FILE = "/var/lib/yinshi/runner-token"
 _DEFAULT_HEARTBEAT_INTERVAL_S = 30.0
+_HEARTBEAT_RETRY_DELAY_MAX_S = 30.0
 _REQUEST_TIMEOUT_S = 15.0
 _RUNNER_GITHUB_ACCESS_RESPONSE_BYTES_MAX = 65536
 _REGISTRATION_TOKEN_ENV_PREFIX = "YINSHI_REGISTRATION_TOKEN="
@@ -1059,14 +1060,31 @@ async def _heartbeat_loop(
     runner_token: str,
 ) -> None:
     """Send recurring authenticated heartbeats until cancelled or revoked."""
+    retry_delay_seconds = 1.0
     while True:
         try:
             await _heartbeat(config, client, runner_token)
         except httpx.HTTPStatusError as exc:
-            if exc.response.status_code == 401:
-                raise RuntimeError("Runner token was rejected by the control plane") from exc
-            raise
-        await asyncio.sleep(config.heartbeat_interval_s)
+            status_code = exc.response.status_code
+            if status_code == 401:
+                raise RuntimeError("Runner token was rejected by the control plane") from None
+            if status_code != 429 and not 500 <= status_code < 600:
+                raise RuntimeError("Runner heartbeat was rejected by the control plane") from None
+            logger.warning(
+                "Runner heartbeat temporarily unavailable with HTTP status %s; retrying",
+                status_code,
+            )
+        except httpx.TransportError:
+            logger.warning("Runner heartbeat temporarily unavailable after network error; retrying")
+        else:
+            retry_delay_seconds = 1.0
+            await asyncio.sleep(config.heartbeat_interval_s)
+            continue
+        await asyncio.sleep(retry_delay_seconds)
+        retry_delay_seconds = min(
+            retry_delay_seconds * 2,
+            _HEARTBEAT_RETRY_DELAY_MAX_S,
+        )
 
 
 async def run_agent(config: RunnerAgentConfig) -> None:

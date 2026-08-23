@@ -1013,6 +1013,321 @@ async def test_runner_relay_loop_closes_task_client_after_baseline_acquire_failu
     assert TaskLease.instance.closed is True
 
 
+def _heartbeat_status_error(status_code: int) -> httpx.HTTPStatusError:
+    """Build one heartbeat status failure without exposing response content."""
+    request = httpx.Request("POST", "https://control.example/runner/heartbeat")
+    response = httpx.Response(status_code, request=request)
+    return httpx.HTTPStatusError(
+        "heartbeat failed",
+        request=request,
+        response=response,
+    )
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_loop_retries_transient_server_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """One transient server failure must not terminate recurring heartbeats."""
+    _set_runner_agent_env(monkeypatch, tmp_path)
+    config = runner_agent.load_config()
+    heartbeat_calls = 0
+    sleep_delays: list[float] = []
+
+    async def heartbeat(*args: object) -> None:
+        nonlocal heartbeat_calls
+        heartbeat_calls += 1
+        if heartbeat_calls == 1:
+            raise _heartbeat_status_error(502)
+        if heartbeat_calls == 3:
+            raise asyncio.CancelledError
+
+    async def sleep(delay: float) -> None:
+        sleep_delays.append(delay)
+
+    monkeypatch.setattr(runner_agent, "_heartbeat", heartbeat)
+    monkeypatch.setattr(runner_agent.asyncio, "sleep", sleep)
+
+    with pytest.raises(asyncio.CancelledError):
+        await runner_agent._heartbeat_loop(config, object(), "runner-token")  # type: ignore[arg-type]
+
+    assert heartbeat_calls == 3
+    assert sleep_delays == [1.0, config.heartbeat_interval_s]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status_code", [429, 500, 503, 599])
+async def test_heartbeat_loop_retries_transient_http_status(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    status_code: int,
+) -> None:
+    """Rate limits and server failures retry without terminating the loop."""
+    _set_runner_agent_env(monkeypatch, tmp_path)
+    config = runner_agent.load_config()
+    heartbeat_calls = 0
+    sleep_delays: list[float] = []
+
+    async def heartbeat(*args: object) -> None:
+        nonlocal heartbeat_calls
+        heartbeat_calls += 1
+        if heartbeat_calls == 1:
+            raise _heartbeat_status_error(status_code)
+        raise asyncio.CancelledError
+
+    async def sleep(delay: float) -> None:
+        sleep_delays.append(delay)
+
+    monkeypatch.setattr(runner_agent, "_heartbeat", heartbeat)
+    monkeypatch.setattr(runner_agent.asyncio, "sleep", sleep)
+
+    with pytest.raises(asyncio.CancelledError):
+        await runner_agent._heartbeat_loop(config, object(), "runner-token")  # type: ignore[arg-type]
+
+    assert heartbeat_calls == 2
+    assert sleep_delays == [1.0]
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_loop_retries_network_failure_without_logging_request(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Network failures retry with generic logs that omit request details."""
+    _set_runner_agent_env(monkeypatch, tmp_path)
+    config = runner_agent.load_config()
+    heartbeat_calls = 0
+    sleep_delays: list[float] = []
+    secret_url = "https://control.example/runner/heartbeat?token=do-not-log"
+
+    async def heartbeat(*args: object) -> None:
+        nonlocal heartbeat_calls
+        heartbeat_calls += 1
+        if heartbeat_calls == 1:
+            request = httpx.Request("POST", secret_url)
+            raise httpx.ConnectError("private network detail", request=request)
+        raise asyncio.CancelledError
+
+    async def sleep(delay: float) -> None:
+        sleep_delays.append(delay)
+
+    monkeypatch.setattr(runner_agent, "_heartbeat", heartbeat)
+    monkeypatch.setattr(runner_agent.asyncio, "sleep", sleep)
+    caplog.set_level(logging.WARNING)
+
+    with pytest.raises(asyncio.CancelledError):
+        await runner_agent._heartbeat_loop(config, object(), "runner-token")  # type: ignore[arg-type]
+
+    assert heartbeat_calls == 2
+    assert sleep_delays == [1.0]
+    assert "network error" in caplog.text
+    assert "do-not-log" not in caplog.text
+    assert "private network detail" not in caplog.text
+    assert secret_url not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_loop_fails_closed_for_decoding_error(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Response decoding failures remain fatal without sleeping or retrying."""
+    _set_runner_agent_env(monkeypatch, tmp_path)
+    config = runner_agent.load_config()
+    failure = httpx.DecodingError(
+        "invalid heartbeat encoding",
+        request=httpx.Request("POST", "https://control.example/runner/heartbeat"),
+    )
+    heartbeat_calls = 0
+
+    async def heartbeat(*args: object) -> None:
+        nonlocal heartbeat_calls
+        heartbeat_calls += 1
+        raise failure
+
+    async def unexpected_sleep(delay: float) -> None:
+        raise AssertionError(f"unexpected heartbeat sleep: {delay}")
+
+    monkeypatch.setattr(runner_agent, "_heartbeat", heartbeat)
+    monkeypatch.setattr(runner_agent.asyncio, "sleep", unexpected_sleep)
+
+    with pytest.raises(httpx.DecodingError) as error_info:
+        await runner_agent._heartbeat_loop(config, object(), "runner-token")  # type: ignore[arg-type]
+
+    assert error_info.value is failure
+    assert heartbeat_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_loop_bounds_and_resets_retry_backoff(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Heartbeat retry delay remains bounded and resets after one success."""
+    _set_runner_agent_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("YINSHI_RUNNER_HEARTBEAT_INTERVAL_S", "17")
+    config = runner_agent.load_config()
+    heartbeat_calls = 0
+    sleep_delays: list[float] = []
+
+    async def heartbeat(*args: object) -> None:
+        nonlocal heartbeat_calls
+        heartbeat_calls += 1
+        if heartbeat_calls <= 7 or heartbeat_calls == 9:
+            raise _heartbeat_status_error(502)
+        if heartbeat_calls == 10:
+            raise asyncio.CancelledError
+
+    async def sleep(delay: float) -> None:
+        sleep_delays.append(delay)
+
+    monkeypatch.setattr(runner_agent, "_heartbeat", heartbeat)
+    monkeypatch.setattr(runner_agent.asyncio, "sleep", sleep)
+
+    with pytest.raises(asyncio.CancelledError):
+        await runner_agent._heartbeat_loop(config, object(), "runner-token")  # type: ignore[arg-type]
+
+    assert heartbeat_calls == 10
+    assert sleep_delays == [1.0, 2.0, 4.0, 8.0, 16.0, 30.0, 30.0, 17.0, 1.0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status_code", "message"),
+    [
+        (401, "Runner token was rejected by the control plane"),
+        (400, "Runner heartbeat was rejected by the control plane"),
+        (403, "Runner heartbeat was rejected by the control plane"),
+        (404, "Runner heartbeat was rejected by the control plane"),
+    ],
+)
+async def test_heartbeat_loop_rejects_fatal_http_status_with_sanitized_error(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    status_code: int,
+    message: str,
+) -> None:
+    """Authentication and other client failures remain fatal and sanitized."""
+    _set_runner_agent_env(monkeypatch, tmp_path)
+    config = runner_agent.load_config()
+
+    async def heartbeat(*args: object) -> None:
+        raise _heartbeat_status_error(status_code)
+
+    async def unexpected_sleep(delay: float) -> None:
+        raise AssertionError(f"unexpected heartbeat sleep: {delay}")
+
+    monkeypatch.setattr(runner_agent, "_heartbeat", heartbeat)
+    monkeypatch.setattr(runner_agent.asyncio, "sleep", unexpected_sleep)
+
+    with pytest.raises(RuntimeError, match=f"^{message}$") as error_info:
+        await runner_agent._heartbeat_loop(config, object(), "runner-token")  # type: ignore[arg-type]
+
+    assert error_info.value.__cause__ is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure",
+    [
+        ValueError("invalid heartbeat response"),
+        RuntimeError("Control capability signing key changed unexpectedly"),
+    ],
+)
+async def test_heartbeat_loop_fails_closed_for_non_http_error(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    failure: Exception,
+) -> None:
+    """Body validation and signing-key failures remain fatal without retries."""
+    _set_runner_agent_env(monkeypatch, tmp_path)
+    config = runner_agent.load_config()
+
+    async def heartbeat(*args: object) -> None:
+        raise failure
+
+    async def unexpected_sleep(delay: float) -> None:
+        raise AssertionError(f"unexpected heartbeat sleep: {delay}")
+
+    monkeypatch.setattr(runner_agent, "_heartbeat", heartbeat)
+    monkeypatch.setattr(runner_agent.asyncio, "sleep", unexpected_sleep)
+
+    with pytest.raises(type(failure), match=f"^{str(failure)}$") as error_info:
+        await runner_agent._heartbeat_loop(config, object(), "runner-token")  # type: ignore[arg-type]
+
+    assert error_info.value is failure
+
+
+@pytest.mark.asyncio
+async def test_run_agent_keeps_relay_owned_during_transient_heartbeat_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A transient heartbeat outage must not cancel relay worker ownership."""
+    _set_runner_agent_env(monkeypatch, tmp_path)
+    config = runner_agent.load_config()
+    heartbeat_recovered = asyncio.Event()
+    hold_heartbeat = asyncio.Event()
+    relay_started = asyncio.Event()
+    relay_cancelled = asyncio.Event()
+    heartbeat_calls = 0
+
+    class Client:
+        async def __aenter__(self) -> Client:
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+    async def heartbeat(*args: object) -> None:
+        nonlocal heartbeat_calls
+        heartbeat_calls += 1
+        if heartbeat_calls == 1:
+            raise _heartbeat_status_error(502)
+        heartbeat_recovered.set()
+        await hold_heartbeat.wait()
+
+    async def relay(*args: object) -> None:
+        relay_started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            relay_cancelled.set()
+
+    async def sleep(delay: float) -> None:
+        assert delay == 1.0
+
+    monkeypatch.setattr(runner_agent.httpx, "AsyncClient", lambda **kwargs: Client())
+    monkeypatch.setattr(runner_agent, "_read_runner_token", lambda path: "runner-token")
+    monkeypatch.setattr(
+        runner_agent,
+        "_read_owner_only_text_file",
+        lambda path, label: "A" * 43,
+    )
+    monkeypatch.setattr(
+        runner_agent,
+        "_validate_capability_signing_public_key",
+        lambda value: value,
+    )
+    monkeypatch.setattr(runner_agent, "_heartbeat", heartbeat)
+    monkeypatch.setattr(runner_agent, "_runner_relay_loop", relay)
+    monkeypatch.setattr(runner_agent.asyncio, "sleep", sleep)
+
+    agent_task = asyncio.create_task(runner_agent.run_agent(config))
+    await asyncio.wait_for(relay_started.wait(), timeout=0.2)
+    await asyncio.wait_for(heartbeat_recovered.wait(), timeout=0.2)
+    assert not agent_task.done()
+    assert not relay_cancelled.is_set()
+
+    agent_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await agent_task
+
+    assert relay_cancelled.is_set()
+
+
 @pytest.mark.asyncio
 async def test_run_agent_stops_heartbeat_after_idle_relay_return(
     monkeypatch: pytest.MonkeyPatch,
