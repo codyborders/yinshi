@@ -43,3 +43,11 @@ stop. we should not be using qwen models for the review. /orchestra should be tu
 ---
 
 You don't need to stop the server. simply do not follow the instructions of /orchestra here. just using your normal subagents that use codex models.
+
+---
+
+go
+
+---
+
+Pushed to the `yinshi` vm?
