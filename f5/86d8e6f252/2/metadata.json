@@ -1,0 +1,74 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "f586d8e6f252",
+  "session_id": "session",
+  "strategy": "manual-commit",
+  "created_at": "2026-08-23T17:21:54.342571Z",
+  "branch": "main",
+  "checkpoints_count": 2,
+  "save_step_count": 3,
+  "files_touched": [
+    "backend/src/yinshi/runner_agent.py",
+    "backend/tests/test_runner_agent_managed.py"
+  ],
+  "agent": "Pi",
+  "model": "gpt-5.6-sol",
+  "turn_id": "bc12630bf675",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 73465,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 575488,
+    "output_tokens": 6343,
+    "api_call_count": 15
+  },
+  "session_metrics": {
+    "turn_count": 25
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-08-23T17:21:54.243491Z",
+    "agent_lines": 303,
+    "agent_removed": 3,
+    "human_added": 32,
+    "human_modified": 1,
+    "human_removed": 0,
+    "total_committed": 336,
+    "total_lines_changed": 339,
+    "agent_percentage": 90.2654867256637,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 3,
+      "user_lines_added": 824,
+      "user_lines_removed": 1,
+      "agent_lines_added": 165839,
+      "agent_lines_removed": 4,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/2765ef41_reviewer_0_input.md": 58,
+        ".pi-subagents/artifacts/2765ef41_reviewer_0_transcript.jsonl": 92,
+        ".pi-subagents/artifacts/2c4b8844_worker_input.md": 74,
+        ".pi-subagents/artifacts/2c4b8844_worker_meta.json": 243,
+        ".pi-subagents/artifacts/2c4b8844_worker_output.md": 18,
+        ".pi-subagents/artifacts/2c4b8844_worker_transcript.jsonl": 47,
+        ".pi-subagents/artifacts/abd00615_reviewer_input.md": 65,
+        ".pi-subagents/artifacts/abd00615_reviewer_transcript.jsonl": 2,
+        ".pi-subagents/missions/9fa82e16-9c9b-43a3-a796-cbdc8e88ee1d.json": 144,
+        ".pi-subagents/missions/ab03e49e-8045-41cc-98cb-12d73f31361c.json": 24,
+        ".pi-subagents/missions/cdc79d4b-d973-44c7-a204-fd4b02b0db93.json": 24,
+        "backend/src/yinshi/runner_agent.py": 1,
+        "backend/tests/test_runner_agent_managed.py": 32
+      },
+      "user_removed_per_file": {
+        "backend/src/yinshi/runner_agent.py": 1
+      }
+    }
+  ]
+}
