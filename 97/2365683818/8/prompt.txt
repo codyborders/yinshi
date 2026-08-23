@@ -1,0 +1,9 @@
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+You are a delegated subagent running from a fork of the parent session. Treat the inherited conversation as reference-only context, not a live thread to continue. Do not continue or answer prior messages as if they are waiting for a reply. Your sole job is to execute the task below and return a focused result for that task using your tools.
+
+Task:
+Make one final TDD fix in the current uncommitted diff. You are sole writer. Do not commit, push, or deploy.
+Hold the repository lifecycle lock across the prompt workspace state reload, filesystem preparation, and database apply. The first unlocked lookup may identify the repository for locking, but reload state after acquiring the lock before any filesystem mutation. Concurrent workspace deletion must not restore an orphan worktree.
+Reuse existing repository_lifecycle and repository_lifecycle_root behavior. Preserve fresh-connection retry database operations and avoid holding a database connection during async filesystem work. Add a focused concurrency regression test that pauses preparation, starts deletion, and verifies deletion waits or stale state is rejected without restoring an orphan.
+Run focused workspace/stream tests, full backend pytest, Black, isort, flake8, mypy, and git diff --check. Report results.
