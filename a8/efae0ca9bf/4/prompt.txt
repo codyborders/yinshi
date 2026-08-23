@@ -1,0 +1,57 @@
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+You are a delegated subagent running from a fork of the parent session. Treat the inherited conversation as reference-only context, not a live thread to continue. Do not continue or answer prior messages as if they are waiting for a reply. Your sole job is to execute the task below and return a focused result for that task using your tools.
+
+Task:
+You are the sole repository writer. Current working tree contains managed-runner freeze fixes. Address all confirmed final-review blockers with strict red-green TDD. Do not commit, push, deploy, or modify `.pi-subagents/`. First, terminal startup still calls synchronous database and filesystem helpers inside async `resolve_tenant_sidecar_context`. Refactor that service so all local preparation, including effective Pi runtime lookup, runtime path resolution, mount preparation, and environment preparation, runs off the event loop. Keep container manager interaction async. Ensure terminal-channel and registered legacy terminal paths stay responsive while the local preparation is blocked. Preserve returned fields, container mounts, narrow mode, desktop behavior, errors, and credentials. Second, `changed_files` and `diff_file` in `services/workspace_files.py` still run workspace path resolution and file reads on the event loop. Offload those bounded filesystem and diff-computation phases. Add ticker tests for changed polling and diff reads. Third, every subprocess in `services/workspace_files.py` must kill and fully drain its piped child before cancellation escapes. Add cancellation tests for status, path status, and Git object reads. Fourth, update `services/git.py` cancellation and timeout cleanup to kill then drain `communicate()` instead of waiting with unread pipes. Preserve existing errors and output behavior. Add or adjust tests to confirm cleanup order and no pipe deadlock. Do not alter schemas, SQLCipher behavior, endpoint contracts, prompt ordering, or recovery policy. Run focused red-green cycles, all related terminal, workspace-file, Git, repository, watchdog, and runner tests, then full backend suite. Run Black, isort, flake8, mypy, and git diff --check. Report exact files and unresolved concerns.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
