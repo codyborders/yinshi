@@ -1,0 +1,60 @@
+Task: [Read from: /Users/user/projects/yinshi/plan.md, /Users/user/projects/yinshi/progress.md]
+
+You are a delegated subagent running from a fork of the parent session. Treat the inherited conversation as reference-only context, not a live thread to continue. Do not continue or answer prior messages as if they are waiting for a reply. Your sole job is to execute the task below and return a focused result for that task using your tools.
+
+Task:
+Review current unstaged diff against HEAD 3660967. Do not edit files.
+Production defect: transient outbound runner relay loss with fresh heartbeat caused immediate Sprite service restart, killing an active prompt. New contract: reconnect-first bounded wait, no restart solely for missing relay while heartbeat remains fresh, restart only when both heartbeat and relay are absent. Concurrent callers share work. Identity and auth stay fail-closed.
+Also review idempotent broker WebSocket closes and sanitized disconnect logs.
+Check for time-boundary bugs, liveness deadlocks, unintended cold-runtime behavior, unsafe suppression, information disclosure, lost cleanup, and missing regressions. Return concrete findings with severity and paths, or no findings.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
