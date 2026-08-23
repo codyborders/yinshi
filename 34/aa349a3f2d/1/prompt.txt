@@ -1,0 +1,150 @@
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+You are a delegated subagent running from a fork of the parent session. Treat the inherited conversation as reference-only context, not a live thread to continue. Do not continue or answer prior messages as if they are waiting for a reply. Your sole job is to execute the task below and return a focused result for that task using your tools.
+
+Task:
+Act as sole writer in /Users/user/projects/yinshi. Do not commit, push, deploy, or modify untracked .pi-subagents/.
+Follow strict red-green TDD. Read PYTHON.md and relevant tenant tests before editing.
+Production root cause is directly reproduced. High-volume prompt journaling kills managed runner with exit code 135. PYTHONFAULTHANDLER shows SIGBUS in prompt_journal.py database.commit while another thread is tenant.py _plaintext_database_readable closing a stdlib SQLite connection. _open_user_connection calls plaintext migration for every existing encrypted SQLCipher DB, so each request opens the live encrypted WAL database with stdlib SQLite. Mixed drivers against the active database can crash the interpreter.
+Implement the narrow fail-closed fix in backend/src/yinshi/tenant.py. Before any stdlib SQLite connection, inspect the canonical 16-byte header `b"SQLite format 3\x00"`. Only exact matches are eligible for stdlib readability validation and plaintext migration. Encrypted, truncated, random, and near-match headers must never open stdlib SQLite. They must continue to SQLCipher key and format validation without fallback, replacement, sidecar deletion, or schema change. Preserve rollback recovery, locks, migration durability, WAL behavior, encryption requirements, and existing plaintext migration.
+First add one durable failing test through a public connection boundary proving an existing encrypted DB never invokes _open_connection. Run it and record the expected red. Then implement minimum code. Add focused cases for exact plaintext header, encrypted header, truncated header, and near-match. Add deterministic concurrent coverage proving live encrypted opens never invoke stdlib SQLite while a SQLCipher operation is active. Do not attempt to reproduce SIGBUS in pytest.
+Run focused tenant tests, relevant prompt journal and runner tests, full backend suite, Black, isort, flake8, mypy, and git diff --check. Report changed files, red result, all command results, and risks.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+- criterion-2: Return evidence sufficient for an independent acceptance review
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Review gate: required by reviewer.
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    },
+    {
+      "id": "criterion-2",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+You are reviving a previous subagent conversation.
+
+Original run: 0566cdef
+Original agent: worker
+Original session file: /Users/user/.pi/agent/sessions/--Users-user-projects-yinshi--/2026-08-23T18-20-47-925Z_01a02fda-8fb5-7968-b3c1-ce30887566ab.jsonl
+
+Use the stored session context as background. Answer the orchestrator's follow-up below. Do not assume the original child process is still alive.
+
+Follow-up:
+Continue as sole writer. Do not commit, push, deploy, or touch .pi-subagents/.
+Two reviewers found concrete gaps. Address them with new red-green cycles.
+First, make encrypted database opening SQLCipher-first. Under the existing migration lock, derive key and try _open_sqlcipher_connection before any plaintext detector. A successful keyed open must never call stdlib SQLite. Only a non-transient keyed-open format failure may become eligible for legacy migration, and only when the exact canonical raw header confirms plaintext. Re-raise TenantDatabaseTemporarilyUnavailable. Wrong-key, malformed, truncated, and noncanonical inputs remain fail-closed. After legacy migration, open keyed SQLCipher once and validate schema as before.
+Second, when encryption is optional but the SQLCipher module is unavailable, allow stdlib fallback only for a missing database or an existing exact canonical plaintext database. An existing encrypted or malformed header must fail closed without stdlib open.
+Third, make raw header inspection reject symlinks and non-regular files before any SQLite API. Use owner-safe low-level file inspection with O_NOFOLLOW when available. File I/O errors except absence must propagate as sanitized runtime failures. Do not change database schema, WAL handling, key derivation, rollback handling, backup behavior, or storage paths.
+Add failing tests first for SQLCipher-first order on a real encrypted test database, optional-driver failure on an encrypted header, and symlink rejection. Keep legacy plaintext migration tests passing. Add process coverage only if it checks behavior without fragile timing. The application never configures SQLCipher plaintext-header mode, so do not expand scope for that unsupported mode.
+Run focused tests after each cycle, then tenant tests, prompt journal and runner tests, full backend, Black, isort, flake8, mypy, and git diff --check. Report red and final results.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+- criterion-2: Return evidence sufficient for an independent acceptance review
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Review gate: required by reviewer.
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    },
+    {
+      "id": "criterion-2",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
