@@ -1,0 +1,9 @@
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+You are a delegated subagent running from a fork of the parent session. Treat the inherited conversation as reference-only context, not a live thread to continue. Do not continue or answer prior messages as if they are waiting for a reply. Your sole job is to execute the task below and return a focused result for that task using your tools.
+
+Task:
+Make one narrow TDD fix in current uncommitted diff. You are sole writer. Do not commit, push, or deploy.
+Fix PromptJournal terminal reconciliation after an uncertain stopping-to-cancelled commit. On retry, an already terminal run is authoritative and must be treated as successful reconciliation while ensuring its session is idle, even when requested status was completed or failed. Do not overwrite one terminal status with another.
+Add a focused regression test that injects a post-commit temporary failure when stopping maps to cancelled, then retries requested completed or failed. Assert run remains cancelled, session idle, and reconciliation succeeds.
+Run prompt-journal focused tests, full backend suite, changed-file formatting/import checks, flake8, mypy, and git diff --check.
