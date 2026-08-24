@@ -1,0 +1,65 @@
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+You are a delegated subagent running from a fork of the parent session. Treat the inherited conversation as reference-only context, not a live thread to continue. Do not continue or answer prior messages as if they are waiting for a reply. Your sole job is to execute the task below and return a focused result for that task using your tools.
+
+Task:
+In /Users/user/projects/yinshi, implement the smallest safe fix for managed Sprites terminal input latency. You are sole writer. Do not commit or touch .pi-subagents/. Follow strict red-green TDD with frontend Vitest. Root cause is deterministic head-of-line blocking: managed connections are keyed only by authorization scope, while a terminal GET events long poll can wait 10 seconds and blocks POST input on the same sequential encrypted connection. Preserve one-pending-request-per encrypted connection, existing terminal authorization scope, capability endpoint, session byte limit, connection expiry and retirement, BYOC behavior, hosted/local behavior, and transport close semantics. Add an internal managed connection lane so terminal event GET requests use a separate connection from terminal start/input/resize/restart/delete commands. Both lanes must request scopes:["terminal"]. Other scopes keep existing behavior. Start by adding a public RuntimeTransport test that holds a managed terminal events request pending, then submits terminal input and confirms input starts and resolves before events release. Confirm red for the expected reason. Then implement minimal production code. Add focused tests that terminal command requests remain sequential on one command connection and transport.close closes both terminal lanes. Reuse current test conventions. Run focused tests, full frontend tests, typecheck, formatter check, and git diff --check. Report red and green commands, changed files, and residual risks.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+- criterion-2: Return evidence sufficient for an independent acceptance review
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files, validation-output, diff-summary
+
+Review gate: required by reviewer.
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    },
+    {
+      "id": "criterion-2",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
