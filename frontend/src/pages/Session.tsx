@@ -34,6 +34,7 @@ import {
 } from "../models/sessionModelPreference";
 import { findActiveRuntimePromptRun } from "../runtime/promptStream";
 import { loadSessionHistory } from "../runtime/sessionHistory";
+import { invalidateSessionHistoryCache } from "../runtime/sessionHistoryCacheClient";
 import { useRuntimeResource } from "../runtime/useRuntimeResource";
 import { parseStoredTurnBlocks } from "../utils/turnEvents";
 
@@ -48,6 +49,36 @@ const INSPECTOR_WIDTH_MAX = 760;
 const DESKTOP_INSPECTOR_QUERY = "(min-width: 1024px)";
 const LEGACY_PI_CONTEXT_MESSAGE =
   "This session predates durable Pi context and cannot continue with exact model context. Start a new session in this workspace.";
+
+function mapStoredHistory(
+  history: Message[],
+  activeRunId: string | null,
+): ChatMessage[] {
+  const mapped = history.map((message) => {
+    let blockIndex = 0;
+    const blocks =
+      message.role === "assistant"
+        ? parseStoredTurnBlocks(
+            message.full_message,
+            () => `${message.id}-block-${++blockIndex}`,
+          )
+        : [];
+    return {
+      id: message.id,
+      role: message.role as ChatMessage["role"],
+      content: message.content || "",
+      blocks,
+      turnId: message.turn_id,
+      timestamp: new Date(message.created_at).getTime(),
+    };
+  });
+  return activeRunId === null
+    ? mapped
+    : mapped.filter(
+        (message) =>
+          message.role !== "assistant" || message.turnId !== activeRunId,
+      );
+}
 
 function useMediaQuery(query: string): boolean {
   const [matches, setMatches] = useState(() => {
@@ -88,7 +119,7 @@ function storedInspectorWidth(): number {
 
 export default function Session() {
   const { id: encodedSessionId } = useParams<{ id: string }>();
-  const { userId } = useAuth();
+  const { status: authStatus, userId } = useAuth();
   const runtimeState = useRuntimeResource(encodedSessionId);
   const runtimeResource = runtimeState.resource;
   const id = runtimeResource?.resourceId;
@@ -106,6 +137,7 @@ export default function Session() {
   const [sessionModel, setSessionModel] = useState(DEFAULT_SESSION_MODEL);
   const [loadingHistory, setLoadingHistory] = useState(true);
   const [historyError, setHistoryError] = useState<string | null>(null);
+  const [historyRevalidating, setHistoryRevalidating] = useState(false);
   const [metadataError, setMetadataError] = useState<string | null>(null);
   const [updatingModel, setUpdatingModel] = useState(false);
   const [pendingModelSelection, setPendingModelSelection] = useState<
@@ -120,10 +152,16 @@ export default function Session() {
   const [fileRefreshKey, setFileRefreshKey] = useState(0);
   const isDesktopInspectorVisible = useMediaQuery(DESKTOP_INSPECTOR_QUERY);
   const wasStreamingRef = useRef(false);
+  const historyGenerationRef = useRef(0);
+  const cacheRefreshRef = useRef<{
+    key: string;
+    promise: Promise<void>;
+  } | null>(null);
 
   useEffect(() => {
     setLoadingHistory(true);
     setHistoryError(null);
+    setHistoryRevalidating(false);
     setMetadataError(null);
   }, [encodedSessionId]);
 
@@ -140,6 +178,9 @@ export default function Session() {
     let cancelled = false;
     const runtimeTransport = transport;
     const runtimeSessionId = id;
+    const generation = ++historyGenerationRef.current;
+    const isStale = () =>
+      cancelled || historyGenerationRef.current !== generation;
 
     async function loadHistory() {
       const expectsBundledActiveRun =
@@ -148,6 +189,7 @@ export default function Session() {
         typeof DecompressionStream === "function";
       let bundledActiveRunId: string | null = null;
       let receivedBundledActiveRun = false;
+      let receivedCachedHistory = false;
       const discoveryPromise: Promise<{
         activeRunId: string | null;
         failed: boolean;
@@ -160,7 +202,24 @@ export default function Session() {
       const historyPromise: Promise<
         { ok: true; history: Message[] } | { ok: false }
       > = loadSessionHistory(runtimeTransport, runtimeSessionId, {
-        isCancelled: () => cancelled,
+        isCancelled: isStale,
+        cacheUserId:
+          authStatus === "authenticated" ? (userId ?? undefined) : undefined,
+        onCachedHistory: (history, activeRunId) => {
+          if (isStale()) return;
+          try {
+            bootstrapSession(
+              mapStoredHistory(history, activeRunId),
+              activeRunId,
+            );
+            receivedCachedHistory = true;
+            setHistoryRevalidating(true);
+            setHistoryError(null);
+            setLoadingHistory(false);
+          } catch {
+            return;
+          }
+        },
         onBundledActiveRun: (activeRunId) => {
           bundledActiveRunId = activeRunId;
           receivedBundledActiveRun = true;
@@ -173,7 +232,7 @@ export default function Session() {
         discoveryPromise,
         historyPromise,
       ]);
-      if (cancelled) return;
+      if (isStale()) return;
 
       let { activeRunId } = discovery;
       let discoveryFailed = discovery.failed;
@@ -182,6 +241,12 @@ export default function Session() {
         discoveryFailed = false;
       }
       if (!historyResult.ok) {
+        if (receivedCachedHistory) {
+          setHistoryError("Failed to refresh session history.");
+          setHistoryRevalidating(false);
+          setLoadingHistory(false);
+          return;
+        }
         if (expectsBundledActiveRun && !receivedBundledActiveRun) {
           try {
             activeRunId = await findActiveRuntimePromptRun(
@@ -191,10 +256,11 @@ export default function Session() {
           } catch {
             activeRunId = null;
           }
-          if (cancelled) return;
+          if (isStale()) return;
         }
         if (activeRunId !== null) bootstrapSession([], activeRunId);
         setHistoryError("Failed to load session history.");
+        setHistoryRevalidating(false);
         setLoadingHistory(false);
         return;
       }
@@ -211,44 +277,24 @@ export default function Session() {
             discoveryFailed = true;
           }
         }
-        if (cancelled) return;
-        const mapped: ChatMessage[] = historyResult.history.map((m) => {
-          let blockIndex = 0;
-          const blocks =
-            m.role === "assistant"
-              ? parseStoredTurnBlocks(
-                  m.full_message,
-                  () => `${m.id}-block-${++blockIndex}`,
-                )
-              : [];
-          return {
-            id: m.id,
-            role: m.role as ChatMessage["role"],
-            content: m.content || "",
-            blocks,
-            turnId: m.turn_id,
-            timestamp: new Date(m.created_at).getTime(),
-          };
-        });
-        const bootstrapHistory =
-          activeRunId === null
-            ? mapped
-            : mapped.filter(
-                (message) =>
-                  message.role !== "assistant" ||
-                  message.turnId !== activeRunId,
-              );
-        bootstrapSession(bootstrapHistory, activeRunId);
+        if (isStale()) return;
+        bootstrapSession(
+          mapStoredHistory(historyResult.history, activeRunId),
+          activeRunId,
+        );
         setHistoryError(
           discoveryFailed ? "Failed to resume the active response." : null,
         );
       } catch {
-        if (!cancelled) {
+        if (!isStale()) {
           if (activeRunId !== null) bootstrapSession([], activeRunId);
           setHistoryError("Failed to load session history.");
         }
       } finally {
-        if (!cancelled) setLoadingHistory(false);
+        if (!isStale()) {
+          setHistoryRevalidating(false);
+          setLoadingHistory(false);
+        }
       }
     }
 
@@ -256,7 +302,7 @@ export default function Session() {
     return () => {
       cancelled = true;
     };
-  }, [bootstrapSession, id, transport]);
+  }, [authStatus, bootstrapSession, id, transport, userId]);
 
   useEffect(() => {
     if (!id || !transport) return;
@@ -291,11 +337,47 @@ export default function Session() {
   }, [id]);
 
   useEffect(() => {
+    wasStreamingRef.current = false;
+  }, [id, transport]);
+
+  useEffect(() => {
     if (wasStreamingRef.current && !streaming) {
       setFileRefreshKey((value) => value + 1);
+      if (
+        id &&
+        transport?.runtime.location === "managed" &&
+        transport.runtime.historyBundleSupported === true &&
+        typeof DecompressionStream === "function" &&
+        authStatus === "authenticated" &&
+        userId
+      ) {
+        const runtimeTransport = transport;
+        const runtimeSessionId = id;
+        const generation = historyGenerationRef.current;
+        const key = `${userId.length}:${userId}${runtimeSessionId}`;
+        if (cacheRefreshRef.current?.key !== key) {
+          const promise = loadSessionHistory(
+            runtimeTransport,
+            runtimeSessionId,
+            {
+              cacheUserId: userId,
+              skipCacheRead: true,
+              isCancelled: () => historyGenerationRef.current !== generation,
+            },
+          )
+            .then(() => undefined)
+            .catch(() => undefined)
+            .finally(() => {
+              if (cacheRefreshRef.current?.promise === promise) {
+                cacheRefreshRef.current = null;
+              }
+            });
+          cacheRefreshRef.current = { key, promise };
+        }
+      }
     }
     wasStreamingRef.current = streaming;
-  }, [streaming]);
+  }, [authStatus, id, streaming, transport, userId]);
 
   const addSystemMessage = useCallback(
     (content: string) => {
@@ -551,6 +633,9 @@ export default function Session() {
     piContextVersion < 1 && messages.length > 0
       ? LEGACY_PI_CONTEXT_MESSAGE
       : null;
+  const inputDisabledReason = historyRevalidating
+    ? "Refreshing session history before new prompts."
+    : legacyInputDisabledReason;
 
   const handleModelChange = useCallback(
     (requestedModel: string) => {
@@ -569,7 +654,16 @@ export default function Session() {
 
   const handleSend = useCallback(
     async (prompt: string) => {
-      if (legacyInputDisabledReason) return;
+      if (inputDisabledReason) return;
+      if (
+        id &&
+        authStatus === "authenticated" &&
+        userId &&
+        transport?.runtime.location === "managed" &&
+        transport.runtime.historyBundleSupported === true
+      ) {
+        invalidateSessionHistoryCache(userId, id);
+      }
       if (piContextVersion < 1) {
         setPiContextVersion(1);
       }
@@ -583,11 +677,15 @@ export default function Session() {
       );
     },
     [
-      legacyInputDisabledReason,
+      authStatus,
+      id,
+      inputDisabledReason,
       pendingModelSelection,
       piContextVersion,
       promptThinkingOverride,
       sendPrompt,
+      transport,
+      userId,
     ],
   );
 
@@ -740,7 +838,7 @@ export default function Session() {
                   onSend={handleSend}
                   onCancel={cancel}
                   onCommand={handleCommand}
-                  inputDisabledReason={legacyInputDisabledReason}
+                  inputDisabledReason={inputDisabledReason}
                   piCommands={piCommands}
                 />
               </div>

@@ -18,6 +18,11 @@ const setMessagesMock = vi.fn();
 const bootstrapSessionMock = vi.fn();
 const useCatalogMock = vi.fn();
 const useAgentStreamMock = vi.fn();
+const historyCacheClient = {
+  get: vi.fn(),
+  put: vi.fn(),
+  delete: vi.fn(),
+};
 let runtimeResourceOverride: Record<string, unknown> | null = null;
 
 const minimaxProvider = {
@@ -120,6 +125,13 @@ vi.mock("../../hooks/useCatalog", () => ({
 
 vi.mock("../../hooks/usePiCommands", () => ({
   usePiCommands: () => [],
+}));
+
+vi.mock("../../runtime/sessionHistoryCacheClient", () => ({
+  getSessionHistoryCacheClient: () => historyCacheClient,
+  invalidateSessionHistoryCache: (userId: string, sessionId: string) => {
+    void historyCacheClient.delete(userId, sessionId);
+  },
 }));
 
 vi.mock("../../runtime/useRuntimeResource", async (importOriginal) => {
@@ -372,6 +384,9 @@ describe("Session", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     runtimeResourceOverride = null;
+    historyCacheClient.get.mockResolvedValue(null);
+    historyCacheClient.put.mockResolvedValue(undefined);
+    historyCacheClient.delete.mockResolvedValue(undefined);
     localStorage.clear();
     sendPromptMock.mockResolvedValue(undefined);
     cancelMock.mockResolvedValue(undefined);
@@ -652,6 +667,115 @@ describe("Session", () => {
     expect(apiGetMock).toHaveBeenCalledWith(`/api/sessions/${TEST_SESSION_ID}`);
   });
 
+  it("bootstraps complete cached managed history before live revalidation", async () => {
+    mockCatalog();
+    const runId = "b".repeat(32);
+    const cachedMessage = {
+      id: "c".repeat(32),
+      created_at: "2026-08-24T03:00:00Z",
+      session_id: TEST_SESSION_ID,
+      role: "user",
+      content: "cached history",
+      full_message: null,
+      turn_id: runId,
+      turn_status: null,
+    };
+    historyCacheClient.get.mockResolvedValue([
+      await historyBundle([cachedMessage], runId),
+    ]);
+    const liveBundle = deferred<unknown>();
+    const transportGet = vi.fn((path: string) => {
+      if (path === `/api/sessions/${TEST_SESSION_ID}/messages/bundle`) {
+        return liveBundle.promise;
+      }
+      if (path === `/api/sessions/${TEST_SESSION_ID}`) {
+        return Promise.resolve(sessionMetadata());
+      }
+      return Promise.reject(new Error(`Unexpected GET ${path}`));
+    });
+    runtimeResourceOverride = managedRuntimeResource(transportGet);
+
+    renderSession();
+
+    await waitFor(() => {
+      expect(bootstrapSessionMock).toHaveBeenCalledWith(
+        [expect.objectContaining({ content: "cached history" })],
+        runId,
+      );
+    });
+    expect(historyCacheClient.get).toHaveBeenCalledWith(
+      "user-1",
+      TEST_SESSION_ID,
+    );
+    expect(transportGet).toHaveBeenCalledWith(
+      `/api/sessions/${TEST_SESSION_ID}/messages/bundle`,
+    );
+    expect(
+      screen.queryByText("Loading conversation..."),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByText("Refreshing session history before new prompts."),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Send Prompt" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Send Prompt" }));
+    expect(sendPromptMock).not.toHaveBeenCalled();
+
+    await act(async () => {
+      liveBundle.resolve(await historyBundle([cachedMessage], runId));
+    });
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Send Prompt" })).toBeEnabled(),
+    );
+    expect(
+      screen.queryByText("Refreshing session history before new prompts."),
+    ).not.toBeInTheDocument();
+  });
+
+  it("enables prompt input after cached history revalidation fails", async () => {
+    mockCatalog();
+    const cachedMessage = {
+      id: "c".repeat(32),
+      created_at: "2026-08-24T03:00:00Z",
+      session_id: TEST_SESSION_ID,
+      role: "user",
+      content: "cached history",
+      full_message: null,
+      turn_id: null,
+      turn_status: null,
+    };
+    historyCacheClient.get.mockResolvedValue([
+      await historyBundle([cachedMessage], null),
+    ]);
+    const liveBundle = deferred<unknown>();
+    const transportGet = vi.fn((path: string) => {
+      if (path === `/api/sessions/${TEST_SESSION_ID}/messages/bundle`) {
+        return liveBundle.promise;
+      }
+      if (path === `/api/sessions/${TEST_SESSION_ID}`) {
+        return Promise.resolve(sessionMetadata());
+      }
+      return Promise.reject(new Error(`Unexpected GET ${path}`));
+    });
+    runtimeResourceOverride = managedRuntimeResource(transportGet);
+    renderSession();
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "Send Prompt" }),
+      ).toBeDisabled(),
+    );
+
+    await act(async () => {
+      liveBundle.reject(new Error("offline"));
+    });
+
+    expect(
+      await screen.findByText("Failed to refresh session history."),
+    ).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Send Prompt" })).toBeEnabled(),
+    );
+  });
+
   it("bootstraps a bundle active run without discovery and deduplicates its assistant", async () => {
     mockCatalog();
     const runId = "b".repeat(32);
@@ -714,6 +838,90 @@ describe("Session", () => {
     expect(transportGet).not.toHaveBeenCalledWith(
       `/api/sessions/${TEST_SESSION_ID}/runs/active`,
     );
+  });
+
+  it("invalidates cached history before prompt send and navigation", async () => {
+    mockCatalog();
+    const emptyBundle = await historyBundle([], null);
+    const transportGet = vi.fn((path: string) => {
+      if (path === `/api/sessions/${TEST_SESSION_ID}/messages/bundle`) {
+        return Promise.resolve(emptyBundle);
+      }
+      if (path === `/api/sessions/${TEST_SESSION_ID}`) {
+        return Promise.resolve(sessionMetadata());
+      }
+      return Promise.reject(new Error(`Unexpected GET ${path}`));
+    });
+    runtimeResourceOverride = managedRuntimeResource(transportGet);
+    let cacheAvailable = true;
+    historyCacheClient.delete.mockImplementation(() => {
+      cacheAvailable = false;
+      return new Promise<void>(() => {});
+    });
+    sendPromptMock.mockReturnValue(new Promise<void>(() => {}));
+    const view = renderSession();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Send Prompt" })).toBeEnabled(),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Send Prompt" }));
+
+    await waitFor(() => expect(sendPromptMock).toHaveBeenCalledTimes(1));
+    expect(historyCacheClient.delete).toHaveBeenCalledWith(
+      "user-1",
+      TEST_SESSION_ID,
+    );
+    expect(historyCacheClient.delete.mock.invocationCallOrder[0]).toBeLessThan(
+      sendPromptMock.mock.invocationCallOrder[0],
+    );
+    view.unmount();
+    expect(cacheAvailable).toBe(false);
+  });
+
+  it("refreshes the managed history cache once after streaming ends", async () => {
+    mockCatalog();
+    let streaming = false;
+    useAgentStreamMock.mockImplementation(() => ({
+      messages: [],
+      sendPrompt: sendPromptMock,
+      cancel: cancelMock,
+      streaming,
+      setMessages: setMessagesMock,
+      bootstrapSession: bootstrapSessionMock,
+    }));
+    const emptyBundle = await historyBundle([], null);
+    const transportGet = vi.fn((path: string) => {
+      if (path === `/api/sessions/${TEST_SESSION_ID}/messages/bundle`) {
+        return Promise.resolve(emptyBundle);
+      }
+      if (path === `/api/sessions/${TEST_SESSION_ID}`) {
+        return Promise.resolve(sessionMetadata());
+      }
+      return Promise.reject(new Error(`Unexpected GET ${path}`));
+    });
+    runtimeResourceOverride = managedRuntimeResource(transportGet);
+    const tree = () => (
+      <MemoryRouter initialEntries={[`/app/sessions/${TEST_SESSION_ID}`]}>
+        <Routes>
+          <Route path="/app/sessions/:id" element={<Session />} />
+        </Routes>
+      </MemoryRouter>
+    );
+    const view = render(tree());
+    await waitFor(() =>
+      expect(historyCacheClient.put).toHaveBeenCalledTimes(1),
+    );
+    historyCacheClient.put.mockClear();
+
+    streaming = true;
+    view.rerender(tree());
+    streaming = false;
+    view.rerender(tree());
+
+    await waitFor(() =>
+      expect(historyCacheClient.put).toHaveBeenCalledTimes(1),
+    );
+    expect(transportGet).toHaveBeenCalledTimes(3);
   });
 
   it("discovers active state after a managed bundle falls back to legacy history", async () => {

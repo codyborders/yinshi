@@ -10,7 +10,10 @@ describe("frontend content security policy", () => {
 
     expect(contentSecurityPolicy).toBeDefined();
     expect(contentSecurityPolicy).toContain("script-src 'self'");
-    expect(contentSecurityPolicy).not.toContain("script-src 'self' 'unsafe-inline'");
+    expect(contentSecurityPolicy).toContain("worker-src 'self'");
+    expect(contentSecurityPolicy).not.toContain(
+      "script-src 'self' 'unsafe-inline'",
+    );
     expect(contentSecurityPolicy).toContain(
       "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
     );

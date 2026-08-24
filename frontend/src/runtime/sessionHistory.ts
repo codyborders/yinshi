@@ -1,4 +1,5 @@
 import { ApiError, type Message } from "../api/client";
+import { getSessionHistoryCacheClient } from "./sessionHistoryCacheClient";
 import type { RuntimeTransport } from "./runtimeTransport";
 
 const MAX_HISTORY_PAGE_REQUESTS = 10_000;
@@ -51,6 +52,15 @@ interface HistoryFieldJob {
 export interface SessionHistoryLoadOptions {
   isCancelled?: () => boolean;
   onBundledActiveRun?: (activeRunId: string | null) => void;
+  cacheUserId?: string;
+  onCachedHistory?: (history: Message[], activeRunId: string | null) => void;
+  skipCacheRead?: boolean;
+}
+
+interface BundledSessionHistory {
+  messages: Message[];
+  activeRunId: string | null;
+  rawEnvelopes: unknown[];
 }
 
 interface MessageHistoryBundle {
@@ -408,12 +418,14 @@ async function decompressBundle(
   return payload;
 }
 
-async function loadBundledSessionHistory(
-  transport: RuntimeTransport,
+async function decodeBundledSessionHistory(
+  getRawEnvelope: (path: string, page: number) => Promise<unknown>,
   sessionId: string,
   options: SessionHistoryLoadOptions,
-): Promise<Message[]> {
+  expectedEnvelopeCount?: number,
+): Promise<BundledSessionHistory> {
   const messages: Message[] = [];
+  const rawEnvelopes: unknown[] = [];
   const seenCursors = new Set<string>();
   const seenMessageIds = new Set<string>();
   let cursor: string | null = null;
@@ -436,7 +448,9 @@ async function loadBundledSessionHistory(
           }&snapshot_tail=${encodeURIComponent(
             snapshotTail ?? "",
           )}&active_run_id=${activeRunId ?? "none"}`;
-    const envelope = parseBundleEnvelope(await transport.get<unknown>(path));
+    const rawEnvelope = await getRawEnvelope(path, page);
+    const envelope = parseBundleEnvelope(rawEnvelope);
+    rawEnvelopes.push(rawEnvelope);
     assertNotCancelled(options);
     if (envelope.cursor !== cursor) {
       throw new Error("Message history bundle cursor changed unexpectedly");
@@ -531,9 +545,14 @@ async function loadBundledSessionHistory(
       ) {
         throw new Error("Message history bundle snapshot tail was not found");
       }
+      if (
+        expectedEnvelopeCount !== undefined &&
+        rawEnvelopes.length !== expectedEnvelopeCount
+      ) {
+        throw new Error("Message history bundle cache has extra pages");
+      }
       assertNotCancelled(options);
-      options.onBundledActiveRun?.(activeRunId);
-      return messages;
+      return { messages, activeRunId, rawEnvelopes };
     }
     if (
       finalPageMessage === undefined ||
@@ -559,6 +578,42 @@ async function loadBundledSessionHistory(
     cursor = envelope.nextCursor;
   }
   throw new Error("Message history bundle used too many pages");
+}
+
+async function loadLiveBundledSessionHistory(
+  transport: RuntimeTransport,
+  sessionId: string,
+  options: SessionHistoryLoadOptions,
+): Promise<BundledSessionHistory> {
+  return decodeBundledSessionHistory(
+    (path) => transport.get<unknown>(path),
+    sessionId,
+    options,
+  );
+}
+
+async function loadCachedBundledSessionHistory(
+  rawEnvelopes: unknown[],
+  sessionId: string,
+  options: SessionHistoryLoadOptions,
+): Promise<BundledSessionHistory> {
+  if (
+    rawEnvelopes.length < 1 ||
+    rawEnvelopes.length > HISTORY_BUNDLE_PAGES_MAX
+  ) {
+    throw new Error("Invalid message history bundle cache page count");
+  }
+  return decodeBundledSessionHistory(
+    async (_path, page) => {
+      if (page >= rawEnvelopes.length) {
+        throw new Error("Message history bundle cache ended early");
+      }
+      return rawEnvelopes[page];
+    },
+    sessionId,
+    options,
+    rawEnvelopes.length,
+  );
 }
 
 function shouldFallbackFromBundle(error: unknown): boolean {
@@ -762,8 +817,69 @@ export async function loadSessionHistory(
     transport.runtime.historyBundleSupported === true &&
     typeof DecompressionStream === "function";
   if (canLoadBundle) {
+    const cacheUserId = options.cacheUserId;
+    const cacheClient =
+      typeof cacheUserId === "string" &&
+      cacheUserId.length >= 1 &&
+      cacheUserId.length <= 256
+        ? getSessionHistoryCacheClient()
+        : null;
+    let liveSucceeded = false;
+    const livePromise = loadLiveBundledSessionHistory(
+      transport,
+      sessionId,
+      options,
+    );
+    void livePromise.then(
+      () => {
+        liveSucceeded = true;
+      },
+      () => undefined,
+    );
+    const cachedPromise =
+      cacheClient && !options.skipCacheRead
+        ? cacheClient
+            .get(cacheUserId as string, sessionId)
+            .then(async (rawEnvelopes) => {
+              if (rawEnvelopes === null || liveSucceeded) return;
+              try {
+                const cached = await loadCachedBundledSessionHistory(
+                  rawEnvelopes,
+                  sessionId,
+                  options,
+                );
+                if (!liveSucceeded) {
+                  options.onCachedHistory?.(
+                    cached.messages,
+                    cached.activeRunId,
+                  );
+                }
+              } catch {
+                if (!options.isCancelled?.()) {
+                  await cacheClient.delete(cacheUserId as string, sessionId);
+                }
+              }
+            })
+            .catch(() => undefined)
+        : Promise.resolve();
     try {
-      return await loadBundledSessionHistory(transport, sessionId, options);
+      await Promise.race([
+        cachedPromise,
+        livePromise.then(
+          () => undefined,
+          () => cachedPromise,
+        ),
+      ]);
+      const live = await livePromise;
+      await cachedPromise;
+      assertNotCancelled(options);
+      options.onBundledActiveRun?.(live.activeRunId);
+      if (cacheClient) {
+        void cacheClient
+          .put(cacheUserId as string, sessionId, live.rawEnvelopes)
+          .catch(() => undefined);
+      }
+      return live.messages;
     } catch (error) {
       if (!shouldFallbackFromBundle(error)) throw error;
     }

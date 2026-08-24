@@ -1,4 +1,17 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+const historyCache = vi.hoisted(() => ({
+  client: null as null | {
+    get: ReturnType<typeof vi.fn>;
+    put: ReturnType<typeof vi.fn>;
+    delete: ReturnType<typeof vi.fn>;
+  },
+}));
+
+vi.mock("./sessionHistoryCacheClient", () => ({
+  getSessionHistoryCacheClient: () => historyCache.client,
+}));
+
 import { ApiError } from "../api/client";
 import type { RuntimeTransport } from "./runtimeTransport";
 import { loadSessionHistory } from "./sessionHistory";
@@ -95,7 +108,188 @@ async function bundleEnvelope(
   };
 }
 
+afterEach(() => {
+  historyCache.client = null;
+});
+
 describe("loadSessionHistory", () => {
+  it("renders validated cached bundles before live revalidation and replaces cache", async () => {
+    const cachedMessage = {
+      id: "1".repeat(32),
+      created_at: "2026-08-23T00:00:00Z",
+      session_id: SESSION_ID,
+      role: "user",
+      content: "cached",
+      full_message: null,
+      turn_id: null,
+      turn_status: null,
+    };
+    const liveMessage = {
+      ...cachedMessage,
+      id: "2".repeat(32),
+      content: "live",
+    };
+    const cachedEnvelope = await bundleEnvelope([cachedMessage], {
+      through: historyCursor(cachedMessage.created_at, cachedMessage.id),
+    });
+    const liveEnvelope = await bundleEnvelope([liveMessage], {
+      through: historyCursor(liveMessage.created_at, liveMessage.id),
+    });
+    let resolveLive!: (value: unknown) => void;
+    const get = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          resolveLive = resolve;
+        }),
+    );
+    historyCache.client = {
+      get: vi.fn().mockResolvedValue([cachedEnvelope]),
+      put: vi.fn().mockResolvedValue(undefined),
+      delete: vi.fn().mockResolvedValue(undefined),
+    };
+    const onCachedHistory = vi.fn();
+    const loading = loadSessionHistory(
+      transportWithGet(get, "managed"),
+      SESSION_ID,
+      { cacheUserId: "user-1", onCachedHistory },
+    );
+    await vi.waitFor(() =>
+      expect(onCachedHistory).toHaveBeenCalledWith([cachedMessage], null),
+    );
+    expect(get).toHaveBeenCalledTimes(1);
+    resolveLive(liveEnvelope);
+    await expect(loading).resolves.toEqual([liveMessage]);
+    await vi.waitFor(() =>
+      expect(historyCache.client?.put).toHaveBeenCalledWith(
+        "user-1",
+        SESSION_ID,
+        [liveEnvelope],
+      ),
+    );
+  });
+
+  it("deletes malformed cache, rejects live failures after cache, and suppresses late cache", async () => {
+    historyCache.client = {
+      get: vi.fn().mockResolvedValue([{ malformed: true }]),
+      put: vi.fn().mockResolvedValue(undefined),
+      delete: vi.fn().mockResolvedValue(undefined),
+    };
+    await expect(
+      loadSessionHistory(
+        transportWithGet(
+          vi.fn().mockRejectedValue(new Error("offline")),
+          "managed",
+        ),
+        SESSION_ID,
+        { cacheUserId: "user-1", onCachedHistory: vi.fn() },
+      ),
+    ).rejects.toThrow("offline");
+    await vi.waitFor(() =>
+      expect(historyCache.client?.delete).toHaveBeenCalledWith(
+        "user-1",
+        SESSION_ID,
+      ),
+    );
+
+    const validEnvelope = await bundleEnvelope([]);
+    const cachedBeforeFailure = vi.fn();
+    historyCache.client.get = vi.fn().mockResolvedValue([validEnvelope]);
+    await expect(
+      loadSessionHistory(
+        transportWithGet(
+          vi.fn().mockRejectedValue(new Error("still offline")),
+          "managed",
+        ),
+        SESSION_ID,
+        { cacheUserId: "user-1", onCachedHistory: cachedBeforeFailure },
+      ),
+    ).rejects.toThrow("still offline");
+    expect(cachedBeforeFailure).toHaveBeenCalledWith([], null);
+
+    let resolveCache!: (value: unknown[] | null) => void;
+    const liveEnvelope = await bundleEnvelope([]);
+    historyCache.client.get = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          resolveCache = resolve;
+        }),
+    );
+    const callback = vi.fn();
+    const liveLoading = loadSessionHistory(
+      transportWithGet(vi.fn().mockResolvedValue(liveEnvelope), "managed"),
+      SESSION_ID,
+      { cacheUserId: "user-1", onCachedHistory: callback },
+    );
+    await Promise.resolve();
+    resolveCache([liveEnvelope]);
+    await expect(liveLoading).resolves.toEqual([]);
+    expect(callback).not.toHaveBeenCalled();
+  });
+
+  it("settles corrupt-cache deletion before writing fresh live envelopes", async () => {
+    const freshEnvelope = await bundleEnvelope([]);
+    let resolveDelete!: () => void;
+    const deletion = new Promise<void>((resolve) => {
+      resolveDelete = resolve;
+    });
+    historyCache.client = {
+      get: vi.fn().mockResolvedValue([{ malformed: true }]),
+      put: vi.fn().mockResolvedValue(undefined),
+      delete: vi.fn().mockReturnValue(deletion),
+    };
+    let resolved = false;
+    const loading = loadSessionHistory(
+      transportWithGet(vi.fn().mockResolvedValue(freshEnvelope), "managed"),
+      SESSION_ID,
+      { cacheUserId: "user-1" },
+    ).then((history) => {
+      resolved = true;
+      return history;
+    });
+    await vi.waitFor(() =>
+      expect(historyCache.client?.delete).toHaveBeenCalledTimes(1),
+    );
+    expect(historyCache.client.put).not.toHaveBeenCalled();
+    expect(resolved).toBe(false);
+    resolveDelete();
+    await expect(loading).resolves.toEqual([]);
+    await vi.waitFor(() =>
+      expect(historyCache.client?.put).toHaveBeenCalledWith(
+        "user-1",
+        SESSION_ID,
+        [freshEnvelope],
+      ),
+    );
+  });
+
+  it("never uses the cache for excluded runtimes or skip-cache reads", async () => {
+    historyCache.client = {
+      get: vi.fn().mockResolvedValue(null),
+      put: vi.fn().mockResolvedValue(undefined),
+      delete: vi.fn().mockResolvedValue(undefined),
+    };
+    const legacyGet = vi.fn().mockResolvedValue({
+      messages: [],
+      next_cursor: null,
+    });
+    await loadSessionHistory(transportWithGet(legacyGet, "local"), SESSION_ID, {
+      cacheUserId: "user-1",
+    });
+    expect(historyCache.client.get).not.toHaveBeenCalled();
+    expect(historyCache.client.put).not.toHaveBeenCalled();
+
+    const liveEnvelope = await bundleEnvelope([]);
+    await loadSessionHistory(
+      transportWithGet(vi.fn().mockResolvedValue(liveEnvelope), "managed"),
+      SESSION_ID,
+      { cacheUserId: "user-1", skipCacheRead: true },
+    );
+    expect(historyCache.client.get).not.toHaveBeenCalled();
+    await vi.waitFor(() =>
+      expect(historyCache.client?.put).toHaveBeenCalledTimes(1),
+    );
+  });
+
   it("loads one complete managed tool trace from one compressed bundle", async () => {
     const messageId = "1".repeat(32);
     const createdAt = "2026-08-23T00:00:00Z";
