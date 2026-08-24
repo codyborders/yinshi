@@ -1768,6 +1768,7 @@ def _migrate_managed_restore_runner_kind(conn: sqlite3.Connection) -> None:
         return
     conn.commit()
     conn.execute("PRAGMA foreign_keys = OFF")
+    conn.execute("PRAGMA legacy_alter_table = ON")
     try:
         conn.execute("BEGIN IMMEDIATE")
         _drop_user_runner_dependent_triggers(conn)
@@ -1810,6 +1811,7 @@ def _migrate_managed_restore_runner_kind(conn: sqlite3.Connection) -> None:
         conn.rollback()
         raise
     finally:
+        conn.execute("PRAGMA legacy_alter_table = OFF")
         conn.execute("PRAGMA foreign_keys = ON")
 
 
