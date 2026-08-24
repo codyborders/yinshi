@@ -627,6 +627,7 @@ async def test_prompt_journal_serializes_concurrent_idempotent_starts(
     """Concurrent retries return one run and register one executor task."""
     session_id = _seed_session(db)
     executor_calls = 0
+    executor_started = asyncio.Event()
     release_executor = asyncio.Event()
 
     async def blocked_events(
@@ -637,6 +638,7 @@ async def test_prompt_journal_serializes_concurrent_idempotent_starts(
         nonlocal executor_calls
         assert selected_session_id == session_id
         executor_calls += 1
+        executor_started.set()
         await release_executor.wait()
         yield {"type": "result"}
 
@@ -657,7 +659,7 @@ async def test_prompt_journal_serializes_concurrent_idempotent_starts(
             body={"prompt": "hello"},
         ),
     )
-    await asyncio.sleep(0)
+    await asyncio.wait_for(executor_started.wait(), timeout=1)
 
     assert first.id == second.id
     assert executor_calls == 1

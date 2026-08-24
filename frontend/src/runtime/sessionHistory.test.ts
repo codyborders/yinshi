@@ -59,8 +59,9 @@ async function bundleEnvelope(
   const source = new ReadableStream<BufferSource>({
     start(controller) {
       const input = new ArrayBuffer(raw.byteLength);
-      new Uint8Array(input).set(raw);
-      controller.enqueue(input);
+      const view = new Uint8Array(input);
+      view.set(raw);
+      controller.enqueue(view);
       controller.close();
     },
   });

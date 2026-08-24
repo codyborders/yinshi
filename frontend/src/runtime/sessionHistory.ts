@@ -372,8 +372,9 @@ async function decompressBundle(
   const source = new ReadableStream<BufferSource>({
     start(controller) {
       const input = new ArrayBuffer(compressed.byteLength);
-      new Uint8Array(input).set(compressed);
-      controller.enqueue(input);
+      const view = new Uint8Array(input);
+      view.set(compressed);
+      controller.enqueue(view);
       controller.close();
     },
   });
