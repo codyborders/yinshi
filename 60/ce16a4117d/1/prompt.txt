@@ -1,0 +1,139 @@
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+You are a delegated subagent running from a fork of the parent session. Treat the inherited conversation as reference-only context, not a live thread to continue. Do not continue or answer prior messages as if they are waiting for a reply. Your sole job is to execute the task below and return a focused result for that task using your tools.
+
+Task:
+In /Users/user/projects/yinshi, remove remaining cold-start latency so the deployed session reaches under 2 seconds. You are sole writer. Do not commit or touch .pi-subagents/. Strict red-green TDD.
+Production measurements: direct managed bundle plus active discovery in a warm realm takes 1.50 seconds. Gzip decode is 34 ms. A fresh iframe reaches conversation readiness in 3.1-3.9 seconds. Cold Noise WASM initialization and the separate active connection dominate.
+1. Add active_run_id to every history bundle envelope. Inside the existing bundle read transaction, query prompt_runs for this session with status in starting, running, stopping. Return one 32-hex ID or null. Require the same value on every page. Frontend validates it and exposes it through a new optional SessionHistoryLoadOptions callback named onBundledActiveRun. Invoke the callback only after the full bundle snapshot succeeds. Legacy and 413 fallback must not invoke it. Add exact backend, model, frontend, compression-bound, active/null, and multipage-invariance tests.
+2. In Session.tsx, when managed historyBundleSupported is true and DecompressionStream exists, do not start initial active discovery. Load the bundle and capture active_run_id through the callback. Bootstrap history using that ID and skip second discovery when callback ran. This must preserve assistant deduplication. Bootstrap immediately, which lets live event attachment start after conversation display. If bundle is unavailable and legacy fallback runs, perform active discovery after history before bootstrap. For non-bundle runtimes, retain current concurrent discovery/history behavior and second discovery. Add public tests proving bundle-capable sessions issue no /runs/active request before history bootstrap, attach the bundled active ID, deduplicate its assistant row, and legacy fallback still discovers active state.
+3. Export preloadEncryptedRunnerCrypto from encryptedRunnerClient. It must start the existing cached Noise module initialization without creating keys or connections. In frontend main startup, call it immediately only for /app paths. Swallow preload rejection so the real connection reports its normal error later. Add tests proving preload shares the same module promise with later connections, creates no capability or WebSocket, and main startup does not produce unhandled rejection.
+Preserve feature advertisement, exact scope authorization, active-run recovery behavior, cancellation, BYOC/local/hosted legacy behavior, secret handling, and all limits. Run focused red-green tests, full frontend and backend tests where backend changes, all static checks, typecheck, changed-file Prettier, build, and diff check. Report residual risks.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+You are reviving a previous subagent conversation.
+
+Original run: c8087613
+Original agent: worker
+Original session file: /Users/user/.pi/agent/sessions/--Users-user-projects-yinshi--/2026-08-24T18-20-32-487Z_01a03500-af67-7919-b1bb-7cdca92ff057.jsonl
+
+Use the stored session context as background. Answer the orchestrator's follow-up below. Do not assume the original child process is still alive.
+
+Follow-up:
+Fix both bundle-active review blockers in /Users/user/projects/yinshi. You remain sole writer. Do not commit or touch .pi-subagents/. Strict red-green TDD.
+1. Snapshot bundled active_run_id across pages. Continuation query must include active_run_id using exact value none or one 32-hex ID from first envelope. Backend must not re-read current active status on continuation. For a supplied ID, verify prompt_runs contains that ID for the same session, regardless of current terminal status. Echo the original value. Runner validates exact none or 32-hex. Frontend sends the captured value and keeps envelope invariance. Add a red test where active run completes between pages and history still succeeds with original ID. Add invalid cross-session active ID and runner query tests.
+2. On managed bundle history failure before callback, Session must perform active discovery before showing history failure. If discovery finds an active run, bootstrap empty history with that run. If discovery fails, preserve history error and no attachment. Cancellation must suppress both. Add a red managed malformed-bundle test with an active run. Keep success path free from /runs/active requests.
+Run focused tests, full backend and frontend suites, static checks, typecheck, formatting, build, and diff check. Report results.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+- criterion-2: Return evidence sufficient for an independent acceptance review
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Review gate: required by reviewer.
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    },
+    {
+      "id": "criterion-2",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```

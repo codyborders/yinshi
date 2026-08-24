@@ -3,8 +3,24 @@
   "checkpoint_id": "60ce16a4117d",
   "strategy": "manual-commit",
   "branch": "main",
-  "checkpoints_count": 1,
-  "files_touched": null,
+  "checkpoints_count": 3,
+  "files_touched": [
+    "backend/src/yinshi/api/sessions.py",
+    "backend/src/yinshi/models.py",
+    "backend/src/yinshi/services/runner_rpc.py",
+    "backend/tests/test_api.py",
+    "backend/tests/test_runner_rpc.py",
+    "frontend/src/crypto/noiseIk.test.ts",
+    "frontend/src/crypto/noiseIk.ts",
+    "frontend/src/main.test.tsx",
+    "frontend/src/main.tsx",
+    "frontend/src/pages/Session.tsx",
+    "frontend/src/pages/__tests__/Session.test.tsx",
+    "frontend/src/runner/encryptedRunnerClient.test.ts",
+    "frontend/src/runner/encryptedRunnerClient.ts",
+    "frontend/src/runtime/sessionHistory.test.ts",
+    "frontend/src/runtime/sessionHistory.ts"
+  ],
   "sessions": [
     {
       "metadata": "/60/ce16a4117d/0/metadata.json",
@@ -12,13 +28,20 @@
       "compact_transcript": "/60/ce16a4117d/0/transcript.jsonl",
       "content_hash": "/60/ce16a4117d/0/content_hash.txt",
       "prompt": "/60/ce16a4117d/0/prompt.txt"
+    },
+    {
+      "metadata": "/60/ce16a4117d/1/metadata.json",
+      "transcript": "/60/ce16a4117d/1/full.jsonl",
+      "compact_transcript": "/60/ce16a4117d/1/transcript.jsonl",
+      "content_hash": "/60/ce16a4117d/1/content_hash.txt",
+      "prompt": "/60/ce16a4117d/1/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 8986225,
+    "input_tokens": 18479269,
     "cache_creation_tokens": 0,
-    "cache_read_tokens": 292580992,
-    "output_tokens": 616403,
-    "api_call_count": 1640
+    "cache_read_tokens": 590995712,
+    "output_tokens": 1263850,
+    "api_call_count": 3367
   }
 }
