@@ -46077,7 +46077,7 @@ export function subscribePiCommands(notify: () => void): () => void {
 
 ## hooks/useAuth.tsx
 
-Auth state is fetched once and distributed through React context. The root chunk below tangles back to `frontend/src/hooks/useAuth.tsx`.
+Auth state is fetched once and distributed through React context. In desktop mode, authentication uses the `window.yinshiDesktop` API to check for an active profile. In browser mode, it calls the `/auth/me` endpoint. The root chunk below tangles back to `frontend/src/hooks/useAuth.tsx`.
 
 ```tsx {chunk="frontend-src-hooks-useauth-tsx" file="frontend/src/hooks/useAuth.tsx"}
 import {
