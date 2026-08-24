@@ -127,6 +127,21 @@ function isBoundedSessionHistoryRequest(
   );
 }
 
+function managedConnectionLane(
+  scope: string,
+  method: RuntimeMethod,
+  path: string,
+): string {
+  if (
+    scope === "terminal" &&
+    method === "GET" &&
+    TERMINAL_EVENTS_PATH.test(path)
+  ) {
+    return "terminal:events";
+  }
+  return scope;
+}
+
 function requiredScope(method: RuntimeMethod, path: string): string {
   const repositoryCollection = path === "/api/repos";
   const repositoryMember = REPOSITORY_MEMBER_PATH.test(path);
@@ -375,7 +390,8 @@ export function createRuntimeTransport(
     }
     const connect =
       runtimeDependencies.connectEncrypted ?? connectEncryptedRunner;
-    let entry = managedConnections.get(scope);
+    const connectionLane = managedConnectionLane(scope, method, pathname);
+    let entry = managedConnections.get(connectionLane);
     if (entry === undefined) {
       const connection = connect({
         expectedRunnerPublicKey:
@@ -390,10 +406,10 @@ export function createRuntimeTransport(
         retired: false,
         successfulHistoryRequests: 0,
       };
-      managedConnections.set(scope, entry);
+      managedConnections.set(connectionLane, entry);
       void connection.catch(() => {
-        if (managedConnections.get(scope) === entry) {
-          managedConnections.delete(scope);
+        if (managedConnections.get(connectionLane) === entry) {
+          managedConnections.delete(connectionLane);
         }
       });
     }
@@ -425,8 +441,8 @@ export function createRuntimeTransport(
         try {
           connection = await replacement;
         } catch (error) {
-          if (managedConnections.get(scope) === activeEntry) {
-            managedConnections.delete(scope);
+          if (managedConnections.get(connectionLane) === activeEntry) {
+            managedConnections.delete(connectionLane);
           }
           throw error;
         }
@@ -453,8 +469,8 @@ export function createRuntimeTransport(
         }
         return result;
       } catch (error) {
-        if (managedConnections.get(scope) === activeEntry) {
-          managedConnections.delete(scope);
+        if (managedConnections.get(connectionLane) === activeEntry) {
+          managedConnections.delete(connectionLane);
         }
         connection.close();
         throw error;

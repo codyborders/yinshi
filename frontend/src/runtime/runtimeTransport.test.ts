@@ -163,6 +163,182 @@ describe("runtime transport", () => {
     expect(connection.close).toHaveBeenCalledTimes(1);
   });
 
+  it("does not let a managed terminal event poll block terminal input", async () => {
+    let releaseEvents: (() => void) | undefined;
+    const eventsReleased = new Promise<void>((resolve) => {
+      releaseEvents = resolve;
+    });
+    const eventConnection = {
+      request: vi.fn().mockImplementation(async () => {
+        await eventsReleased;
+        return { events: [] };
+      }),
+      close: vi.fn(),
+    };
+    const commandConnection = {
+      request: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn(),
+    };
+    const connectEncrypted = vi
+      .fn()
+      .mockResolvedValueOnce(eventConnection)
+      .mockResolvedValueOnce(commandConnection);
+    const transport = createRuntimeTransport(
+      { location: "managed", runnerPublicKey },
+      {
+        apiClient: apiClient(),
+        encryptedRequest: vi.fn(),
+        connectEncrypted,
+      },
+    );
+    const workspaceId = "a".repeat(32);
+    const terminalId = "b".repeat(32);
+    const eventsRequest = transport.get(
+      `/api/workspaces/${workspaceId}/terminals/${terminalId}/events/0`,
+    );
+    await vi.waitFor(() => {
+      expect(eventConnection.request).toHaveBeenCalledTimes(1);
+    });
+
+    const inputRequest = transport.post(
+      `/api/workspaces/${workspaceId}/terminals/${terminalId}/input`,
+      { data: "a" },
+    );
+    try {
+      await vi.waitFor(() => {
+        expect(commandConnection.request).toHaveBeenCalledWith({
+          method: "POST",
+          path: `/api/workspaces/${workspaceId}/terminals/${terminalId}/input`,
+          query: {},
+          body: { data: "a" },
+        });
+      });
+      await expect(inputRequest).resolves.toBeUndefined();
+      expect(connectEncrypted).toHaveBeenCalledTimes(2);
+      expect(connectEncrypted).toHaveBeenNthCalledWith(1, {
+        expectedRunnerPublicKey: runnerPublicKey,
+        scopes: ["terminal"],
+        maxSessionBytes: 16_777_216,
+        capabilityEndpoint: "/api/runtime/capabilities",
+      });
+      expect(connectEncrypted).toHaveBeenNthCalledWith(2, {
+        expectedRunnerPublicKey: runnerPublicKey,
+        scopes: ["terminal"],
+        maxSessionBytes: 16_777_216,
+        capabilityEndpoint: "/api/runtime/capabilities",
+      });
+    } finally {
+      releaseEvents?.();
+      await Promise.allSettled([eventsRequest, inputRequest]);
+      transport.close();
+    }
+  });
+
+  it("keeps managed terminal commands sequential on one connection", async () => {
+    let releaseInput: (() => void) | undefined;
+    const inputReleased = new Promise<void>((resolve) => {
+      releaseInput = resolve;
+    });
+    const commandConnection = {
+      request: vi
+        .fn()
+        .mockImplementationOnce(async () => {
+          await inputReleased;
+          return undefined;
+        })
+        .mockResolvedValueOnce(undefined),
+      close: vi.fn(),
+    };
+    const connectEncrypted = vi.fn().mockResolvedValue(commandConnection);
+    const transport = createRuntimeTransport(
+      { location: "managed", runnerPublicKey },
+      {
+        apiClient: apiClient(),
+        encryptedRequest: vi.fn(),
+        connectEncrypted,
+      },
+    );
+    const workspaceId = "a".repeat(32);
+    const terminalId = "b".repeat(32);
+    const inputRequest = transport.post(
+      `/api/workspaces/${workspaceId}/terminals/${terminalId}/input`,
+      { data: "a" },
+    );
+    await vi.waitFor(() => {
+      expect(commandConnection.request).toHaveBeenCalledTimes(1);
+    });
+
+    const resizeRequest = transport.post(
+      `/api/workspaces/${workspaceId}/terminals/${terminalId}/resize`,
+      { cols: 80, rows: 24 },
+    );
+    await Promise.resolve();
+    expect(commandConnection.request).toHaveBeenCalledTimes(1);
+
+    releaseInput?.();
+    await expect(Promise.all([inputRequest, resizeRequest])).resolves.toEqual([
+      undefined,
+      undefined,
+    ]);
+    expect(connectEncrypted).toHaveBeenCalledTimes(1);
+    expect(commandConnection.request).toHaveBeenNthCalledWith(2, {
+      method: "POST",
+      path: `/api/workspaces/${workspaceId}/terminals/${terminalId}/resize`,
+      query: {},
+      body: { cols: 80, rows: 24 },
+    });
+  });
+
+  it("closes both managed terminal connections", async () => {
+    let releaseEvents: (() => void) | undefined;
+    const eventsReleased = new Promise<void>((resolve) => {
+      releaseEvents = resolve;
+    });
+    const eventConnection = {
+      request: vi.fn().mockImplementation(async () => {
+        await eventsReleased;
+        return { events: [] };
+      }),
+      close: vi.fn(),
+    };
+    const commandConnection = {
+      request: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn(),
+    };
+    const connectEncrypted = vi
+      .fn()
+      .mockResolvedValueOnce(eventConnection)
+      .mockResolvedValueOnce(commandConnection);
+    const transport = createRuntimeTransport(
+      { location: "managed", runnerPublicKey },
+      {
+        apiClient: apiClient(),
+        encryptedRequest: vi.fn(),
+        connectEncrypted,
+      },
+    );
+    const workspaceId = "a".repeat(32);
+    const terminalId = "b".repeat(32);
+    const eventsRequest = transport.get(
+      `/api/workspaces/${workspaceId}/terminals/${terminalId}/events/0`,
+    );
+    await vi.waitFor(() => {
+      expect(eventConnection.request).toHaveBeenCalledTimes(1);
+    });
+    await transport.post(
+      `/api/workspaces/${workspaceId}/terminals/${terminalId}/input`,
+      { data: "a" },
+    );
+
+    transport.close();
+    await Promise.resolve();
+    expect(eventConnection.close).toHaveBeenCalledTimes(1);
+    expect(commandConnection.close).toHaveBeenCalledTimes(1);
+
+    releaseEvents?.();
+    await eventsRequest;
+  });
+
   it("serializes concurrent managed requests on one scoped connection", async () => {
     let activeRequests = 0;
     let releaseFirst: (() => void) | undefined;
