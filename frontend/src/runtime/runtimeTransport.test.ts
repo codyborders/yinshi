@@ -375,26 +375,38 @@ describe("runtime transport", () => {
     expect(request).toHaveBeenCalledTimes(2);
   });
 
-  it("rotates managed session reads after eight bounded history requests", async () => {
-    const requestOrder: string[] = [];
-    const firstConnection = {
-      request: vi.fn().mockImplementation(async ({ path }) => {
-        requestOrder.push(`first:${path}`);
-        return {};
-      }),
-      close: vi.fn(() => requestOrder.push("first:close")),
-    };
-    const secondConnection = {
-      request: vi.fn().mockImplementation(async ({ path }) => {
-        requestOrder.push(`second:${path}`);
-        return {};
-      }),
-      close: vi.fn(),
-    };
-    const connectEncrypted = vi
-      .fn()
-      .mockResolvedValueOnce(firstConnection)
-      .mockResolvedValueOnce(secondConnection);
+  it("uses at most four sequential connections for managed history fields", async () => {
+    const connections: Array<{
+      request: ReturnType<typeof vi.fn>;
+      close: ReturnType<typeof vi.fn>;
+    }> = [];
+    const releases: Array<() => void> = [];
+    let activeRequests = 0;
+    let maximumActiveRequests = 0;
+    let requestsStarted = 0;
+    const connectEncrypted = vi.fn().mockImplementation(() => {
+      let connectionActive = false;
+      const connection = {
+        request: vi.fn().mockImplementation(async () => {
+          if (connectionActive)
+            throw new Error("connection requests overlapped");
+          connectionActive = true;
+          activeRequests += 1;
+          maximumActiveRequests = Math.max(
+            maximumActiveRequests,
+            activeRequests,
+          );
+          requestsStarted += 1;
+          await new Promise<void>((resolve) => releases.push(resolve));
+          activeRequests -= 1;
+          connectionActive = false;
+          return {};
+        }),
+        close: vi.fn(),
+      };
+      connections.push(connection);
+      return Promise.resolve(connection);
+    });
     const transport = createRuntimeTransport(
       { location: "managed", runnerPublicKey },
       {
@@ -404,35 +416,108 @@ describe("runtime transport", () => {
       },
     );
     const sessionId = "a".repeat(32);
-    const messageId = "b".repeat(32);
-    const pagePath = `/api/sessions/${sessionId}/messages/page`;
-    const fieldPath = `/api/sessions/${sessionId}/messages/${messageId}/field`;
-    const metadataPath = `/api/sessions/${sessionId}`;
+    const requests = Array.from({ length: 5 }, (_value, index) => {
+      const messageId = index.toString(16).padStart(32, "0");
+      return transport.get(
+        `/api/sessions/${sessionId}/messages/${messageId}/field?name=content&offset=0`,
+      );
+    });
 
-    const requests = Array.from({ length: 8 }, (_value, index) =>
-      transport.get(`${pagePath}?cursor=${index}`),
-    );
-    requests.push(transport.get(`${fieldPath}?name=content&offset=0`));
-    requests.push(transport.get(metadataPath));
+    await vi.waitFor(() => expect(requestsStarted).toBe(4));
+    expect(connectEncrypted).toHaveBeenCalledTimes(4);
+    expect(maximumActiveRequests).toBe(4);
 
-    await expect(Promise.all(requests)).resolves.toHaveLength(10);
+    releases[0]();
+    await vi.waitFor(() => expect(requestsStarted).toBe(5));
+    expect(connectEncrypted).toHaveBeenCalledTimes(4);
 
-    expect(connectEncrypted).toHaveBeenCalledTimes(2);
-    expect(firstConnection.request).toHaveBeenCalledTimes(8);
-    expect(secondConnection.request).toHaveBeenCalledTimes(2);
-    expect(firstConnection.close).toHaveBeenCalledTimes(1);
-    expect(secondConnection.close).not.toHaveBeenCalled();
-    expect(requestOrder).toEqual([
-      ...Array.from({ length: 8 }, () => `first:${pagePath}`),
-      "first:close",
-      `second:${fieldPath}`,
-      `second:${metadataPath}`,
-    ]);
+    for (const release of releases.slice(1)) release();
+    await expect(Promise.all(requests)).resolves.toHaveLength(5);
+    expect(
+      connections.every(
+        (connection) => connection.request.mock.calls.length <= 2,
+      ),
+    ).toBe(true);
+
+    transport.close();
+    await Promise.resolve();
+    expect(
+      connections.every(
+        (connection) => connection.close.mock.calls.length === 1,
+      ),
+    ).toBe(true);
   });
 
-  it("keeps ordinary managed session reads on one connection", async () => {
+  it("rotates each managed history lane after eight successful requests", async () => {
+    const connections: Array<{
+      request: ReturnType<typeof vi.fn>;
+      close: ReturnType<typeof vi.fn>;
+    }> = [];
+    const connectEncrypted = vi.fn().mockImplementation(() => {
+      const connection = {
+        request: vi.fn().mockResolvedValue({}),
+        close: vi.fn(),
+      };
+      connections.push(connection);
+      return Promise.resolve(connection);
+    });
+    const transport = createRuntimeTransport(
+      { location: "managed", runnerPublicKey },
+      {
+        apiClient: apiClient(),
+        encryptedRequest: vi.fn(),
+        connectEncrypted,
+      },
+    );
+    const sessionId = "a".repeat(32);
+    const messageId = `${"b".repeat(31)}1`;
+    const pagePath = `/api/sessions/${sessionId}/messages/page`;
+    const fieldPath = `/api/sessions/${sessionId}/messages/${messageId}/field`;
+
+    const requests = Array.from({ length: 9 }, (_value, index) =>
+      transport.get(`${pagePath}?cursor=${index}`),
+    );
+    requests.push(
+      ...Array.from({ length: 9 }, (_value, index) =>
+        transport.get(`${fieldPath}?name=content&offset=${index}`),
+      ),
+    );
+
+    await expect(Promise.all(requests)).resolves.toHaveLength(18);
+
+    expect(connectEncrypted).toHaveBeenCalledTimes(4);
+    expect(connections[0].request).toHaveBeenCalledTimes(8);
+    expect(connections[1].request).toHaveBeenCalledTimes(8);
+    expect(connections[0].close).toHaveBeenCalledTimes(1);
+    expect(connections[1].close).toHaveBeenCalledTimes(1);
+    expect(
+      connections
+        .slice(2)
+        .map((connection) => connection.request.mock.calls.length),
+    ).toEqual([1, 1]);
+    for (const [options] of connectEncrypted.mock.calls) {
+      expect(options).toMatchObject({
+        scopes: ["session.read"],
+        maxSessionBytes: 16_777_216,
+        capabilityEndpoint: "/api/runtime/capabilities",
+      });
+    }
+  });
+
+  it("keeps ordinary managed session reads sequential on one connection", async () => {
+    let releaseFirst: (() => void) | undefined;
+    const firstReleased = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let activeRequests = 0;
     const connection = {
-      request: vi.fn().mockResolvedValue([]),
+      request: vi.fn().mockImplementation(async () => {
+        activeRequests += 1;
+        if (activeRequests > 1) throw new Error("session reads overlapped");
+        if (connection.request.mock.calls.length === 1) await firstReleased;
+        activeRequests -= 1;
+        return [];
+      }),
       close: vi.fn(),
     };
     const connectEncrypted = vi.fn().mockResolvedValue(connection);
@@ -446,18 +531,14 @@ describe("runtime transport", () => {
     );
     const sessionId = "a".repeat(32);
 
-    await Promise.all(
-      Array.from({ length: 10 }, (_value, index) =>
-        transport.get(
-          index % 2 === 0
-            ? `/api/sessions/${sessionId}`
-            : `/api/sessions/${sessionId}/messages`,
-        ),
-      ),
-    );
+    const metadata = transport.get(`/api/sessions/${sessionId}`);
+    const messages = transport.get(`/api/sessions/${sessionId}/messages`);
+    await vi.waitFor(() => expect(connection.request).toHaveBeenCalledTimes(1));
+    releaseFirst?.();
 
+    await expect(Promise.all([metadata, messages])).resolves.toEqual([[], []]);
     expect(connectEncrypted).toHaveBeenCalledTimes(1);
-    expect(connection.request).toHaveBeenCalledTimes(10);
+    expect(connection.request).toHaveBeenCalledTimes(2);
     expect(connection.close).not.toHaveBeenCalled();
   });
 

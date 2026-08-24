@@ -5,6 +5,7 @@ const MAX_HISTORY_PAGE_REQUESTS = 10_000;
 const MAX_HISTORY_FIELD_REQUESTS = 100_000;
 const MAX_HISTORY_MESSAGES = 640_000;
 const MAX_HISTORY_FIELD_LENGTH = 1_000_000_000;
+const HISTORY_FIELD_WORKERS = 4;
 
 type HistoryFieldName = "content" | "full_message";
 
@@ -34,6 +35,12 @@ interface RequestBudget {
   fieldRequests: number;
 }
 
+interface HistoryFieldJob {
+  fieldName: HistoryFieldName;
+  length: number;
+  messageIndex: number;
+}
+
 interface SessionHistoryLoadOptions {
   isCancelled?: () => boolean;
 }
@@ -61,7 +68,10 @@ function isFieldLength(value: unknown): value is number | null {
   );
 }
 
-function parseMetadata(value: unknown, sessionId: string): MessageHistoryMetadata {
+function parseMetadata(
+  value: unknown,
+  sessionId: string,
+): MessageHistoryMetadata {
   if (
     !isRecord(value) ||
     typeof value.id !== "string" ||
@@ -98,7 +108,9 @@ function parsePage(value: unknown, sessionId: string): MessageHistoryPage {
     throw new Error("Invalid message history page");
   }
   return {
-    messages: value.messages.map((message) => parseMetadata(message, sessionId)),
+    messages: value.messages.map((message) =>
+      parseMetadata(message, sessionId),
+    ),
     next_cursor: value.next_cursor,
   };
 }
@@ -163,7 +175,9 @@ async function loadHistoryField(
     chunks.push(chunk.value);
     if (chunk.next_offset === null) {
       if (nextExpectedOffset !== advertisedLength) {
-        throw new Error("Message history field ended before its advertised length");
+        throw new Error(
+          "Message history field ended before its advertised length",
+        );
       }
       offset = nextExpectedOffset;
       break;
@@ -242,36 +256,69 @@ export async function loadSessionHistory(
   }
 
   const budget: RequestBudget = { fieldRequests: 0 };
-  const messages: Message[] = [];
-  for (const message of metadata) {
-    const content = await loadHistoryField(
-      transport,
-      sessionId,
-      message.id,
-      "content",
-      message.content_length,
-      budget,
-      options,
-    );
-    const fullMessage = await loadHistoryField(
-      transport,
-      sessionId,
-      message.id,
-      "full_message",
-      message.full_message_length,
-      budget,
-      options,
-    );
-    messages.push({
-      id: message.id,
-      created_at: message.created_at,
-      session_id: message.session_id,
-      role: message.role,
-      content,
-      full_message: fullMessage,
-      turn_id: message.turn_id,
-      turn_status: message.turn_status,
-    });
+  const messages: Message[] = metadata.map((message) => ({
+    id: message.id,
+    created_at: message.created_at,
+    session_id: message.session_id,
+    role: message.role,
+    content: message.content_length === null ? null : "",
+    full_message: message.full_message_length === null ? null : "",
+    turn_id: message.turn_id,
+    turn_status: message.turn_status,
+  }));
+  const jobs: HistoryFieldJob[] = [];
+  for (const [messageIndex, message] of metadata.entries()) {
+    if (message.content_length !== null && message.content_length > 0) {
+      jobs.push({
+        fieldName: "content",
+        length: message.content_length,
+        messageIndex,
+      });
+    }
+    if (
+      message.full_message_length !== null &&
+      message.full_message_length > 0
+    ) {
+      jobs.push({
+        fieldName: "full_message",
+        length: message.full_message_length,
+        messageIndex,
+      });
+    }
   }
+
+  let nextJobIndex = 0;
+  const workerState: {
+    firstFailure: { error: unknown } | null;
+    stopped: boolean;
+  } = { firstFailure: null, stopped: false };
+  async function hydrateFields(): Promise<void> {
+    try {
+      while (!workerState.stopped) {
+        assertNotCancelled(options);
+        const job = jobs[nextJobIndex];
+        if (!job) return;
+        nextJobIndex += 1;
+        const message = metadata[job.messageIndex];
+        const value = await loadHistoryField(
+          transport,
+          sessionId,
+          message.id,
+          job.fieldName,
+          job.length,
+          budget,
+          options,
+        );
+        messages[job.messageIndex][job.fieldName] = value;
+      }
+    } catch (error) {
+      workerState.stopped = true;
+      workerState.firstFailure ??= { error };
+    }
+  }
+
+  const workerCount = Math.min(HISTORY_FIELD_WORKERS, jobs.length);
+  await Promise.all(Array.from({ length: workerCount }, hydrateFields));
+  if (workerState.firstFailure) throw workerState.firstFailure.error;
   return messages;
 }

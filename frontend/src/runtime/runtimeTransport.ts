@@ -114,6 +114,7 @@ const PROVIDER_AUTH_START_PATH = /^\/auth\/providers\/[a-z0-9-]{1,64}\/start$/;
 const PROVIDER_AUTH_CALLBACK_PATH =
   /^\/auth\/providers\/[a-z0-9-]{1,64}\/callback$/;
 const RUNTIME_TRANSPORT_SESSION_BYTES = 16 * 1024 * 1024;
+const MANAGED_HISTORY_CONNECTIONS = 4;
 const MANAGED_HISTORY_REQUESTS_PER_CONNECTION = 8;
 
 function isBoundedSessionHistoryRequest(
@@ -131,6 +132,7 @@ function managedConnectionLane(
   scope: string,
   method: RuntimeMethod,
   path: string,
+  query: Readonly<Record<string, string>>,
 ): string {
   if (
     scope === "terminal" &&
@@ -138,6 +140,20 @@ function managedConnectionLane(
     TERMINAL_EVENTS_PATH.test(path)
   ) {
     return "terminal:events";
+  }
+  if (
+    scope === "session.read" &&
+    isBoundedSessionHistoryRequest(method, path)
+  ) {
+    if (SESSION_HISTORY_PAGE_PATH.test(path)) {
+      return "session.read:history:0";
+    }
+    const messageId = path.split("/")[5];
+    const fieldOffset = query.name === "full_message" ? 1 : 0;
+    const laneIndex =
+      (Number.parseInt(messageId.slice(-1), 16) + fieldOffset) %
+      MANAGED_HISTORY_CONNECTIONS;
+    return `session.read:history:${laneIndex}`;
   }
   return scope;
 }
@@ -390,7 +406,12 @@ export function createRuntimeTransport(
     }
     const connect =
       runtimeDependencies.connectEncrypted ?? connectEncryptedRunner;
-    const connectionLane = managedConnectionLane(scope, method, pathname);
+    const connectionLane = managedConnectionLane(
+      scope,
+      method,
+      pathname,
+      query,
+    );
     let entry = managedConnections.get(connectionLane);
     if (entry === undefined) {
       const connection = connect({
