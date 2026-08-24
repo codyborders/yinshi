@@ -4,10 +4,18 @@ import { BrowserRouter } from "react-router-dom";
 import { datadogRum } from "@datadog/browser-rum";
 import App from "./App";
 import { AuthProvider } from "./hooks/useAuth";
+import { preloadEncryptedRunnerCrypto } from "./runner/encryptedRunnerClient";
 import { createRumConfiguration } from "./rum";
 import "./index.css";
 
 declare const __GIT_COMMIT_HASH__: string;
+
+if (
+  window.location.pathname === "/app" ||
+  window.location.pathname.startsWith("/app/")
+) {
+  void preloadEncryptedRunnerCrypto().catch(() => undefined);
+}
 
 /* Defer Datadog RUM so it does not compete with first paint. */
 const initDatadogRum = () => {

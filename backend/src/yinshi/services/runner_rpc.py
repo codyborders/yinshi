@@ -58,6 +58,7 @@ _SESSION_HISTORY_OFFSET_PATTERN = re.compile(r"^(?:0|[1-9][0-9]{0,9})$")
 _SESSION_HISTORY_OFFSET_MAX = 1_000_000_000
 _SESSION_HISTORY_SNAPSHOT_PATTERN = re.compile(r"^(?:0|[1-9][0-9]{0,18})$")
 _SESSION_HISTORY_SNAPSHOT_MAX = 9_007_199_254_740_991
+_SESSION_HISTORY_ACTIVE_RUN_PATTERN = re.compile(rf"^(?:none|{_RESOURCE_ID})$")
 _PROMPT_RUN_COLLECTION_PATH = re.compile(rf"^/api/sessions/{_RESOURCE_ID}/runs$")
 _PROMPT_RUN_ACTIVE_PATH = re.compile(rf"^/api/sessions/{_RESOURCE_ID}/runs/active$")
 _PROMPT_RUN_EVENTS_PATH = re.compile(
@@ -327,6 +328,7 @@ def _validate_route_query(request: RunnerRpcRequest) -> None:
             "snapshot",
             "snapshot_count",
             "snapshot_tail",
+            "active_run_id",
         }:
             raise ValueError("Runner message history bundle query is invalid")
         cursor = _validate_history_cursor(request.query["cursor"])
@@ -334,6 +336,7 @@ def _validate_route_query(request: RunnerRpcRequest) -> None:
         _validate_history_cursor(request.query["snapshot_tail"])
         snapshot = request.query["snapshot"]
         snapshot_count = request.query["snapshot_count"]
+        active_run_id = request.query["active_run_id"]
         if (
             _SESSION_HISTORY_SNAPSHOT_PATTERN.fullmatch(snapshot) is None
             or int(snapshot) < 1
@@ -345,6 +348,8 @@ def _validate_route_query(request: RunnerRpcRequest) -> None:
             or int(snapshot_count) > _SESSION_HISTORY_SNAPSHOT_MAX
         ):
             raise ValueError("Runner message history bundle snapshot count is invalid")
+        if _SESSION_HISTORY_ACTIVE_RUN_PATTERN.fullmatch(active_run_id) is None:
+            raise ValueError("Runner message history bundle active run is invalid")
         if cursor >= through:
             raise ValueError("Runner message history bundle cursor order is invalid")
         return

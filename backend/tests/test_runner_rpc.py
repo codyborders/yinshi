@@ -421,6 +421,7 @@ async def test_bounded_history_queries_reach_worker_unchanged(
                 "snapshot": "123",
                 "snapshot_count": "66",
                 "snapshot_tail": through,
+                "active_run_id": "none",
             },
         ),
         (
@@ -440,6 +441,7 @@ async def test_bounded_history_queries_reach_worker_unchanged(
                     created_at="2026-08-23T00:00:00Z",
                     message_id="a" * 32,
                 ),
+                "active_run_id": "d" * 32,
             },
         ),
         (
@@ -527,7 +529,30 @@ async def test_bounded_history_queries_reach_worker_unchanged(
                 "snapshot": "1",
                 "snapshot_count": "1",
                 "snapshot_tail": _history_cursor(),
+                "active_run_id": "none",
                 "extra": "value",
+            },
+        ),
+        (
+            "bundle",
+            {
+                "cursor": _history_cursor(),
+                "through": _history_cursor(created_at="2026-08-23T00:00:01+00:00"),
+                "snapshot": "1",
+                "snapshot_count": "1",
+                "snapshot_tail": _history_cursor(),
+                "active_run_id": "NONE",
+            },
+        ),
+        (
+            "bundle",
+            {
+                "cursor": _history_cursor(),
+                "through": _history_cursor(created_at="2026-08-23T00:00:01+00:00"),
+                "snapshot": "1",
+                "snapshot_count": "1",
+                "snapshot_tail": _history_cursor(),
+                "active_run_id": "a" * 31,
             },
         ),
         (

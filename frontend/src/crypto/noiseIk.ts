@@ -11,12 +11,14 @@ const NOISE_TAG_LENGTH = 16;
 const NOISE_MESSAGE_MAX_LENGTH = 65_535;
 const IK_FIRST_MESSAGE_OVERHEAD = 96;
 const IK_SECOND_MESSAGE_MIN_LENGTH = 48;
-const TRANSPORT_PLAINTEXT_MAX_LENGTH = NOISE_MESSAGE_MAX_LENGTH - NOISE_TAG_LENGTH;
+const TRANSPORT_PLAINTEXT_MAX_LENGTH =
+  NOISE_MESSAGE_MAX_LENGTH - NOISE_TAG_LENGTH;
 const TRANSPORT_MESSAGES_BEFORE_REHANDSHAKE = 1_048_576;
 const WASM_LOAD_TIMEOUT_MS = 15_000;
 const emptyBytes = new Uint8Array();
 
 let libraryPromise: Promise<NoiseLibrary> | undefined;
+let libraryReadyPromise: Promise<void> | undefined;
 
 export interface NoiseIkKeypair {
   readonly privateKey: Uint8Array;
@@ -38,7 +40,11 @@ export interface NoiseIkInitiator {
   dispose(): void;
 }
 
-function copyExact(value: Uint8Array, length: number, name: string): Uint8Array {
+function copyExact(
+  value: Uint8Array,
+  length: number,
+  name: string,
+): Uint8Array {
   if (!(value instanceof Uint8Array) || value.length !== length) {
     throw new TypeError(`${name} must contain exactly ${length} bytes`);
   }
@@ -52,7 +58,7 @@ function copyBytes(value: Uint8Array, name: string): Uint8Array {
   return Uint8Array.from(value);
 }
 
-async function loadNoiseLibrary(): Promise<NoiseLibrary> {
+function loadNoiseLibrary(): Promise<NoiseLibrary> {
   if (libraryPromise !== undefined) {
     return libraryPromise;
   }
@@ -74,18 +80,17 @@ async function loadNoiseLibrary(): Promise<NoiseLibrary> {
               : {
                   locateFile: (path: string) => {
                     if (path !== "noise-c.wasm") {
-                      throw new Error("Noise cryptography requested an unknown runtime asset");
+                      throw new Error(
+                        "Noise cryptography requested an unknown runtime asset",
+                      );
                     }
                     return noiseWasmUrl;
                   },
                 };
-          createNoise(
-            moduleOptions,
-            (library) => {
+          createNoise(moduleOptions, (library) => {
             globalThis.clearTimeout(timeout);
-              resolve(library);
-            },
-          );
+            resolve(library);
+          });
         } catch (error) {
           globalThis.clearTimeout(timeout);
           reject(error);
@@ -127,7 +132,11 @@ class NoiseIkInitiatorState implements NoiseIkInitiator {
       library.constants.NOISE_ROLE_INITIATOR,
     );
     try {
-      handshake.Initialize(prologue, staticPrivateKey, responderStaticPublicKey);
+      handshake.Initialize(
+        prologue,
+        staticPrivateKey,
+        responderStaticPublicKey,
+      );
     } catch (error) {
       handshake.free();
       throw error;
@@ -148,7 +157,9 @@ class NoiseIkInitiatorState implements NoiseIkInitiator {
   writeHandshakeMessage(payloadValue: Uint8Array): Uint8Array {
     this.#requireUsable();
     if (this.#firstMessageWritten) {
-      throw new Error("Noise IK initiator handshake message was already written");
+      throw new Error(
+        "Noise IK initiator handshake message was already written",
+      );
     }
     const payload = copyBytes(payloadValue, "payload");
     if (payload.length > NOISE_MESSAGE_MAX_LENGTH - IK_FIRST_MESSAGE_OVERHEAD) {
@@ -156,8 +167,13 @@ class NoiseIkInitiatorState implements NoiseIkInitiator {
     }
     try {
       const message = this.#handshake.WriteMessage(payload);
-      if (message.length < IK_FIRST_MESSAGE_OVERHEAD || message.length > NOISE_MESSAGE_MAX_LENGTH) {
-        throw new Error("Noise IK library produced an invalid initiator message");
+      if (
+        message.length < IK_FIRST_MESSAGE_OVERHEAD ||
+        message.length > NOISE_MESSAGE_MAX_LENGTH
+      ) {
+        throw new Error(
+          "Noise IK library produced an invalid initiator message",
+        );
       }
       this.#firstMessageWritten = true;
       return Uint8Array.from(message);
@@ -170,10 +186,15 @@ class NoiseIkInitiatorState implements NoiseIkInitiator {
   readHandshakeMessage(messageValue: Uint8Array): Uint8Array {
     this.#requireUsable();
     if (!this.#firstMessageWritten || this.#handshakeHashValue !== undefined) {
-      throw new Error("Noise IK initiator is not ready for the responder message");
+      throw new Error(
+        "Noise IK initiator is not ready for the responder message",
+      );
     }
     const message = copyBytes(messageValue, "message");
-    if (message.length < IK_SECOND_MESSAGE_MIN_LENGTH || message.length > NOISE_MESSAGE_MAX_LENGTH) {
+    if (
+      message.length < IK_SECOND_MESSAGE_MIN_LENGTH ||
+      message.length > NOISE_MESSAGE_MAX_LENGTH
+    ) {
       throw new RangeError("Noise IK responder message has an invalid length");
     }
     try {
@@ -181,7 +202,9 @@ class NoiseIkInitiatorState implements NoiseIkInitiator {
       if (payload === null) {
         throw new Error("Noise IK responder payload was not returned");
       }
-      this.#handshakeHashValue = Uint8Array.from(this.#handshake.GetHandshakeHash());
+      this.#handshakeHashValue = Uint8Array.from(
+        this.#handshake.GetHandshakeHash(),
+      );
       [this.#sendCipher, this.#receiveCipher] = this.#handshake.Split();
       return Uint8Array.from(payload);
     } catch (error) {
@@ -212,7 +235,10 @@ class NoiseIkInitiatorState implements NoiseIkInitiator {
   decrypt(ciphertextValue: Uint8Array): Uint8Array {
     const cipher = this.#transportCipher("receive");
     const ciphertext = copyBytes(ciphertextValue, "ciphertext");
-    if (ciphertext.length < NOISE_TAG_LENGTH || ciphertext.length > NOISE_MESSAGE_MAX_LENGTH) {
+    if (
+      ciphertext.length < NOISE_TAG_LENGTH ||
+      ciphertext.length > NOISE_MESSAGE_MAX_LENGTH
+    ) {
       throw new RangeError("Noise transport ciphertext has an invalid length");
     }
     if (this.#messagesReceived >= TRANSPORT_MESSAGES_BEFORE_REHANDSHAKE) {
@@ -246,7 +272,8 @@ class NoiseIkInitiatorState implements NoiseIkInitiator {
 
   #transportCipher(direction: "send" | "receive"): NoiseCipherState {
     this.#requireUsable();
-    const cipher = direction === "send" ? this.#sendCipher : this.#receiveCipher;
+    const cipher =
+      direction === "send" ? this.#sendCipher : this.#receiveCipher;
     if (cipher === undefined) {
       throw new Error("Noise IK transport is not ready");
     }
@@ -263,13 +290,22 @@ class NoiseIkInitiatorState implements NoiseIkInitiator {
   }
 }
 
+export function preloadNoiseIkLibrary(): Promise<void> {
+  libraryReadyPromise ??= loadNoiseLibrary().then(() => undefined);
+  return libraryReadyPromise;
+}
+
 export async function createNoiseIkKeypair(): Promise<NoiseIkKeypair> {
   const library = await loadNoiseLibrary();
   const [privateKey, publicKey] = library.CreateKeyPair(
     library.constants.NOISE_DH_CURVE25519,
   );
   return {
-    privateKey: copyExact(privateKey, X25519_KEY_LENGTH, "generated private key"),
+    privateKey: copyExact(
+      privateKey,
+      X25519_KEY_LENGTH,
+      "generated private key",
+    ),
     publicKey: copyExact(publicKey, X25519_KEY_LENGTH, "generated public key"),
   };
 }

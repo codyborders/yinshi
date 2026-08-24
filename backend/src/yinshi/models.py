@@ -269,6 +269,7 @@ class MessageHistoryBundleOut(BaseModel):
     snapshot: int = Field(ge=0, le=9_007_199_254_740_991)
     snapshot_count: int = Field(ge=0, le=9_007_199_254_740_991)
     snapshot_tail: str | None = Field(default=None, max_length=128)
+    active_run_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{32}$")
     data: str = Field(max_length=900_000)
 
 

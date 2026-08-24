@@ -436,6 +436,7 @@ def _history_bundle_envelope(
     snapshot: int,
     snapshot_count: int,
     snapshot_tail: str | None,
+    active_run_id: str | None,
 ) -> dict[str, Any]:
     """Compress complete message records into one deterministic envelope."""
     payload = _history_bundle_json_bytes(records)
@@ -452,6 +453,7 @@ def _history_bundle_envelope(
         "snapshot": snapshot,
         "snapshot_count": snapshot_count,
         "snapshot_tail": snapshot_tail,
+        "active_run_id": active_run_id,
         "data": encoded,
     }
 
@@ -479,6 +481,7 @@ def _message_history_bundle(
     snapshot_count: int | None,
     snapshot_tail: tuple[str, str] | None,
     snapshot_tail_encoded: str | None,
+    bundled_active_run_id: str | None,
 ) -> dict[str, Any]:
     """Read one snapshot-bound compressed page from one database connection."""
     db.execute("BEGIN")
@@ -486,6 +489,22 @@ def _message_history_bundle(
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
     check_session_owner(db, session_id, request)
+    if cursor is None:
+        active_run_row = db.execute(
+            "SELECT id FROM prompt_runs WHERE session_id = ? "
+            "AND status IN ('starting', 'running', 'stopping')",
+            (session_id,),
+        ).fetchone()
+        active_run_id = str(active_run_row["id"]) if active_run_row is not None else None
+    else:
+        active_run_id = bundled_active_run_id
+        if active_run_id is not None:
+            active_run_row = db.execute(
+                "SELECT 1 FROM prompt_runs WHERE id = ? AND session_id = ?",
+                (active_run_id, session_id),
+            ).fetchone()
+            if active_run_row is None:
+                _raise_history_bundle_snapshot_changed()
 
     if cursor is None:
         snapshot_row = db.execute(
@@ -524,6 +543,7 @@ def _message_history_bundle(
                 snapshot=0,
                 snapshot_count=0,
                 snapshot_tail=None,
+                active_run_id=active_run_id,
             )
         through = (str(through_row["created_at"]), str(through_row["id"]))
         through_encoded = _encode_message_history_cursor(*through)
@@ -646,6 +666,7 @@ def _message_history_bundle(
             snapshot=snapshot,
             snapshot_count=snapshot_count,
             snapshot_tail=snapshot_tail_encoded,
+            active_run_id=active_run_id,
         )
         if len(_history_bundle_json_bytes(envelope)) <= _MESSAGE_HISTORY_BUNDLE_RESPONSE_BYTES_MAX:
             best = envelope
@@ -670,6 +691,7 @@ def _message_history_bundle(
         snapshot=snapshot,
         snapshot_count=snapshot_count,
         snapshot_tail=snapshot_tail_encoded,
+        active_run_id=active_run_id,
     )
 
 
@@ -693,9 +715,22 @@ async def get_message_history_bundle(
         le=_MESSAGE_HISTORY_SNAPSHOT_MAX,
     ),
     snapshot_tail: str | None = Query(default=None, min_length=1, max_length=128),
+    active_run_id: str | None = Query(
+        default=None,
+        min_length=4,
+        max_length=32,
+        pattern=r"^(?:none|[0-9a-f]{32})$",
+    ),
 ) -> dict[str, Any]:
     """Return complete messages in a bounded compressed snapshot page."""
-    continuation_values = (cursor, through, snapshot, snapshot_count, snapshot_tail)
+    continuation_values = (
+        cursor,
+        through,
+        snapshot,
+        snapshot_count,
+        snapshot_tail,
+        active_run_id,
+    )
     if any(value is not None for value in continuation_values) and not all(
         value is not None for value in continuation_values
     ):
@@ -724,6 +759,7 @@ async def get_message_history_bundle(
             snapshot_count,
             decoded_snapshot_tail,
             snapshot_tail,
+            None if active_run_id == "none" else active_run_id,
         ),
     )
 

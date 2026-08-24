@@ -1,6 +1,11 @@
 import { afterAll, describe, expect, it } from "vitest";
 
-import { createNoiseIkInitiator, type NoiseIkInitiator } from "./noiseIk";
+import {
+  createNoiseIkInitiator,
+  createNoiseIkKeypair,
+  preloadNoiseIkLibrary,
+  type NoiseIkInitiator,
+} from "./noiseIk";
 
 function bytes(hex: string): Uint8Array {
   return Uint8Array.from(Buffer.from(hex, "hex"));
@@ -10,7 +15,10 @@ function hex(value: Uint8Array): string {
   return Buffer.from(value).toString("hex");
 }
 
-const originalCryptoDescriptor = Object.getOwnPropertyDescriptor(globalThis, "crypto");
+const originalCryptoDescriptor = Object.getOwnPropertyDescriptor(
+  globalThis,
+  "crypto",
+);
 
 afterAll(() => {
   if (originalCryptoDescriptor === undefined) {
@@ -21,6 +29,17 @@ afterAll(() => {
 });
 
 describe("Noise_IK_25519_ChaChaPoly_SHA256", () => {
+  it("shares one cached preload with later key creation", async () => {
+    const first = preloadNoiseIkLibrary();
+    const second = preloadNoiseIkLibrary();
+
+    expect(first).toBe(second);
+    await first;
+    const keypair = await createNoiseIkKeypair();
+    expect(keypair.privateKey).toHaveLength(32);
+    expect(keypair.publicKey).toHaveLength(32);
+  });
+
   it("matches the canonical IK handshake and transport vector", async () => {
     const ephemeralPrivateKey = bytes(
       "893e28b9dc6ca8d611ab664754b8ceb7bac5117349a4439a6b0569da977c464a",

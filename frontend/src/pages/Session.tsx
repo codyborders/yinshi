@@ -142,17 +142,29 @@ export default function Session() {
     const runtimeSessionId = id;
 
     async function loadHistory() {
+      const expectsBundledActiveRun =
+        runtimeTransport.runtime.location === "managed" &&
+        runtimeTransport.runtime.historyBundleSupported === true &&
+        typeof DecompressionStream === "function";
+      let bundledActiveRunId: string | null = null;
+      let receivedBundledActiveRun = false;
       const discoveryPromise: Promise<{
         activeRunId: string | null;
         failed: boolean;
-      }> = findActiveRuntimePromptRun(runtimeTransport, runtimeSessionId).then(
-        (activeRunId) => ({ activeRunId, failed: false }),
-        () => ({ activeRunId: null, failed: true }),
-      );
+      }> = expectsBundledActiveRun
+        ? Promise.resolve({ activeRunId: null, failed: false })
+        : findActiveRuntimePromptRun(runtimeTransport, runtimeSessionId).then(
+            (activeRunId) => ({ activeRunId, failed: false }),
+            () => ({ activeRunId: null, failed: true }),
+          );
       const historyPromise: Promise<
         { ok: true; history: Message[] } | { ok: false }
       > = loadSessionHistory(runtimeTransport, runtimeSessionId, {
         isCancelled: () => cancelled,
+        onBundledActiveRun: (activeRunId) => {
+          bundledActiveRunId = activeRunId;
+          receivedBundledActiveRun = true;
+        },
       }).then(
         (history) => ({ ok: true, history }),
         () => ({ ok: false }),
@@ -165,7 +177,22 @@ export default function Session() {
 
       let { activeRunId } = discovery;
       let discoveryFailed = discovery.failed;
+      if (receivedBundledActiveRun) {
+        activeRunId = bundledActiveRunId;
+        discoveryFailed = false;
+      }
       if (!historyResult.ok) {
+        if (expectsBundledActiveRun && !receivedBundledActiveRun) {
+          try {
+            activeRunId = await findActiveRuntimePromptRun(
+              runtimeTransport,
+              runtimeSessionId,
+            );
+          } catch {
+            activeRunId = null;
+          }
+          if (cancelled) return;
+        }
         if (activeRunId !== null) bootstrapSession([], activeRunId);
         setHistoryError("Failed to load session history.");
         setLoadingHistory(false);
@@ -173,7 +200,7 @@ export default function Session() {
       }
 
       try {
-        if (activeRunId === null) {
+        if (activeRunId === null && !receivedBundledActiveRun) {
           try {
             activeRunId = await findActiveRuntimePromptRun(
               runtimeTransport,

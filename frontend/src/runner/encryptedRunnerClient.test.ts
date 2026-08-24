@@ -1,9 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { ApiError } from "../api/client";
+import { api, ApiError } from "../api/client";
 import {
   checkEncryptedRunnerHealth,
   connectEncryptedRunner,
+  preloadEncryptedRunnerCrypto,
   requestEncryptedRunner,
   type RunnerClientDependencies,
   RunnerRelayConnectionError,
@@ -184,6 +185,28 @@ function dependencies(
 }
 
 describe("checkEncryptedRunnerHealth", () => {
+  it("preloads cached runner cryptography without capabilities, keys, or sockets", async () => {
+    const capability = vi.spyOn(api, "post");
+    const openWebSocket = vi.fn();
+    vi.stubGlobal("WebSocket", openWebSocket);
+    const getRandomValues = vi.spyOn(crypto, "getRandomValues");
+
+    try {
+      const first = preloadEncryptedRunnerCrypto();
+      const second = preloadEncryptedRunnerCrypto();
+
+      expect(first).toBe(second);
+      await first;
+      expect(capability).not.toHaveBeenCalled();
+      expect(getRandomValues).not.toHaveBeenCalled();
+      expect(openWebSocket).not.toHaveBeenCalled();
+    } finally {
+      capability.mockRestore();
+      getRandomValues.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("marks relay transport failures with a stable error type", () => {
     const error = new RunnerRelayConnectionError(
       "Runner relay closed before responding",
@@ -489,7 +512,9 @@ describe("checkEncryptedRunnerHealth", () => {
     ).catch((failure: unknown) => failure);
 
     expect(error).toBeInstanceOf(RunnerRelayConnectionError);
-    expect(error).toMatchObject({ message: "Runner relay could not be opened" });
+    expect(error).toMatchObject({
+      message: "Runner relay could not be opened",
+    });
   });
 
   it("carries bounded large requests and responses through encrypted fragments", async () => {

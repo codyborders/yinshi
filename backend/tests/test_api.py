@@ -19,6 +19,7 @@ from unittest.mock import AsyncMock, call, patch
 import httpx
 import pytest
 from fastapi import HTTPException, Request
+from fastapi.exceptions import ResponseValidationError
 from fastapi.testclient import TestClient
 
 from tests.conftest import reset_rate_limiter
@@ -1310,6 +1311,7 @@ def test_message_history_bundle_returns_complete_messages_in_one_bounded_page(
         "snapshot",
         "snapshot_count",
         "snapshot_tail",
+        "active_run_id",
         "data",
     }
     assert envelope["version"] == 1
@@ -1322,7 +1324,47 @@ def test_message_history_bundle_returns_complete_messages_in_one_bounded_page(
     assert envelope["snapshot"] > 0
     assert envelope["snapshot_count"] == 56
     assert isinstance(envelope["snapshot_tail"], str)
+    assert envelope["active_run_id"] is None
     assert _decode_history_bundle(response) == legacy.json()
+
+
+@pytest.mark.parametrize("status", ("starting", "running", "stopping"))
+def test_message_history_bundle_returns_active_run_from_read_transaction(
+    client: TestClient,
+    session_id: str,
+    status: str,
+) -> None:
+    """Every durable active status should be advertised with history."""
+    run_id = "a" * 32
+    with get_db() as db:
+        db.execute(
+            """INSERT INTO prompt_runs (id, session_id, idempotency_key, status)
+               VALUES (?, ?, ?, ?)""",
+            (run_id, session_id, "b" * 32, status),
+        )
+        db.commit()
+
+    response = client.get(f"/api/sessions/{session_id}/messages/bundle")
+
+    assert response.status_code == 200
+    assert response.json()["active_run_id"] == run_id
+
+
+def test_message_history_bundle_rejects_malformed_active_run_id(
+    client: TestClient,
+    session_id: str,
+) -> None:
+    """Malformed durable run IDs must fail response validation closed."""
+    with get_db() as db:
+        db.execute(
+            """INSERT INTO prompt_runs (id, session_id, idempotency_key, status)
+               VALUES ('not-a-run-id', ?, ?, 'running')""",
+            (session_id, "c" * 32),
+        )
+        db.commit()
+
+    with pytest.raises(ResponseValidationError):
+        client.get(f"/api/sessions/{session_id}/messages/bundle")
 
 
 def test_message_history_bundle_starts_one_read_transaction_before_queries(
@@ -1408,6 +1450,7 @@ def test_message_history_bundle_paginates_equal_timestamps_with_stable_snapshot(
             "snapshot": first_data["snapshot"],
             "snapshot_count": first_data["snapshot_count"],
             "snapshot_tail": first_data["snapshot_tail"],
+            "active_run_id": first_data["active_run_id"] or "none",
         },
     )
     assert second.status_code == 200
@@ -1417,10 +1460,84 @@ def test_message_history_bundle_paginates_equal_timestamps_with_stable_snapshot(
     assert second_data["snapshot"] == first_data["snapshot"]
     assert second_data["snapshot_count"] == first_data["snapshot_count"]
     assert second_data["snapshot_tail"] == first_data["snapshot_tail"]
+    assert second_data["active_run_id"] == first_data["active_run_id"]
     assert second_data["next_cursor"] is None
     assert [message["id"] for message in _decode_history_bundle(second)] == [
         f"{index * 2:032x}" for index in range(64, 66)
     ]
+
+
+def test_message_history_bundle_preserves_completed_active_run_across_pages(
+    client: TestClient,
+    session_id: str,
+) -> None:
+    """A run finishing after page one must not alter the history snapshot."""
+    _insert_snapshot_bundle_messages(session_id)
+    run_id = "a" * 32
+    with get_db() as db:
+        db.execute(
+            """INSERT INTO prompt_runs (id, session_id, idempotency_key, status)
+               VALUES (?, ?, ?, 'running')""",
+            (run_id, session_id, "b" * 32),
+        )
+        db.commit()
+
+    first = client.get(f"/api/sessions/{session_id}/messages/bundle")
+    assert first.status_code == 200
+    assert first.json()["active_run_id"] == run_id
+    with get_db() as db:
+        db.execute(
+            "UPDATE prompt_runs SET status = 'completed' WHERE id = ?",
+            (run_id,),
+        )
+        db.commit()
+
+    second = client.get(
+        f"/api/sessions/{session_id}/messages/bundle",
+        params=_bundle_continuation_params(first),
+    )
+
+    assert second.status_code == 200
+    assert second.json()["active_run_id"] == run_id
+    assert second.json()["next_cursor"] is None
+
+
+def test_message_history_bundle_rejects_cross_session_active_run_snapshot(
+    client: TestClient,
+    session_id: str,
+) -> None:
+    """A continuation cannot claim an active run from another session."""
+    _insert_snapshot_bundle_messages(session_id)
+    other_session_id = "d" * 32
+    other_run_id = "e" * 32
+    with get_db() as db:
+        session = db.execute(
+            "SELECT workspace_id FROM sessions WHERE id = ?",
+            (session_id,),
+        ).fetchone()
+        assert session is not None
+        db.execute(
+            "INSERT INTO sessions (id, workspace_id) VALUES (?, ?)",
+            (other_session_id, session["workspace_id"]),
+        )
+        db.execute(
+            """INSERT INTO prompt_runs (id, session_id, idempotency_key, status)
+               VALUES (?, ?, ?, 'completed')""",
+            (other_run_id, other_session_id, "f" * 32),
+        )
+        db.commit()
+    first = client.get(f"/api/sessions/{session_id}/messages/bundle")
+    assert first.status_code == 200
+    params = _bundle_continuation_params(first)
+    params["active_run_id"] = other_run_id
+
+    response = client.get(
+        f"/api/sessions/{session_id}/messages/bundle",
+        params=params,
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "history_bundle_snapshot_changed"
 
 
 def _insert_snapshot_bundle_messages(session_id: str) -> None:
@@ -1449,6 +1566,7 @@ def _bundle_continuation_params(first: httpx.Response) -> dict[str, object]:
         "snapshot": data["snapshot"],
         "snapshot_count": data["snapshot_count"],
         "snapshot_tail": data["snapshot_tail"],
+        "active_run_id": data["active_run_id"] or "none",
     }
 
 
@@ -1634,7 +1752,13 @@ def test_message_history_bundle_paginates_at_encoded_response_cap(
 ) -> None:
     """Incompressible messages should remain atomic below every response cap."""
     random_source = random.Random(1)
+    active_run_id = "a" * 32
     with get_db() as db:
+        db.execute(
+            """INSERT INTO prompt_runs (id, session_id, idempotency_key, status)
+               VALUES (?, ?, ?, 'running')""",
+            (active_run_id, session_id, "b" * 32),
+        )
         for index in range(3):
             content = base64.b64encode(random_source.randbytes(350_000)).decode("ascii")
             db.execute(
@@ -1666,6 +1790,7 @@ def test_message_history_bundle_paginates_at_encoded_response_cap(
                 "snapshot": snapshot,
                 "snapshot_count": snapshot_count,
                 "snapshot_tail": snapshot_tail,
+                "active_run_id": active_run_id,
             }
         )
         response = client.get(
@@ -1675,6 +1800,7 @@ def test_message_history_bundle_paginates_at_encoded_response_cap(
         assert response.status_code == 200
         assert len(response.content) <= 900_000
         assert response.json()["raw_bytes"] <= 4 * 1_024 * 1_024
+        assert response.json()["active_run_id"] == active_run_id
         decoded = _decode_history_bundle(response)
         assert 1 <= len(decoded) <= 64
         decoded_ids.extend(str(message["id"]) for message in decoded)
@@ -1763,6 +1889,7 @@ def test_message_history_bundle_empty_snapshot_is_zero(
     assert response.json()["snapshot"] == 0
     assert response.json()["snapshot_count"] == 0
     assert response.json()["snapshot_tail"] is None
+    assert response.json()["active_run_id"] is None
 
 
 def test_message_history_bundle_returns_stable_413_for_one_oversized_message(

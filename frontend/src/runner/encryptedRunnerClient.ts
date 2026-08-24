@@ -3,6 +3,7 @@ import { ApiError, apiErrorFromPayload } from "../api/errors";
 import {
   createNoiseIkInitiator,
   createNoiseIkKeypair,
+  preloadNoiseIkLibrary,
   type NoiseIkInitiator,
   type NoiseIkKeypair,
 } from "../crypto/noiseIk";
@@ -81,6 +82,10 @@ export interface EncryptedRunnerConnection {
   close(): void;
 }
 
+export function preloadEncryptedRunnerCrypto(): Promise<void> {
+  return preloadNoiseIkLibrary();
+}
+
 export class RunnerRelayConnectionError extends Error {
   constructor(message: string) {
     super(message);
@@ -93,15 +98,11 @@ export class RunnerRpcError extends ApiError {
 
   constructor(status: number, body: unknown) {
     const parsed = apiErrorFromPayload(status, body);
-    super(
-      parsed.status,
-      parsed.message,
-      {
-        code: parsed.code,
-        connect_url: parsed.connectUrl,
-        manage_url: parsed.manageUrl,
-      },
-    );
+    super(parsed.status, parsed.message, {
+      code: parsed.code,
+      connect_url: parsed.connectUrl,
+      manage_url: parsed.manageUrl,
+    });
     this.body = body;
     this.name = "RunnerRpcError";
   }
@@ -273,24 +274,18 @@ function receiveMessage(
     const handleClose = () => {
       cleanup();
       reject(
-        new RunnerRelayConnectionError(
-          "Runner relay closed before responding",
-        ),
+        new RunnerRelayConnectionError("Runner relay closed before responding"),
       );
     };
     const handleError = () => {
       cleanup();
       reject(
-        new RunnerRelayConnectionError(
-          "Runner relay failed before responding",
-        ),
+        new RunnerRelayConnectionError("Runner relay failed before responding"),
       );
     };
     const timeout = window.setTimeout(() => {
       cleanup();
-      reject(
-        new RunnerRelayConnectionError("Runner relay response timed out"),
-      );
+      reject(new RunnerRelayConnectionError("Runner relay response timed out"));
     }, timeoutMs);
     socket.addEventListener("message", handleMessage);
     socket.addEventListener("close", handleClose);

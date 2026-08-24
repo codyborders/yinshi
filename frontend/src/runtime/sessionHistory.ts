@@ -48,8 +48,9 @@ interface HistoryFieldJob {
   messageIndex: number;
 }
 
-interface SessionHistoryLoadOptions {
+export interface SessionHistoryLoadOptions {
   isCancelled?: () => boolean;
+  onBundledActiveRun?: (activeRunId: string | null) => void;
 }
 
 interface MessageHistoryBundle {
@@ -63,6 +64,7 @@ interface MessageHistoryBundle {
   snapshot: number;
   snapshotCount: number;
   snapshotTail: string | null;
+  activeRunId: string | null;
   data: string;
 }
 
@@ -270,6 +272,7 @@ function parseBundleEnvelope(value: unknown): MessageHistoryBundle {
     "snapshot",
     "snapshot_count",
     "snapshot_tail",
+    "active_run_id",
     "data",
   ];
   if (
@@ -291,6 +294,11 @@ function parseBundleEnvelope(value: unknown): MessageHistoryBundle {
     !Number.isSafeInteger(value.snapshot_count) ||
     (value.snapshot_count as number) < 0 ||
     !isNullableString(value.snapshot_tail) ||
+    !(
+      value.active_run_id === null ||
+      (typeof value.active_run_id === "string" &&
+        /^[0-9a-f]{32}$/u.test(value.active_run_id))
+    ) ||
     typeof value.data !== "string" ||
     value.data.length > HISTORY_BUNDLE_ENCODED_BYTES_MAX
   ) {
@@ -311,6 +319,7 @@ function parseBundleEnvelope(value: unknown): MessageHistoryBundle {
     snapshot: value.snapshot as number,
     snapshotCount: value.snapshot_count as number,
     snapshotTail: value.snapshot_tail,
+    activeRunId: value.active_run_id,
     data: value.data,
   };
 }
@@ -412,6 +421,7 @@ async function loadBundledSessionHistory(
   let snapshot: number | null = null;
   let snapshotCount: number | null = null;
   let snapshotTail: string | null = null;
+  let activeRunId: string | null = null;
   for (let page = 0; page < HISTORY_BUNDLE_PAGES_MAX; page += 1) {
     assertNotCancelled(options);
     const path =
@@ -423,7 +433,9 @@ async function loadBundledSessionHistory(
             through ?? "",
           )}&snapshot=${snapshot ?? ""}&snapshot_count=${
             snapshotCount ?? ""
-          }&snapshot_tail=${encodeURIComponent(snapshotTail ?? "")}`;
+          }&snapshot_tail=${encodeURIComponent(
+            snapshotTail ?? "",
+          )}&active_run_id=${activeRunId ?? "none"}`;
     const envelope = parseBundleEnvelope(await transport.get<unknown>(path));
     assertNotCancelled(options);
     if (envelope.cursor !== cursor) {
@@ -434,11 +446,13 @@ async function loadBundledSessionHistory(
       snapshot = envelope.snapshot;
       snapshotCount = envelope.snapshotCount;
       snapshotTail = envelope.snapshotTail;
+      activeRunId = envelope.activeRunId;
     } else if (
       envelope.through !== through ||
       envelope.snapshot !== snapshot ||
       envelope.snapshotCount !== snapshotCount ||
-      envelope.snapshotTail !== snapshotTail
+      envelope.snapshotTail !== snapshotTail ||
+      envelope.activeRunId !== activeRunId
     ) {
       throw new Error("Message history bundle snapshot changed unexpectedly");
     }
@@ -517,6 +531,8 @@ async function loadBundledSessionHistory(
       ) {
         throw new Error("Message history bundle snapshot tail was not found");
       }
+      assertNotCancelled(options);
+      options.onBundledActiveRun?.(activeRunId);
       return messages;
     }
     if (
