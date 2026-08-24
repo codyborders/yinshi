@@ -9,7 +9,7 @@ export const HISTORY_CACHE_MAX_TOTAL_BYTES = 4 * 1_024 * 1_024;
 export const HISTORY_CACHE_STORAGE_PREFIX = "yinshi:session-history:v1:";
 export const HISTORY_CACHE_READ_KEY_TTL_MS = 30_000;
 
-const DEFAULT_KEY_FETCH_TIMEOUT_MS = 250;
+const DEFAULT_KEY_FETCH_TIMEOUT_MS = 1_500;
 const SESSION_ID_PATTERN = /^[0-9a-f]{32}$/u;
 const KEY_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/u;
 const BASE64URL_PATTERN = /^[A-Za-z0-9_-]+$/u;

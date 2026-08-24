@@ -113,6 +113,32 @@ afterEach(() => {
 });
 
 describe("loadSessionHistory", () => {
+  it("initiates the cache read before the live bundle in the same tick", async () => {
+    const callOrder: string[] = [];
+    const envelope = await bundleEnvelope([]);
+    historyCache.client = {
+      get: vi.fn(() => {
+        callOrder.push("cache");
+        return Promise.resolve([envelope]);
+      }),
+      put: vi.fn().mockResolvedValue(undefined),
+      delete: vi.fn().mockResolvedValue(undefined),
+    };
+    const get = vi.fn(() => {
+      callOrder.push("live");
+      return Promise.resolve(envelope);
+    });
+
+    const loading = loadSessionHistory(
+      transportWithGet(get, "managed"),
+      SESSION_ID,
+      { cacheUserId: "user-1" },
+    );
+
+    expect(callOrder).toEqual(["cache", "live"]);
+    await expect(loading).resolves.toEqual([]);
+  });
+
   it("renders validated cached bundles before live revalidation and replaces cache", async () => {
     const cachedMessage = {
       id: "1".repeat(32),

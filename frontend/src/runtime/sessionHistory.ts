@@ -824,6 +824,13 @@ export async function loadSessionHistory(
       cacheUserId.length <= 256
         ? getSessionHistoryCacheClient()
         : null;
+    const cacheRead =
+      cacheClient && !options.skipCacheRead
+        ? {
+            client: cacheClient,
+            promise: cacheClient.get(cacheUserId as string, sessionId),
+          }
+        : null;
     let liveSucceeded = false;
     const livePromise = loadLiveBundledSessionHistory(
       transport,
@@ -837,9 +844,8 @@ export async function loadSessionHistory(
       () => undefined,
     );
     const cachedPromise =
-      cacheClient && !options.skipCacheRead
-        ? cacheClient
-            .get(cacheUserId as string, sessionId)
+      cacheRead !== null
+        ? cacheRead.promise
             .then(async (rawEnvelopes) => {
               if (rawEnvelopes === null || liveSucceeded) return;
               try {
@@ -856,7 +862,10 @@ export async function loadSessionHistory(
                 }
               } catch {
                 if (!options.isCancelled?.()) {
-                  await cacheClient.delete(cacheUserId as string, sessionId);
+                  await cacheRead.client.delete(
+                    cacheUserId as string,
+                    sessionId,
+                  );
                 }
               }
             })

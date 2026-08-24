@@ -93,6 +93,24 @@ describe("SessionHistoryCacheClient", () => {
     expect(refreshed.fetchKey).toHaveBeenCalledTimes(1);
   });
 
+  it("accepts a cache key response that arrives after 500 ms", async () => {
+    const envelopes = [{ data: MARKER }];
+    await clientFor().client.put(USER, SESSION, envelopes);
+    const fetchKey = vi.fn(
+      () =>
+        new Promise<unknown>((resolve) => {
+          setTimeout(() => resolve(keyResponse(USER, 1)), 500);
+        }),
+    );
+    const refreshed = new SessionHistoryCacheClient({
+      storage: sessionStorage,
+      fetchKey,
+    });
+
+    await expect(refreshed.get(USER, SESSION)).resolves.toEqual(envelopes);
+    expect(fetchKey).toHaveBeenCalledTimes(1);
+  });
+
   it("fetches and validates a fresh key for every write after a cookie switch", async () => {
     const fetchKey = vi
       .fn()
