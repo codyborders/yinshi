@@ -37,7 +37,7 @@ The `yinshi-managed-operational-critical` alert sends email after two minutes of
 
 ## State interpretation
 
-The `managed_runtimes` row identifies current runner and Sprite. It also records lifecycle and generation. Running restore fields identify the pre-activation source plus any replacement candidate. A deterministic candidate can exist before SQL records its provider identity.
+The `managed_runtimes` row identifies current runner and Sprite. It also records lifecycle and generation. Running restore fields identify the pre-activation source plus any replacement candidate. SQL records a candidate's provider identity before the provider creates it.
 
 Phase `activated` means candidate authority is active. Recovery must move forward from this point. A `managed_retired` runner must remain revoked after activation.
 
