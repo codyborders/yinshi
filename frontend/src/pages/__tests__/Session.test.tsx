@@ -18,6 +18,7 @@ const setMessagesMock = vi.fn();
 const bootstrapSessionMock = vi.fn();
 const useCatalogMock = vi.fn();
 const useAgentStreamMock = vi.fn();
+let runtimeResourceOverride: Record<string, unknown> | null = null;
 
 const minimaxProvider = {
   id: "minimax",
@@ -116,7 +117,28 @@ vi.mock("../../hooks/usePiCommands", () => ({
   usePiCommands: () => [],
 }));
 
+vi.mock("../../runtime/useRuntimeResource", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../../runtime/useRuntimeResource")>();
+  return {
+    ...actual,
+    useRuntimeResource: (
+      ...args: Parameters<typeof actual.useRuntimeResource>
+    ) => runtimeResourceOverride ?? actual.useRuntimeResource(...args),
+  };
+});
+
 import Session from "../Session";
+
+function deferred<T>() {
+  let resolve: (value: T) => void = () => {};
+  let reject: (reason?: unknown) => void = () => {};
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+  return { promise, resolve, reject };
+}
 
 function mockCatalog({
   defaultModel = minimaxModel.ref,
@@ -251,6 +273,7 @@ describe("Session", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    runtimeResourceOverride = null;
     localStorage.clear();
     sendPromptMock.mockResolvedValue(undefined);
     cancelMock.mockResolvedValue(undefined);
@@ -531,6 +554,63 @@ describe("Session", () => {
     expect(apiGetMock).toHaveBeenCalledWith(`/api/sessions/${TEST_SESSION_ID}`);
   });
 
+  it("starts active discovery and the managed history bundle before either resolves", async () => {
+    mockCatalog();
+    const activeRun = deferred<unknown>();
+    const historyBundle = deferred<unknown>();
+    const transportGet = vi.fn((path: string) => {
+      if (path === `/api/sessions/${TEST_SESSION_ID}/runs/active`) {
+        return activeRun.promise;
+      }
+      if (path === `/api/sessions/${TEST_SESSION_ID}/messages/bundle`) {
+        return historyBundle.promise;
+      }
+      if (path === `/api/sessions/${TEST_SESSION_ID}`) {
+        return Promise.resolve(sessionMetadata());
+      }
+      return Promise.reject(new Error(`Unexpected GET ${path}`));
+    });
+    runtimeResourceOverride = {
+      resource: {
+        resourceId: TEST_SESSION_ID,
+        runtime: {
+          location: "managed",
+          runnerPublicKey: "rFvhxP4Hj7ENRRoyt2-DhkltHdiuShm7vob8n0NhzUc",
+          historyBundleSupported: true,
+        },
+        transport: {
+          runtime: {
+            location: "managed",
+            runnerPublicKey: "rFvhxP4Hj7ENRRoyt2-DhkltHdiuShm7vob8n0NhzUc",
+            historyBundleSupported: true,
+          },
+          get: transportGet,
+          post: vi.fn(),
+          patch: vi.fn(),
+          put: vi.fn(),
+          delete: vi.fn(),
+          upload: vi.fn(),
+          close: vi.fn(),
+        },
+      },
+      loading: false,
+      error: null,
+    };
+
+    const rendered = renderSession();
+
+    await waitFor(() => {
+      expect(transportGet).toHaveBeenCalledWith(
+        `/api/sessions/${TEST_SESSION_ID}/runs/active`,
+      );
+      expect(transportGet).toHaveBeenCalledWith(
+        `/api/sessions/${TEST_SESSION_ID}/messages/bundle`,
+      );
+    });
+    expect(bootstrapSessionMock).not.toHaveBeenCalled();
+    rendered.unmount();
+  });
+
   it("loads history and resumes the discovered active run without starting it", async () => {
     mockCatalog();
     const runId = "b".repeat(32);
@@ -634,6 +714,114 @@ describe("Session", () => {
       await screen.findByText("Failed to load session history."),
     ).toBeInTheDocument();
     expect(bootstrapSessionMock).toHaveBeenCalledWith([], runId);
+  });
+
+  it("keeps loaded history and reports failed active discovery", async () => {
+    mockCatalog();
+    const messageId = "c".repeat(32);
+    apiGetMock.mockImplementation((path: string) => {
+      if (path === "/api/runtime") {
+        return Promise.resolve({
+          provider: "local",
+          status: "ready",
+          artifact_version: null,
+          last_error: null,
+          runner_public_key: null,
+        });
+      }
+      if (path === `/api/sessions/${TEST_SESSION_ID}/runs/active`) {
+        return Promise.reject(new Error("discovery unavailable"));
+      }
+      if (path === `/api/sessions/${TEST_SESSION_ID}`) {
+        return Promise.resolve(sessionMetadata());
+      }
+      if (path === `/api/sessions/${TEST_SESSION_ID}/messages/page`) {
+        return Promise.resolve({
+          messages: [
+            {
+              id: messageId,
+              created_at: "2026-08-24T03:00:00Z",
+              session_id: TEST_SESSION_ID,
+              role: "user",
+              content_length: 4,
+              full_message_length: null,
+              turn_id: null,
+              turn_status: null,
+            },
+          ],
+          next_cursor: null,
+        });
+      }
+      if (
+        path.startsWith(
+          `/api/sessions/${TEST_SESSION_ID}/messages/${messageId}/field`,
+        )
+      ) {
+        return Promise.resolve({ value: "keep", offset: 0, next_offset: null });
+      }
+      return Promise.reject(new Error(`Unexpected GET ${path}`));
+    });
+
+    renderSession();
+
+    expect(
+      await screen.findByText("Failed to resume the active response."),
+    ).toBeInTheDocument();
+    expect(bootstrapSessionMock).toHaveBeenCalledWith(
+      [expect.objectContaining({ content: "keep" })],
+      null,
+    );
+  });
+
+  it("ignores concurrent history results after cancellation", async () => {
+    mockCatalog();
+    const activeRun = deferred<unknown>();
+    const historyPage = deferred<unknown>();
+    apiGetMock.mockImplementation((path: string) => {
+      if (path === "/api/runtime") {
+        return Promise.resolve({
+          provider: "local",
+          status: "ready",
+          artifact_version: null,
+          last_error: null,
+          runner_public_key: null,
+        });
+      }
+      if (path === `/api/sessions/${TEST_SESSION_ID}/runs/active`) {
+        return activeRun.promise;
+      }
+      if (path === `/api/sessions/${TEST_SESSION_ID}`) {
+        return Promise.resolve(sessionMetadata());
+      }
+      if (path === `/api/sessions/${TEST_SESSION_ID}/messages/page`) {
+        return historyPage.promise;
+      }
+      return Promise.reject(new Error(`Unexpected GET ${path}`));
+    });
+
+    const rendered = renderSession();
+    await waitFor(() => {
+      expect(apiGetMock).toHaveBeenCalledWith(
+        `/api/sessions/${TEST_SESSION_ID}/runs/active`,
+      );
+      expect(apiGetMock).toHaveBeenCalledWith(
+        `/api/sessions/${TEST_SESSION_ID}/messages/page`,
+      );
+    });
+
+    rendered.unmount();
+    await act(async () => {
+      activeRun.resolve({
+        id: "b".repeat(32),
+        session_id: TEST_SESSION_ID,
+        status: "running",
+      });
+      historyPage.reject(new Error("late history failure"));
+      await Promise.resolve();
+    });
+
+    expect(bootstrapSessionMock).not.toHaveBeenCalled();
+    expect(cancelMock).not.toHaveBeenCalled();
   });
 
   it("keeps loaded history when metadata loading fails", async () => {

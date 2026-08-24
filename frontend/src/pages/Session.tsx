@@ -142,25 +142,37 @@ export default function Session() {
     const runtimeSessionId = id;
 
     async function loadHistory() {
-      let activeRunId: string | null = null;
-      let discoveryFailed = false;
-      try {
-        activeRunId = await findActiveRuntimePromptRun(
-          runtimeTransport,
-          runtimeSessionId,
-        );
-      } catch {
-        discoveryFailed = true;
-      }
+      const discoveryPromise: Promise<{
+        activeRunId: string | null;
+        failed: boolean;
+      }> = findActiveRuntimePromptRun(runtimeTransport, runtimeSessionId).then(
+        (activeRunId) => ({ activeRunId, failed: false }),
+        () => ({ activeRunId: null, failed: true }),
+      );
+      const historyPromise: Promise<
+        { ok: true; history: Message[] } | { ok: false }
+      > = loadSessionHistory(runtimeTransport, runtimeSessionId, {
+        isCancelled: () => cancelled,
+      }).then(
+        (history) => ({ ok: true, history }),
+        () => ({ ok: false }),
+      );
+      const [discovery, historyResult] = await Promise.all([
+        discoveryPromise,
+        historyPromise,
+      ]);
       if (cancelled) return;
 
+      let { activeRunId } = discovery;
+      let discoveryFailed = discovery.failed;
+      if (!historyResult.ok) {
+        if (activeRunId !== null) bootstrapSession([], activeRunId);
+        setHistoryError("Failed to load session history.");
+        setLoadingHistory(false);
+        return;
+      }
+
       try {
-        const history: Message[] = await loadSessionHistory(
-          runtimeTransport,
-          runtimeSessionId,
-          { isCancelled: () => cancelled },
-        );
-        if (cancelled) return;
         if (activeRunId === null) {
           try {
             activeRunId = await findActiveRuntimePromptRun(
@@ -173,7 +185,7 @@ export default function Session() {
           }
         }
         if (cancelled) return;
-        const mapped: ChatMessage[] = history.map((m) => {
+        const mapped: ChatMessage[] = historyResult.history.map((m) => {
           let blockIndex = 0;
           const blocks =
             m.role === "assistant"
