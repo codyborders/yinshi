@@ -1,0 +1,140 @@
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+You are a delegated subagent running from a fork of the parent session. Treat the inherited conversation as reference-only context, not a live thread to continue. Do not continue or answer prior messages as if they are waiting for a reply. Your sole job is to execute the task below and return a focused result for that task using your tools.
+
+Task:
+In /Users/user/projects/yinshi, implement the smallest safe fix for 20-30 second managed session history reloads.
+You are sole writer. Do not commit or touch .pi-subagents/. Follow strict red-green TDD.
+Production baseline for session 7fbeb08c215c8e74ddaf9d46d3604801 is 28.5 seconds. It has 56 messages, 1 metadata page, 76 non-empty fields, 141 field chunk requests, and currently needs 18 sequential connection generations.
+Root cause: loadSessionHistory hydrates every content/full_message field serially. Managed runtimeTransport also serializes every bounded history request on one session.read connection.
+Preserve serial cursor-based metadata paging, serial chunks within one field, exact message order, field validation, request budgets, cancellation, field failure behavior, eight-request rotation per connection, 16 MiB limit, session.read authorization, ordinary session.read serialization, local/hosted/BYOC behavior, active-run behavior, and transport close semantics.
+Implement bounded field hydration with exactly 4 workers across independent message fields. Preallocate results by metadata index. Stop scheduling new work after cancellation or first failure. Drain already-started workers before rejecting. Keep chunks for one field sequential.
+Then give managed bounded history requests at most 4 internal history connection lanes. Select a stable lane per field so all chunks of that field share one connection. Metadata pages may use a fixed history lane. Both content and full_message may be distributed. All lanes must still request scopes:["session.read"], maxSessionBytes 16_777_216, and capability endpoint /api/runtime/capabilities. Keep the existing per-entry eight-request retirement counter. Non-history session.read requests remain on the ordinary lane.
+Start with one public sessionHistory test that demonstrates no more than four fields start and a fifth waits. Confirm red for expected serial behavior. Implement minimum behavior.
+Add tests for out-of-order completion preserving metadata order, chunks in one field remaining sequential, cancellation or failure stopping new jobs while started jobs drain, managed history using no more than four connections without overlap per connection, independent rotation per history lane, ordinary session.read remaining sequential, and close covering all history lanes. Avoid timing assertions by using deferred promises.
+Run focused tests after each red-green step. Finish with full frontend Vitest, typecheck, Prettier check for changed files, production build, and git diff --check. Report commands and any residual risk.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+You are reviving a previous subagent conversation.
+
+Original run: ea66f91e
+Original agent: worker
+Original session file: /Users/user/.pi/agent/sessions/--Users-user-projects-yinshi--/2026-08-24T14-52-35-476Z_01a03442-4d14-7ac2-b80b-7ea39ee2a2f9.jsonl
+
+Use the stored session context as background. Answer the orchestrator's follow-up below. Do not assume the original child process is still alive.
+
+Follow-up:
+Review found one medium issue. Fix it with strict red-green TDD. In sessionHistory.ts, Promise.all preserves worker order, so workerResults.find can return a later failure from a lower-index worker instead of the first failure observed. Add a deterministic deferred-promise test where worker 1 fails first, worker 0 fails later during drain, and loadSessionHistory rejects with worker 1 error only after started workers drain. Confirm red for wrong error selection. Then store first observed failure at catch time in shared state and throw it after all workers finish. Preserve cancellation behavior and bounded scheduling. Run focused sessionHistory tests, both runtime focused suites, full frontend tests, typecheck, changed-file Prettier check, build, and git diff --check. Do not commit or touch .pi-subagents/.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+- criterion-2: Return evidence sufficient for an independent acceptance review
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Review gate: required by reviewer.
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    },
+    {
+      "id": "criterion-2",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
