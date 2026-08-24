@@ -478,6 +478,7 @@ async def _run_local_preparation(operation: Callable[[], _T]) -> _T:
 
 def _prepare_tenant_sidecar_context(
     tenant: TenantContext,
+    application_mode: str,
     runtime_session_id: str | None,
     repo_agents_md: str | None,
     repo_root_path: str | None,
@@ -491,6 +492,7 @@ def _prepare_tenant_sidecar_context(
     runtime_inputs = resolve_effective_pi_runtime(
         tenant.user_id,
         tenant.data_dir,
+        application_mode=application_mode,
         runtime_session_id=runtime_session_id,
         repo_agents_md=repo_agents_md,
     )
@@ -547,9 +549,11 @@ async def resolve_tenant_sidecar_context(
             settings_payload=None,
         )
 
+    application_mode = getattr(request.app.state, "mode", "hosted")
     preparation = await _run_local_preparation(
         lambda: _prepare_tenant_sidecar_context(
             tenant,
+            application_mode,
             runtime_session_id,
             repo_agents_md,
             repo_root_path,

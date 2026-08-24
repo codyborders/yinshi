@@ -101,7 +101,11 @@ async def get_catalog(request: Request) -> dict[str, Any]:
     tenant = require_tenant(request)
     connections = list_provider_connections(tenant.user_id)
     connected_provider_ids = {connection["provider"] for connection in connections}
-    runtime_inputs = resolve_effective_pi_runtime(tenant.user_id, tenant.data_dir)
+    runtime_inputs = resolve_effective_pi_runtime(
+        tenant.user_id,
+        tenant.data_dir,
+        application_mode=getattr(request.app.state, "mode", "hosted"),
+    )
 
     try:
         # Catalog construction reads model metadata only. Use the persistent host

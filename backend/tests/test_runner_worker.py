@@ -10,11 +10,78 @@ import os
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
+from io import BytesIO
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
+from zipfile import ZIP_DEFLATED, ZipFile
 
 import pytest
 
 from yinshi.runner_worker import RunnerWorkerManager
+from yinshi.services.pi_config import import_from_upload
+
+
+def _build_skill_archive() -> bytes:
+    """Return one minimal imported skill archive."""
+    buffer = BytesIO()
+    with ZipFile(buffer, "w", ZIP_DEFLATED) as archive:
+        archive.writestr(
+            ".pi/agent/skills/local-check/SKILL.md",
+            "---\nname: local-check\ndescription: Local runtime check.\n---\n",
+        )
+    return buffer.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_runner_worker_exposes_imported_skill_commands(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    db: sqlite3.Connection,
+) -> None:
+    """Worker command discovery should use its account-bound local sidecar path."""
+    manager = RunnerWorkerManager(
+        data_directory=tmp_path / "runner",
+        data_protection_key=b"r" * 32,
+        environment_setter=monkeypatch.setenv,
+    )
+    dispatcher = manager.dispatcher("account-1")
+    await import_from_upload(
+        dispatcher.user_id,
+        dispatcher.data_directory,
+        _build_skill_archive(),
+        "pi-config.zip",
+    )
+    fake_commands = [
+        {
+            "kind": "skill",
+            "name": "local-check",
+            "description": "Local runtime check.",
+            "command_name": "skill:local-check",
+        }
+    ]
+    mock_sidecar = AsyncMock()
+    mock_sidecar.list_imported_commands = AsyncMock(
+        return_value={"commands": fake_commands},
+    )
+    mock_sidecar.disconnect = AsyncMock()
+
+    with patch(
+        "yinshi.api.settings.create_sidecar_connection",
+        return_value=mock_sidecar,
+    ) as mock_connect:
+        response = await dispatcher.request(
+            method="GET",
+            path="/api/settings/pi-config/commands",
+            body=None,
+        )
+
+    assert response.status_code == 200
+    assert response.body == {"commands": fake_commands}
+    mock_connect.assert_awaited_once_with(None)
+    mock_sidecar.list_imported_commands.assert_awaited_once_with(
+        agent_dir=str(Path(dispatcher.data_directory) / "pi-config" / "agent")
+    )
+    mock_sidecar.disconnect.assert_awaited_once_with()
 
 
 @pytest.mark.asyncio

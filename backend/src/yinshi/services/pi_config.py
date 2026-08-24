@@ -1040,20 +1040,27 @@ def update_enabled_categories(
     return cast(dict[str, Any], get_pi_config(normalized_user_id))
 
 
-def resolve_pi_runtime(user_id: str, data_dir: str) -> PiRuntimeInputs:
-    """Return the active Pi runtime inputs when container mode is enabled."""
+def resolve_pi_runtime(
+    user_id: str,
+    data_dir: str,
+    *,
+    application_mode: str = "hosted",
+) -> PiRuntimeInputs:
+    """Return Pi inputs allowed for the current application execution mode."""
+    if application_mode not in {"desktop", "hosted", "worker"}:
+        raise ValueError(f"Unsupported application mode: {application_mode}")
     settings = get_settings()
-    if not settings.container_enabled:
+    if not settings.container_enabled and application_mode == "hosted":
+        return PiRuntimeInputs(agent_dir=None, settings_payload=None)
+
+    agent_dir = _pi_agent_dir_path(data_dir)
+    if not agent_dir.is_dir():
         return PiRuntimeInputs(agent_dir=None, settings_payload=None)
 
     config = get_pi_config(user_id)
     if config is None:
         return PiRuntimeInputs(agent_dir=None, settings_payload=None)
     if config["status"] != "ready":
-        return PiRuntimeInputs(agent_dir=None, settings_payload=None)
-
-    agent_dir = _pi_agent_dir_path(data_dir)
-    if not agent_dir.is_dir():
         return PiRuntimeInputs(agent_dir=None, settings_payload=None)
 
     settings_payload = get_sidecar_settings_payload(user_id)
@@ -1063,9 +1070,18 @@ def resolve_pi_runtime(user_id: str, data_dir: str) -> PiRuntimeInputs:
     )
 
 
-def resolve_agent_dir(user_id: str, data_dir: str) -> str | None:
+def resolve_agent_dir(
+    user_id: str,
+    data_dir: str,
+    *,
+    application_mode: str = "hosted",
+) -> str | None:
     """Return the agentDir path when a ready Pi config should be active."""
-    runtime_inputs = resolve_pi_runtime(user_id, data_dir)
+    runtime_inputs = resolve_pi_runtime(
+        user_id,
+        data_dir,
+        application_mode=application_mode,
+    )
     return runtime_inputs.agent_dir
 
 
@@ -1073,11 +1089,16 @@ def resolve_effective_pi_runtime(
     user_id: str,
     data_dir: str,
     *,
+    application_mode: str = "hosted",
     runtime_session_id: str | None = None,
     repo_agents_md: str | None = None,
 ) -> PiRuntimeInputs:
     """Return runtime inputs with an optional repo-level AGENTS.md overlay applied."""
-    runtime_inputs = resolve_pi_runtime(user_id, data_dir)
+    runtime_inputs = resolve_pi_runtime(
+        user_id,
+        data_dir,
+        application_mode=application_mode,
+    )
 
     if repo_agents_md is None:
         return runtime_inputs

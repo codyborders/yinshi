@@ -828,11 +828,11 @@ def test_delete_pi_config_removes_files_and_settings(auth_client: TestClient) ->
     assert _get_user_settings_row(tenant.user_id) is None
 
 
-def test_prompt_does_not_forward_pi_settings_when_runtime_is_inactive(
+def test_prompt_forwards_pi_settings_to_host_local_sidecar(
     auth_client: TestClient,
     git_repo: str,
 ) -> None:
-    """Prompt execution should not forward Pi settings when container isolation is off."""
+    """Prompt execution should activate imported settings without container isolation."""
     from tests.factories import create_full_stack, make_mock_sidecar
 
     _activate_container_runtime()
@@ -847,7 +847,9 @@ def test_prompt_does_not_forward_pi_settings_when_runtime_is_inactive(
 
     settings = get_settings()
     original_container_enabled = settings.container_enabled
+    original_application_mode = auth_client.app.state.mode
     settings.container_enabled = False
+    auth_client.app.state.mode = "worker"
 
     stack = create_full_stack(auth_client, git_repo, name="prompt-test")
     session_id = stack["session"]["id"]
@@ -884,14 +886,20 @@ def test_prompt_does_not_forward_pi_settings_when_runtime_is_inactive(
         ):
             response = auth_client.post(
                 f"/api/sessions/{session_id}/prompt",
-                json={"prompt": "run without pi runtime"},
+                json={"prompt": "run with host-local pi runtime"},
             )
     finally:
         settings.container_enabled = original_container_enabled
+        auth_client.app.state.mode = original_application_mode
 
     assert response.status_code == 200
-    assert mock_sidecar.warmup.call_args.kwargs["agent_dir"] is None
-    assert mock_sidecar.warmup.call_args.kwargs["settings_payload"] is None
+    assert mock_sidecar.warmup.call_args.kwargs["agent_dir"] == str(
+        Path(tenant.data_dir) / "pi-config" / "agent"
+    )
+    assert mock_sidecar.warmup.call_args.kwargs["settings_payload"] == {
+        "provider": {"baseUrl": "https://api.example.com", "nested": {}},
+        "retry": {"enabled": False},
+    }
 
 
 def test_upload_pi_config_rate_limit_returns_429(auth_client: TestClient) -> None:
@@ -1110,6 +1118,30 @@ def test_list_pi_config_commands_returns_empty_without_imported_config(
     assert response.status_code == 200
     assert response.json() == {"commands": []}
     assert mock_connect.call_count == 0
+
+
+def test_hosted_mode_does_not_load_imported_commands_without_containers(
+    auth_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Hosted mode must not execute imported resources in a shared local sidecar."""
+    from yinshi.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "container_enabled", False)
+    upload_response = auth_client.post(
+        "/api/settings/pi-config/upload",
+        files={"file": ("pi-config.zip", _build_pi_archive(), "application/zip")},
+    )
+    assert upload_response.status_code == 201
+
+    with patch(
+        "yinshi.api.settings.create_sidecar_connection",
+    ) as mock_connect:
+        response = auth_client.get("/api/settings/pi-config/commands")
+
+    assert response.status_code == 200
+    assert response.json() == {"commands": []}
+    mock_connect.assert_not_awaited()
 
 
 def test_list_pi_config_commands_returns_sidecar_payload(
