@@ -1178,9 +1178,10 @@ async def test_prompt_journal_immediate_cancellation_wins_start_race(
         "SELECT status FROM prompt_runs WHERE id = ?",
         (run.id,),
     ).fetchone()["status"]
-    assert status in ("stopping", "cancelled"), (
-        f"prompt run did not enter stopping or cancelled state: {status}"
-    )
+    assert status in (
+        "stopping",
+        "cancelled",
+    ), f"prompt run did not enter stopping or cancelled state: {status}"
     batch = await journal.events(
         request=journal_request,
         session_id=session_id,
