@@ -1,0 +1,84 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "0778521f928c",
+  "session_id": "session",
+  "strategy": "manual-commit",
+  "created_at": "2026-08-24T03:53:28.427993Z",
+  "branch": "main",
+  "checkpoints_count": 2,
+  "save_step_count": 3,
+  "files_touched": [
+    "backend/src/yinshi/api/prompt_runs.py",
+    "backend/src/yinshi/services/prompt_journal.py",
+    "backend/src/yinshi/services/runner_rpc.py",
+    "backend/tests/test_prompt_journal.py",
+    "backend/tests/test_prompt_runs_api.py",
+    "backend/tests/test_runner_rpc.py",
+    "frontend/src/hooks/__tests__/useAgentStream.test.tsx",
+    "frontend/src/hooks/useAgentStream.ts",
+    "frontend/src/pages/Session.tsx",
+    "frontend/src/pages/__tests__/Session.test.tsx",
+    "frontend/src/runtime/promptStream.test.ts",
+    "frontend/src/runtime/promptStream.ts",
+    "frontend/src/runtime/runtimeTransport.test.ts",
+    "frontend/src/runtime/runtimeTransport.ts"
+  ],
+  "agent": "Pi",
+  "model": "gpt-5.6-sol",
+  "turn_id": "9008b8b2ecfd",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 333032,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 1199616,
+    "output_tokens": 10664,
+    "api_call_count": 28
+  },
+  "session_metrics": {
+    "turn_count": 45
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-08-24T03:53:28.260272Z",
+    "agent_lines": 1025,
+    "agent_removed": 171,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 1025,
+    "total_lines_changed": 1196,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 73,
+      "user_lines_removed": 0,
+      "agent_lines_added": 183641,
+      "agent_lines_removed": 172,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/030327ed_reviewer_0_input.md": 56,
+        ".pi-subagents/artifacts/030327ed_reviewer_0_transcript.jsonl": 2,
+        ".pi-subagents/missions/959cdfcd-ea43-459d-b4f8-4f62946fc833.json": 15
+      }
+    },
+    {
+      "checkpoint_number": 3,
+      "user_lines_added": 646,
+      "user_lines_removed": 0,
+      "agent_lines_added": 184178,
+      "agent_lines_removed": 171,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/030327ed_reviewer_0_input.md": 56,
+        ".pi-subagents/artifacts/030327ed_reviewer_0_transcript.jsonl": 181,
+        ".pi-subagents/artifacts/2c62d067_worker_input.md": 73,
+        ".pi-subagents/artifacts/2c62d067_worker_transcript.jsonl": 64,
+        ".pi-subagents/artifacts/ad71c4d5_reviewer_input.md": 65,
+        ".pi-subagents/artifacts/ad71c4d5_reviewer_transcript.jsonl": 2,
+        ".pi-subagents/missions/0eee8c61-0238-4021-af93-d1adf77cfc98.json": 24,
+        ".pi-subagents/missions/959cdfcd-ea43-459d-b4f8-4f62946fc833.json": 157,
+        ".pi-subagents/missions/bebff0ae-e60c-462d-a8c9-901cd15207ff.json": 24
+      }
+    }
+  ]
+}
