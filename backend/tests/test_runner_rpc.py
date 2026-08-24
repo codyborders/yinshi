@@ -32,6 +32,7 @@ from yinshi.services.runner_noise_session import (
 from yinshi.services.runner_rpc import (
     EncryptedRunnerRpcSession,
     RunnerRpcRequest,
+    _parse_request,
     _required_scope,
 )
 from yinshi.services.runner_rpc_transport import (
@@ -178,7 +179,7 @@ async def _open_session(
     initiator.set_prologue(RUNNER_NOISE_PROLOGUE)
     initiator.start_handshake()
     first_message = bytes(initiator.write_message(capability.encode("ascii")))
-    response = await rpc_session.handle_frame(first_message, current_time=1_900_000_001)
+    response = (await rpc_session.handle_frame(first_message, current_time=1_900_000_001))[0]
     assert json.loads(initiator.read_message(response))["transfer_id"] == claims.transfer_id
     return rpc_session, initiator
 
@@ -213,19 +214,23 @@ def _transport_request_payload(
     sequence: int,
     body: object = None,
     query: dict[str, str] | None = None,
+    response_mode: str | None = None,
 ) -> tuple[bytes, str]:
     request_id = str(uuid.uuid4())
+    request: dict[str, object] = {
+        "body": body,
+        "method": method,
+        "path": path,
+        "query": query or {},
+        "request_id": request_id,
+        "sequence": sequence,
+        "type": "request",
+        "v": 2,
+    }
+    if response_mode is not None:
+        request["response_mode"] = response_mode
     payload = json.dumps(
-        {
-            "body": body,
-            "method": method,
-            "path": path,
-            "query": query or {},
-            "request_id": request_id,
-            "sequence": sequence,
-            "type": "request",
-            "v": 2,
-        },
+        request,
         separators=(",", ":"),
         sort_keys=True,
     ).encode("utf-8")
@@ -240,10 +245,12 @@ async def _transport_round_trip(
     response_frame: bytes | None = None
     request_frames = _transport_frames(request_payload, kind=_TRANSPORT_REQUEST)
     for index, frame in enumerate(request_frames):
-        encrypted_response = await session.handle_frame(
-            bytes(initiator.encrypt(frame)),
-            current_time=1_900_000_002,
-        )
+        encrypted_response = (
+            await session.handle_frame(
+                bytes(initiator.encrypt(frame)),
+                current_time=1_900_000_002,
+            )
+        )[0]
         plaintext_response = bytes(initiator.decrypt(encrypted_response))
         if index + 1 < len(request_frames):
             header = _TRANSPORT_HEADER.unpack(plaintext_response[: _TRANSPORT_HEADER.size])
@@ -274,10 +281,12 @@ async def _transport_round_trip(
             count,
             total,
         )
-        encrypted_fragment = await session.handle_frame(
-            bytes(initiator.encrypt(pull)),
-            current_time=1_900_000_003,
-        )
+        encrypted_fragment = (
+            await session.handle_frame(
+                bytes(initiator.encrypt(pull)),
+                current_time=1_900_000_003,
+            )
+        )[0]
         fragment = bytes(initiator.decrypt(encrypted_fragment))
         fragment_header = _TRANSPORT_HEADER.unpack(fragment[: _TRANSPORT_HEADER.size])
         assert fragment_header == (
@@ -315,6 +324,35 @@ class _HistoryQueryDispatcher(WorkerHttpDispatcher):
         return WorkerHttpResponse(
             status_code=200,
             body={"ok": True},
+            content_type="application/json",
+        )
+
+
+class _BundleResponseDispatcher(WorkerHttpDispatcher):
+    """Return one configured response from the exact history bundle route."""
+
+    def __init__(self, response_body: object) -> None:
+        self.response_body = response_body
+
+    @property
+    def user_id(self) -> str:
+        return _USER_ID
+
+    async def request(
+        self,
+        *,
+        method: str,
+        path: str,
+        body: object,
+        query: dict[str, str] | None = None,
+    ) -> WorkerHttpResponse:
+        assert method == "GET"
+        assert path == f"/api/sessions/{'a' * 32}/messages/bundle"
+        assert body is None
+        assert query == {}
+        return WorkerHttpResponse(
+            status_code=200,
+            body=self.response_body,
             content_type="application/json",
         )
 
@@ -465,7 +503,7 @@ async def test_bounded_history_queries_reach_worker_unchanged(
         )
         response = json.loads(
             initiator.decrypt(
-                await session.handle_frame(encrypted_request, current_time=1_900_000_002)
+                (await session.handle_frame(encrypted_request, current_time=1_900_000_002))[0]
             )
         )
         assert response["request_id"] == request_id
@@ -648,7 +686,7 @@ async def test_bounded_history_queries_reject_invalid_variants(
     )
 
     with pytest.raises(ValueError, match="history"):
-        await session.handle_frame(encrypted_request, current_time=1_900_000_002)
+        (await session.handle_frame(encrypted_request, current_time=1_900_000_002))[0]
 
     assert dispatcher.requests == []
 
@@ -676,10 +714,12 @@ async def test_bounded_history_query_rejects_duplicate_json_keys(
     ).encode("utf-8")
 
     with pytest.raises(ValueError, match="unique"):
-        await session.handle_frame(
-            bytes(initiator.encrypt(plaintext)),
-            current_time=1_900_000_002,
-        )
+        (
+            await session.handle_frame(
+                bytes(initiator.encrypt(plaintext)),
+                current_time=1_900_000_002,
+            )
+        )[0]
 
     assert dispatcher.requests == []
 
@@ -698,7 +738,7 @@ async def test_legacy_client_receives_legacy_response_when_both_fit(
         sequence=0,
     )
 
-    encrypted_response = await session.handle_frame(request, current_time=1_900_000_002)
+    encrypted_response = (await session.handle_frame(request, current_time=1_900_000_002))[0]
     response = json.loads(initiator.decrypt(encrypted_response))
 
     assert response == {
@@ -745,7 +785,7 @@ async def test_encrypted_repository_list_uses_restricted_worker_app(
         sequence=0,
     )
 
-    encrypted_response = await session.handle_frame(request, current_time=1_900_000_002)
+    encrypted_response = (await session.handle_frame(request, current_time=1_900_000_002))[0]
     response = json.loads(initiator.decrypt(encrypted_response))
 
     assert response == {
@@ -765,10 +805,12 @@ async def test_encrypted_repository_list_uses_restricted_worker_app(
         version=2,
         query={"flow_id": "11111111-1111-4111-8111-111111111111"},
     )
-    provider_response = await session.handle_frame(
-        provider_request,
-        current_time=1_900_000_002,
-    )
+    provider_response = (
+        await session.handle_frame(
+            provider_request,
+            current_time=1_900_000_002,
+        )
+    )[0]
     assert provider_response is not None
     provider_payload = json.loads(initiator.decrypt(provider_response))
     assert provider_payload["request_id"] == provider_request_id
@@ -783,7 +825,7 @@ async def test_encrypted_repository_list_uses_restricted_worker_app(
         query={"path": "ignored.txt"},
     )
     with pytest.raises(ValueError, match="does not accept query"):
-        await session.handle_frame(unexpected_query_request, current_time=1_900_000_003)
+        (await session.handle_frame(unexpected_query_request, current_time=1_900_000_003))[0]
 
 
 @pytest.mark.asyncio
@@ -835,10 +877,12 @@ async def test_encrypted_repository_import_rejects_paths_and_reuses_worker_route
         body={"name": "unsafe", "local_path": "/private/source"},
     )
     with pytest.raises(ValueError, match="local path"):
-        await rejected_session.handle_frame(
-            rejected_request,
-            current_time=1_900_000_002,
-        )
+        (
+            await rejected_session.handle_frame(
+                rejected_request,
+                current_time=1_900_000_002,
+            )
+        )[0]
 
     session, initiator = await _open_session(
         tmp_path / "accepted",
@@ -856,7 +900,7 @@ async def test_encrypted_repository_import_rejects_paths_and_reuses_worker_route
         },
     )
 
-    encrypted_response = await session.handle_frame(request, current_time=1_900_000_002)
+    encrypted_response = (await session.handle_frame(request, current_time=1_900_000_002))[0]
     response = json.loads(initiator.decrypt(encrypted_response))
 
     assert response["status"] == 201
@@ -972,10 +1016,12 @@ async def test_encrypted_workspace_and_session_crud_use_scoped_worker_routes(
     )
     create_workspace_response = json.loads(
         initiator.decrypt(
-            await session.handle_frame(
-                create_workspace_request,
-                current_time=1_900_000_002,
-            )
+            (
+                await session.handle_frame(
+                    create_workspace_request,
+                    current_time=1_900_000_002,
+                )
+            )[0]
         )
     )
     assert create_workspace_response["status"] == 201
@@ -990,10 +1036,12 @@ async def test_encrypted_workspace_and_session_crud_use_scoped_worker_routes(
     )
     list_workspace_response = json.loads(
         initiator.decrypt(
-            await session.handle_frame(
-                list_workspace_request,
-                current_time=1_900_000_003,
-            )
+            (
+                await session.handle_frame(
+                    list_workspace_request,
+                    current_time=1_900_000_003,
+                )
+            )[0]
         )
     )
     assert [item["id"] for item in list_workspace_response["body"]] == [workspace_id]
@@ -1007,10 +1055,12 @@ async def test_encrypted_workspace_and_session_crud_use_scoped_worker_routes(
     )
     create_session_response = json.loads(
         initiator.decrypt(
-            await session.handle_frame(
-                create_session_request,
-                current_time=1_900_000_004,
-            )
+            (
+                await session.handle_frame(
+                    create_session_request,
+                    current_time=1_900_000_004,
+                )
+            )[0]
         )
     )
     assert create_session_response["status"] == 201
@@ -1025,10 +1075,12 @@ async def test_encrypted_workspace_and_session_crud_use_scoped_worker_routes(
     )
     get_session_response = json.loads(
         initiator.decrypt(
-            await session.handle_frame(
-                get_session_request,
-                current_time=1_900_000_005,
-            )
+            (
+                await session.handle_frame(
+                    get_session_request,
+                    current_time=1_900_000_005,
+                )
+            )[0]
         )
     )
     assert get_session_response["status"] == 200
@@ -1045,7 +1097,9 @@ async def test_encrypted_workspace_and_session_crud_use_scoped_worker_routes(
         query={"path": "notes.txt"},
     )
     read_file_response = json.loads(
-        initiator.decrypt(await session.handle_frame(read_file_request, current_time=1_900_000_006))
+        initiator.decrypt(
+            (await session.handle_frame(read_file_request, current_time=1_900_000_006))[0]
+        )
     )
     assert read_file_response["body"] == {"path": "notes.txt", "content": "before"}
     assert read_file_response["v"] == 2
@@ -1061,7 +1115,7 @@ async def test_encrypted_workspace_and_session_crud_use_scoped_worker_routes(
     )
     write_file_response = json.loads(
         initiator.decrypt(
-            await session.handle_frame(write_file_request, current_time=1_900_000_007)
+            (await session.handle_frame(write_file_request, current_time=1_900_000_007))[0]
         )
     )
     assert write_file_response["status"] == 200
@@ -1075,7 +1129,7 @@ async def test_encrypted_workspace_and_session_crud_use_scoped_worker_routes(
         version=2,
     )
     tree_response = json.loads(
-        initiator.decrypt(await session.handle_frame(tree_request, current_time=1_900_000_008))
+        initiator.decrypt((await session.handle_frame(tree_request, current_time=1_900_000_008))[0])
     )
     assert tree_response["status"] == 200
     assert any(node["path"] == "notes.txt" for node in tree_response["body"]["files"])
@@ -1094,7 +1148,9 @@ async def test_encrypted_workspace_and_session_crud_use_scoped_worker_routes(
         },
     )
     start_run_response = json.loads(
-        initiator.decrypt(await session.handle_frame(start_run_request, current_time=1_900_000_009))
+        initiator.decrypt(
+            (await session.handle_frame(start_run_request, current_time=1_900_000_009))[0]
+        )
     )
     assert start_run_response["status"] == 202
     run_id = start_run_response["body"]["id"]
@@ -1110,10 +1166,12 @@ async def test_encrypted_workspace_and_session_crud_use_scoped_worker_routes(
         )
         event_response = json.loads(
             initiator.decrypt(
-                await session.handle_frame(
-                    event_request,
-                    current_time=1_900_000_002 + request_sequence,
-                )
+                (
+                    await session.handle_frame(
+                        event_request,
+                        current_time=1_900_000_002 + request_sequence,
+                    )
+                )[0]
             )
         )
         assert event_response["status"] == 200
@@ -1138,10 +1196,12 @@ async def test_encrypted_workspace_and_session_crud_use_scoped_worker_routes(
     )
     start_terminal_response = json.loads(
         initiator.decrypt(
-            await session.handle_frame(
-                start_terminal_request,
-                current_time=1_900_000_020,
-            )
+            (
+                await session.handle_frame(
+                    start_terminal_request,
+                    current_time=1_900_000_020,
+                )
+            )[0]
         )
     )
     assert start_terminal_response["status"] == 201
@@ -1157,10 +1217,12 @@ async def test_encrypted_workspace_and_session_crud_use_scoped_worker_routes(
     )
     terminal_events_response = json.loads(
         initiator.decrypt(
-            await session.handle_frame(
-                terminal_events_request,
-                current_time=1_900_000_021,
-            )
+            (
+                await session.handle_frame(
+                    terminal_events_request,
+                    current_time=1_900_000_021,
+                )
+            )[0]
         )
     )
     assert terminal_events_response["body"]["events"] == [
@@ -1176,10 +1238,12 @@ async def test_encrypted_workspace_and_session_crud_use_scoped_worker_routes(
     )
     terminal_input_response = json.loads(
         initiator.decrypt(
-            await session.handle_frame(
-                terminal_input_request,
-                current_time=1_900_000_022,
-            )
+            (
+                await session.handle_frame(
+                    terminal_input_request,
+                    current_time=1_900_000_022,
+                )
+            )[0]
         )
     )
     assert terminal_input_response["status"] == 204
@@ -1207,10 +1271,12 @@ async def test_encrypted_workspace_and_session_crud_use_scoped_worker_routes(
     )
     start_upload_response = json.loads(
         initiator.decrypt(
-            await session.handle_frame(
-                start_upload_request,
-                current_time=1_900_000_023,
-            )
+            (
+                await session.handle_frame(
+                    start_upload_request,
+                    current_time=1_900_000_023,
+                )
+            )[0]
         )
     )
     assert start_upload_response["status"] == 201
@@ -1226,10 +1292,12 @@ async def test_encrypted_workspace_and_session_crud_use_scoped_worker_routes(
     )
     upload_chunk_response = json.loads(
         initiator.decrypt(
-            await session.handle_frame(
-                upload_chunk_request,
-                current_time=1_900_000_024,
-            )
+            (
+                await session.handle_frame(
+                    upload_chunk_request,
+                    current_time=1_900_000_024,
+                )
+            )[0]
         )
     )
     assert upload_chunk_response["body"]["next_chunk_index"] == 1
@@ -1243,10 +1311,12 @@ async def test_encrypted_workspace_and_session_crud_use_scoped_worker_routes(
     )
     complete_upload_response = json.loads(
         initiator.decrypt(
-            await session.handle_frame(
-                complete_upload_request,
-                current_time=1_900_000_025,
-            )
+            (
+                await session.handle_frame(
+                    complete_upload_request,
+                    current_time=1_900_000_025,
+                )
+            )[0]
         )
     )
     assert complete_upload_response["status"] == 201
@@ -1268,10 +1338,12 @@ async def test_encrypted_workspace_and_session_crud_use_scoped_worker_routes(
     )
     create_provider_response = json.loads(
         initiator.decrypt(
-            await session.handle_frame(
-                create_provider_request,
-                current_time=1_900_000_026,
-            )
+            (
+                await session.handle_frame(
+                    create_provider_request,
+                    current_time=1_900_000_026,
+                )
+            )[0]
         )
     )
     assert create_provider_response["status"] == 201
@@ -1286,16 +1358,157 @@ async def test_encrypted_workspace_and_session_crud_use_scoped_worker_routes(
     )
     list_provider_response = json.loads(
         initiator.decrypt(
-            await session.handle_frame(
-                list_provider_request,
-                current_time=1_900_000_027,
-            )
+            (
+                await session.handle_frame(
+                    list_provider_request,
+                    current_time=1_900_000_027,
+                )
+            )[0]
         )
     )
     assert [item["provider"] for item in list_provider_response["body"]] == ["anthropic"]
     assert "sk-ant-encrypted-worker-test" not in json.dumps(list_provider_response)
     await prompt_journal.close()
     await terminal_journal.close_all()
+
+
+@pytest.mark.parametrize("response_mode", [None, "push"])
+def test_runner_rpc_request_accepts_only_exact_push_mode(response_mode: str | None) -> None:
+    """V2 requests accept the legacy shape or literal push mode only."""
+    payload, request_id = _transport_request_payload(
+        method="GET",
+        path=f"/api/sessions/{'a' * 32}/messages/bundle",
+        sequence=0,
+        response_mode=response_mode,
+    )
+
+    request = _parse_request(payload, expected_sequence=0)
+
+    assert request.request_id == request_id
+    assert request.response_mode == response_mode
+
+
+@pytest.mark.parametrize("response_mode", ["pull", "", "PUSH", False, None])
+def test_runner_rpc_request_rejects_invalid_explicit_response_mode(
+    response_mode: object,
+) -> None:
+    """Present response_mode fields must contain only literal push."""
+    payload, _ = _transport_request_payload(
+        method="GET",
+        path=f"/api/sessions/{'a' * 32}/messages/bundle",
+        sequence=0,
+    )
+    request = json.loads(payload)
+    request["response_mode"] = response_mode
+
+    with pytest.raises(ValueError, match="response_mode"):
+        _parse_request(
+            json.dumps(request, separators=(",", ":")).encode(),
+            expected_sequence=0,
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("body_size, expected_frames", [(10, 1), (280_000, 5), (900_000, 14)])
+async def test_history_bundle_push_returns_all_ordered_frames_without_pulls(
+    body_size: int,
+    expected_frames: int,
+    tmp_path: Path,
+    db: sqlite3.Connection,
+) -> None:
+    """Negotiated history bundles push every canonical fragment in nonce order."""
+    response_body = {"data": "x" * body_size}
+    dispatcher = _BundleResponseDispatcher(response_body)
+    session, initiator = await _open_session(
+        tmp_path,
+        scopes=["session.read"],
+        dispatcher_factory=lambda _user_id: dispatcher,
+        max_session_bytes=16 * 1_024 * 1_024,
+    )
+    request_payload, request_id = _transport_request_payload(
+        method="GET",
+        path=f"/api/sessions/{'a' * 32}/messages/bundle",
+        sequence=0,
+        response_mode="push",
+    )
+
+    encrypted_frames = await session.handle_frame(
+        bytes(initiator.encrypt(request_payload)),
+        current_time=1_900_000_002,
+    )
+
+    assert len(encrypted_frames) == expected_frames
+    plaintext_frames = [bytes(initiator.decrypt(frame)) for frame in encrypted_frames]
+    if expected_frames == 1:
+        response = json.loads(plaintext_frames[0])
+    else:
+        fragments = [
+            _TRANSPORT_HEADER.unpack(frame[: _TRANSPORT_HEADER.size]) for frame in plaintext_frames
+        ]
+        total = fragments[0][4]
+        assert fragments == [
+            (_TRANSPORT_MAGIC, _TRANSPORT_RESPONSE, index, expected_frames, total)
+            for index in range(expected_frames)
+        ]
+        response = json.loads(
+            b"".join(frame[_TRANSPORT_HEADER.size :] for frame in plaintext_frames)
+        )
+    assert response["request_id"] == request_id
+    assert response["body"] == response_body
+
+    if expected_frames > 1:
+        pull = _TRANSPORT_HEADER.pack(
+            _TRANSPORT_MAGIC,
+            _TRANSPORT_PULL,
+            1,
+            expected_frames,
+            fragments[0][4],
+        )
+        with pytest.raises(ValueError, match="fragment"):
+            await session.handle_frame(
+                bytes(initiator.encrypt(pull)),
+                current_time=1_900_000_003,
+            )
+
+
+@pytest.mark.asyncio
+async def test_push_is_bundle_only_and_checks_response_limit_before_emission(
+    tmp_path: Path,
+    db: sqlite3.Connection,
+) -> None:
+    """Push fails closed for other routes and oversized bundle responses."""
+    wrong_route_session, wrong_route_initiator = await _open_session(tmp_path)
+    wrong_route, _ = _transport_request_payload(
+        method="GET",
+        path="/health",
+        sequence=0,
+        response_mode="push",
+    )
+    with pytest.raises(ValueError, match="limited to history bundles"):
+        await wrong_route_session.handle_frame(
+            bytes(wrong_route_initiator.encrypt(wrong_route)),
+            current_time=1_900_000_002,
+        )
+
+    response_body = {"data": "x" * (10 * 1_024 * 1_024)}
+    dispatcher = _BundleResponseDispatcher(response_body)
+    session, initiator = await _open_session(
+        tmp_path,
+        scopes=["session.read"],
+        dispatcher_factory=lambda _user_id: dispatcher,
+        max_session_bytes=16 * 1_024 * 1_024,
+    )
+    request, _ = _transport_request_payload(
+        method="GET",
+        path=f"/api/sessions/{'a' * 32}/messages/bundle",
+        sequence=0,
+        response_mode="push",
+    )
+    with pytest.raises(ValueError, match="exceeded transport limit"):
+        await session.handle_frame(
+            bytes(initiator.encrypt(request)),
+            current_time=1_900_000_002,
+        )
 
 
 @pytest.mark.asyncio
@@ -1326,7 +1539,7 @@ async def test_legacy_request_transitions_to_fragments_for_large_response(
         query={"path": "large.txt"},
     )
 
-    encrypted_first = await session.handle_frame(request, current_time=1_900_000_002)
+    encrypted_first = (await session.handle_frame(request, current_time=1_900_000_002))[0]
     first = bytes(initiator.decrypt(encrypted_first))
     magic, kind, index, count, total = _TRANSPORT_HEADER.unpack(first[: _TRANSPORT_HEADER.size])
     assert (magic, kind, index) == (_TRANSPORT_MAGIC, _TRANSPORT_RESPONSE, 0)
@@ -1341,10 +1554,12 @@ async def test_legacy_request_transitions_to_fragments_for_large_response(
             count,
             total,
         )
-        encrypted_fragment = await session.handle_frame(
-            bytes(initiator.encrypt(pull)),
-            current_time=1_900_000_003,
-        )
+        encrypted_fragment = (
+            await session.handle_frame(
+                bytes(initiator.encrypt(pull)),
+                current_time=1_900_000_003,
+            )
+        )[0]
         fragment = bytes(initiator.decrypt(encrypted_fragment))
         start = response_index * _TRANSPORT_PAYLOAD_BYTES_MAX
         fragment_payload = fragment[_TRANSPORT_HEADER.size :]
@@ -1427,10 +1642,12 @@ async def test_encrypted_rpc_rejects_invalid_fragment_streams_and_fails_closed(
             + b"x"
         )
     else:
-        first_response = await session.handle_frame(
-            bytes(initiator.encrypt(frames[0])),
-            current_time=1_900_000_002,
-        )
+        first_response = (
+            await session.handle_frame(
+                bytes(initiator.encrypt(frames[0])),
+                current_time=1_900_000_002,
+            )
+        )[0]
         initiator.decrypt(first_response)
         invalid_frame = _TRANSPORT_HEADER.pack(
             _TRANSPORT_MAGIC,
@@ -1441,15 +1658,19 @@ async def test_encrypted_rpc_rejects_invalid_fragment_streams_and_fails_closed(
         )
 
     with pytest.raises(ValueError, match="fragment"):
-        await session.handle_frame(
-            bytes(initiator.encrypt(invalid_frame)),
-            current_time=1_900_000_003,
-        )
+        (
+            await session.handle_frame(
+                bytes(initiator.encrypt(invalid_frame)),
+                current_time=1_900_000_003,
+            )
+        )[0]
     with pytest.raises(RuntimeError, match="failed"):
-        await session.handle_frame(
-            bytes(initiator.encrypt(frames[0])),
-            current_time=1_900_000_004,
-        )
+        (
+            await session.handle_frame(
+                bytes(initiator.encrypt(frames[0])),
+                current_time=1_900_000_004,
+            )
+        )[0]
 
 
 @pytest.mark.asyncio
@@ -1467,4 +1688,4 @@ async def test_encrypted_rpc_rejects_replayed_sequence(
     )
 
     with pytest.raises(ValueError, match="sequence"):
-        await session.handle_frame(request, current_time=1_900_000_002)
+        (await session.handle_frame(request, current_time=1_900_000_002))[0]

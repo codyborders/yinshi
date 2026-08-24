@@ -58,8 +58,12 @@ class FakeWebSocket extends EventTarget {
   readonly sent: Array<string | ArrayBufferView | ArrayBuffer | Blob> = [];
   binaryType = "blob";
   readyState = FakeWebSocket.OPEN;
+  private queuedRpcResponses = 1;
 
-  constructor(private readonly rpcResponseDelayMs = 0) {
+  constructor(
+    private readonly rpcResponseDelayMs = 0,
+    private readonly synchronousRpcResponses = false,
+  ) {
     super();
     queueMicrotask(() => this.dispatchEvent(new Event("open")));
   }
@@ -76,15 +80,26 @@ class FakeWebSocket extends EventTarget {
     }
     const response =
       this.sent.length === 2 ? Uint8Array.of(11) : Uint8Array.of(12);
-    const dispatchResponse = () =>
-      this.dispatchEvent(
-        new MessageEvent("message", { data: response.buffer }),
-      );
+    const responseCount = this.queuedRpcResponses;
+    this.queuedRpcResponses = 1;
+    const dispatchResponse = () => {
+      for (let index = 0; index < responseCount; index += 1) {
+        this.dispatchEvent(
+          new MessageEvent("message", { data: response.buffer }),
+        );
+      }
+    };
     if (this.sent.length > 2 && this.rpcResponseDelayMs > 0) {
       window.setTimeout(dispatchResponse, this.rpcResponseDelayMs);
+    } else if (this.sent.length > 2 && this.synchronousRpcResponses) {
+      dispatchResponse();
     } else {
       queueMicrotask(dispatchResponse);
     }
+  }
+
+  queueRpcResponses(count: number): void {
+    this.queuedRpcResponses = count;
   }
 
   close(): void {
@@ -96,6 +111,9 @@ class FakeWebSocket extends EventTarget {
 function dependencies(
   socket: FakeWebSocket,
   responseBody: unknown = { protocol: "yinshi-runner-v1", status: "ok" },
+  capturedRequests: Uint8Array[] = [],
+  transformPushFrames: (frames: Uint8Array[]) => Uint8Array[] = (frames) =>
+    frames,
 ): RunnerClientDependencies {
   return {
     createKeypair: async () => ({
@@ -130,11 +148,29 @@ function dependencies(
             plaintext.length >= 4 &&
             new TextDecoder().decode(plaintext.subarray(0, 4)) === "YRP1";
           if (!isTransport) {
-            pending.push(
-              response.length <= 65_535 - 16
-                ? response
-                : transportResponse(response, 0),
-            );
+            capturedRequests.push(plaintext.slice());
+            let pushResponse = false;
+            try {
+              pushResponse =
+                JSON.parse(new TextDecoder().decode(plaintext))
+                  .response_mode === "push";
+            } catch {
+              pushResponse = false;
+            }
+            if (response.length <= 65_535 - 16) {
+              pending.push(response);
+            } else if (pushResponse) {
+              const count = Math.ceil(response.length / transportPayloadBytes);
+              const frames = transformPushFrames(
+                Array.from({ length: count }, (_value, index) =>
+                  transportResponse(response, index),
+                ),
+              );
+              pending.push(...frames);
+              socket.queueRpcResponses(frames.length);
+            } else {
+              pending.push(transportResponse(response, 0));
+            }
             return Uint8Array.of(2);
           }
           const view = new DataView(
@@ -551,6 +587,268 @@ describe("checkEncryptedRunnerHealth", () => {
       ),
     ).resolves.toEqual(responseBody);
     expect(socket.sent.length).toBeGreaterThan(100);
+  });
+
+  it("receives an immediate five-frame pushed response without pull requests", async () => {
+    const socket = new FakeWebSocket(0, true);
+    const responseBody = { data: "x".repeat(280_000) };
+    const capturedRequests: Uint8Array[] = [];
+    const clientDependencies = dependencies(
+      socket,
+      responseBody,
+      capturedRequests,
+    );
+    clientDependencies.issueCapability = vi.fn().mockResolvedValue({
+      ...(await clientDependencies.issueCapability({
+        initiator_public_key: clientPublicKey,
+        scopes: ["session.read"],
+        max_session_bytes: 16 * 1_024 * 1_024,
+      })),
+      max_session_bytes: 16 * 1_024 * 1_024,
+    });
+
+    const connection = await connectEncryptedRunner(
+      {
+        expectedRunnerPublicKey: runnerPublicKey,
+        scopes: ["session.read"],
+        maxSessionBytes: 16 * 1_024 * 1_024,
+        pushResponsesSupported: true,
+      },
+      clientDependencies,
+    );
+    await expect(
+      connection.request({
+        method: "GET",
+        path: `/api/sessions/${"a".repeat(32)}/messages/bundle`,
+        response_mode: "push",
+      }),
+    ).resolves.toEqual(responseBody);
+    connection.close();
+
+    expect(socket.sent).toHaveLength(3);
+    expect(
+      JSON.parse(new TextDecoder().decode(capturedRequests[0])),
+    ).toMatchObject({
+      response_mode: "push",
+    });
+  });
+
+  it("times out when a pushed response stops after its first fragment", async () => {
+    vi.useFakeTimers();
+    const socket = new FakeWebSocket();
+    const responseBody = { data: "x".repeat(140_000) };
+    const clientDependencies = dependencies(socket, responseBody);
+    clientDependencies.issueCapability = vi.fn().mockResolvedValue({
+      ...(await clientDependencies.issueCapability({
+        initiator_public_key: clientPublicKey,
+        scopes: ["session.read"],
+        max_session_bytes: 16 * 1_024 * 1_024,
+      })),
+      max_session_bytes: 16 * 1_024 * 1_024,
+    });
+    const connection = await connectEncryptedRunner(
+      {
+        expectedRunnerPublicKey: runnerPublicKey,
+        scopes: ["session.read"],
+        maxSessionBytes: 16 * 1_024 * 1_024,
+        pushResponsesSupported: true,
+      },
+      clientDependencies,
+    );
+    socket.send = (data) => {
+      socket.sent.push(data);
+      socket.dispatchEvent(
+        new MessageEvent("message", { data: Uint8Array.of(12).buffer }),
+      );
+    };
+
+    try {
+      const request = connection.request({
+        method: "GET",
+        path: `/api/sessions/${"a".repeat(32)}/messages/bundle`,
+        response_mode: "push",
+      });
+      const rejection = expect(request).rejects.toThrow(
+        "Runner relay response timed out",
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(45_000);
+      await rejection;
+      expect(socket.readyState).toBe(3);
+    } finally {
+      connection.close();
+      vi.useRealTimers();
+    }
+  });
+
+  it("poisons the next request when an extra pushed frame is queued", async () => {
+    const socket = new FakeWebSocket(0, true);
+    const responseBody = { data: "x".repeat(140_000) };
+    const clientDependencies = dependencies(
+      socket,
+      responseBody,
+      [],
+      (frames) => [...frames, frames[frames.length - 1]],
+    );
+    clientDependencies.issueCapability = vi.fn().mockResolvedValue({
+      ...(await clientDependencies.issueCapability({
+        initiator_public_key: clientPublicKey,
+        scopes: ["session.read"],
+        max_session_bytes: 16 * 1_024 * 1_024,
+      })),
+      max_session_bytes: 16 * 1_024 * 1_024,
+    });
+    const connection = await connectEncryptedRunner(
+      {
+        expectedRunnerPublicKey: runnerPublicKey,
+        scopes: ["session.read"],
+        maxSessionBytes: 16 * 1_024 * 1_024,
+        pushResponsesSupported: true,
+      },
+      clientDependencies,
+    );
+
+    await expect(
+      connection.request({
+        method: "GET",
+        path: `/api/sessions/${"a".repeat(32)}/messages/bundle`,
+        response_mode: "push",
+      }),
+    ).resolves.toEqual(responseBody);
+    await expect(
+      connection.request({
+        method: "GET",
+        path: `/api/sessions/${"b".repeat(32)}/messages/bundle`,
+        response_mode: "push",
+      }),
+    ).rejects.toThrow("Runner RPC transport fragment is invalid");
+    expect(socket.readyState).toBe(3);
+  });
+
+  it.each([
+    ["remote close", "Runner relay closed before responding"],
+    ["local dispose", "Runner relay connection closed"],
+  ])(
+    "rejects a pending pushed receive on %s",
+    async (closeMode, expectedMessage) => {
+      const socket = new FakeWebSocket();
+      const responseBody = { data: "x".repeat(140_000) };
+      const clientDependencies = dependencies(socket, responseBody);
+      clientDependencies.issueCapability = vi.fn().mockResolvedValue({
+        ...(await clientDependencies.issueCapability({
+          initiator_public_key: clientPublicKey,
+          scopes: ["session.read"],
+          max_session_bytes: 16 * 1_024 * 1_024,
+        })),
+        max_session_bytes: 16 * 1_024 * 1_024,
+      });
+      const connection = await connectEncryptedRunner(
+        {
+          expectedRunnerPublicKey: runnerPublicKey,
+          scopes: ["session.read"],
+          maxSessionBytes: 16 * 1_024 * 1_024,
+          pushResponsesSupported: true,
+        },
+        clientDependencies,
+      );
+      socket.send = (data) => {
+        socket.sent.push(data);
+        socket.dispatchEvent(
+          new MessageEvent("message", { data: Uint8Array.of(12).buffer }),
+        );
+      };
+
+      const request = connection.request({
+        method: "GET",
+        path: `/api/sessions/${"a".repeat(32)}/messages/bundle`,
+        response_mode: "push",
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+      if (closeMode === "remote close") socket.close();
+      else connection.close();
+
+      await expect(request).rejects.toThrow(expectedMessage);
+      connection.close();
+    },
+  );
+
+  it("fails closed when pushed response fragments are reordered", async () => {
+    const socket = new FakeWebSocket(0, true);
+    const responseBody = { data: "x".repeat(140_000) };
+    const clientDependencies = dependencies(
+      socket,
+      responseBody,
+      [],
+      (frames) => [frames[0], frames[2], frames[1]],
+    );
+    clientDependencies.issueCapability = vi.fn().mockResolvedValue({
+      ...(await clientDependencies.issueCapability({
+        initiator_public_key: clientPublicKey,
+        scopes: ["session.read"],
+        max_session_bytes: 16 * 1_024 * 1_024,
+      })),
+      max_session_bytes: 16 * 1_024 * 1_024,
+    });
+
+    const connection = await connectEncryptedRunner(
+      {
+        expectedRunnerPublicKey: runnerPublicKey,
+        scopes: ["session.read"],
+        maxSessionBytes: 16 * 1_024 * 1_024,
+        pushResponsesSupported: true,
+      },
+      clientDependencies,
+    );
+    await expect(
+      connection.request({
+        method: "GET",
+        path: `/api/sessions/${"a".repeat(32)}/messages/bundle`,
+        response_mode: "push",
+      }),
+    ).rejects.toThrow("Runner RPC transport fragment is invalid");
+    expect(socket.readyState).toBe(3);
+  });
+
+  it("omits push mode and retains pulls when support is absent", async () => {
+    const socket = new FakeWebSocket();
+    const responseBody = { data: "x".repeat(70_000) };
+    const capturedRequests: Uint8Array[] = [];
+    const clientDependencies = dependencies(
+      socket,
+      responseBody,
+      capturedRequests,
+    );
+    clientDependencies.issueCapability = vi.fn().mockResolvedValue({
+      ...(await clientDependencies.issueCapability({
+        initiator_public_key: clientPublicKey,
+        scopes: ["session.read"],
+        max_session_bytes: 16 * 1_024 * 1_024,
+      })),
+      max_session_bytes: 16 * 1_024 * 1_024,
+    });
+
+    const connection = await connectEncryptedRunner(
+      {
+        expectedRunnerPublicKey: runnerPublicKey,
+        scopes: ["session.read"],
+        maxSessionBytes: 16 * 1_024 * 1_024,
+      },
+      clientDependencies,
+    );
+    await expect(
+      connection.request({
+        method: "GET",
+        path: `/api/sessions/${"a".repeat(32)}/messages/bundle`,
+        response_mode: "push",
+      }),
+    ).resolves.toEqual(responseBody);
+    connection.close();
+
+    expect(socket.sent).toHaveLength(4);
+    expect(
+      JSON.parse(new TextDecoder().decode(capturedRequests[0])),
+    ).not.toHaveProperty("response_mode");
   });
 
   it("closes the connection after an out-of-order response fragment", async () => {

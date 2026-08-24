@@ -76,7 +76,9 @@ function parseManagedRuntime(value: unknown): Record<string, unknown> {
       response.status,
     ) ||
     (response.history_bundle_supported !== undefined &&
-      typeof response.history_bundle_supported !== "boolean")
+      typeof response.history_bundle_supported !== "boolean") ||
+    (response.runner_rpc_push_supported !== undefined &&
+      typeof response.runner_rpc_push_supported !== "boolean")
   ) {
     throw new Error("Managed runtime response is invalid");
   }
@@ -156,6 +158,9 @@ export async function provisionRuntimeRef(
       ...(typeof managed.history_bundle_supported === "boolean"
         ? { historyBundleSupported: managed.history_bundle_supported }
         : {}),
+      ...(typeof managed.runner_rpc_push_supported === "boolean"
+        ? { runnerRpcPushSupported: managed.runner_rpc_push_supported }
+        : {}),
     };
   }
   if (managed.status === "failed") {
@@ -232,6 +237,9 @@ export async function resolveRuntimeRef(
         runnerPublicKey: managed.runner_public_key,
         ...(typeof managed.history_bundle_supported === "boolean"
           ? { historyBundleSupported: managed.history_bundle_supported }
+          : {}),
+        ...(typeof managed.runner_rpc_push_supported === "boolean"
+          ? { runnerRpcPushSupported: managed.runner_rpc_push_supported }
           : {}),
       };
     }

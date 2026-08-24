@@ -90,6 +90,38 @@ async def test_runner_relay_runtime_rejects_unknown_or_malformed_frames(
 
 
 @pytest.mark.asyncio
+async def test_runner_relay_runtime_prefixes_every_pushed_response(
+    tmp_path: Path,
+    db: sqlite3.Connection,
+) -> None:
+    """Every ordered session response retains the same transfer UUID prefix."""
+    runtime = _runtime(tmp_path)
+    transfer_id = str(uuid.uuid4())
+    await runtime.handle_control(json.dumps({"runner_id": "runner-1", "type": "welcome"}))
+    await runtime.handle_control(json.dumps({"transfer_id": transfer_id, "type": "open"}))
+
+    class Session:
+        async def handle_frame(self, ciphertext: bytes, *, current_time: int) -> tuple[bytes, ...]:
+            assert ciphertext == b"request"
+            assert current_time == 1_900_000_000
+            return (b"first", b"second", b"third")
+
+        def close(self) -> None:
+            return None
+
+    runtime._sessions[transfer_id] = Session()  # type: ignore[assignment]
+
+    responses = await runtime.handle_binary(
+        uuid.UUID(transfer_id).bytes + b"request",
+        current_time=1_900_000_000,
+    )
+
+    assert responses == tuple(
+        uuid.UUID(transfer_id).bytes + response for response in (b"first", b"second", b"third")
+    )
+
+
+@pytest.mark.asyncio
 async def test_runner_relay_runtime_accepts_duplicate_close_after_retirement(
     tmp_path: Path,
     db: sqlite3.Connection,

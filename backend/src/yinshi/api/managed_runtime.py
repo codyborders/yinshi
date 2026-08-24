@@ -69,6 +69,7 @@ class ManagedRuntimeOut(BaseModel):
     last_error: str | None = None
     runner_public_key: str | None = None
     history_bundle_supported: bool = False
+    runner_rpc_push_supported: bool = False
 
 
 router = APIRouter(tags=["runtime"])
@@ -102,6 +103,10 @@ def _safe_runtime_status(
         last_error=runtime.last_error,
         runner_public_key=runner_public_key,
         history_bundle_supported=(
+            runtime.lifecycle_status == "ready"
+            and runtime.artifact_version == expected_artifact_version
+        ),
+        runner_rpc_push_supported=(
             runtime.lifecycle_status == "ready"
             and runtime.artifact_version == expected_artifact_version
         ),

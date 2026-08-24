@@ -104,6 +104,75 @@ describe("runtime transport", () => {
     expect(client.get).not.toHaveBeenCalled();
   });
 
+  it("selects push only for exact advertised managed history bundles", async () => {
+    const connection = {
+      request: vi.fn().mockResolvedValue({}),
+      close: vi.fn(),
+    };
+    const connectEncrypted = vi.fn().mockResolvedValue(connection);
+    const transport = createRuntimeTransport(
+      {
+        location: "managed",
+        runnerPublicKey,
+        runnerRpcPushSupported: true,
+      },
+      {
+        apiClient: apiClient(),
+        encryptedRequest: vi.fn(),
+        connectEncrypted,
+      },
+    );
+    const sessionId = "a".repeat(32);
+
+    await transport.get(`/api/sessions/${sessionId}/messages/bundle`);
+    await transport.get(`/api/sessions/${sessionId}/messages/page`);
+
+    expect(connectEncrypted).toHaveBeenCalledWith({
+      expectedRunnerPublicKey: runnerPublicKey,
+      scopes: ["session.read"],
+      maxSessionBytes: 16_777_216,
+      capabilityEndpoint: "/api/runtime/capabilities",
+      pushResponsesSupported: true,
+    });
+    expect(connection.request).toHaveBeenNthCalledWith(1, {
+      method: "GET",
+      path: `/api/sessions/${sessionId}/messages/bundle`,
+      query: {},
+      body: null,
+      response_mode: "push",
+    });
+    expect(connection.request).toHaveBeenNthCalledWith(2, {
+      method: "GET",
+      path: `/api/sessions/${sessionId}/messages/page`,
+      query: {},
+      body: null,
+    });
+  });
+
+  it("keeps managed bundles on pull when push advertisement is absent", async () => {
+    const connection = {
+      request: vi.fn().mockResolvedValue({}),
+      close: vi.fn(),
+    };
+    const transport = createRuntimeTransport(
+      { location: "managed", runnerPublicKey },
+      {
+        apiClient: apiClient(),
+        encryptedRequest: vi.fn(),
+        connectEncrypted: vi.fn().mockResolvedValue(connection),
+      },
+    );
+
+    await transport.get(`/api/sessions/${"a".repeat(32)}/messages/bundle`);
+
+    expect(connection.request).toHaveBeenCalledWith({
+      method: "GET",
+      path: `/api/sessions/${"a".repeat(32)}/messages/bundle`,
+      query: {},
+      body: null,
+    });
+  });
+
   it("keeps managed OAuth callback input inside the encrypted connection", async () => {
     const client = apiClient();
     const connection = {

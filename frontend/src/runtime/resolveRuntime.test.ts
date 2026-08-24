@@ -13,6 +13,7 @@ describe("runtime resolution", () => {
       last_error: null,
       runner_public_key: runnerKey,
       history_bundle_supported: true,
+      runner_rpc_push_supported: true,
     });
     const provisionRuntime = vi.fn();
 
@@ -25,6 +26,7 @@ describe("runtime resolution", () => {
       location: "managed",
       runnerPublicKey: runnerKey,
       historyBundleSupported: true,
+      runnerRpcPushSupported: true,
     });
     expect(getRuntime).toHaveBeenCalledTimes(1);
     expect(provisionRuntime).not.toHaveBeenCalled();
@@ -36,6 +38,7 @@ describe("runtime resolution", () => {
       status: "ready",
       runner_public_key: runnerKey,
       history_bundle_supported: false,
+      runner_rpc_push_supported: false,
     });
 
     await expect(
@@ -47,6 +50,7 @@ describe("runtime resolution", () => {
       location: "managed",
       runnerPublicKey: runnerKey,
       historyBundleSupported: false,
+      runnerRpcPushSupported: false,
     });
   });
 
@@ -330,6 +334,48 @@ describe("runtime resolution", () => {
             desktop: false,
             getRuntime: vi.fn().mockResolvedValue(response),
             provisionRuntime: vi.fn(),
+          },
+        ),
+      ).rejects.toThrow("Managed runtime response is invalid");
+    },
+  );
+
+  it.each(["true", 1, null])(
+    "rejects invalid push support from runtime lookup: %p",
+    async (runnerRpcPushSupported) => {
+      await expect(
+        resolveRuntimeRef(
+          { location: "hosted" },
+          {
+            desktop: false,
+            getRuntime: vi.fn().mockResolvedValue({
+              provider: "fly_sprites",
+              status: "ready",
+              runner_public_key: runnerKey,
+              runner_rpc_push_supported: runnerRpcPushSupported,
+            }),
+            provisionRuntime: vi.fn(),
+          },
+        ),
+      ).rejects.toThrow("Managed runtime response is invalid");
+    },
+  );
+
+  it.each(["true", 1, null])(
+    "rejects invalid push support from runtime provisioning: %p",
+    async (runnerRpcPushSupported) => {
+      await expect(
+        provisionRuntimeRef(
+          { location: "hosted" },
+          {
+            desktop: false,
+            getRuntime: vi.fn(),
+            provisionRuntime: vi.fn().mockResolvedValue({
+              provider: "fly_sprites",
+              status: "ready",
+              runner_public_key: runnerKey,
+              runner_rpc_push_supported: runnerRpcPushSupported,
+            }),
           },
         ),
       ).rejects.toThrow("Managed runtime response is invalid");

@@ -64,6 +64,7 @@ export interface EncryptedRunnerConnectionOptions {
   readonly scopes: readonly string[];
   readonly maxSessionBytes?: number;
   readonly capabilityEndpoint?: RunnerCapabilityEndpoint;
+  readonly pushResponsesSupported?: boolean;
 }
 
 export interface EncryptedRunnerOperation {
@@ -71,6 +72,7 @@ export interface EncryptedRunnerOperation {
   readonly path: string;
   readonly query?: Readonly<Record<string, string>>;
   readonly body?: unknown;
+  readonly response_mode?: "push";
 }
 
 export interface EncryptedRunnerRequest
@@ -293,6 +295,100 @@ function receiveMessage(
   });
 }
 
+class BinaryMessageInbox {
+  private readonly queued: Array<ArrayBuffer | Error> = [];
+  private pending:
+    | {
+        readonly resolve: (value: ArrayBuffer) => void;
+        readonly reject: (reason: Error) => void;
+        readonly timeout: number;
+      }
+    | undefined;
+  private closed = false;
+
+  constructor(private readonly socket: WebSocket) {
+    socket.addEventListener("message", this.handleMessage);
+    socket.addEventListener("close", this.handleClose);
+    socket.addEventListener("error", this.handleError);
+  }
+
+  receive(timeoutMs = RPC_RESPONSE_TIMEOUT_MS): Promise<ArrayBuffer> {
+    if (this.pending !== undefined) {
+      return Promise.reject(
+        new Error("Runner response receive is already pending"),
+      );
+    }
+    const queued = this.queued.shift();
+    if (queued instanceof Error) return Promise.reject(queued);
+    if (queued !== undefined) return Promise.resolve(queued);
+    if (this.closed) {
+      return Promise.reject(
+        new RunnerRelayConnectionError("Runner relay closed before responding"),
+      );
+    }
+    return new Promise((resolve, reject) => {
+      const timeout = window.setTimeout(() => {
+        this.pending = undefined;
+        reject(
+          new RunnerRelayConnectionError("Runner relay response timed out"),
+        );
+      }, timeoutMs);
+      this.pending = { resolve, reject, timeout };
+    });
+  }
+
+  dispose(): void {
+    this.closed = true;
+    this.socket.removeEventListener("message", this.handleMessage);
+    this.socket.removeEventListener("close", this.handleClose);
+    this.socket.removeEventListener("error", this.handleError);
+    this.rejectPending(
+      new RunnerRelayConnectionError("Runner relay connection closed"),
+    );
+    this.queued.length = 0;
+  }
+
+  private readonly handleMessage = (event: MessageEvent): void => {
+    const item =
+      event.data instanceof ArrayBuffer
+        ? event.data
+        : new Error("Runner RPC response must be binary");
+    if (this.pending === undefined) {
+      this.queued.push(item);
+      return;
+    }
+    const pending = this.pending;
+    this.pending = undefined;
+    window.clearTimeout(pending.timeout);
+    if (item instanceof Error) pending.reject(item);
+    else pending.resolve(item);
+  };
+
+  private readonly handleClose = (): void => {
+    this.closed = true;
+    this.rejectPending(
+      new RunnerRelayConnectionError("Runner relay closed before responding"),
+    );
+  };
+
+  private readonly handleError = (): void => {
+    this.rejectPending(
+      new RunnerRelayConnectionError("Runner relay failed before responding"),
+    );
+  };
+
+  private rejectPending(error: Error): void {
+    if (this.pending === undefined) {
+      this.queued.push(error);
+      return;
+    }
+    const pending = this.pending;
+    this.pending = undefined;
+    window.clearTimeout(pending.timeout);
+    pending.reject(error);
+  }
+}
+
 async function sendAndReceive(
   socket: WebSocket,
   message: string | Uint8Array,
@@ -332,26 +428,23 @@ async function exchangeEncryptedFrame(
   socket: WebSocket,
   initiator: NoiseIkInitiator,
   plaintext: Uint8Array,
+  inbox: BinaryMessageInbox,
 ): Promise<Uint8Array> {
   const ciphertext = initiator.encrypt(plaintext);
   if (ciphertext.length > NOISE_CIPHERTEXT_BYTES_MAX) {
     throw new Error("Runner RPC encrypted fragment is too large");
   }
-  const encryptedResponse = await sendAndReceive(
-    socket,
-    ciphertext,
-    RPC_RESPONSE_TIMEOUT_MS,
-  );
-  if (!(encryptedResponse instanceof ArrayBuffer)) {
-    throw new Error("Runner RPC response must be binary");
-  }
-  return initiator.decrypt(new Uint8Array(encryptedResponse));
+  const encryptedResponse = inbox.receive();
+  socket.send(ciphertext);
+  return initiator.decrypt(new Uint8Array(await encryptedResponse));
 }
 
 async function collectFramedResponse(
   socket: WebSocket,
   initiator: NoiseIkInitiator,
   firstResponse: Uint8Array,
+  inbox: BinaryMessageInbox,
+  pushResponse: boolean,
 ): Promise<Uint8Array> {
   let fragment = parseTransportFragment(firstResponse, RPC_RESPONSE_BYTES_MAX);
   if (fragment.kind !== TRANSPORT_RESPONSE || fragment.index !== 0) {
@@ -360,16 +453,19 @@ async function collectFramedResponse(
   const response = new Uint8Array(fragment.total);
   response.set(fragment.payload, 0);
   for (let index = 1; index < fragment.count; index += 1) {
-    const plaintext = await exchangeEncryptedFrame(
-      socket,
-      initiator,
-      packTransportFragment(
-        TRANSPORT_PULL,
-        index,
-        fragment.count,
-        fragment.total,
-      ),
-    );
+    const plaintext = pushResponse
+      ? initiator.decrypt(new Uint8Array(await inbox.receive()))
+      : await exchangeEncryptedFrame(
+          socket,
+          initiator,
+          packTransportFragment(
+            TRANSPORT_PULL,
+            index,
+            fragment.count,
+            fragment.total,
+          ),
+          inbox,
+        );
     const nextFragment = parseTransportFragment(
       plaintext,
       RPC_RESPONSE_BYTES_MAX,
@@ -392,14 +488,21 @@ async function exchangeRpcPayload(
   socket: WebSocket,
   initiator: NoiseIkInitiator,
   request: Uint8Array,
+  inbox: BinaryMessageInbox,
+  pushResponse: boolean,
 ): Promise<Uint8Array> {
   if (request.length < 1 || request.length > RPC_REQUEST_BYTES_MAX) {
     throw new Error("Runner RPC request is too large");
   }
   if (request.length <= NOISE_PLAINTEXT_BYTES_MAX) {
-    const response = await exchangeEncryptedFrame(socket, initiator, request);
+    const response = await exchangeEncryptedFrame(
+      socket,
+      initiator,
+      request,
+      inbox,
+    );
     return hasTransportMagic(response)
-      ? collectFramedResponse(socket, initiator, response)
+      ? collectFramedResponse(socket, initiator, response, inbox, pushResponse)
       : response;
   }
 
@@ -421,6 +524,7 @@ async function exchangeRpcPayload(
         request.length,
         request.subarray(start, end),
       ),
+      inbox,
     );
     if (index + 1 < requestCount) {
       parseTransportAck(response, index, requestCount, request.length);
@@ -431,7 +535,13 @@ async function exchangeRpcPayload(
   if (firstResponse === undefined) {
     throw new Error("Runner RPC transport fragment is invalid");
   }
-  return collectFramedResponse(socket, initiator, firstResponse);
+  return collectFramedResponse(
+    socket,
+    initiator,
+    firstResponse,
+    inbox,
+    pushResponse,
+  );
 }
 
 function parseRpcResponse(
@@ -497,8 +607,9 @@ function validateOperation(operation: EncryptedRunnerOperation): {
   readonly path: string;
   readonly query: Readonly<Record<string, string>>;
   readonly body: unknown;
+  readonly response_mode?: "push";
 } {
-  const { method, path, query = {}, body = null } = operation;
+  const { method, path, query = {}, body = null, response_mode } = operation;
   if (!path.startsWith("/") || path.includes("?") || path.includes("#")) {
     throw new TypeError("Runner request path must be normalized");
   }
@@ -517,7 +628,16 @@ function validateOperation(operation: EncryptedRunnerOperation): {
   if (!new Set(["DELETE", "GET", "PATCH", "POST", "PUT"]).has(method)) {
     throw new TypeError("Runner request method is invalid");
   }
-  return { method, path, query, body };
+  if (response_mode !== undefined && response_mode !== "push") {
+    throw new TypeError("Runner response mode is invalid");
+  }
+  return {
+    method,
+    path,
+    query,
+    body,
+    ...(response_mode === "push" ? { response_mode } : {}),
+  };
 }
 
 export async function connectEncryptedRunner(
@@ -529,6 +649,7 @@ export async function connectEncryptedRunner(
     scopes,
     maxSessionBytes = RUNNER_HEALTH_SESSION_BYTES,
     capabilityEndpoint = DEFAULT_CAPABILITY_ENDPOINT,
+    pushResponsesSupported = false,
   } = options;
   if (
     capabilityEndpoint !== DEFAULT_CAPABILITY_ENDPOINT &&
@@ -591,11 +712,13 @@ export async function connectEncryptedRunner(
   }
   socket.binaryType = "arraybuffer";
   let closed = false;
+  let inbox: BinaryMessageInbox | undefined;
   let requestPending = false;
   let nextSequence = 0;
   const close = () => {
     if (closed) return;
     closed = true;
+    inbox?.dispose();
     initiator.dispose();
     if (
       socket.readyState === WebSocket.OPEN ||
@@ -621,6 +744,7 @@ export async function connectEncryptedRunner(
       initiator.readHandshakeMessage(new Uint8Array(handshakeResponse)),
       capability.transfer_id,
     );
+    inbox = new BinaryMessageInbox(socket);
   } catch (error) {
     close();
     throw error;
@@ -636,11 +760,14 @@ export async function connectEncryptedRunner(
         close();
         throw new Error("Runner connection reached its message limit");
       }
-      const { method, path, query, body } = validateOperation(operation);
+      const { method, path, query, body, response_mode } =
+        validateOperation(operation);
       requestPending = true;
       const sequence = nextSequence;
       try {
         const requestId = dependencies.createRequestId();
+        const pushResponse =
+          pushResponsesSupported === true && response_mode === "push";
         const request = new TextEncoder().encode(
           JSON.stringify({
             body,
@@ -651,10 +778,20 @@ export async function connectEncryptedRunner(
             sequence,
             type: "request",
             v: 2,
+            ...(pushResponse ? { response_mode: "push" } : {}),
           }),
         );
+        if (inbox === undefined) {
+          throw new Error("Runner response inbox is unavailable");
+        }
         const response = parseRpcResponse(
-          await exchangeRpcPayload(socket, initiator, request),
+          await exchangeRpcPayload(
+            socket,
+            initiator,
+            request,
+            inbox,
+            pushResponse,
+          ),
           requestId,
           sequence,
         );

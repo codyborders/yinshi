@@ -286,6 +286,7 @@ def test_get_runtime_returns_local_compatibility_status(auth_client: TestClient)
         "last_error": None,
         "runner_public_key": None,
         "history_bundle_supported": False,
+        "runner_rpc_push_supported": False,
     }
 
 
@@ -335,6 +336,7 @@ def test_get_runtime_returns_only_safe_managed_fields(
         "last_error": None,
         "runner_public_key": _RUNNER_PUBLIC_KEY,
         "history_bundle_supported": True,
+        "runner_rpc_push_supported": True,
     }
     for secret in (
         tenant.user_id,
@@ -375,6 +377,7 @@ def test_get_runtime_does_not_advertise_bundle_for_stale_artifact(
 
     assert response.status_code == 200
     assert response.json()["history_bundle_supported"] is False
+    assert response.json()["runner_rpc_push_supported"] is False
 
 
 def test_provision_runtime_awaits_manager_and_returns_safe_status(
@@ -412,6 +415,7 @@ def test_provision_runtime_awaits_manager_and_returns_safe_status(
         "last_error": None,
         "runner_public_key": None,
         "history_bundle_supported": False,
+        "runner_rpc_push_supported": False,
     }
     assert manager.calls == [("provision", tenant.user_id)]
     assert tenant.user_id not in response.text
@@ -447,6 +451,7 @@ def test_provision_runtime_advertises_bundle_for_current_ready_artifact(
 
     assert response.status_code == 200
     assert response.json()["history_bundle_supported"] is True
+    assert response.json()["runner_rpc_push_supported"] is True
 
 
 @pytest.mark.parametrize(

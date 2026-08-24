@@ -10,7 +10,7 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal, cast
 from urllib.parse import urlsplit
 
 from yinshi.services.runner_capabilities import RUNNER_PROTOCOL_VERSION
@@ -35,6 +35,7 @@ from yinshi.worker_runtime import WorkerHttpDispatcher
 
 _REQUEST_KEYS_V1 = {"body", "method", "path", "request_id", "sequence", "type", "v"}
 _REQUEST_KEYS_V2 = _REQUEST_KEYS_V1 | {"query"}
+_REQUEST_KEYS_V2_PUSH = _REQUEST_KEYS_V2 | {"response_mode"}
 _REQUEST_BYTES_MAX = 2 * 1_024 * 1_024
 _RESPONSE_BYTES_MAX = 10 * 1_024 * 1_024
 _NOISE_PLAINTEXT_BYTES_MAX = _NOISE_CIPHERTEXT_BYTES_MAX - _NOISE_TAG_BYTES
@@ -112,6 +113,7 @@ class RunnerRpcRequest:
     path: str
     body: Any
     query: dict[str, str]
+    response_mode: Literal["push"] | None = None
 
 
 def _parse_request(plaintext: bytes, *, expected_sequence: int) -> RunnerRpcRequest:
@@ -130,9 +132,18 @@ def _parse_request(plaintext: bytes, *, expected_sequence: int) -> RunnerRpcRequ
     if not isinstance(payload, dict):
         raise ValueError("Runner RPC request has an invalid shape")
     version = payload.get("v")
-    expected_keys = _REQUEST_KEYS_V1 if version == 1 else _REQUEST_KEYS_V2
-    if version not in {1, 2} or set(payload) != expected_keys:
+    payload_keys = set(payload)
+    valid_shape = (
+        version == 1
+        and payload_keys == _REQUEST_KEYS_V1
+        or version == 2
+        and (payload_keys == _REQUEST_KEYS_V2 or payload_keys == _REQUEST_KEYS_V2_PUSH)
+    )
+    if not valid_shape:
         raise ValueError("Runner RPC request has an invalid shape or version")
+    response_mode = payload.get("response_mode")
+    if "response_mode" in payload and response_mode != "push":
+        raise ValueError("Runner RPC response_mode is unsupported")
     if payload.get("type") != "request":
         raise ValueError("Runner RPC request has an unsupported type")
     sequence = payload.get("sequence")
@@ -168,13 +179,14 @@ def _parse_request(plaintext: bytes, *, expected_sequence: int) -> RunnerRpcRequ
             raise ValueError("Runner RPC query value is invalid")
         query[key] = value
     return RunnerRpcRequest(
-        version=version,
+        version=cast(int, version),
         sequence=sequence,
         request_id=normalized_request_id,
         method=method,
         path=path,
         body=payload.get("body"),
         query=query,
+        response_mode=response_mode,
     )
 
 
@@ -445,32 +457,36 @@ class EncryptedRunnerRpcSession:
         self._response_fragment_count = 0
         self._next_response_fragment = 0
 
-    async def handle_frame(self, ciphertext: bytes, *, current_time: int) -> bytes:
-        """Accept a handshake or decrypt, dispatch, and encrypt one RPC response."""
+    async def handle_frame(
+        self,
+        ciphertext: bytes,
+        *,
+        current_time: int,
+    ) -> tuple[bytes, ...]:
+        """Accept a handshake or return ordered encrypted RPC response frames."""
         if self._failed:
             raise RuntimeError("Runner RPC session failed and cannot be reused")
         if type(current_time) is not int or current_time < 0:
             raise ValueError("current_time must be a non-negative integer")
         if not self._established:
-            return self._accept_handshake(ciphertext, current_time=current_time)
+            return (self._accept_handshake(ciphertext, current_time=current_time),)
 
         try:
             plaintext = self._noise_session.decrypt(ciphertext)
             if plaintext.startswith(_TRANSPORT_MAGIC):
-                response = await self._handle_transport_frame(plaintext)
-                return self._noise_session.encrypt(response)
-            if self._request_buffer is not None or self._response_payload is not None:
-                raise ValueError("Runner RPC transport fragment is invalid")
-            response = await self._dispatch_payload(plaintext)
-            if len(response) <= _NOISE_PLAINTEXT_BYTES_MAX:
-                return self._noise_session.encrypt(response)
-            return self._noise_session.encrypt(self._begin_framed_response(response))
+                responses = await self._handle_transport_frame(plaintext)
+            else:
+                if self._request_buffer is not None or self._response_payload is not None:
+                    raise ValueError("Runner RPC transport fragment is invalid")
+                response, request = await self._dispatch_payload(plaintext)
+                responses = self._response_frames(response, request=request)
+            return tuple(self._noise_session.encrypt(response) for response in responses)
         except (TypeError, ValueError):
             self._failed = True
             self._clear_transport_buffers()
             raise
 
-    async def _handle_transport_frame(self, frame: bytes) -> bytes:
+    async def _handle_transport_frame(self, frame: bytes) -> tuple[bytes, ...]:
         """Validate one bounded transport fragment and advance exact stream state."""
         if len(frame) < _TRANSPORT_HEADER.size:
             raise ValueError("Runner RPC transport fragment is invalid")
@@ -491,11 +507,13 @@ class EncryptedRunnerRpcSession:
                 payload=payload,
             )
         if kind == _TRANSPORT_PULL:
-            return self._accept_response_pull(
-                index=index,
-                count=count,
-                total=total,
-                payload=payload,
+            return (
+                self._accept_response_pull(
+                    index=index,
+                    count=count,
+                    total=total,
+                    payload=payload,
+                ),
             )
         raise ValueError("Runner RPC transport fragment is invalid")
 
@@ -506,7 +524,7 @@ class EncryptedRunnerRpcSession:
         count: int,
         total: int,
         payload: bytes,
-    ) -> bytes:
+    ) -> tuple[bytes, ...]:
         """Buffer one ordered request fragment and dispatch only when complete."""
         if self._response_payload is not None:
             raise ValueError("Runner RPC transport fragment is invalid")
@@ -533,20 +551,42 @@ class EncryptedRunnerRpcSession:
         self._request_buffer[start : start + len(payload)] = payload
         self._next_request_fragment += 1
         if self._next_request_fragment < count:
-            return _TRANSPORT_HEADER.pack(
-                _TRANSPORT_MAGIC,
-                _TRANSPORT_ACK,
-                index,
-                count,
-                total,
+            return (
+                _TRANSPORT_HEADER.pack(
+                    _TRANSPORT_MAGIC,
+                    _TRANSPORT_ACK,
+                    index,
+                    count,
+                    total,
+                ),
             )
 
         request_payload = bytes(self._request_buffer)
         self._request_buffer = None
         self._request_fragment_count = 0
         self._next_request_fragment = 0
-        response = await self._dispatch_payload(request_payload)
-        return self._begin_framed_response(response)
+        response, request = await self._dispatch_payload(request_payload)
+        return self._response_frames(response, request=request, force_framed=True)
+
+    def _response_frames(
+        self,
+        response: bytes,
+        *,
+        request: RunnerRpcRequest,
+        force_framed: bool = False,
+    ) -> tuple[bytes, ...]:
+        """Build one legacy response or an explicitly pushed fragment batch."""
+        if len(response) > _RESPONSE_BYTES_MAX:
+            raise ValueError("Runner RPC response exceeded transport limit")
+        if not force_framed and len(response) <= _NOISE_PLAINTEXT_BYTES_MAX:
+            return (response,)
+        if request.response_mode != "push":
+            return (self._begin_framed_response(response),)
+        response_count = self._fragment_count(len(response))
+        return tuple(
+            self._pack_response_fragment(response, index=index, count=response_count)
+            for index in range(response_count)
+        )
 
     def _begin_framed_response(self, response: bytes) -> bytes:
         """Return first framed response and retain bounded remaining data for pulls."""
@@ -587,12 +627,20 @@ class EncryptedRunnerRpcSession:
             self._next_response_fragment = 0
         return fragment
 
-    async def _dispatch_payload(self, plaintext: bytes) -> bytes:
+    async def _dispatch_payload(
+        self,
+        plaintext: bytes,
+    ) -> tuple[bytes, RunnerRpcRequest]:
         """Parse and dispatch one complete bounded RPC request payload."""
         request = _parse_request(
             plaintext,
             expected_sequence=self._next_request_sequence,
         )
+        if request.response_mode == "push" and not (
+            request.method == "GET"
+            and _SESSION_HISTORY_BUNDLE_PATH.fullmatch(request.path) is not None
+        ):
+            raise ValueError("Runner RPC push response is limited to history bundles")
         status_code, response_body = await self._dispatch(request)
         response = json.dumps(
             {
@@ -607,7 +655,7 @@ class EncryptedRunnerRpcSession:
             sort_keys=True,
         ).encode("utf-8")
         self._next_request_sequence += 1
-        return response
+        return response, request
 
     @staticmethod
     def _fragment_count(total: int) -> int:

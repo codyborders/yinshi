@@ -850,9 +850,15 @@ async def _consume_runner_relay_messages(
     protocol_error = asyncio.Event()
 
     async def send(message: str | bytes) -> None:
-        """Serialize writes from control and transfer tasks."""
+        """Serialize one control or transfer write."""
         async with send_lock:
             await websocket.send(message)
+
+    async def send_many(messages: tuple[bytes, ...]) -> None:
+        """Serialize one pushed response batch without interleaving writes."""
+        async with send_lock:
+            for message in messages:
+                await websocket.send(message)
 
     async def cancel_binary_tasks(tasks: tuple[asyncio.Task[None], ...]) -> None:
         """Stop selected operations before their control state is retired."""
@@ -886,7 +892,7 @@ async def _consume_runner_relay_messages(
         """Run one transfer operation without blocking unrelated controls."""
         try:
             try:
-                response = await runtime.handle_binary(
+                responses = await runtime.handle_binary(
                     frame,
                     current_time=int(time.time()),
                 )
@@ -899,10 +905,7 @@ async def _consume_runner_relay_messages(
                     )
                 )
             else:
-                current_task = asyncio.current_task()
-                if busy_transfer_tasks.get(transfer_id) is current_task:
-                    busy_transfer_tasks.pop(transfer_id, None)
-                await send(response)
+                await send_many(responses)
         except asyncio.CancelledError:
             raise
         except Exception:

@@ -18,6 +18,7 @@ export type RuntimeRef =
       readonly location: "managed";
       readonly runnerPublicKey: string;
       readonly historyBundleSupported?: boolean;
+      readonly runnerRpcPushSupported?: boolean;
     }
   | {
       readonly location: "byoc";
@@ -432,6 +433,10 @@ export function createRuntimeTransport(
         scopes: [scope],
         maxSessionBytes: RUNTIME_TRANSPORT_SESSION_BYTES,
         capabilityEndpoint: "/api/runtime/capabilities",
+        ...(runtime.location === "managed" &&
+        runtime.runnerRpcPushSupported === true
+          ? { pushResponsesSupported: true }
+          : {}),
       });
       entry = {
         connection,
@@ -467,6 +472,10 @@ export function createRuntimeTransport(
           scopes: [scope],
           maxSessionBytes: RUNTIME_TRANSPORT_SESSION_BYTES,
           capabilityEndpoint: "/api/runtime/capabilities",
+          ...(runtime.location === "managed" &&
+          runtime.runnerRpcPushSupported === true
+            ? { pushResponsesSupported: true }
+            : {}),
         });
         activeEntry.connection = replacement;
         activeEntry.retired = false;
@@ -490,6 +499,12 @@ export function createRuntimeTransport(
           path: pathname,
           query,
           body,
+          ...(runtime.location === "managed" &&
+          runtime.runnerRpcPushSupported === true &&
+          method === "GET" &&
+          SESSION_HISTORY_BUNDLE_PATH.test(pathname)
+            ? { response_mode: "push" as const }
+            : {}),
         });
         if (isBoundedSessionHistoryRequest(method, pathname)) {
           activeEntry.successfulHistoryRequests += 1;

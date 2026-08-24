@@ -132,8 +132,13 @@ class RunnerAgentRelayRuntime:
             return await self._handle_maintenance_control(payload)
         raise ValueError("Runner relay control message type is unsupported")
 
-    async def handle_binary(self, frame: bytes, *, current_time: int) -> bytes:
-        """Route one UUID-prefixed ciphertext frame through its encrypted RPC session."""
+    async def handle_binary(
+        self,
+        frame: bytes,
+        *,
+        current_time: int,
+    ) -> tuple[bytes, ...]:
+        """Route one ciphertext frame into ordered UUID-prefixed responses."""
         if not isinstance(frame, bytes):
             raise TypeError("Runner relay frame must be bytes")
         if not _UUID_BYTES_LENGTH < len(frame) <= _UUID_BYTES_LENGTH + _RELAY_FRAME_BYTES_MAX:
@@ -145,7 +150,7 @@ class RunnerAgentRelayRuntime:
         if session is None:
             raise ValueError("Runner relay transfer is not open")
         try:
-            response = await session.handle_frame(
+            responses = await session.handle_frame(
                 frame[_UUID_BYTES_LENGTH:],
                 current_time=current_time,
             )
@@ -155,7 +160,8 @@ class RunnerAgentRelayRuntime:
             if removed_session is not None and self._task_lease is not None:
                 await self._task_lease.release()
             raise RunnerRelaySessionError(transfer_id) from exc
-        return uuid.UUID(transfer_id).bytes + response
+        transfer_prefix = uuid.UUID(transfer_id).bytes
+        return tuple(transfer_prefix + response for response in responses)
 
     def _handle_welcome(self, payload: dict[str, object]) -> None:
         """Set runner identity exactly once from authenticated relay state."""
