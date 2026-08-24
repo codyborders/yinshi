@@ -53897,7 +53897,9 @@ export async function startRuntimePrompt(
           yield event;
         }
         if (TERMINAL_STATUSES.has(batch.status)) {
-          if (!emittedTerminalEvent && batch.status !== "completed") {
+          if (emittedTerminalEvent) return;
+          if (batch.events.length > 0) continue;
+          if (batch.status !== "completed") {
             yield {
               type: "error",
               error:
