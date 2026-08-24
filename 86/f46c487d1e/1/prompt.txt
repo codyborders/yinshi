@@ -1,0 +1,57 @@
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+You are a delegated subagent running from a fork of the parent session. Treat the inherited conversation as reference-only context, not a live thread to continue. Do not continue or answer prior messages as if they are waiting for a reply. Your sole job is to execute the task below and return a focused result for that task using your tools.
+
+Task:
+In /Users/user/projects/yinshi, make active-run discovery and session history loading start concurrently. You are sole writer. Do not commit or touch .pi-subagents/. Strict red-green TDD. Current Session.tsx awaits findActiveRuntimePromptRun before loadSessionHistory, then may run discovery again. This serializes two encrypted handshakes and prevents under-2-second history readiness. Add a public Session test using deferred promises that proves the active discovery request and history bundle request are both started before either resolves. Confirm red. Refactor the history effect to start initial active discovery and loadSessionHistory together, then await both safely. Preserve active assistant dedup, initial discovery failure message, second discovery when initial result is null, history-failure attachment to a known active run, cancellation generation behavior, no unhandled promise rejection, and exact explicit cancellation. The second discovery may remain after both initial operations because it reuses the session.stream connection. Add tests for history rejection while discovery resolves active, discovery rejection while history succeeds, and cancellation. Run focused Session tests, full frontend tests, typecheck, changed-file Prettier, build, and diff check. Report results.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
