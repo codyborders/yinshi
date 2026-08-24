@@ -1,0 +1,303 @@
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+You are a delegated subagent running from a fork of the parent session. Treat the inherited conversation as reference-only context, not a live thread to continue. Do not continue or answer prior messages as if they are waiting for a reply. Your sole job is to execute the task below and return a focused result for that task using your tools.
+
+Task:
+In /Users/user/projects/yinshi, implement a bounded compressed session-history bundle so complete managed history loads under 2 seconds. You are sole writer. Do not commit or touch .pi-subagents/. Follow strict red-green TDD. Current production commit is 262583d, baseline is 9.95 seconds for session 7fbeb08c215c8e74ddaf9d46d3604801 with 56 messages and a 502,810-character trace.
+Protocol: add GET /api/sessions/{32hex}/messages/bundle. First request has no query. Response version 1 contains encoding gzip+base64url, raw_bytes, message_count, cursor, next_cursor, through, and data. Gzip data decompresses to a compact UTF-8 JSON array of complete MessageOut records. First page captures canonical through cursor for the final message at request time. Later pages require both cursor and through and read only (cursor, through]. Reuse existing canonical history cursor encoding and exact created_at,id ordering.
+Limits: maximum 64 complete messages per bundle page, decompressed page at most 4 MiB, final JSON response at most 900,000 bytes, worker response remains under 1,048,576 bytes, capability stays 16 MiB. Messages are atomic. Never split one MessageOut. If first message cannot fit raw or encoded limit, return 413 with stable structured code history_bundle_message_too_large. Use deterministic gzip mtime=0 and URL-safe base64 without padding. Select largest fitting message prefix. Keep SQLCipher open, query, MessageOut serialization, gzip, and close in one run_db_operation_for_request worker thread. Parameterize SQL. Do not log content.
+Add strict Pydantic response model in models.py. Backend API tests must cover exact equivalence with legacy MessageOut, one-page production-sized 56-message fixture, multi-page cursor progression, equal timestamp id order, snapshot exclusion after a new message insert, malformed cursor/through pairs, cross-session denial, 413 incompressible single message, response and raw caps, and worker response cap.
+Runner authorization: add only exact GET bundle path to session.read in runner_rpc.py. First query may be empty. Later query must be exactly cursor and through, both canonical. Reject methods, near matches, one-key queries, extra keys, and invalid ordering. Add runner RPC tests and worker runtime route tests.
+Frontend: in sessionHistory.ts attempt bundle first only when transport.runtime.location is managed and DecompressionStream exists. Keep current metadata/field loader unchanged as fallback. Validate exact envelope fields and types, version, encoding, base64url canonical form, encoded size <=900,000, cursor progression, invariant through, message_count, raw_bytes, session_id, canonical ids, full Message shape, max 64 messages per page, max 256 pages, max 10,000 messages, and canonical ordering. Decode gzip through a stream reader and abort before accumulating more than 4 MiB. Validate raw_bytes against decoded UTF-8 bytes. Publish only after every page succeeds.
+Fallback only for exact ApiError 413 with code history_bundle_message_too_large, exact 404 Not Found, exact Error message Runner RPC method or path is not allowed, or unavailable DecompressionStream. Do not fallback for auth, timeout, relay closure, malformed bundle, corrupt gzip, decompression overflow, invalid JSON, cursor errors, or count mismatch. BYOC, local, hosted, and desktop continue using current loader without trying bundle.
+Update runtimeTransport.ts and backend runner_rpc allowlists for exact bundle path and bounded-history lane handling. Both keep session.read and existing 16 MiB capability. Add public frontend tests for one-page exact message/tool trace, pagination, fallback cases, no-fallback errors, malformed payload, decompression cap, cancellation, ordering, capability scope, near-match rejection, and transport close behavior.
+Do not parallelize active-run discovery yet. Run each red before production code. Finish with focused backend and frontend tests, full backend and frontend suites, Black, isort, flake8, mypy, frontend typecheck, changed-file Prettier, build, and git diff --check. Report changed files, commands, and residual risks.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+You are reviving a previous subagent conversation.
+
+Original run: d79440ca
+Original agent: worker
+Original session file: /Users/user/.pi/agent/sessions/--Users-user-projects-yinshi--/2026-08-24T16-21-15-512Z_01a03493-7a78-73af-b571-54b5e38d1b85.jsonl
+
+Use the stored session context as background. Answer the orchestrator's follow-up below. Do not assume the original child process is still alive.
+
+Follow-up:
+Fix all compressed-history review findings in /Users/user/projects/yinshi. You remain sole writer. Do not commit or touch .pi-subagents/. Use strict red-green TDD.
+1. Replace unsafe old-runner fallback with explicit managed feature advertisement. Add history_bundle_supported boolean to ManagedRuntimeOut. It is true only when runtime is ready and runtime.artifact_version equals managed_runtime_manager.artifact_version. Pass expected artifact version from GET /api/runtime and POST /api/runtime/provision. Frontend resolveRuntime must store optional historyBundleSupported on managed RuntimeRef. Bundle loading occurs only when this value is true. Remove fallback for generic relay closure, old route error, and 404. Keep fallback only for exact 413 code and missing DecompressionStream. Add backend and resolver tests. Existing managed RuntimeRef literals may omit the optional property and then use legacy loading.
+2. Add a rowid snapshot watermark to the bundle protocol. Envelope adds snapshot integer. First request captures MAX(rowid) and through key from rows at or below snapshot. Continuation query must include exactly cursor, through, and snapshot. Every metadata and full-row query must constrain rowid <= snapshot. Frontend validates snapshot as a safe nonnegative integer, preserves it across pages, and sends it on continuation. Runner validates canonical nonnegative decimal snapshot within SQLite signed 64-bit range. Add a test inserting a same-timestamp message with an in-range ID after page one. Confirm page two excludes it.
+3. Start one explicit read transaction before session ownership, snapshot, metadata, and full-row queries. Keep transaction within run_db_operation_for_request thread. Add a concurrency or connection trace test confirming one BEGIN and consistent reads if practical.
+4. Make runner cursor ordering match backend ordering. _validate_history_cursor should return the validated raw timestamp string and ID bytes. Do not normalize timestamps to UTC before tuple comparison. All layers then compare the same stored lexical cursor order. Keep ISO parse validation. Remove unused timezone import. Add equivalent-offset cursor tests showing consistent raw ordering.
+5. Frontend must require every next_cursor to identify the final decoded message on its page. Compare message ID exactly and timestamp instants through Date.parse because MessageOut may emit T while cursor stores a space. On final nonempty page, require through to identify the final decoded message. Keep canonical base64url re-encoding in decodeBase64Url. Add skip-cursor and final-through mismatch tests.
+6. Allow an empty first history only with through null and snapshot 0. Reject empty continuation pages. Preserve exact ordering, 4 MiB and 900 KB limits, one-page performance, strict malformed-data failures, BYOC/hosted/local legacy behavior, active-run dedup, and cancellation.
+Run focused red-green tests for each item. Finish full backend and frontend tests, Black, isort, flake8, mypy, frontend typecheck, changed-file Prettier, build, and git diff --check. Report changed files and residual risks.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+- criterion-2: Return evidence sufficient for an independent acceptance review
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Review gate: required by reviewer.
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    },
+    {
+      "id": "criterion-2",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+You are reviving a previous subagent conversation.
+
+Original run: 7525068d
+Original agent: worker
+Original session file: /Users/user/.pi/agent/sessions/--Users-user-projects-yinshi--/2026-08-24T16-21-15-512Z_01a03493-7a78-73af-b571-54b5e38d1b85.jsonl
+
+Use the stored session context as background. Answer the orchestrator's follow-up below. Do not assume the original child process is still alive.
+
+Follow-up:
+Fix the final review blocker and numeric-range issue in /Users/user/projects/yinshi. You remain sole writer. Do not commit or touch .pi-subagents/. Use strict red-green TDD.
+Keep rowid snapshot, but add snapshot_count to bundle envelope and continuation query. First page captures count of session messages with rowid <= snapshot. Every continuation starts one transaction, recomputes that count, and rejects a mismatch with HTTP 409 and stable code history_bundle_snapshot_changed. Also verify the original through message still exists under rowid <= snapshot before page queries. Reject absence with the same 409. These checks must happen after ownership validation and before returning data.
+Continuation query must be exactly cursor, through, snapshot, and snapshot_count. Frontend validates snapshot_count as a safe nonnegative integer, keeps it invariant, and sends it. It must not fallback on 409.
+Add backend tests: deleting an unseen middle message after page one causes exact 409. Deleting highest through message then inserting an in-range replacement that reuses its rowid also causes exact 409. Existing same-key later insertion remains excluded. Add runner query contract tests and frontend envelope/invariance/error tests.
+Resolve numeric range mismatch by limiting snapshot and snapshot_count to JavaScript Number.MAX_SAFE_INTEGER, 9_007_199_254_740_991, in backend model, FastAPI Query, runner validator, and frontend. Real rowids above this fail closed. Test boundary and boundary+1.
+Preserve feature advertisement, one-page path, compression limits, active-run behavior, and all prior tests. Run focused tests, full backend/frontend suites, all static checks, typecheck, formatting, build, and diff check.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+- criterion-2: Return evidence sufficient for an independent acceptance review
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Review gate: required by reviewer.
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    },
+    {
+      "id": "criterion-2",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+You are reviving a previous subagent conversation.
+
+Original run: 26ace050
+Original agent: worker
+Original session file: /Users/user/.pi/agent/sessions/--Users-user-projects-yinshi--/2026-08-24T16-21-15-512Z_01a03493-7a78-73af-b571-54b5e38d1b85.jsonl
+
+Use the stored session context as background. Answer the orchestrator's follow-up below. Do not assume the original child process is still alive.
+
+Follow-up:
+One precise snapshot blocker remains. Fix it in /Users/user/projects/yinshi. You remain sole writer. Do not commit or touch .pi-subagents/. Strict red-green TDD.
+Add snapshot_tail to bundle envelope and continuation query. snapshot_tail is the canonical cursor for the message occupying the maximum captured rowid, independent of through ordering. First page should obtain snapshot=max(rowid) and snapshot_count=count(*) in one aggregate scan, then load the row at snapshot and encode its created_at,id as snapshot_tail. Empty history uses snapshot 0, snapshot_count 0, snapshot_tail null.
+Continuation query must include cursor, through, snapshot, snapshot_count, and snapshot_tail. Inside the transaction, verify rowid=snapshot still has exactly snapshot_tail identity. Keep count and through checks. Any mismatch returns exact 409 history_bundle_snapshot_changed. Frontend validates and preserves snapshot_tail. Runner validates it canonically. Do not fallback on 409.
+Add a red regression where maximum rowid belongs to a different message than through. Delete that maximum-rowid message, insert a replacement reusing rowid while count and through survive, then require 409. Add frontend and runner contract tests. Also test empty history null snapshot_tail.
+Preserve Number.MAX_SAFE_INTEGER bounds and all existing behavior. Run focused and full backend/frontend validation, static checks, formatting, build, and diff check. Report final result.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+- criterion-2: Return evidence sufficient for an independent acceptance review
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Review gate: required by reviewer.
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    },
+    {
+      "id": "criterion-2",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
