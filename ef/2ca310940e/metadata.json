@@ -3,8 +3,24 @@
   "checkpoint_id": "ef2ca310940e",
   "strategy": "manual-commit",
   "branch": "main",
-  "checkpoints_count": 1,
-  "files_touched": null,
+  "checkpoints_count": 3,
+  "files_touched": [
+    "backend/src/yinshi/main.py",
+    "backend/tests/test_main.py",
+    "frontend/index.html",
+    "frontend/src/index-security.test.ts",
+    "frontend/src/pages/Session.tsx",
+    "frontend/src/pages/__tests__/Session.test.tsx",
+    "frontend/src/runtime/sessionHistory.test.ts",
+    "frontend/src/runtime/sessionHistory.ts",
+    "frontend/src/runtime/sessionHistoryCache.shared-worker.ts",
+    "frontend/src/runtime/sessionHistoryCacheClient.test.ts",
+    "frontend/src/runtime/sessionHistoryCacheClient.ts",
+    "frontend/src/runtime/sessionHistoryCacheCore.test.ts",
+    "frontend/src/runtime/sessionHistoryCacheCore.ts",
+    "frontend/src/runtime/sessionHistoryCachePort.test.ts",
+    "frontend/src/runtime/sessionHistoryCachePort.ts"
+  ],
   "sessions": [
     {
       "metadata": "/ef/2ca310940e/0/metadata.json",
@@ -12,13 +28,20 @@
       "compact_transcript": "/ef/2ca310940e/0/transcript.jsonl",
       "content_hash": "/ef/2ca310940e/0/content_hash.txt",
       "prompt": "/ef/2ca310940e/0/prompt.txt"
+    },
+    {
+      "metadata": "/ef/2ca310940e/1/metadata.json",
+      "transcript": "/ef/2ca310940e/1/full.jsonl",
+      "compact_transcript": "/ef/2ca310940e/1/transcript.jsonl",
+      "content_hash": "/ef/2ca310940e/1/content_hash.txt",
+      "prompt": "/ef/2ca310940e/1/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 9153826,
+    "input_tokens": 18706660,
     "cache_creation_tokens": 0,
-    "cache_read_tokens": 315979392,
-    "output_tokens": 638456,
-    "api_call_count": 1700
+    "cache_read_tokens": 635293440,
+    "output_tokens": 1312877,
+    "api_call_count": 3505
   }
 }

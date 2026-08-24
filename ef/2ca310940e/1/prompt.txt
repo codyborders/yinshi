@@ -1,0 +1,153 @@
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+You are a delegated subagent running from a fork of the parent session. Treat the inherited conversation as reference-only context, not a live thread to continue. Do not continue or answer prior messages as if they are waiting for a reply. Your sole job is to execute the task below and return a focused result for that task using your tools.
+
+Task:
+In /Users/user/projects/yinshi, implement a bounded memory-only SharedWorker cache for managed compressed session history. You are sole writer. Do not commit or touch .pi-subagents/. Strict red-green TDD. Goal: refreshed target session displays complete history under 2 seconds while live runner revalidation remains authoritative.
+Never use localStorage, sessionStorage, IndexedDB, Cache API, service worker cache, filesystem, or disk for conversation data. SharedWorker process memory only.
+Add a cache core and SharedWorker module. Partition entries by authenticated userId plus 32-hex sessionId. Store the exact array of validated raw bundle envelopes, not decoded messages. Limits: TTL 10 minutes, 8 entries, 1 MiB encoded JSON per entry, 4 MiB aggregate, 32 pending client requests. LRU eviction. Strict protocol version, exact request/response keys, bounded canonical request IDs, user IDs max 256, session IDs exact. Worker supports get, put, delete. It performs no network or storage calls.
+Add a lazy page client using new SharedWorker(new URL(..., import.meta.url), {type:"module",name:"managed-session-history-v1"}). Timeout each request after 250 ms. Worker unsupported, construction/CSP failure, port errors, timeout, malformed response, late response, or capacity errors become cache misses or ignored writes. No unhandled rejections.
+Refactor sessionHistory bundle decoding so cached and live envelope arrays use the exact same strict validation, gzip, cursor, snapshot, active_run_id, order, and limit path. Add options cacheUserId, onCachedHistory(history,activeRunId), and skipCacheRead. Only managed bundle-capable browser runtimes with nonempty user ID use cache. Start live bundle fetch immediately, in parallel with cache get. A valid cache callback may fire before live fetch completes. Live success remains function return, replaces cache, and is authoritative. Late cache never fires after live success. Invalid cache is deleted and ignored. Network failure remains a rejection after cached callback.
+In Session, pass authenticated userId. Map and bootstrap valid cached history immediately, set loadingHistory false, and retain a non-destructive history refresh error if live revalidation later fails. Live result replaces cached history and clears error. Guard every callback by cancellation, session, user, and transport generation. Preserve active run dedup and cancellation.
+After streaming transitions true to false, trigger one coalesced background loadSessionHistory with skipCacheRead true to refresh the worker cache. Do not show spinner or replace visible history. Ignore refresh errors. Old session callbacks must not refresh new session.
+Gate cache off for BYOC, hosted, local, desktop, auth-disabled, missing userId, and missing SharedWorker. Add explicit worker-src self to frontend meta CSP and backend response CSP with tests. Verify Vite emits one same-origin SharedWorker chunk, not data/blob.
+Tests: core isolation, TTL, LRU, byte accounting, replacement, strict messages. Client unsupported/failures/timeouts/malformed/late/dispose/pending bound. SessionHistory cache-first callback before deferred network, live replacement/cache write, late cache suppression, malformed delete, network failure. Session render before network, active ID, no excluded runtime cache, cancellation/generation. Terminal transition cache refresh once. Security CSP/build. Run focused tests per red, full backend/frontend, all static checks, typecheck, Prettier, build, and diff check. Report residual risks.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+- criterion-2: Return evidence sufficient for an independent acceptance review
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Review gate: required by reviewer.
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    },
+    {
+      "id": "criterion-2",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+You are reviving a previous subagent conversation.
+
+Original run: f831bb1e
+Original agent: worker
+Original session file: /Users/user/.pi/agent/sessions/--Users-user-projects-yinshi--/2026-08-24T20-00-24-179Z_01a0355c-1c73-7347-ba02-13dd4e60e84e.jsonl
+
+Use the stored session context as background. Answer the orchestrator's follow-up below. Do not assume the original child process is still alive.
+
+Follow-up:
+Fix every SharedWorker cache review finding in /Users/user/projects/yinshi. You remain sole writer. Do not commit or touch .pi-subagents/. Strict red-green TDD.
+1. Prevent cached-to-live bootstrap from erasing new prompts. When cached history renders, set a historyRevalidating state. Keep conversation visible but disable prompt input with a clear reason until live revalidation succeeds or fails. Then clear revalidating. Since input is blocked, live authoritative bootstrap cannot replace a newly started prompt. Preserve cancel for an already active run. Add Session tests proving cached render shows messages, input is disabled, onSend cannot start, and live completion enables input.
+2. Bind every SharedWorker port to authenticated identity. Worker must fetch same-origin /auth/me with credentials include at connection time, validate authenticated true and canonical nonempty user_id <=256, and compare every request userId to the bound identity before cache access. A new account cannot request retained prior-user entries. Auth failure leaves port unavailable. Conversation data remains memory-only. Add tests with two ports and switched auth identities. If direct worker harness is hard, extract a port-binding helper with injected authenticate function.
+3. Remove corrupt-delete versus live-put race. Ensure cached read, decode, and any deletion fully settle before writing live envelopes. Live request must still start immediately. Cache callback stays suppressed after live success. Add deterministic deferred test where live finishes before corrupt-cache deletion and assert final entry is fresh.
+4. Invalidate the managed session cache immediately when prompt send starts, before backend send. Fire-and-forget deletion must not delay send. Keep terminal background refresh. Add send-then-navigation test proving stale cache is unavailable while run remains active.
+5. Retain the SharedWorker object in SessionHistoryCacheClient. Install worker.onerror. On worker error, mark unavailable, close port, clear handle, and resolve pending requests as misses. Later requests return misses without waiting. Add tests.
+6. Keep CSP and all bounds. Add no persistent storage. Run focused tests, full backend/frontend, static checks, typecheck, formatting, build, and diff check. Report results.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+- criterion-2: Return evidence sufficient for an independent acceptance review
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Review gate: required by reviewer.
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    },
+    {
+      "id": "criterion-2",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
