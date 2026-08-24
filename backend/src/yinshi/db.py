@@ -1431,6 +1431,7 @@ def _migrate_runner_kinds(conn: sqlite3.Connection) -> None:
     logger.info("Control migration: adding runner kinds to user_runners")
     conn.commit()
     conn.execute("PRAGMA foreign_keys = OFF")
+    conn.execute("PRAGMA legacy_alter_table = ON")
     try:
         conn.execute("BEGIN IMMEDIATE")
         conn.execute("DROP TRIGGER IF EXISTS update_user_runners_updated_at")
@@ -1506,6 +1507,7 @@ def _migrate_runner_kinds(conn: sqlite3.Connection) -> None:
         conn.rollback()
         raise
     finally:
+        conn.execute("PRAGMA legacy_alter_table = OFF")
         conn.execute("PRAGMA foreign_keys = ON")
 
 
@@ -1518,6 +1520,7 @@ def _migrate_managed_restore_runner_kind(conn: sqlite3.Connection) -> None:
         return
     conn.commit()
     conn.execute("PRAGMA foreign_keys = OFF")
+    conn.execute("PRAGMA legacy_alter_table = ON")
     try:
         conn.execute("BEGIN IMMEDIATE")
         conn.execute("DROP TRIGGER IF EXISTS update_user_runners_updated_at")
@@ -1563,6 +1566,7 @@ def _migrate_managed_restore_runner_kind(conn: sqlite3.Connection) -> None:
         conn.rollback()
         raise
     finally:
+        conn.execute("PRAGMA legacy_alter_table = OFF")
         conn.execute("PRAGMA foreign_keys = ON")
 
 
