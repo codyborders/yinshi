@@ -1,0 +1,213 @@
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+You are a delegated subagent running from a fork of the parent session. Treat the inherited conversation as reference-only context, not a live thread to continue. Do not continue or answer prior messages as if they are waiting for a reply. Your sole job is to execute the task below and return a focused result for that task using your tools.
+
+Task:
+Fix the reproduced native SQLCipher deadlock in the current checkout. You are the only writer. Do not commit, push, deploy, or modify `.pi-subagents/`. Production faulthandler at 04:00:11 UTC showed one thread in get_user_db connection.close while another entered _open_sqlcipher_connection for the same encrypted tenant database. Relay and heartbeats then stopped. Existing _tenant_migration_lock serializes only open preparation, not the full connection lifetime. Use strict red-green TDD. Update the concurrency contract so every get_user_db connection for a tenant holds the existing per-database lock from before SQLCipher open through all use and connection close. init_user_db must also open and close under that lock. Keep a private helper for already-locked opening to avoid recursive lock acquisition. Preserve SQLCipher-first classification, plaintext migration, wrong-key fail-closed behavior, migration cleanup, trusted-file checks, schemas, WAL behavior, keys, storage layout, async offloading, and sanitized errors. Replace the test that currently permits a concurrent encrypted open during an active operation with one proving the second open cannot begin until the first context exits and closes. Retain process-level migration locking. Run tenant tests and Python static checks. Return changed paths and results.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+- criterion-2: Return evidence sufficient for an independent acceptance review
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Review gate: required by reviewer.
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    },
+    {
+      "id": "criterion-2",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+You are reviving a previous subagent conversation.
+
+Original run: f8cef9cf
+Original agent: worker
+Original session file: /Users/user/.pi/agent/sessions/--Users-user-projects-yinshi--/2026-08-24T04-03-30-436Z_01a031f0-0c04-7719-b6d7-0459cb498b7c.jsonl
+
+Use the stored session context as background. Answer the orchestrator's follow-up below. Do not assume the original child process is still alive.
+
+Follow-up:
+Address independent review blockers with strict red-green TDD. Remain sole writer. Do not commit, push, deploy, or touch `.pi-subagents/`. (1) In `_open_user_connection_with_lock_held`, if schema validation or either migration-residue cleanup raises after SQLCipher open, close the connection before propagating. Add cleanup-failure tests. (2) Fix every cited async route that opens get_user_db/get_db_for_request on the event-loop thread and then awaits while holding the full-lifetime database lock: api/auth_routes.py `_refresh_connected_github_repos`, api/repos.py delete path, and api/workspaces.py create/remove paths. Follow project rule: every database connection used by an async route must be opened, used, and closed within one offloaded blocking operation, never carried across await or thread. Use short snapshot/apply callbacks and existing repository lifecycle/staged checkout helpers. Keep filesystem and Git work off the event loop. Preserve endpoint status, ownership, locking, cancellation, cleanup, tenant isolation, and errors. Add focused responsiveness and behavior tests. (3) Fix private-helper test so connection assertions and close occur inside lock scope. (4) Confirm no remaining async route in these files uses a database connection across await. Run tenant, auth, repos, workspaces, workspace service, deps, stream cleanup tests plus Python static checks. Return changed paths, validation, and any unresolved risk.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+- criterion-2: Return evidence sufficient for an independent acceptance review
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Review gate: required by reviewer.
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    },
+    {
+      "id": "criterion-2",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+You are reviving a previous subagent conversation.
+
+Original run: f8cef9cf
+Original agent: worker
+Original session file: /Users/user/.pi/agent/sessions/--Users-user-projects-yinshi--/2026-08-24T04-03-30-436Z_01a031f0-0c04-7719-b6d7-0459cb498b7c.jsonl
+
+Use the stored session context as background. Answer the orchestrator's follow-up below. Do not assume the original child process is still alive.
+
+Follow-up:
+Redesign current uncommitted SQLCipher fix after final review. Remain sole writer. Do not commit, push, deploy, or touch `.pi-subagents/`. The broad lifecycle-route refactor has cancellation, uncertain-commit, filesystem compensation, and race blockers. Revert all uncommitted changes outside `backend/src/yinshi/tenant.py` and `backend/tests/test_tenant.py` to HEAD, including deleting the new async-route test. Replace full connection-lifetime serialization with the narrower observed native safety gate: SQLCipher connection open preparation already holds `_tenant_migration_lock`; acquire the same lock around every public connection close in `get_user_db` and `init_user_db`. Thus open and close for the same database cannot overlap, while established connection use and WAL concurrency remain available. Keep error-path closes inside the existing open lock. Ensure schema or migration-residue cleanup failure closes before propagating. Restore `_open_user_connection` public-private behavior unless a helper remains clearly needed. Strict red-green tests must prove: a blocked close prevents a second open until close finishes; concurrent use can still overlap a second open; init close holds the gate; cleanup failures close; migration and wrong-key behavior remain. Run tenant tests, full backend suite, and Python static checks. Return only the final two-file diff summary and any remaining risk.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+- criterion-2: Return evidence sufficient for an independent acceptance review
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Review gate: required by reviewer.
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    },
+    {
+      "id": "criterion-2",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
