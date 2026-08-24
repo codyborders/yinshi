@@ -2,6 +2,8 @@ import { act, screen } from "@testing-library/react";
 import type { HTMLAttributes, PropsWithChildren } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+const preloadEncryptedRunnerCryptoMock = vi.fn();
+
 vi.mock("react-router-dom", () => ({
   BrowserRouter: (props: PropsWithChildren<HTMLAttributes<HTMLDivElement>>) => (
     <div {...props} />
@@ -20,6 +22,10 @@ vi.mock("./hooks/useAuth", () => ({
   AuthProvider: ({ children }: PropsWithChildren) => children,
 }));
 
+vi.mock("./runner/encryptedRunnerClient", () => ({
+  preloadEncryptedRunnerCrypto: preloadEncryptedRunnerCryptoMock,
+}));
+
 describe("application bootstrap", () => {
   beforeEach(() => {
     document.body.innerHTML = '<div id="root"></div>';
@@ -34,5 +40,6 @@ describe("application bootstrap", () => {
     expect(await screen.findByRole("main")).toHaveTextContent(
       "Yinshi application",
     );
+    expect(preloadEncryptedRunnerCryptoMock).not.toHaveBeenCalled();
   });
 });
