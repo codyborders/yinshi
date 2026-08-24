@@ -1,0 +1,83 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "b350f760236f",
+  "session_id": "session",
+  "strategy": "manual-commit",
+  "created_at": "2026-08-24T00:19:03.756713Z",
+  "branch": "main",
+  "checkpoints_count": 3,
+  "save_step_count": 4,
+  "files_touched": [
+    "backend/src/yinshi/api/sessions.py",
+    "backend/src/yinshi/models.py",
+    "backend/src/yinshi/services/runner_rpc.py",
+    "backend/tests/test_api.py",
+    "backend/tests/test_runner_rpc.py",
+    "backend/tests/test_worker_runtime.py",
+    "frontend/src/pages/Session.tsx",
+    "frontend/src/pages/__tests__/Session.test.tsx",
+    "frontend/src/runtime/runtimeTransport.test.ts",
+    "frontend/src/runtime/runtimeTransport.ts",
+    "frontend/src/runtime/sessionHistory.test.ts",
+    "frontend/src/runtime/sessionHistory.ts"
+  ],
+  "agent": "Pi",
+  "model": "gpt-5.6-sol",
+  "turn_id": "c1c4f217130f",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 163980,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 847872,
+    "output_tokens": 8709,
+    "api_call_count": 20
+  },
+  "session_metrics": {
+    "turn_count": 39
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-08-24T00:19:03.605192Z",
+    "agent_lines": 1650,
+    "agent_removed": 15,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 1650,
+    "total_lines_changed": 1665,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 73,
+      "user_lines_removed": 0,
+      "agent_lines_added": 177728,
+      "agent_lines_removed": 13,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/1738ff17_reviewer_0_input.md": 56,
+        ".pi-subagents/artifacts/1738ff17_reviewer_0_transcript.jsonl": 2,
+        ".pi-subagents/missions/b56ca728-074e-4d4b-9d68-6b3e8d914c8e.json": 15
+      }
+    },
+    {
+      "checkpoint_number": 3,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 4,
+      "user_lines_added": 73,
+      "user_lines_removed": 0,
+      "agent_lines_added": 179365,
+      "agent_lines_removed": 15,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/c9cdbf81_reviewer_0_input.md": 56,
+        ".pi-subagents/artifacts/c9cdbf81_reviewer_0_transcript.jsonl": 2,
+        ".pi-subagents/missions/8ae0b636-54c6-4dab-ae1b-35ca33b86dc9.json": 15
+      }
+    }
+  ]
+}
