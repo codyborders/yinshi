@@ -56,6 +56,7 @@ _SESSION_HISTORY_CURSOR_VERSION = 1
 _SESSION_HISTORY_OFFSET_PATTERN = re.compile(r"^(?:0|[1-9][0-9]{0,9})$")
 _SESSION_HISTORY_OFFSET_MAX = 1_000_000_000
 _PROMPT_RUN_COLLECTION_PATH = re.compile(rf"^/api/sessions/{_RESOURCE_ID}/runs$")
+_PROMPT_RUN_ACTIVE_PATH = re.compile(rf"^/api/sessions/{_RESOURCE_ID}/runs/active$")
 _PROMPT_RUN_EVENTS_PATH = re.compile(
     rf"^/api/sessions/{_RESOURCE_ID}/runs/{_RESOURCE_ID}/events/[0-9]{{1,6}}$"
 )
@@ -213,11 +214,12 @@ def _required_scope(request: RunnerRpcRequest) -> str:
         return "session.write"
 
     is_prompt_run_collection = _PROMPT_RUN_COLLECTION_PATH.fullmatch(request.path) is not None
+    is_prompt_run_active = _PROMPT_RUN_ACTIVE_PATH.fullmatch(request.path) is not None
     is_prompt_run_events = _PROMPT_RUN_EVENTS_PATH.fullmatch(request.path) is not None
     is_prompt_run_cancel = _PROMPT_RUN_CANCEL_PATH.fullmatch(request.path) is not None
     if request.method == "POST" and (is_prompt_run_collection or is_prompt_run_cancel):
         return "session.stream"
-    if request.method == "GET" and is_prompt_run_events:
+    if request.method == "GET" and (is_prompt_run_active or is_prompt_run_events):
         return "session.stream"
     if request.method == "GET" and _WORKSPACE_FILE_READ_PATH.fullmatch(request.path):
         return "files.read"

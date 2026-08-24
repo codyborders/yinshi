@@ -254,6 +254,28 @@ class PromptJournal:
         assert previous_task is task, "new run ID must not collide with an active task"
         return run
 
+    async def active(
+        self,
+        *,
+        request: Request,
+        session_id: str,
+    ) -> PromptRun | None:
+        """Return the session's current durable run without starting another."""
+        self._validate_resource_id(session_id, "session_id")
+        await self._recover_database(request)
+        await self._reconcile_pending_for_database(request)
+
+        def read_active(database: sqlite3.Connection) -> PromptRun | None:
+            row = database.execute(
+                """SELECT id, session_id, status FROM prompt_runs
+                   WHERE session_id = ?
+                     AND status IN ('starting', 'running', 'stopping')""",
+                (session_id,),
+            ).fetchone()
+            return self._row_to_run(row) if row is not None else None
+
+        return await run_db_operation_for_request(request, read_active)
+
     async def events(
         self,
         *,

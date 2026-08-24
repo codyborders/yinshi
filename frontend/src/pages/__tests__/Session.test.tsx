@@ -15,6 +15,7 @@ const apiPatchMock = vi.fn();
 const cancelMock = vi.fn();
 const sendPromptMock = vi.fn();
 const setMessagesMock = vi.fn();
+const bootstrapSessionMock = vi.fn();
 const useCatalogMock = vi.fn();
 const useAgentStreamMock = vi.fn();
 
@@ -156,6 +157,7 @@ function mockSessionApi(
     | Record<string, unknown>
     | Promise<Record<string, unknown>> = sessionMetadata(),
   messages: unknown[] = [],
+  activeRun: unknown = null,
 ) {
   const metadata =
     sessionMetadataValue instanceof Promise
@@ -183,8 +185,7 @@ function mockSessionApi(
             created_at: stored.created_at,
             session_id: stored.session_id,
             role: stored.role,
-            content_length:
-              content == null ? null : Array.from(content).length,
+            content_length: content == null ? null : Array.from(content).length,
             full_message_length:
               fullMessage == null ? null : Array.from(fullMessage).length,
             turn_id: stored.turn_id ?? null,
@@ -203,7 +204,10 @@ function mockSessionApi(
       const stored = messages.find(
         (message) => (message as Record<string, unknown>).id === messageId,
       ) as Record<string, unknown> | undefined;
-      if (!stored || (fieldName !== "content" && fieldName !== "full_message")) {
+      if (
+        !stored ||
+        (fieldName !== "content" && fieldName !== "full_message")
+      ) {
         return Promise.reject(new Error("Unexpected history field request"));
       }
       const fieldValue = stored[fieldName] as string;
@@ -219,6 +223,9 @@ function mockSessionApi(
         offset,
         next_offset: nextOffset < characters.length ? nextOffset : null,
       });
+    }
+    if (path === `/api/sessions/${TEST_SESSION_ID}/runs/active`) {
+      return Promise.resolve(activeRun);
     }
     if (path === `/api/sessions/${TEST_SESSION_ID}`) {
       return Promise.resolve(metadata);
@@ -247,12 +254,16 @@ describe("Session", () => {
     localStorage.clear();
     sendPromptMock.mockResolvedValue(undefined);
     cancelMock.mockResolvedValue(undefined);
+    bootstrapSessionMock.mockImplementation((history) => {
+      setMessagesMock(history);
+    });
     useAgentStreamMock.mockReturnValue({
       messages: [],
       sendPrompt: sendPromptMock,
       cancel: cancelMock,
       streaming: false,
       setMessages: setMessagesMock,
+      bootstrapSession: bootstrapSessionMock,
     });
     apiPatchMock.mockResolvedValue({ model: minimaxModel.ref });
   });
@@ -405,6 +416,7 @@ describe("Session", () => {
       cancel: cancelMock,
       streaming: false,
       setMessages: setMessagesMock,
+      bootstrapSession: bootstrapSessionMock,
     });
     mockSessionApi(sessionMetadata({ pi_context_version: 0 }));
 
@@ -517,6 +529,111 @@ describe("Session", () => {
       screen.queryByText("Failed to load session metadata."),
     ).not.toBeInTheDocument();
     expect(apiGetMock).toHaveBeenCalledWith(`/api/sessions/${TEST_SESSION_ID}`);
+  });
+
+  it("loads history and resumes the discovered active run without starting it", async () => {
+    mockCatalog();
+    const runId = "b".repeat(32);
+    mockSessionApi(sessionMetadata(), [], {
+      id: runId,
+      session_id: TEST_SESSION_ID,
+      status: "running",
+    });
+
+    renderSession();
+
+    await waitFor(() => {
+      expect(bootstrapSessionMock).toHaveBeenCalledWith([], runId);
+    });
+    const requestedPaths = apiGetMock.mock.calls.map((call) => call[0]);
+    expect(
+      requestedPaths.indexOf(`/api/sessions/${TEST_SESSION_ID}/runs/active`),
+    ).toBeLessThan(
+      requestedPaths.indexOf(`/api/sessions/${TEST_SESSION_ID}/messages/page`),
+    );
+    expect(sendPromptMock).not.toHaveBeenCalled();
+  });
+
+  it("removes a stored assistant for the active turn before journal replay", async () => {
+    mockCatalog();
+    const runId = "b".repeat(32);
+    mockSessionApi(
+      sessionMetadata(),
+      [
+        {
+          id: "c".repeat(32),
+          created_at: "2026-08-24T03:00:00Z",
+          session_id: TEST_SESSION_ID,
+          role: "user",
+          content: "keep me",
+          full_message: null,
+          turn_id: runId,
+          turn_status: null,
+        },
+        {
+          id: "d".repeat(32),
+          created_at: "2026-08-24T03:00:01Z",
+          session_id: TEST_SESSION_ID,
+          role: "assistant",
+          content: "stored completion",
+          full_message: null,
+          turn_id: runId,
+          turn_status: "completed",
+        },
+      ],
+      {
+        id: runId,
+        session_id: TEST_SESSION_ID,
+        status: "running",
+      },
+    );
+
+    renderSession();
+
+    await waitFor(() => expect(bootstrapSessionMock).toHaveBeenCalled());
+    const [history, activeRunId] = bootstrapSessionMock.mock.calls[0];
+    expect(activeRunId).toBe(runId);
+    expect(history.map((message: { role: string }) => message.role)).toEqual([
+      "user",
+    ]);
+    expect(history[0]).toEqual(expect.objectContaining({ content: "keep me" }));
+  });
+
+  it("resumes a discovered active run when history loading fails", async () => {
+    mockCatalog();
+    const runId = "b".repeat(32);
+    apiGetMock.mockImplementation((path: string) => {
+      if (path === "/api/runtime") {
+        return Promise.resolve({
+          provider: "local",
+          status: "ready",
+          artifact_version: null,
+          last_error: null,
+          runner_public_key: null,
+        });
+      }
+      if (path === `/api/sessions/${TEST_SESSION_ID}/runs/active`) {
+        return Promise.resolve({
+          id: runId,
+          session_id: TEST_SESSION_ID,
+          status: "running",
+        });
+      }
+      if (path === `/api/sessions/${TEST_SESSION_ID}`) {
+        return Promise.resolve(sessionMetadata());
+      }
+      if (path === `/api/sessions/${TEST_SESSION_ID}/messages/page`) {
+        return Promise.reject(new Error("history unavailable"));
+      }
+      return Promise.reject(new Error(`Unexpected GET ${path}`));
+    });
+
+    renderSession();
+
+    expect(
+      await screen.findByText("Failed to load session history."),
+    ).toBeInTheDocument();
+    expect(bootstrapSessionMock).toHaveBeenCalledWith([], runId);
   });
 
   it("keeps loaded history when metadata loading fails", async () => {

@@ -80,6 +80,9 @@ const SESSION_HISTORY_FIELD_PATH = new RegExp(
 const PROMPT_RUN_COLLECTION_PATH = new RegExp(
   `^/api/sessions/${RESOURCE_ID}/runs$`,
 );
+const PROMPT_RUN_ACTIVE_PATH = new RegExp(
+  `^/api/sessions/${RESOURCE_ID}/runs/active$`,
+);
 const PROMPT_RUN_EVENTS_PATH = new RegExp(
   `^/api/sessions/${RESOURCE_ID}/runs/${RESOURCE_ID}/events/[0-9]{1,6}$`,
 );
@@ -172,12 +175,13 @@ function requiredScope(method: RuntimeMethod, path: string): string {
   }
 
   const promptRunCollection = PROMPT_RUN_COLLECTION_PATH.test(path);
+  const promptRunActive = PROMPT_RUN_ACTIVE_PATH.test(path);
   const promptRunEvents = PROMPT_RUN_EVENTS_PATH.test(path);
   const promptRunCancel = PROMPT_RUN_CANCEL_PATH.test(path);
   if (method === "POST" && (promptRunCollection || promptRunCancel)) {
     return "session.stream";
   }
-  if (method === "GET" && promptRunEvents) {
+  if (method === "GET" && (promptRunActive || promptRunEvents)) {
     return "session.stream";
   }
   if (method === "GET" && WORKSPACE_FILE_READ_PATH.test(path)) {

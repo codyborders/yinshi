@@ -42,14 +42,17 @@ interface PromptEventBatchResponse {
   readonly next_sequence: number;
 }
 
-export interface RuntimePromptOptions {
+export interface RuntimePromptPollingOptions {
+  readonly signal?: AbortSignal;
+  readonly pollDelayMs?: number;
+  readonly pollRetryLimit?: number;
+}
+
+export interface RuntimePromptOptions extends RuntimePromptPollingOptions {
   readonly prompt: string;
   readonly model?: string;
   readonly thinking?: ThinkingLevel;
   readonly idempotencyKey?: string;
-  readonly signal?: AbortSignal;
-  readonly pollDelayMs?: number;
-  readonly pollRetryLimit?: number;
 }
 
 export interface RuntimePromptHandle {
@@ -131,7 +134,10 @@ function abortError(): DOMException {
   return new DOMException("Prompt polling aborted", "AbortError");
 }
 
-async function delay(milliseconds: number, signal?: AbortSignal): Promise<void> {
+async function delay(
+  milliseconds: number,
+  signal?: AbortSignal,
+): Promise<void> {
   if (signal?.aborted) throw abortError();
   if (milliseconds === 0) return;
   await new Promise<void>((resolve, reject) => {
@@ -148,8 +154,12 @@ async function delay(milliseconds: number, signal?: AbortSignal): Promise<void> 
 }
 
 function shouldRetry(error: unknown): boolean {
-  if (error instanceof DOMException && error.name === "AbortError") return false;
-  if (error instanceof TypeError || error instanceof RunnerRelayConnectionError) {
+  if (error instanceof DOMException && error.name === "AbortError")
+    return false;
+  if (
+    error instanceof TypeError ||
+    error instanceof RunnerRelayConnectionError
+  ) {
     return true;
   }
   if (error !== null && typeof error === "object" && "status" in error) {
@@ -162,27 +172,29 @@ function shouldRetry(error: unknown): boolean {
   return false;
 }
 
-export async function startRuntimePrompt(
-  transport: RuntimeTransport,
-  sessionIdValue: string,
-  options: RuntimePromptOptions,
-): Promise<RuntimePromptHandle> {
-  if (!transport || typeof transport.post !== "function" || typeof transport.get !== "function") {
+function validateTransport(transport: RuntimeTransport): void {
+  if (
+    !transport ||
+    typeof transport.post !== "function" ||
+    typeof transport.get !== "function"
+  ) {
     throw new TypeError("Prompt runtime transport is invalid");
   }
-  const sessionId = validateResourceId(sessionIdValue, "session ID");
-  const prompt = options.prompt.trim();
-  if (!prompt || prompt.length > 100_000) {
-    throw new Error("Prompt content has an invalid length");
-  }
-  const idempotencyKey = options.idempotencyKey ?? crypto.randomUUID();
-  if (typeof idempotencyKey !== "string" || idempotencyKey.length !== 36) {
-    throw new Error("Prompt idempotency key is invalid");
-  }
+}
+
+function pollingSettings(
+  transport: RuntimeTransport,
+  options: RuntimePromptPollingOptions,
+): { pollDelayMs: number; pollRetryLimit: number } {
   const remoteRuntime =
-    transport.runtime.location === "byoc" || transport.runtime.location === "managed";
+    transport.runtime.location === "byoc" ||
+    transport.runtime.location === "managed";
   const pollDelayMs = options.pollDelayMs ?? (remoteRuntime ? 750 : 250);
-  if (!Number.isSafeInteger(pollDelayMs) || pollDelayMs < 0 || pollDelayMs > 5_000) {
+  if (
+    !Number.isSafeInteger(pollDelayMs) ||
+    pollDelayMs < 0 ||
+    pollDelayMs > 5_000
+  ) {
     throw new Error("Prompt poll delay is invalid");
   }
   const pollRetryLimit = options.pollRetryLimit ?? 5;
@@ -193,19 +205,23 @@ export async function startRuntimePrompt(
   ) {
     throw new Error("Prompt poll retry limit is invalid");
   }
-  const started = validateRun(
-    await transport.post<unknown>(`/api/sessions/${sessionId}/runs`, {
-      prompt,
-      model: options.model ?? null,
-      thinking: options.thinking ?? null,
-      idempotency_key: idempotencyKey,
-    }),
-    sessionId,
-  );
+  return { pollDelayMs, pollRetryLimit };
+}
+
+export function attachRuntimePrompt(
+  transport: RuntimeTransport,
+  sessionIdValue: string,
+  runIdValue: string,
+  options: RuntimePromptPollingOptions = {},
+): RuntimePromptHandle {
+  validateTransport(transport);
+  const sessionId = validateResourceId(sessionIdValue, "session ID");
+  const runId = validateResourceId(runIdValue, "run ID");
+  const { pollDelayMs, pollRetryLimit } = pollingSettings(transport, options);
   let consumed = false;
 
   return {
-    runId: started.id,
+    runId,
     async *events(): AsyncGenerator<SSEEvent> {
       if (consumed) {
         throw new Error("Prompt event stream can only be consumed once");
@@ -220,7 +236,7 @@ export async function startRuntimePrompt(
         let rawBatch: unknown;
         try {
           rawBatch = await transport.get<unknown>(
-            `/api/sessions/${sessionId}/runs/${started.id}/events/${nextSequence}`,
+            `/api/sessions/${sessionId}/runs/${runId}/events/${nextSequence}`,
           );
         } catch (error) {
           if (!shouldRetry(error)) throw error;
@@ -230,12 +246,16 @@ export async function startRuntimePrompt(
           await delay(retryDelayMs, options.signal);
           continue;
         }
-        const batch = validateBatch(rawBatch, started.id, nextSequence);
+        const batch = validateBatch(rawBatch, runId, nextSequence);
         consecutiveTransientFailures = 0;
         retryDelayMs = pollDelayMs;
         nextSequence = batch.nextSequence;
         for (const event of batch.events) {
-          if (event.type === "error" || event.type === "cancelled" || event.type === "result") {
+          if (
+            event.type === "error" ||
+            event.type === "cancelled" ||
+            event.type === "result"
+          ) {
             emittedTerminalEvent = true;
           }
           yield event;
@@ -260,14 +280,70 @@ export async function startRuntimePrompt(
     async cancel(): Promise<PromptRunStatus> {
       const cancelled = validateRun(
         await transport.post<unknown>(
-          `/api/sessions/${sessionId}/runs/${started.id}/cancel`,
+          `/api/sessions/${sessionId}/runs/${runId}/cancel`,
         ),
         sessionId,
       );
-      if (cancelled.id !== started.id) {
+      if (cancelled.id !== runId) {
         throw new Error("Prompt cancellation response did not match the run");
       }
       return cancelled.status;
     },
   };
+}
+
+export async function findActiveRuntimePromptRun(
+  transport: RuntimeTransport,
+  sessionIdValue: string,
+): Promise<string | null> {
+  validateTransport(transport);
+  const sessionId = validateResourceId(sessionIdValue, "session ID");
+  const response = await transport.get<unknown>(
+    `/api/sessions/${sessionId}/runs/active`,
+  );
+  if (response === null) return null;
+  const active = validateRun(response, sessionId);
+  if (TERMINAL_STATUSES.has(active.status)) {
+    throw new Error("Active prompt response contained a terminal run");
+  }
+  return active.id;
+}
+
+export async function getActiveRuntimePrompt(
+  transport: RuntimeTransport,
+  sessionIdValue: string,
+  options: RuntimePromptPollingOptions = {},
+): Promise<RuntimePromptHandle | null> {
+  const runId = await findActiveRuntimePromptRun(transport, sessionIdValue);
+  return runId === null
+    ? null
+    : attachRuntimePrompt(transport, sessionIdValue, runId, options);
+}
+
+export async function startRuntimePrompt(
+  transport: RuntimeTransport,
+  sessionIdValue: string,
+  options: RuntimePromptOptions,
+): Promise<RuntimePromptHandle> {
+  validateTransport(transport);
+  const sessionId = validateResourceId(sessionIdValue, "session ID");
+  const prompt = options.prompt.trim();
+  if (!prompt || prompt.length > 100_000) {
+    throw new Error("Prompt content has an invalid length");
+  }
+  const idempotencyKey = options.idempotencyKey ?? crypto.randomUUID();
+  if (typeof idempotencyKey !== "string" || idempotencyKey.length !== 36) {
+    throw new Error("Prompt idempotency key is invalid");
+  }
+  pollingSettings(transport, options);
+  const started = validateRun(
+    await transport.post<unknown>(`/api/sessions/${sessionId}/runs`, {
+      prompt,
+      model: options.model ?? null,
+      thinking: options.thinking ?? null,
+      idempotency_key: idempotencyKey,
+    }),
+    sessionId,
+  );
+  return attachRuntimePrompt(transport, sessionId, started.id, options);
 }

@@ -32,6 +32,7 @@ import {
   initializeSessionModelPreference,
   rememberSessionModel,
 } from "../models/sessionModelPreference";
+import { findActiveRuntimePromptRun } from "../runtime/promptStream";
 import { loadSessionHistory } from "../runtime/sessionHistory";
 import { useRuntimeResource } from "../runtime/useRuntimeResource";
 import { parseStoredTurnBlocks } from "../utils/turnEvents";
@@ -92,8 +93,14 @@ export default function Session() {
   const runtimeResource = runtimeState.resource;
   const id = runtimeResource?.resourceId;
   const transport = runtimeResource?.transport;
-  const { messages, sendPrompt, cancel, streaming, setMessages } =
-    useAgentStream(id, transport);
+  const {
+    messages,
+    sendPrompt,
+    cancel,
+    streaming,
+    setMessages,
+    bootstrapSession,
+  } = useAgentStream(id, transport);
   const { catalog, loading: loadingCatalog } = useCatalog(transport);
   const piCommands = usePiCommands(transport);
   const [sessionModel, setSessionModel] = useState(DEFAULT_SESSION_MODEL);
@@ -135,12 +142,36 @@ export default function Session() {
     const runtimeSessionId = id;
 
     async function loadHistory() {
+      let activeRunId: string | null = null;
+      let discoveryFailed = false;
+      try {
+        activeRunId = await findActiveRuntimePromptRun(
+          runtimeTransport,
+          runtimeSessionId,
+        );
+      } catch {
+        discoveryFailed = true;
+      }
+      if (cancelled) return;
+
       try {
         const history: Message[] = await loadSessionHistory(
           runtimeTransport,
           runtimeSessionId,
           { isCancelled: () => cancelled },
         );
+        if (cancelled) return;
+        if (activeRunId === null) {
+          try {
+            activeRunId = await findActiveRuntimePromptRun(
+              runtimeTransport,
+              runtimeSessionId,
+            );
+            discoveryFailed = false;
+          } catch {
+            discoveryFailed = true;
+          }
+        }
         if (cancelled) return;
         const mapped: ChatMessage[] = history.map((m) => {
           let blockIndex = 0;
@@ -156,13 +187,25 @@ export default function Session() {
             role: m.role as ChatMessage["role"],
             content: m.content || "",
             blocks,
+            turnId: m.turn_id,
             timestamp: new Date(m.created_at).getTime(),
           };
         });
-        setMessages(mapped);
-        setHistoryError(null);
+        const bootstrapHistory =
+          activeRunId === null
+            ? mapped
+            : mapped.filter(
+                (message) =>
+                  message.role !== "assistant" ||
+                  message.turnId !== activeRunId,
+              );
+        bootstrapSession(bootstrapHistory, activeRunId);
+        setHistoryError(
+          discoveryFailed ? "Failed to resume the active response." : null,
+        );
       } catch {
         if (!cancelled) {
+          if (activeRunId !== null) bootstrapSession([], activeRunId);
           setHistoryError("Failed to load session history.");
         }
       } finally {
@@ -174,7 +217,7 @@ export default function Session() {
     return () => {
       cancelled = true;
     };
-  }, [id, setMessages, transport]);
+  }, [bootstrapSession, id, transport]);
 
   useEffect(() => {
     if (!id || !transport) return;

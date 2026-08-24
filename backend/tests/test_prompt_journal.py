@@ -87,6 +87,40 @@ async def _wait_for_terminal(
 
 
 @pytest.mark.asyncio
+async def test_active_run_discovery_excludes_terminal_runs(
+    db: sqlite3.Connection,
+) -> None:
+    """Discovery returns one active run and excludes it after completion."""
+    session_id = _seed_session(db)
+    request = _request()
+    journal = PromptJournal()
+
+    assert await journal.active(request=request, session_id=session_id) is None
+
+    run_id = uuid.uuid4().hex
+    db.execute(
+        """INSERT INTO prompt_runs (id, session_id, idempotency_key, status)
+           VALUES (?, ?, ?, 'running')""",
+        (run_id, session_id, str(uuid.uuid4())),
+    )
+    db.commit()
+
+    active = await journal.active(request=request, session_id=session_id)
+    assert active is not None
+    assert active.id == run_id
+    assert active.session_id == session_id
+    assert active.status == "running"
+
+    db.execute(
+        "UPDATE prompt_runs SET status = 'completed' WHERE id = ?",
+        (run_id,),
+    )
+    db.commit()
+
+    assert await journal.active(request=request, session_id=session_id) is None
+
+
+@pytest.mark.asyncio
 async def test_event_append_reconciles_uncertain_commit_exactly_once(
     db: sqlite3.Connection,
     monkeypatch: pytest.MonkeyPatch,

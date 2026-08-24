@@ -15,7 +15,48 @@ from fastapi import Request
 from fastapi.testclient import TestClient
 
 from tests.factories import create_full_stack
-from yinshi.services.prompt_journal import PromptJournal
+from yinshi.services.prompt_journal import PromptJournal, PromptRun
+
+
+def test_active_prompt_run_route_returns_run_or_null(
+    auth_client: TestClient,
+    git_repo: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Active-run discovery preserves session ownership and nullable results."""
+    stack = create_full_stack(auth_client, git_repo, name="active-run")
+    session_id = stack["session"]["id"]
+    run_id = uuid.uuid4().hex
+
+    class ActiveJournal(PromptJournal):
+        active_run: PromptRun | None = PromptRun(
+            id=run_id,
+            session_id=session_id,
+            status="running",
+        )
+
+        async def active(self, **_kwargs):
+            return self.active_run
+
+    from yinshi.main import app
+
+    journal = ActiveJournal()
+    monkeypatch.setattr(app.state, "prompt_journal", journal)
+
+    active = auth_client.get(f"/api/sessions/{session_id}/runs/active")
+    journal.active_run = None
+    inactive = auth_client.get(f"/api/sessions/{session_id}/runs/active")
+    missing = auth_client.get(f"/api/sessions/{uuid.uuid4().hex}/runs/active")
+
+    assert active.status_code == 200
+    assert active.json() == {
+        "id": run_id,
+        "session_id": session_id,
+        "status": "running",
+    }
+    assert inactive.status_code == 200
+    assert inactive.json() is None
+    assert missing.status_code == 404
 
 
 def test_prompt_run_start_and_sequence_reconnect(

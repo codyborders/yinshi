@@ -57,6 +57,34 @@ _USER_ID = "user-1"
 _WORKSPACE_ID = "11111111111141118111111111111111"
 
 
+def test_active_run_discovery_requires_session_stream_scope() -> None:
+    """Only the exact active-run path should receive stream authority."""
+    session_id = "a" * 32
+    request = RunnerRpcRequest(
+        version=1,
+        sequence=0,
+        request_id=str(uuid.uuid4()),
+        method="GET",
+        path=f"/api/sessions/{session_id}/runs/active",
+        body=None,
+        query={},
+    )
+
+    assert _required_scope(request) == "session.stream"
+
+    near_match = RunnerRpcRequest(
+        version=1,
+        sequence=0,
+        request_id=str(uuid.uuid4()),
+        method="GET",
+        path=f"/api/sessions/{session_id}/runs/actives",
+        body=None,
+        query={},
+    )
+    with pytest.raises(ValueError, match="not allowed"):
+        _required_scope(near_match)
+
+
 def test_bounded_history_routes_require_session_read_scope() -> None:
     """Only exact bounded history paths should receive session read authority."""
     session_id = "a" * 32

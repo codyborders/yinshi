@@ -131,6 +131,26 @@ async def start_prompt_run(
 
 
 @router.get(
+    "/api/sessions/{session_id}/runs/active",
+    response_model=PromptRunResponse | None,
+)
+async def get_active_prompt_run(
+    session_id: str,
+    request: Request,
+) -> PromptRunResponse | None:
+    """Return the current durable run without starting or cancelling it."""
+    await _require_session(request, session_id)
+    try:
+        run = await _prompt_journal(request).active(
+            request=request,
+            session_id=session_id,
+        )
+    except PromptRunNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Session not found") from exc
+    return _run_response(run) if run is not None else None
+
+
+@router.get(
     "/api/sessions/{session_id}/runs/{run_id}/events/{next_sequence}",
     response_model=PromptEventBatchResponse,
 )

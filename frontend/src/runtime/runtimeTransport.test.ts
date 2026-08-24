@@ -53,6 +53,28 @@ describe("runtime transport", () => {
     expect(client.get).not.toHaveBeenCalled();
   });
 
+  it("uses session stream authority for exact active-run discovery", async () => {
+    const encryptedRequest = vi.fn().mockResolvedValue(null);
+    const transport = createRuntimeTransport(
+      { location: "byoc", runnerId: "runner-1", runnerPublicKey },
+      { apiClient: apiClient(), encryptedRequest },
+    );
+    const sessionId = "a".repeat(32);
+
+    await expect(
+      transport.get(`/api/sessions/${sessionId}/runs/active`),
+    ).resolves.toBeNull();
+    expect(encryptedRequest).toHaveBeenCalledWith({
+      expectedRunnerPublicKey: runnerPublicKey,
+      scopes: ["session.stream"],
+      method: "GET",
+      path: `/api/sessions/${sessionId}/runs/active`,
+      query: {},
+      body: null,
+      maxSessionBytes: 16_777_216,
+    });
+  });
+
   it("routes managed JSON calls through its pinned encrypted capability endpoint", async () => {
     const client = apiClient();
     const connection = {
@@ -419,9 +441,7 @@ describe("runtime transport", () => {
       },
     );
 
-    await expect(transport.get("/api/repos")).rejects.toThrow(
-      "renewal failed",
-    );
+    await expect(transport.get("/api/repos")).rejects.toThrow("renewal failed");
     await expect(transport.get("/api/repos")).resolves.toEqual([]);
 
     expect(connectEncrypted).toHaveBeenCalledTimes(3);

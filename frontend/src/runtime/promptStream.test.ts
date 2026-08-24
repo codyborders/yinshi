@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { RunnerRelayConnectionError } from "../runner/encryptedRunnerClient";
 import type { RuntimeTransport } from "./runtimeTransport";
-import { startRuntimePrompt } from "./promptStream";
+import { getActiveRuntimePrompt, startRuntimePrompt } from "./promptStream";
 
 const sessionId = "a".repeat(32);
 const runId = "b".repeat(32);
@@ -21,6 +21,56 @@ function transport(): RuntimeTransport {
 }
 
 describe("runtime prompt stream", () => {
+  it("discovers and attaches to an active run without starting another", async () => {
+    const runtimeTransport = transport();
+    vi.mocked(runtimeTransport.get)
+      .mockResolvedValueOnce({
+        id: runId,
+        session_id: sessionId,
+        status: "running",
+      })
+      .mockResolvedValueOnce({
+        run_id: runId,
+        status: "completed",
+        events: [
+          { type: "tool_use", id: "tool-1", name: "read", input: {} },
+          { type: "tool_result", tool_use_id: "tool-1", content: "done" },
+          { type: "result" },
+        ],
+        next_sequence: 3,
+      });
+
+    const handle = await getActiveRuntimePrompt(runtimeTransport, sessionId, {
+      pollDelayMs: 0,
+    });
+    expect(handle).not.toBeNull();
+    const events = [];
+    for await (const event of handle!.events()) {
+      events.push(event.type);
+    }
+
+    expect(events).toEqual(["tool_use", "tool_result", "result"]);
+    expect(runtimeTransport.post).not.toHaveBeenCalled();
+    expect(runtimeTransport.get).toHaveBeenNthCalledWith(
+      1,
+      `/api/sessions/${sessionId}/runs/active`,
+    );
+    expect(runtimeTransport.get).toHaveBeenNthCalledWith(
+      2,
+      `/api/sessions/${sessionId}/runs/${runId}/events/0`,
+    );
+  });
+
+  it("returns null when the session has no active run", async () => {
+    const runtimeTransport = transport();
+    vi.mocked(runtimeTransport.get).mockResolvedValueOnce(null);
+
+    await expect(
+      getActiveRuntimePrompt(runtimeTransport, sessionId),
+    ).resolves.toBeNull();
+    expect(runtimeTransport.post).not.toHaveBeenCalled();
+  });
+
   it("reconnects from durable event sequence until terminal status", async () => {
     const runtimeTransport = transport();
     vi.mocked(runtimeTransport.post).mockResolvedValue({
@@ -434,7 +484,10 @@ describe("runtime prompt stream", () => {
   it.each([
     ["HTTP 429", Object.assign(new Error("busy"), { status: 429 })],
     ["HTTP 500", Object.assign(new Error("unavailable"), { status: 500 })],
-    ["runner 599", Object.assign(new Error("runner unavailable"), { status: 599 })],
+    [
+      "runner 599",
+      Object.assign(new Error("runner unavailable"), { status: 599 }),
+    ],
     ["fetch TypeError", new TypeError("fetch failed")],
   ])("retries transient %s polling errors", async (_label, pollingError) => {
     vi.useFakeTimers();
@@ -483,17 +536,27 @@ describe("runtime prompt stream", () => {
           runnerPublicKey: "MeAwP9ZBjS-MDni5HyLoyu0Pvkhlbc9HZ-SDT3Abj2I",
         },
       };
-      const lastError = Object.assign(new Error("last failure"), { status: 503 });
+      const lastError = Object.assign(new Error("last failure"), {
+        status: 503,
+      });
       vi.mocked(runtimeTransport.post).mockResolvedValue({
         id: runId,
         session_id: sessionId,
         status: "starting",
       });
       vi.mocked(runtimeTransport.get)
-        .mockRejectedValueOnce(Object.assign(new Error("failure 1"), { status: 503 }))
-        .mockRejectedValueOnce(Object.assign(new Error("failure 2"), { status: 503 }))
-        .mockRejectedValueOnce(Object.assign(new Error("failure 3"), { status: 503 }))
-        .mockRejectedValueOnce(Object.assign(new Error("failure 4"), { status: 503 }))
+        .mockRejectedValueOnce(
+          Object.assign(new Error("failure 1"), { status: 503 }),
+        )
+        .mockRejectedValueOnce(
+          Object.assign(new Error("failure 2"), { status: 503 }),
+        )
+        .mockRejectedValueOnce(
+          Object.assign(new Error("failure 3"), { status: 503 }),
+        )
+        .mockRejectedValueOnce(
+          Object.assign(new Error("failure 4"), { status: 503 }),
+        )
         .mockRejectedValueOnce(lastError);
       const handle = await startRuntimePrompt(runtimeTransport, sessionId, {
         prompt: "hello",
@@ -566,7 +629,10 @@ describe("runtime prompt stream", () => {
   });
 
   it.each([
-    ["ordinary client status", Object.assign(new Error("not found"), { status: 404 })],
+    [
+      "ordinary client status",
+      Object.assign(new Error("not found"), { status: 404 }),
+    ],
     ["abort", new DOMException("aborted", "AbortError")],
     ["generic transport error", new Error("identity changed")],
     [
@@ -591,24 +657,35 @@ describe("runtime prompt stream", () => {
     expect(runtimeTransport.get).toHaveBeenCalledTimes(1);
   });
 
-  it.each([0, 6])("rejects an out-of-bounds retry limit of %s", async (pollRetryLimit) => {
-    const runtimeTransport = transport();
+  it.each([0, 6])(
+    "rejects an out-of-bounds retry limit of %s",
+    async (pollRetryLimit) => {
+      const runtimeTransport = transport();
 
-    await expect(
-      startRuntimePrompt(runtimeTransport, sessionId, {
-        prompt: "hello",
-        idempotencyKey: "22222222-2222-4222-8222-222222222222",
-        pollRetryLimit,
-      }),
-    ).rejects.toThrow("retry limit");
-    expect(runtimeTransport.post).not.toHaveBeenCalled();
-  });
+      await expect(
+        startRuntimePrompt(runtimeTransport, sessionId, {
+          prompt: "hello",
+          idempotencyKey: "22222222-2222-4222-8222-222222222222",
+          pollRetryLimit,
+        }),
+      ).rejects.toThrow("retry limit");
+      expect(runtimeTransport.post).not.toHaveBeenCalled();
+    },
+  );
 
   it("cancels the exact run idempotently", async () => {
     const runtimeTransport = transport();
     vi.mocked(runtimeTransport.post)
-      .mockResolvedValueOnce({ id: runId, session_id: sessionId, status: "starting" })
-      .mockResolvedValueOnce({ id: runId, session_id: sessionId, status: "cancelled" });
+      .mockResolvedValueOnce({
+        id: runId,
+        session_id: sessionId,
+        status: "starting",
+      })
+      .mockResolvedValueOnce({
+        id: runId,
+        session_id: sessionId,
+        status: "cancelled",
+      });
     const handle = await startRuntimePrompt(runtimeTransport, sessionId, {
       prompt: "hello",
       idempotencyKey: "22222222-2222-4222-8222-222222222222",
