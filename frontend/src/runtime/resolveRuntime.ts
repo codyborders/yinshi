@@ -14,7 +14,10 @@ interface RuntimeResolverDependencies {
   readonly getRuntime?: (signal?: AbortSignal) => Promise<unknown>;
   readonly provisionRuntime?: (signal?: AbortSignal) => Promise<unknown>;
   readonly desktop?: boolean;
-  readonly sleep?: (milliseconds: number, signal?: AbortSignal) => Promise<void>;
+  readonly sleep?: (
+    milliseconds: number,
+    signal?: AbortSignal,
+  ) => Promise<void>;
   readonly maxPollAttempts?: number;
 }
 
@@ -71,7 +74,9 @@ function parseManagedRuntime(value: unknown): Record<string, unknown> {
     typeof response.status !== "string" ||
     !["absent", "provisioning", "ready", "failed", "deleting"].includes(
       response.status,
-    )
+    ) ||
+    (response.history_bundle_supported !== undefined &&
+      typeof response.history_bundle_supported !== "boolean")
   ) {
     throw new Error("Managed runtime response is invalid");
   }
@@ -84,7 +89,9 @@ function isCanonicalRunnerPublicKey(value: unknown): value is string {
   }
   try {
     const binary = atob(`${value.replace(/-/gu, "+").replace(/_/gu, "/")}=`);
-    const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+    const bytes = Uint8Array.from(binary, (character) =>
+      character.charCodeAt(0),
+    );
     let canonical = "";
     for (const byte of bytes) {
       canonical += String.fromCharCode(byte);
@@ -146,6 +153,9 @@ export async function provisionRuntimeRef(
     return {
       location: "managed",
       runnerPublicKey: managed.runner_public_key,
+      ...(typeof managed.history_bundle_supported === "boolean"
+        ? { historyBundleSupported: managed.history_bundle_supported }
+        : {}),
     };
   }
   if (managed.status === "failed") {
@@ -176,7 +186,8 @@ export async function resolveRuntimeRef(
     if (desktop) {
       return runtime;
     }
-    const getRuntime = dependencies.getRuntime ?? defaultDependencies.getRuntime;
+    const getRuntime =
+      dependencies.getRuntime ?? defaultDependencies.getRuntime;
     throwIfAborted(signal);
     let managed = parseManagedRuntime(await getRuntime(signal));
     throwIfAborted(signal);
@@ -219,6 +230,9 @@ export async function resolveRuntimeRef(
       return {
         location: "managed",
         runnerPublicKey: managed.runner_public_key,
+        ...(typeof managed.history_bundle_supported === "boolean"
+          ? { historyBundleSupported: managed.history_bundle_supported }
+          : {}),
       };
     }
     if (managed.status === "failed") {

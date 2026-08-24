@@ -1,19 +1,24 @@
 """Tests for REST API endpoints including SSE streaming."""
 
 import asyncio
+import base64
+import gzip
 import json
 import logging
+import random
 import sqlite3
 import subprocess
 import time
 from collections import namedtuple
+from collections.abc import Callable
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, call, patch
 
 import httpx
 import pytest
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 from fastapi.testclient import TestClient
 
 from tests.conftest import reset_rate_limiter
@@ -1245,6 +1250,546 @@ def test_get_session_messages(client: TestClient, git_repo: str) -> None:
     assert resp.json() == []
 
 
+def _decode_history_bundle(response: httpx.Response) -> list[dict[str, object]]:
+    """Decode one bundle through its public response contract."""
+    data = response.json()
+    padding = "=" * (-len(data["data"]) % 4)
+    compressed = base64.urlsafe_b64decode(data["data"] + padding)
+    payload = gzip.decompress(compressed)
+    assert len(payload) == data["raw_bytes"]
+    decoded = json.loads(payload)
+    assert isinstance(decoded, list)
+    return decoded
+
+
+def test_message_history_bundle_returns_complete_messages_in_one_bounded_page(
+    client: TestClient,
+    session_id: str,
+) -> None:
+    """A production-sized history should fit one complete compressed page."""
+    trace = json.dumps(
+        {
+            "schema": "yinshi.assistant_turn.v1",
+            "events": [{"type": "assistant", "delta": "x" * 8_900}] * 56,
+        }
+    )
+    with get_db() as db:
+        for index in range(56):
+            db.execute(
+                "INSERT INTO messages "
+                "(id, created_at, session_id, role, content, full_message, turn_id, turn_status) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    f"{index:032x}",
+                    f"2026-08-23 12:00:{index:02d}",
+                    session_id,
+                    "assistant" if index == 55 else "user",
+                    f"message-{index}",
+                    trace if index == 55 else None,
+                    f"turn-{index}",
+                    "completed",
+                ),
+            )
+        db.commit()
+
+    legacy = client.get(f"/api/sessions/{session_id}/messages")
+    response = client.get(f"/api/sessions/{session_id}/messages/bundle")
+
+    assert legacy.status_code == 200
+    assert response.status_code == 200
+    assert len(response.content) <= 900_000
+    envelope = response.json()
+    assert set(envelope) == {
+        "version",
+        "encoding",
+        "raw_bytes",
+        "message_count",
+        "cursor",
+        "next_cursor",
+        "through",
+        "snapshot",
+        "snapshot_count",
+        "snapshot_tail",
+        "data",
+    }
+    assert envelope["version"] == 1
+    assert envelope["encoding"] == "gzip+base64url"
+    assert envelope["message_count"] == 56
+    assert envelope["cursor"] is None
+    assert envelope["next_cursor"] is None
+    assert isinstance(envelope["through"], str)
+    assert isinstance(envelope["snapshot"], int)
+    assert envelope["snapshot"] > 0
+    assert envelope["snapshot_count"] == 56
+    assert isinstance(envelope["snapshot_tail"], str)
+    assert _decode_history_bundle(response) == legacy.json()
+
+
+def test_message_history_bundle_starts_one_read_transaction_before_queries(
+    client: TestClient,
+    session_id: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ownership and bundle reads should share one explicit read transaction."""
+    from yinshi.api import sessions
+
+    statements: list[str] = []
+
+    class TracedConnection:
+        def __init__(self, connection: sqlite3.Connection) -> None:
+            self._connection = connection
+
+        def execute(self, sql: str, parameters: tuple[Any, ...] = ()) -> Any:
+            statements.append(sql)
+            return self._connection.execute(sql, parameters)
+
+    async def traced_operation(
+        request: Request,
+        operation: Callable[[Any], Any],
+    ) -> Any:
+        with get_db() as db:
+            return operation(TracedConnection(db))
+
+    monkeypatch.setattr(sessions, "run_db_operation_for_request", traced_operation)
+
+    response = client.get(f"/api/sessions/{session_id}/messages/bundle")
+
+    assert response.status_code == 200
+    assert statements[0] == "BEGIN"
+    assert statements.count("BEGIN") == 1
+    assert statements[1].startswith("SELECT id FROM sessions")
+
+
+def test_message_history_bundle_paginates_equal_timestamps_with_stable_snapshot(
+    client: TestClient,
+    session_id: str,
+) -> None:
+    """Bundle cursors should use exact ID order and exclude later inserts."""
+    with get_db() as db:
+        for index in range(66):
+            db.execute(
+                "INSERT INTO messages (id, created_at, session_id, role, content) "
+                "VALUES (?, ?, ?, 'user', ?)",
+                (
+                    f"{index * 2:032x}",
+                    "2026-08-23 12:00:00",
+                    session_id,
+                    f"message-{index}",
+                ),
+            )
+        db.commit()
+
+    first = client.get(f"/api/sessions/{session_id}/messages/bundle")
+    assert first.status_code == 200
+    first_data = first.json()
+    assert first_data["message_count"] == 64
+    assert first_data["cursor"] is None
+    assert first_data["next_cursor"]
+    assert first_data["through"]
+    assert isinstance(first_data["snapshot"], int)
+    assert first_data["snapshot"] > 0
+    assert [message["id"] for message in _decode_history_bundle(first)] == [
+        f"{index * 2:032x}" for index in range(64)
+    ]
+
+    with get_db() as db:
+        db.execute(
+            "INSERT INTO messages (id, created_at, session_id, role, content) "
+            "VALUES (?, ?, ?, 'user', 'later')",
+            (f"{127:032x}", "2026-08-23 12:00:00", session_id),
+        )
+        db.commit()
+
+    second = client.get(
+        f"/api/sessions/{session_id}/messages/bundle",
+        params={
+            "cursor": first_data["next_cursor"],
+            "through": first_data["through"],
+            "snapshot": first_data["snapshot"],
+            "snapshot_count": first_data["snapshot_count"],
+            "snapshot_tail": first_data["snapshot_tail"],
+        },
+    )
+    assert second.status_code == 200
+    second_data = second.json()
+    assert second_data["cursor"] == first_data["next_cursor"]
+    assert second_data["through"] == first_data["through"]
+    assert second_data["snapshot"] == first_data["snapshot"]
+    assert second_data["snapshot_count"] == first_data["snapshot_count"]
+    assert second_data["snapshot_tail"] == first_data["snapshot_tail"]
+    assert second_data["next_cursor"] is None
+    assert [message["id"] for message in _decode_history_bundle(second)] == [
+        f"{index * 2:032x}" for index in range(64, 66)
+    ]
+
+
+def _insert_snapshot_bundle_messages(session_id: str) -> None:
+    """Insert two bundle pages with deterministic equal-timestamp ordering."""
+    with get_db() as db:
+        for index in range(66):
+            db.execute(
+                "INSERT INTO messages (id, created_at, session_id, role, content) "
+                "VALUES (?, ?, ?, 'user', ?)",
+                (
+                    f"{index * 2:032x}",
+                    "2026-08-23 12:00:00",
+                    session_id,
+                    f"message-{index}",
+                ),
+            )
+        db.commit()
+
+
+def _bundle_continuation_params(first: httpx.Response) -> dict[str, object]:
+    """Build one continuation query from a public bundle envelope."""
+    data = first.json()
+    return {
+        "cursor": data["next_cursor"],
+        "through": data["through"],
+        "snapshot": data["snapshot"],
+        "snapshot_count": data["snapshot_count"],
+        "snapshot_tail": data["snapshot_tail"],
+    }
+
+
+def test_message_history_bundle_rejects_deleted_unseen_message(
+    client: TestClient,
+    session_id: str,
+) -> None:
+    """Deleting an unseen row should invalidate the count watermark."""
+    _insert_snapshot_bundle_messages(session_id)
+    first = client.get(f"/api/sessions/{session_id}/messages/bundle")
+    assert first.status_code == 200
+    assert first.json()["next_cursor"]
+    with get_db() as db:
+        db.execute("DELETE FROM messages WHERE id = ?", (f"{128:032x}",))
+        db.commit()
+
+    response = client.get(
+        f"/api/sessions/{session_id}/messages/bundle",
+        params=_bundle_continuation_params(first),
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {
+        "detail": {
+            "code": "history_bundle_snapshot_changed",
+            "message": "Stored message history changed during bundle loading",
+        }
+    }
+
+
+def test_message_history_bundle_rejects_missing_through_after_rowid_reuse(
+    client: TestClient,
+    session_id: str,
+) -> None:
+    """Replacing a deleted through row must not pass an unchanged count watermark."""
+    _insert_snapshot_bundle_messages(session_id)
+    first = client.get(f"/api/sessions/{session_id}/messages/bundle")
+    assert first.status_code == 200
+    with get_db() as db:
+        through_id = f"{130:032x}"
+        deleted = db.execute("SELECT rowid FROM messages WHERE id = ?", (through_id,)).fetchone()
+        assert deleted is not None
+        db.execute("DELETE FROM messages WHERE id = ?", (through_id,))
+        db.execute(
+            "INSERT INTO messages (id, created_at, session_id, role, content) "
+            "VALUES (?, ?, ?, 'user', 'replacement')",
+            (f"{127:032x}", "2026-08-23 12:00:00", session_id),
+        )
+        replacement = db.execute(
+            "SELECT rowid FROM messages WHERE id = ?", (f"{127:032x}",)
+        ).fetchone()
+        assert replacement is not None
+        assert replacement["rowid"] == deleted["rowid"]
+        db.commit()
+
+    response = client.get(
+        f"/api/sessions/{session_id}/messages/bundle",
+        params=_bundle_continuation_params(first),
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "history_bundle_snapshot_changed"
+
+
+def test_message_history_bundle_rejects_reused_rowid_when_tail_differs_from_through(
+    client: TestClient,
+    session_id: str,
+) -> None:
+    """Tail identity catches rowid reuse when the ordered through row survives."""
+    through_id = "f" * 32
+    with get_db() as db:
+        db.execute(
+            "INSERT INTO messages (id, created_at, session_id, role, content) "
+            "VALUES (?, '2026-08-23 13:00:00', ?, 'user', 'through')",
+            (through_id, session_id),
+        )
+        for index in range(65):
+            db.execute(
+                "INSERT INTO messages (id, created_at, session_id, role, content) "
+                "VALUES (?, '2026-08-23 12:00:00', ?, 'user', ?)",
+                (f"{index * 2:032x}", session_id, f"message-{index}"),
+            )
+        db.commit()
+
+    first = client.get(f"/api/sessions/{session_id}/messages/bundle")
+    assert first.status_code == 200
+    assert first.json()["next_cursor"]
+    with get_db() as db:
+        tail_id = f"{128:032x}"
+        deleted = db.execute("SELECT rowid FROM messages WHERE id = ?", (tail_id,)).fetchone()
+        assert deleted is not None
+        db.execute("DELETE FROM messages WHERE id = ?", (tail_id,))
+        db.execute(
+            "INSERT INTO messages (id, created_at, session_id, role, content) "
+            "VALUES (?, '2026-08-23 12:00:00', ?, 'user', 'replacement')",
+            (f"{127:032x}", session_id),
+        )
+        replacement = db.execute(
+            "SELECT rowid FROM messages WHERE id = ?", (f"{127:032x}",)
+        ).fetchone()
+        assert replacement is not None
+        assert replacement["rowid"] == deleted["rowid"]
+        assert db.execute("SELECT 1 FROM messages WHERE id = ?", (through_id,)).fetchone()
+        db.commit()
+
+    response = client.get(
+        f"/api/sessions/{session_id}/messages/bundle",
+        params=_bundle_continuation_params(first),
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "history_bundle_snapshot_changed"
+
+
+def test_message_history_bundle_rejects_snapshot_above_javascript_safe_integer(
+    client: TestClient,
+    session_id: str,
+) -> None:
+    """First-page rowids outside the shared numeric range fail closed."""
+    with get_db() as db:
+        db.execute(
+            "INSERT INTO messages "
+            "(rowid, id, created_at, session_id, role, content) "
+            "VALUES (?, ?, ?, ?, 'user', 'high')",
+            (
+                9_007_199_254_740_992,
+                "f" * 32,
+                "2026-08-23 12:00:00",
+                session_id,
+            ),
+        )
+        db.commit()
+
+    response = client.get(f"/api/sessions/{session_id}/messages/bundle")
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "Message history snapshot exceeds supported range"
+
+
+def test_message_history_bundle_query_enforces_javascript_safe_integer_boundary(
+    client: TestClient,
+    session_id: str,
+) -> None:
+    """Continuation numeric inputs accept the shared boundary and reject boundary plus one."""
+    _insert_snapshot_bundle_messages(session_id)
+    first = client.get(f"/api/sessions/{session_id}/messages/bundle")
+    assert first.status_code == 200
+    params = _bundle_continuation_params(first)
+    params["snapshot"] = 9_007_199_254_740_991
+
+    boundary = client.get(
+        f"/api/sessions/{session_id}/messages/bundle",
+        params=params,
+    )
+    assert boundary.status_code == 409
+
+    params["snapshot"] = 9_007_199_254_740_992
+    snapshot_above = client.get(
+        f"/api/sessions/{session_id}/messages/bundle",
+        params=params,
+    )
+    assert snapshot_above.status_code == 422
+
+    params["snapshot"] = first.json()["snapshot"]
+    params["snapshot_count"] = 9_007_199_254_740_991
+    count_boundary = client.get(
+        f"/api/sessions/{session_id}/messages/bundle",
+        params=params,
+    )
+    assert count_boundary.status_code == 409
+
+    params["snapshot_count"] = 9_007_199_254_740_992
+    count_above = client.get(
+        f"/api/sessions/{session_id}/messages/bundle",
+        params=params,
+    )
+    assert count_above.status_code == 422
+
+
+def test_message_history_bundle_paginates_at_encoded_response_cap(
+    client: TestClient,
+    session_id: str,
+) -> None:
+    """Incompressible messages should remain atomic below every response cap."""
+    random_source = random.Random(1)
+    with get_db() as db:
+        for index in range(3):
+            content = base64.b64encode(random_source.randbytes(350_000)).decode("ascii")
+            db.execute(
+                "INSERT INTO messages (id, created_at, session_id, role, content) "
+                "VALUES (?, ?, ?, 'user', ?)",
+                (
+                    f"{index + 1:032x}",
+                    f"2026-08-23 12:00:0{index}",
+                    session_id,
+                    content,
+                ),
+            )
+        db.commit()
+
+    cursor = None
+    through = None
+    snapshot = None
+    snapshot_count = None
+    snapshot_tail = None
+    decoded_ids: list[str] = []
+    response_count = 0
+    while True:
+        params = (
+            None
+            if cursor is None
+            else {
+                "cursor": cursor,
+                "through": through,
+                "snapshot": snapshot,
+                "snapshot_count": snapshot_count,
+                "snapshot_tail": snapshot_tail,
+            }
+        )
+        response = client.get(
+            f"/api/sessions/{session_id}/messages/bundle",
+            params=params,
+        )
+        assert response.status_code == 200
+        assert len(response.content) <= 900_000
+        assert response.json()["raw_bytes"] <= 4 * 1_024 * 1_024
+        decoded = _decode_history_bundle(response)
+        assert 1 <= len(decoded) <= 64
+        decoded_ids.extend(str(message["id"]) for message in decoded)
+        response_count += 1
+        through = response.json()["through"]
+        snapshot = response.json()["snapshot"]
+        snapshot_count = response.json()["snapshot_count"]
+        snapshot_tail = response.json()["snapshot_tail"]
+        cursor = response.json()["next_cursor"]
+        if cursor is None:
+            break
+
+    assert response_count == 3
+    assert decoded_ids == [f"{index + 1:032x}" for index in range(3)]
+
+
+def test_message_history_bundle_denies_another_tenant(
+    auth_client_factory: Callable[..., TestClient],
+    git_repo: str,
+) -> None:
+    """A tenant must not read a bundle from another tenant database."""
+    owner = auth_client_factory(email="owner@example.com", provider_user_id="owner")
+    other = auth_client_factory(email="other@example.com", provider_user_id="other")
+    stack = create_full_stack(owner, git_repo, name="owner-history")
+    session_id = stack["session"]["id"]
+
+    response = other.get(f"/api/sessions/{session_id}/messages/bundle")
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Session not found"
+
+
+def test_message_history_bundle_rejects_invalid_cursor_pairs(
+    client: TestClient,
+    session_id: str,
+) -> None:
+    """Bundle pagination should require one ordered canonical cursor pair."""
+    with get_db() as db:
+        db.execute(
+            "INSERT INTO messages (id, session_id, role, content) VALUES (?, ?, 'user', 'x')",
+            ("1" * 32, session_id),
+        )
+        db.commit()
+    initial = client.get(f"/api/sessions/{session_id}/messages/bundle").json()
+    cursor = initial["through"]
+    assert cursor
+
+    only_cursor = client.get(
+        f"/api/sessions/{session_id}/messages/bundle",
+        params={"cursor": cursor},
+    )
+    only_through = client.get(
+        f"/api/sessions/{session_id}/messages/bundle",
+        params={"through": cursor},
+    )
+    missing_snapshot = client.get(
+        f"/api/sessions/{session_id}/messages/bundle",
+        params={"cursor": cursor, "through": cursor},
+    )
+    equal_pair = client.get(
+        f"/api/sessions/{session_id}/messages/bundle",
+        params={"cursor": cursor, "through": cursor, "snapshot": initial["snapshot"]},
+    )
+    malformed = client.get(
+        f"/api/sessions/{session_id}/messages/bundle",
+        params={"cursor": "invalid", "through": "invalid", "snapshot": "-1"},
+    )
+
+    assert only_cursor.status_code == 422
+    assert only_through.status_code == 422
+    assert missing_snapshot.status_code == 422
+    assert equal_pair.status_code == 422
+    assert malformed.status_code == 422
+
+
+def test_message_history_bundle_empty_snapshot_is_zero(
+    client: TestClient,
+    session_id: str,
+) -> None:
+    """An empty first bundle has no through cursor and the zero watermark."""
+    response = client.get(f"/api/sessions/{session_id}/messages/bundle")
+
+    assert response.status_code == 200
+    assert response.json()["message_count"] == 0
+    assert response.json()["through"] is None
+    assert response.json()["snapshot"] == 0
+    assert response.json()["snapshot_count"] == 0
+    assert response.json()["snapshot_tail"] is None
+
+
+def test_message_history_bundle_returns_stable_413_for_one_oversized_message(
+    client: TestClient,
+    session_id: str,
+) -> None:
+    """One incompressible message should select the legacy chunk fallback."""
+    random_bytes = random.Random(0).randbytes(900_000)
+    content = base64.b64encode(random_bytes).decode("ascii")
+    with get_db() as db:
+        db.execute(
+            "INSERT INTO messages (id, session_id, role, content) VALUES (?, ?, 'user', ?)",
+            ("e" * 32, session_id, content),
+        )
+        db.commit()
+
+    response = client.get(f"/api/sessions/{session_id}/messages/bundle")
+
+    assert response.status_code == 413
+    assert response.json() == {
+        "detail": {
+            "code": "history_bundle_message_too_large",
+            "message": "Stored message does not fit a bounded history bundle",
+        }
+    }
+
+
 def test_message_history_pages_and_fields_are_bounded(
     client: TestClient,
     session_id: str,
@@ -1316,10 +1861,12 @@ def test_message_history_pages_and_fields_are_bounded(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("history_path", ("messages/page", "messages/bundle"))
 async def test_message_history_database_wait_does_not_block_event_loop(
     client: TestClient,
     session_id: str,
     monkeypatch: pytest.MonkeyPatch,
+    history_path: str,
 ) -> None:
     """History database opens should run outside the active request event loop."""
     from yinshi.api import deps
@@ -1347,7 +1894,7 @@ async def test_message_history_database_wait_does_not_block_event_loop(
             transport=httpx.ASGITransport(app=client.app),
             base_url="http://testserver",
         ) as async_client:
-            response = await async_client.get(f"/api/sessions/{session_id}/messages/page")
+            response = await async_client.get(f"/api/sessions/{session_id}/{history_path}")
     finally:
         stop_ticker.set()
         await ticker_task

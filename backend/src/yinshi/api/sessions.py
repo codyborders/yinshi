@@ -2,12 +2,13 @@
 
 import base64
 import binascii
+import gzip
 import json
 import logging
 import os
 import re
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any, Literal, NoReturn
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
@@ -19,6 +20,7 @@ from yinshi.api.deps import (
 )
 from yinshi.model_catalog import normalize_model_ref
 from yinshi.models import (
+    MessageHistoryBundleOut,
     MessageHistoryFieldChunkOut,
     MessageHistoryPageOut,
     MessageOut,
@@ -53,6 +55,10 @@ _MESSAGE_HISTORY_FIELD_CHARS_MAX = 262_144
 _MESSAGE_HISTORY_FIELD_BYTES_MAX = 900_000
 _MESSAGE_HISTORY_CURSOR_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 _MESSAGE_HISTORY_CURSOR_VERSION = 1
+_MESSAGE_HISTORY_BUNDLE_PAGE_LIMIT = 64
+_MESSAGE_HISTORY_BUNDLE_RAW_BYTES_MAX = 4 * 1_024 * 1_024
+_MESSAGE_HISTORY_BUNDLE_RESPONSE_BYTES_MAX = 900_000
+_MESSAGE_HISTORY_SNAPSHOT_MAX = 9_007_199_254_740_991
 
 
 def _normalize_session_row(db: Any, row: Any) -> dict[str, Any]:
@@ -409,6 +415,317 @@ def _message_history_field_chunk(
     if offset > field_length or (field_length > 0 and offset == field_length):
         raise HTTPException(status_code=416, detail="Invalid message field offset")
     return _fit_message_history_field_response(field_value, offset)
+
+
+def _history_bundle_json_bytes(value: Any) -> bytes:
+    """Encode JSON exactly like Starlette while preserving UTF-8 text."""
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        allow_nan=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
+def _history_bundle_envelope(
+    records: list[dict[str, Any]],
+    *,
+    cursor: str | None,
+    next_cursor: str | None,
+    through: str | None,
+    snapshot: int,
+    snapshot_count: int,
+    snapshot_tail: str | None,
+) -> dict[str, Any]:
+    """Compress complete message records into one deterministic envelope."""
+    payload = _history_bundle_json_bytes(records)
+    compressed = gzip.compress(payload, compresslevel=6, mtime=0)
+    encoded = base64.urlsafe_b64encode(compressed).rstrip(b"=").decode("ascii")
+    return {
+        "version": 1,
+        "encoding": "gzip+base64url",
+        "raw_bytes": len(payload),
+        "message_count": len(records),
+        "cursor": cursor,
+        "next_cursor": next_cursor,
+        "through": through,
+        "snapshot": snapshot,
+        "snapshot_count": snapshot_count,
+        "snapshot_tail": snapshot_tail,
+        "data": encoded,
+    }
+
+
+def _raise_history_bundle_snapshot_changed() -> NoReturn:
+    """Reject a continuation whose durable snapshot no longer exists."""
+    raise HTTPException(
+        status_code=409,
+        detail={
+            "code": "history_bundle_snapshot_changed",
+            "message": "Stored message history changed during bundle loading",
+        },
+    )
+
+
+def _message_history_bundle(
+    db: Any,
+    session_id: str,
+    request: Request,
+    cursor: tuple[str, str] | None,
+    cursor_encoded: str | None,
+    through: tuple[str, str] | None,
+    through_encoded: str | None,
+    snapshot: int | None,
+    snapshot_count: int | None,
+    snapshot_tail: tuple[str, str] | None,
+    snapshot_tail_encoded: str | None,
+) -> dict[str, Any]:
+    """Read one snapshot-bound compressed page from one database connection."""
+    db.execute("BEGIN")
+    session = db.execute("SELECT id FROM sessions WHERE id = ?", (session_id,)).fetchone()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    check_session_owner(db, session_id, request)
+
+    if cursor is None:
+        snapshot_row = db.execute(
+            "SELECT coalesce(max(rowid), 0) AS snapshot, count(*) AS snapshot_count "
+            "FROM messages WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        assert snapshot_row is not None
+        snapshot = int(snapshot_row["snapshot"])
+        snapshot_count = int(snapshot_row["snapshot_count"])
+        if snapshot > _MESSAGE_HISTORY_SNAPSHOT_MAX:
+            raise HTTPException(
+                status_code=422,
+                detail="Message history snapshot exceeds supported range",
+            )
+        if snapshot_count > _MESSAGE_HISTORY_SNAPSHOT_MAX:
+            raise HTTPException(
+                status_code=422,
+                detail="Message history snapshot exceeds supported range",
+            )
+        through_row = db.execute(
+            "SELECT created_at, id FROM messages WHERE session_id = ? AND rowid <= ? "
+            "ORDER BY created_at DESC, id DESC LIMIT 1",
+            (session_id, snapshot),
+        ).fetchone()
+        snapshot_tail_row = db.execute(
+            "SELECT created_at, id FROM messages WHERE session_id = ? AND rowid = ?",
+            (session_id, snapshot),
+        ).fetchone()
+        if through_row is None or snapshot_tail_row is None:
+            return _history_bundle_envelope(
+                [],
+                cursor=None,
+                next_cursor=None,
+                through=None,
+                snapshot=0,
+                snapshot_count=0,
+                snapshot_tail=None,
+            )
+        through = (str(through_row["created_at"]), str(through_row["id"]))
+        through_encoded = _encode_message_history_cursor(*through)
+        snapshot_tail = (
+            str(snapshot_tail_row["created_at"]),
+            str(snapshot_tail_row["id"]),
+        )
+        snapshot_tail_encoded = _encode_message_history_cursor(*snapshot_tail)
+    else:
+        assert through is not None
+        assert snapshot is not None
+        assert snapshot_count is not None
+        assert snapshot_tail is not None
+        assert snapshot_tail_encoded is not None
+        count_row = db.execute(
+            "SELECT count(*) AS snapshot_count FROM messages "
+            "WHERE session_id = ? AND rowid <= ?",
+            (session_id, snapshot),
+        ).fetchone()
+        assert count_row is not None
+        through_row = db.execute(
+            "SELECT 1 FROM messages WHERE session_id = ? AND rowid <= ? "
+            "AND created_at = ? AND id = ?",
+            (session_id, snapshot, through[0], through[1]),
+        ).fetchone()
+        snapshot_tail_row = db.execute(
+            "SELECT 1 FROM messages WHERE session_id = ? AND rowid = ? "
+            "AND created_at = ? AND id = ?",
+            (session_id, snapshot, snapshot_tail[0], snapshot_tail[1]),
+        ).fetchone()
+        if (
+            int(count_row["snapshot_count"]) != snapshot_count
+            or through_row is None
+            or snapshot_tail_row is None
+        ):
+            _raise_history_bundle_snapshot_changed()
+    assert through is not None
+    assert through_encoded is not None
+    assert snapshot is not None
+    assert snapshot_count is not None
+    assert snapshot_tail_encoded is not None
+
+    parameters: list[Any] = [session_id, snapshot]
+    cursor_clause = ""
+    if cursor is not None:
+        cursor_clause = "AND (created_at > ? OR (created_at = ? AND id > ?)) "
+        parameters.extend((cursor[0], cursor[0], cursor[1]))
+    parameters.extend((through[0], through[0], through[1]))
+    range_parameters = tuple(parameters)
+    metadata_rows = db.execute(
+        "SELECT created_at, id, "
+        "coalesce(length(CAST(content AS BLOB)), 0) + "
+        "coalesce(length(CAST(full_message AS BLOB)), 0) AS field_bytes "
+        "FROM messages WHERE session_id = ? AND rowid <= ? "
+        f"{cursor_clause}"  # noqa: S608
+        "AND (created_at < ? OR (created_at = ? AND id <= ?)) "
+        "ORDER BY created_at, id LIMIT ?",
+        (*range_parameters, _MESSAGE_HISTORY_BUNDLE_PAGE_LIMIT + 1),
+    ).fetchall()
+    candidate_count = 0
+    estimated_raw_bytes = 2
+    for row in metadata_rows[:_MESSAGE_HISTORY_BUNDLE_PAGE_LIMIT]:
+        candidate_bytes = int(row["field_bytes"])
+        if estimated_raw_bytes + candidate_bytes > _MESSAGE_HISTORY_BUNDLE_RAW_BYTES_MAX:
+            break
+        estimated_raw_bytes += candidate_bytes
+        candidate_count += 1
+    if metadata_rows and candidate_count == 0:
+        raise HTTPException(
+            status_code=413,
+            detail={
+                "code": "history_bundle_message_too_large",
+                "message": "Stored message does not fit a bounded history bundle",
+            },
+        )
+    candidate_rows = db.execute(
+        "SELECT * FROM messages WHERE session_id = ? AND rowid <= ? "
+        f"{cursor_clause}"  # noqa: S608
+        "AND (created_at < ? OR (created_at = ? AND id <= ?)) "
+        "ORDER BY created_at, id LIMIT ?",
+        (*range_parameters, candidate_count),
+    ).fetchall()
+    candidates = [
+        MessageOut.model_validate(dict(row)).model_dump(mode="json") for row in candidate_rows
+    ]
+
+    raw_prefix_count = 0
+    raw_bytes = 2
+    for candidate in candidates:
+        candidate_bytes = len(_history_bundle_json_bytes(candidate))
+        separator_bytes = 1 if raw_prefix_count else 0
+        if raw_bytes + separator_bytes + candidate_bytes > _MESSAGE_HISTORY_BUNDLE_RAW_BYTES_MAX:
+            break
+        raw_bytes += separator_bytes + candidate_bytes
+        raw_prefix_count += 1
+    if candidates and raw_prefix_count == 0:
+        raise HTTPException(
+            status_code=413,
+            detail={
+                "code": "history_bundle_message_too_large",
+                "message": "Stored message does not fit a bounded history bundle",
+            },
+        )
+
+    best: dict[str, Any] | None = None
+    low = 1
+    high = raw_prefix_count
+    while low <= high:
+        count = (low + high) // 2
+        has_more = len(metadata_rows) > count
+        next_cursor = None
+        if has_more:
+            row = candidate_rows[count - 1]
+            next_cursor = _encode_message_history_cursor(str(row["created_at"]), str(row["id"]))
+        envelope = _history_bundle_envelope(
+            candidates[:count],
+            cursor=cursor_encoded,
+            next_cursor=next_cursor,
+            through=through_encoded,
+            snapshot=snapshot,
+            snapshot_count=snapshot_count,
+            snapshot_tail=snapshot_tail_encoded,
+        )
+        if len(_history_bundle_json_bytes(envelope)) <= _MESSAGE_HISTORY_BUNDLE_RESPONSE_BYTES_MAX:
+            best = envelope
+            low = count + 1
+        else:
+            high = count - 1
+    if best is None and candidates:
+        raise HTTPException(
+            status_code=413,
+            detail={
+                "code": "history_bundle_message_too_large",
+                "message": "Stored message does not fit a bounded history bundle",
+            },
+        )
+    if best is not None:
+        return best
+    return _history_bundle_envelope(
+        [],
+        cursor=cursor_encoded,
+        next_cursor=None,
+        through=through_encoded,
+        snapshot=snapshot,
+        snapshot_count=snapshot_count,
+        snapshot_tail=snapshot_tail_encoded,
+    )
+
+
+@router.get(
+    "/api/sessions/{session_id}/messages/bundle",
+    response_model=MessageHistoryBundleOut,
+)
+async def get_message_history_bundle(
+    session_id: str,
+    request: Request,
+    cursor: str | None = Query(default=None, min_length=1, max_length=128),
+    through: str | None = Query(default=None, min_length=1, max_length=128),
+    snapshot: int | None = Query(
+        default=None,
+        ge=0,
+        le=_MESSAGE_HISTORY_SNAPSHOT_MAX,
+    ),
+    snapshot_count: int | None = Query(
+        default=None,
+        ge=0,
+        le=_MESSAGE_HISTORY_SNAPSHOT_MAX,
+    ),
+    snapshot_tail: str | None = Query(default=None, min_length=1, max_length=128),
+) -> dict[str, Any]:
+    """Return complete messages in a bounded compressed snapshot page."""
+    continuation_values = (cursor, through, snapshot, snapshot_count, snapshot_tail)
+    if any(value is not None for value in continuation_values) and not all(
+        value is not None for value in continuation_values
+    ):
+        raise HTTPException(status_code=422, detail="Invalid message history bundle cursor")
+    if cursor is not None and snapshot == 0:
+        raise HTTPException(status_code=422, detail="Invalid message history bundle cursor")
+    decoded_cursor = _decode_message_history_cursor(cursor) if cursor is not None else None
+    decoded_through = _decode_message_history_cursor(through) if through is not None else None
+    decoded_snapshot_tail = (
+        _decode_message_history_cursor(snapshot_tail) if snapshot_tail is not None else None
+    )
+    if decoded_cursor is not None and decoded_through is not None:
+        if decoded_cursor >= decoded_through:
+            raise HTTPException(status_code=422, detail="Invalid message history bundle cursor")
+    return await run_db_operation_for_request(
+        request,
+        lambda db: _message_history_bundle(
+            db,
+            session_id,
+            request,
+            decoded_cursor,
+            cursor,
+            decoded_through,
+            through,
+            snapshot,
+            snapshot_count,
+            decoded_snapshot_tail,
+            snapshot_tail,
+        ),
+    )
 
 
 @router.get(

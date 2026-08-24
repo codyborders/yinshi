@@ -1,4 +1,4 @@
-import type { Message } from "../api/client";
+import { ApiError, type Message } from "../api/client";
 import type { RuntimeTransport } from "./runtimeTransport";
 
 const MAX_HISTORY_PAGE_REQUESTS = 10_000;
@@ -6,6 +6,13 @@ const MAX_HISTORY_FIELD_REQUESTS = 100_000;
 const MAX_HISTORY_MESSAGES = 640_000;
 const MAX_HISTORY_FIELD_LENGTH = 1_000_000_000;
 const HISTORY_FIELD_WORKERS = 8;
+const HISTORY_BUNDLE_PAGE_MESSAGES_MAX = 64;
+const HISTORY_BUNDLE_PAGES_MAX = 256;
+const HISTORY_BUNDLE_MESSAGES_MAX = 10_000;
+const HISTORY_BUNDLE_ENCODED_BYTES_MAX = 900_000;
+const HISTORY_BUNDLE_RAW_BYTES_MAX = 4 * 1_024 * 1_024;
+const HISTORY_CURSOR_PATTERN = /^[A-Za-z0-9_-]{1,128}$/u;
+const HISTORY_BUNDLE_DATA_PATTERN = /^[A-Za-z0-9_-]+$/u;
 
 type HistoryFieldName = "content" | "full_message";
 
@@ -43,6 +50,25 @@ interface HistoryFieldJob {
 
 interface SessionHistoryLoadOptions {
   isCancelled?: () => boolean;
+}
+
+interface MessageHistoryBundle {
+  version: 1;
+  encoding: "gzip+base64url";
+  rawBytes: number;
+  messageCount: number;
+  cursor: string | null;
+  nextCursor: string | null;
+  through: string | null;
+  snapshot: number;
+  snapshotCount: number;
+  snapshotTail: string | null;
+  data: string;
+}
+
+interface HistoryCursorKey {
+  timestamp: string;
+  messageId: string;
 }
 
 function assertNotCancelled(options: SessionHistoryLoadOptions): void {
@@ -140,6 +166,393 @@ function codePointLength(value: string): number {
   return Array.from(value).length;
 }
 
+function exactKeys(
+  value: Record<string, unknown>,
+  expected: string[],
+): boolean {
+  const actual = Object.keys(value).sort();
+  const sortedExpected = [...expected].sort();
+  return (
+    actual.length === sortedExpected.length &&
+    actual.every((key, index) => key === sortedExpected[index])
+  );
+}
+
+function decodeBase64Url(value: string): Uint8Array {
+  if (!HISTORY_BUNDLE_DATA_PATTERN.test(value)) {
+    throw new Error("Invalid message history bundle encoding");
+  }
+  const padded = `${value.replace(/-/gu, "+").replace(/_/gu, "/")}${"=".repeat(
+    -value.length & 3,
+  )}`;
+  let binary: string;
+  try {
+    binary = atob(padded);
+  } catch {
+    throw new Error("Invalid message history bundle encoding");
+  }
+  const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+  if (base64Url(bytes) !== value) {
+    throw new Error("Invalid message history bundle encoding");
+  }
+  return bytes;
+}
+
+function base64Url(value: Uint8Array): string {
+  let binary = "";
+  for (const byte of value) binary += String.fromCharCode(byte);
+  return btoa(binary)
+    .replace(/\+/gu, "-")
+    .replace(/\//gu, "_")
+    .replace(/=+$/u, "");
+}
+
+function parseHistoryCursor(value: string): HistoryCursorKey {
+  if (!HISTORY_CURSOR_PATTERN.test(value)) {
+    throw new Error("Invalid message history bundle cursor");
+  }
+  const raw = decodeBase64Url(value);
+  if (raw.length < 19 || raw[0] !== 1) {
+    throw new Error("Invalid message history bundle cursor");
+  }
+  const timestampLength = raw[1];
+  if (
+    timestampLength < 1 ||
+    timestampLength > 64 ||
+    raw.length !== 2 + timestampLength + 16
+  ) {
+    throw new Error("Invalid message history bundle cursor");
+  }
+  let timestamp: string;
+  try {
+    timestamp = new TextDecoder("utf-8", { fatal: true }).decode(
+      raw.subarray(2, 2 + timestampLength),
+    );
+  } catch {
+    throw new Error("Invalid message history bundle cursor");
+  }
+  if (!Number.isFinite(Date.parse(timestamp))) {
+    throw new Error("Invalid message history bundle cursor");
+  }
+  const messageId = Array.from(raw.subarray(2 + timestampLength), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
+  return { timestamp, messageId };
+}
+
+function compareHistoryKeys(
+  left: HistoryCursorKey,
+  right: HistoryCursorKey,
+): number {
+  if (left.timestamp !== right.timestamp) {
+    return left.timestamp < right.timestamp ? -1 : 1;
+  }
+  return left.messageId.localeCompare(right.messageId);
+}
+
+function cursorIdentifiesMessage(cursor: string, message: Message): boolean {
+  const key = parseHistoryCursor(cursor);
+  return (
+    key.messageId === message.id &&
+    Date.parse(key.timestamp) === Date.parse(message.created_at)
+  );
+}
+
+function parseBundleEnvelope(value: unknown): MessageHistoryBundle {
+  const keys = [
+    "version",
+    "encoding",
+    "raw_bytes",
+    "message_count",
+    "cursor",
+    "next_cursor",
+    "through",
+    "snapshot",
+    "snapshot_count",
+    "snapshot_tail",
+    "data",
+  ];
+  if (
+    !isRecord(value) ||
+    !exactKeys(value, keys) ||
+    value.version !== 1 ||
+    value.encoding !== "gzip+base64url" ||
+    !Number.isSafeInteger(value.raw_bytes) ||
+    (value.raw_bytes as number) < 0 ||
+    (value.raw_bytes as number) > HISTORY_BUNDLE_RAW_BYTES_MAX ||
+    !Number.isSafeInteger(value.message_count) ||
+    (value.message_count as number) < 0 ||
+    (value.message_count as number) > HISTORY_BUNDLE_PAGE_MESSAGES_MAX ||
+    !isNullableString(value.cursor) ||
+    !isNullableString(value.next_cursor) ||
+    !isNullableString(value.through) ||
+    !Number.isSafeInteger(value.snapshot) ||
+    (value.snapshot as number) < 0 ||
+    !Number.isSafeInteger(value.snapshot_count) ||
+    (value.snapshot_count as number) < 0 ||
+    !isNullableString(value.snapshot_tail) ||
+    typeof value.data !== "string" ||
+    value.data.length > HISTORY_BUNDLE_ENCODED_BYTES_MAX
+  ) {
+    throw new Error("Invalid message history bundle");
+  }
+  if (value.cursor !== null) parseHistoryCursor(value.cursor);
+  if (value.next_cursor !== null) parseHistoryCursor(value.next_cursor);
+  if (value.through !== null) parseHistoryCursor(value.through);
+  if (value.snapshot_tail !== null) parseHistoryCursor(value.snapshot_tail);
+  return {
+    version: 1,
+    encoding: "gzip+base64url",
+    rawBytes: value.raw_bytes as number,
+    messageCount: value.message_count as number,
+    cursor: value.cursor,
+    nextCursor: value.next_cursor,
+    through: value.through,
+    snapshot: value.snapshot as number,
+    snapshotCount: value.snapshot_count as number,
+    snapshotTail: value.snapshot_tail,
+    data: value.data,
+  };
+}
+
+function parseBundledMessage(value: unknown, sessionId: string): Message {
+  const keys = [
+    "id",
+    "created_at",
+    "session_id",
+    "role",
+    "content",
+    "full_message",
+    "turn_id",
+    "turn_status",
+  ];
+  if (
+    !isRecord(value) ||
+    !exactKeys(value, keys) ||
+    typeof value.id !== "string" ||
+    !/^[0-9a-f]{32}$/u.test(value.id) ||
+    typeof value.created_at !== "string" ||
+    !Number.isFinite(Date.parse(value.created_at)) ||
+    value.session_id !== sessionId ||
+    typeof value.role !== "string" ||
+    !isNullableString(value.content) ||
+    !isNullableString(value.full_message) ||
+    !isNullableString(value.turn_id) ||
+    !isNullableString(value.turn_status)
+  ) {
+    throw new Error("Invalid message history bundle message");
+  }
+  return {
+    id: value.id,
+    created_at: value.created_at,
+    session_id: value.session_id,
+    role: value.role,
+    content: value.content,
+    full_message: value.full_message,
+    turn_id: value.turn_id,
+    turn_status: value.turn_status,
+  };
+}
+
+async function decompressBundle(
+  encoded: string,
+  options: SessionHistoryLoadOptions,
+): Promise<Uint8Array> {
+  assertNotCancelled(options);
+  const compressed = decodeBase64Url(encoded);
+  const source = new ReadableStream<BufferSource>({
+    start(controller) {
+      const input = new ArrayBuffer(compressed.byteLength);
+      new Uint8Array(input).set(compressed);
+      controller.enqueue(input);
+      controller.close();
+    },
+  });
+  const reader = source
+    .pipeThrough(new DecompressionStream("gzip"))
+    .getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      assertNotCancelled(options);
+      const result = await reader.read();
+      if (result.done) break;
+      total += result.value.length;
+      if (total > HISTORY_BUNDLE_RAW_BYTES_MAX) {
+        throw new Error(
+          "Message history bundle exceeded its decoded size limit",
+        );
+      }
+      chunks.push(result.value);
+    }
+  } catch (error) {
+    await reader.cancel().catch(() => undefined);
+    throw error;
+  }
+  const payload = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    payload.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return payload;
+}
+
+async function loadBundledSessionHistory(
+  transport: RuntimeTransport,
+  sessionId: string,
+  options: SessionHistoryLoadOptions,
+): Promise<Message[]> {
+  const messages: Message[] = [];
+  const seenCursors = new Set<string>();
+  const seenMessageIds = new Set<string>();
+  let cursor: string | null = null;
+  let through: string | null = null;
+  let snapshot: number | null = null;
+  let snapshotCount: number | null = null;
+  let snapshotTail: string | null = null;
+  for (let page = 0; page < HISTORY_BUNDLE_PAGES_MAX; page += 1) {
+    assertNotCancelled(options);
+    const path =
+      cursor === null
+        ? `/api/sessions/${sessionId}/messages/bundle`
+        : `/api/sessions/${sessionId}/messages/bundle?cursor=${encodeURIComponent(
+            cursor,
+          )}&through=${encodeURIComponent(
+            through ?? "",
+          )}&snapshot=${snapshot ?? ""}&snapshot_count=${
+            snapshotCount ?? ""
+          }&snapshot_tail=${encodeURIComponent(snapshotTail ?? "")}`;
+    const envelope = parseBundleEnvelope(await transport.get<unknown>(path));
+    assertNotCancelled(options);
+    if (envelope.cursor !== cursor) {
+      throw new Error("Message history bundle cursor changed unexpectedly");
+    }
+    if (cursor === null) {
+      through = envelope.through;
+      snapshot = envelope.snapshot;
+      snapshotCount = envelope.snapshotCount;
+      snapshotTail = envelope.snapshotTail;
+    } else if (
+      envelope.through !== through ||
+      envelope.snapshot !== snapshot ||
+      envelope.snapshotCount !== snapshotCount ||
+      envelope.snapshotTail !== snapshotTail
+    ) {
+      throw new Error("Message history bundle snapshot changed unexpectedly");
+    }
+    if (
+      (cursor === null &&
+        envelope.messageCount === 0 &&
+        (envelope.through !== null ||
+          envelope.snapshot !== 0 ||
+          envelope.snapshotCount !== 0 ||
+          envelope.snapshotTail !== null ||
+          envelope.nextCursor !== null)) ||
+      (cursor === null &&
+        envelope.messageCount > 0 &&
+        (envelope.through === null ||
+          envelope.snapshot < 1 ||
+          envelope.snapshotCount < envelope.messageCount ||
+          envelope.snapshotTail === null)) ||
+      (cursor !== null && envelope.messageCount === 0)
+    ) {
+      throw new Error("Invalid message history bundle snapshot");
+    }
+    const decoded = await decompressBundle(envelope.data, options);
+    if (decoded.length !== envelope.rawBytes) {
+      throw new Error("Message history bundle decoded length did not match");
+    }
+    let payload: unknown;
+    try {
+      payload = JSON.parse(
+        new TextDecoder("utf-8", { fatal: true }).decode(decoded),
+      );
+    } catch {
+      throw new Error("Message history bundle payload is invalid");
+    }
+    if (!Array.isArray(payload) || payload.length !== envelope.messageCount) {
+      throw new Error("Message history bundle count did not match");
+    }
+    for (const rawMessage of payload) {
+      const message = parseBundledMessage(rawMessage, sessionId);
+      const previous = messages[messages.length - 1];
+      if (previous) {
+        const order = compareHistoryKeys(
+          { timestamp: previous.created_at, messageId: previous.id },
+          { timestamp: message.created_at, messageId: message.id },
+        );
+        if (order >= 0) {
+          throw new Error("Message history bundle order is invalid");
+        }
+      }
+      if (seenMessageIds.has(message.id)) {
+        throw new Error("Message history bundle repeated a message");
+      }
+      seenMessageIds.add(message.id);
+      messages.push(message);
+      if (messages.length > HISTORY_BUNDLE_MESSAGES_MAX) {
+        throw new Error("Message history bundle contains too many messages");
+      }
+    }
+    const finalPageMessage = messages[messages.length - 1];
+    if (envelope.nextCursor === null) {
+      if (
+        envelope.messageCount > 0 &&
+        (envelope.through === null ||
+          finalPageMessage === undefined ||
+          !cursorIdentifiesMessage(envelope.through, finalPageMessage))
+      ) {
+        throw new Error(
+          "Message history bundle snapshot end did not match final message",
+        );
+      }
+      if (
+        messages.length > 0 &&
+        (envelope.snapshotTail === null ||
+          !messages.some((message) =>
+            cursorIdentifiesMessage(envelope.snapshotTail as string, message),
+          ))
+      ) {
+        throw new Error("Message history bundle snapshot tail was not found");
+      }
+      return messages;
+    }
+    if (
+      finalPageMessage === undefined ||
+      !cursorIdentifiesMessage(envelope.nextCursor, finalPageMessage)
+    ) {
+      throw new Error(
+        "Message history bundle cursor did not identify final page message",
+      );
+    }
+    const nextCursorKey = parseHistoryCursor(envelope.nextCursor);
+    if (
+      envelope.messageCount === 0 ||
+      seenCursors.has(envelope.nextCursor) ||
+      envelope.through === null ||
+      (cursor !== null &&
+        compareHistoryKeys(nextCursorKey, parseHistoryCursor(cursor)) <= 0) ||
+      compareHistoryKeys(nextCursorKey, parseHistoryCursor(envelope.through)) >
+        0
+    ) {
+      throw new Error("Message history bundle cursor did not advance");
+    }
+    seenCursors.add(envelope.nextCursor);
+    cursor = envelope.nextCursor;
+  }
+  throw new Error("Message history bundle used too many pages");
+}
+
+function shouldFallbackFromBundle(error: unknown): boolean {
+  return (
+    error instanceof ApiError &&
+    error.status === 413 &&
+    error.code === "history_bundle_message_too_large"
+  );
+}
+
 async function loadHistoryField(
   transport: RuntimeTransport,
   sessionId: string,
@@ -207,10 +620,10 @@ function compareMetadataKeys(
   return left.id.localeCompare(right.id);
 }
 
-export async function loadSessionHistory(
+async function loadLegacySessionHistory(
   transport: RuntimeTransport,
   sessionId: string,
-  options: SessionHistoryLoadOptions = {},
+  options: SessionHistoryLoadOptions,
 ): Promise<Message[]> {
   const metadata: MessageHistoryMetadata[] = [];
   const seenCursors = new Set<string>();
@@ -321,4 +734,23 @@ export async function loadSessionHistory(
   await Promise.all(Array.from({ length: workerCount }, hydrateFields));
   if (workerState.firstFailure) throw workerState.firstFailure.error;
   return messages;
+}
+
+export async function loadSessionHistory(
+  transport: RuntimeTransport,
+  sessionId: string,
+  options: SessionHistoryLoadOptions = {},
+): Promise<Message[]> {
+  const canLoadBundle =
+    transport.runtime.location === "managed" &&
+    transport.runtime.historyBundleSupported === true &&
+    typeof DecompressionStream === "function";
+  if (canLoadBundle) {
+    try {
+      return await loadBundledSessionHistory(transport, sessionId, options);
+    } catch (error) {
+      if (!shouldFallbackFromBundle(error)) throw error;
+    }
+  }
+  return loadLegacySessionHistory(transport, sessionId, options);
 }

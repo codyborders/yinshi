@@ -902,6 +902,9 @@ describe("runtime transport", () => {
       `/api/sessions/${sessionId}/messages/page?cursor=abc_123`,
     );
     await transport.get(
+      `/api/sessions/${sessionId}/messages/bundle?cursor=cursor_1&through=through_1&snapshot=123&snapshot_count=66&snapshot_tail=tail_1`,
+    );
+    await transport.get(
       `/api/sessions/${sessionId}/messages/${messageId}/field?name=full_message&offset=32768`,
     );
 
@@ -918,6 +921,21 @@ describe("runtime transport", () => {
       expectedRunnerPublicKey: runnerPublicKey,
       scopes: ["session.read"],
       method: "GET",
+      path: `/api/sessions/${sessionId}/messages/bundle`,
+      query: {
+        cursor: "cursor_1",
+        through: "through_1",
+        snapshot: "123",
+        snapshot_count: "66",
+        snapshot_tail: "tail_1",
+      },
+      body: null,
+      maxSessionBytes: 16_777_216,
+    });
+    expect(encryptedRequest).toHaveBeenNthCalledWith(3, {
+      expectedRunnerPublicKey: runnerPublicKey,
+      scopes: ["session.read"],
+      method: "GET",
       path: `/api/sessions/${sessionId}/messages/${messageId}/field`,
       query: { name: "full_message", offset: "32768" },
       body: null,
@@ -926,6 +944,12 @@ describe("runtime transport", () => {
 
     await expect(
       transport.get(`/api/sessions/${sessionId}/messages/pages`),
+    ).rejects.toThrow("not allowed");
+    await expect(
+      transport.get(`/api/sessions/${sessionId}/messages/bundles`),
+    ).rejects.toThrow("not allowed");
+    await expect(
+      transport.post(`/api/sessions/${sessionId}/messages/bundle`, {}),
     ).rejects.toThrow("not allowed");
     await expect(
       transport.get(
@@ -937,7 +961,7 @@ describe("runtime transport", () => {
         `/api/sessions/${sessionId}/messages/${messageId}/field?name=content&%6eame=full_message&offset=0`,
       ),
     ).rejects.toThrow("query keys must be unique");
-    expect(encryptedRequest).toHaveBeenCalledTimes(2);
+    expect(encryptedRequest).toHaveBeenCalledTimes(3);
   });
 
   it("separates workspace and session read and write scopes", async () => {

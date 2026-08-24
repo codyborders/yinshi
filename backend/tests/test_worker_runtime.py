@@ -229,6 +229,16 @@ async def test_worker_history_responses_stay_bounded_above_legacy_limit(
             body=None,
         )
 
+    bundle = await dispatcher.request(
+        method="GET",
+        path=f"/api/sessions/{session_id}/messages/bundle",
+        body=None,
+    )
+    assert bundle.status_code == 200
+    assert len(json.dumps(bundle.body).encode("utf-8")) < 1_048_576
+    assert bundle.body["message_count"] == 36
+    assert bundle.body["next_cursor"] is None
+
     page = await dispatcher.request(
         method="GET",
         path=f"/api/sessions/{session_id}/messages/page",

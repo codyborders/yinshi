@@ -48,6 +48,7 @@ _SESSION_COLLECTION_PATH = re.compile(rf"^/api/workspaces/{_RESOURCE_ID}/session
 _SESSION_MEMBER_PATH = re.compile(rf"^/api/sessions/{_RESOURCE_ID}$")
 _SESSION_READ_PATH = re.compile(rf"^/api/sessions/{_RESOURCE_ID}/(?:messages|tree)$")
 _SESSION_HISTORY_PAGE_PATH = re.compile(rf"^/api/sessions/{_RESOURCE_ID}/messages/page$")
+_SESSION_HISTORY_BUNDLE_PATH = re.compile(rf"^/api/sessions/{_RESOURCE_ID}/messages/bundle$")
 _SESSION_HISTORY_FIELD_PATH = re.compile(
     rf"^/api/sessions/{_RESOURCE_ID}/messages/{_RESOURCE_ID}/field$"
 )
@@ -55,6 +56,8 @@ _SESSION_HISTORY_CURSOR_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 _SESSION_HISTORY_CURSOR_VERSION = 1
 _SESSION_HISTORY_OFFSET_PATTERN = re.compile(r"^(?:0|[1-9][0-9]{0,9})$")
 _SESSION_HISTORY_OFFSET_MAX = 1_000_000_000
+_SESSION_HISTORY_SNAPSHOT_PATTERN = re.compile(r"^(?:0|[1-9][0-9]{0,18})$")
+_SESSION_HISTORY_SNAPSHOT_MAX = 9_007_199_254_740_991
 _PROMPT_RUN_COLLECTION_PATH = re.compile(rf"^/api/sessions/{_RESOURCE_ID}/runs$")
 _PROMPT_RUN_ACTIVE_PATH = re.compile(rf"^/api/sessions/{_RESOURCE_ID}/runs/active$")
 _PROMPT_RUN_EVENTS_PATH = re.compile(
@@ -199,12 +202,14 @@ def _required_scope(request: RunnerRpcRequest) -> str:
     is_session_member = _SESSION_MEMBER_PATH.fullmatch(request.path) is not None
     is_session_read = _SESSION_READ_PATH.fullmatch(request.path) is not None
     is_session_history_page = _SESSION_HISTORY_PAGE_PATH.fullmatch(request.path) is not None
+    is_session_history_bundle = _SESSION_HISTORY_BUNDLE_PATH.fullmatch(request.path) is not None
     is_session_history_field = _SESSION_HISTORY_FIELD_PATH.fullmatch(request.path) is not None
     if request.method == "GET" and (
         is_session_collection
         or is_session_member
         or is_session_read
         or is_session_history_page
+        or is_session_history_bundle
         or is_session_history_field
     ):
         return "session.read"
@@ -273,7 +278,7 @@ def _required_scope(request: RunnerRpcRequest) -> str:
     raise ValueError("Runner RPC method or path is not allowed")
 
 
-def _validate_history_cursor(cursor: str) -> None:
+def _validate_history_cursor(cursor: str) -> tuple[str, bytes]:
     """Reject any cursor that the bounded history API would not accept."""
     if _SESSION_HISTORY_CURSOR_PATTERN.fullmatch(cursor) is None:
         raise ValueError("Runner message history cursor is invalid")
@@ -301,6 +306,7 @@ def _validate_history_cursor(cursor: str) -> None:
         datetime.fromisoformat(created_at.replace("Z", "+00:00"))
     except (UnicodeDecodeError, ValueError) as exc:
         raise ValueError("Runner message history cursor is invalid") from exc
+    return created_at, raw[-16:]
 
 
 def _validate_route_query(request: RunnerRpcRequest) -> None:
@@ -311,6 +317,36 @@ def _validate_route_query(request: RunnerRpcRequest) -> None:
         if set(request.query) != {"cursor"}:
             raise ValueError("Runner message history page query is invalid")
         _validate_history_cursor(request.query["cursor"])
+        return
+    if request.method == "GET" and _SESSION_HISTORY_BUNDLE_PATH.fullmatch(request.path):
+        if not request.query:
+            return
+        if set(request.query) != {
+            "cursor",
+            "through",
+            "snapshot",
+            "snapshot_count",
+            "snapshot_tail",
+        }:
+            raise ValueError("Runner message history bundle query is invalid")
+        cursor = _validate_history_cursor(request.query["cursor"])
+        through = _validate_history_cursor(request.query["through"])
+        _validate_history_cursor(request.query["snapshot_tail"])
+        snapshot = request.query["snapshot"]
+        snapshot_count = request.query["snapshot_count"]
+        if (
+            _SESSION_HISTORY_SNAPSHOT_PATTERN.fullmatch(snapshot) is None
+            or int(snapshot) < 1
+            or int(snapshot) > _SESSION_HISTORY_SNAPSHOT_MAX
+        ):
+            raise ValueError("Runner message history bundle snapshot is invalid")
+        if (
+            _SESSION_HISTORY_SNAPSHOT_PATTERN.fullmatch(snapshot_count) is None
+            or int(snapshot_count) > _SESSION_HISTORY_SNAPSHOT_MAX
+        ):
+            raise ValueError("Runner message history bundle snapshot count is invalid")
+        if cursor >= through:
+            raise ValueError("Runner message history bundle cursor order is invalid")
         return
     if request.method == "GET" and _SESSION_HISTORY_FIELD_PATH.fullmatch(request.path):
         if set(request.query) != {"name", "offset"}:

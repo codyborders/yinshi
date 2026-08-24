@@ -22,7 +22,8 @@ _CLIENT_PUBLIC_KEY = "a8OCKiqn9OaYHWU4aSs83z5t-e6m7SaetB2TwidXt1o"
 class FakeManager:
     """Record managed runtime operations and return configured values."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, artifact_version: str = "runner-v1") -> None:
+        self.artifact_version = artifact_version
         self.provision_result: object | None = None
         self.runner: dict[str, Any] | None = None
         self.error: Exception | None = None
@@ -284,6 +285,7 @@ def test_get_runtime_returns_local_compatibility_status(auth_client: TestClient)
         "artifact_version": None,
         "last_error": None,
         "runner_public_key": None,
+        "history_bundle_supported": False,
     }
 
 
@@ -322,7 +324,7 @@ def test_get_runtime_returns_only_safe_managed_fields(
     monkeypatch.setattr(managed_runtime, "get_managed_runtime_status", lambda user_id: runtime)
     monkeypatch.setattr(managed_runtime, "get_managed_runner_for_user", lambda user_id: runner)
 
-    with _runtime_client(tenant, FakeManager()) as client:
+    with _runtime_client(tenant, FakeManager(artifact_version="runner-v2")) as client:
         response = client.get("/api/runtime")
 
     assert response.status_code == 200
@@ -332,6 +334,7 @@ def test_get_runtime_returns_only_safe_managed_fields(
         "artifact_version": "runner-v2",
         "last_error": None,
         "runner_public_key": _RUNNER_PUBLIC_KEY,
+        "history_bundle_supported": True,
     }
     for secret in (
         tenant.user_id,
@@ -341,6 +344,37 @@ def test_get_runtime_returns_only_safe_managed_fields(
         "https://provider.example/private",
     ):
         assert secret not in response.text
+
+
+def test_get_runtime_does_not_advertise_bundle_for_stale_artifact(
+    auth_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A ready runtime must match the configured artifact before advertising support."""
+    from yinshi.api import managed_runtime
+    from yinshi.services.managed_runners import ManagedRuntimeStatus
+
+    tenant = getattr(auth_client, "yinshi_tenant")
+    runtime = ManagedRuntimeStatus(
+        user_id=tenant.user_id,
+        runner_id="managed-runner",
+        provider_name="fly_sprites",
+        sprite_name="sprite",
+        lifecycle_status="ready",
+        generation=2,
+        artifact_version="runner-v1",
+        created_at="2026-08-11T12:00:00Z",
+        updated_at="2026-08-11T12:01:00Z",
+        last_error=None,
+    )
+    monkeypatch.setattr(managed_runtime, "get_managed_runtime_status", lambda user_id: runtime)
+    monkeypatch.setattr(managed_runtime, "get_managed_runner_for_user", lambda user_id: None)
+
+    with _runtime_client(tenant, FakeManager(artifact_version="runner-v2")) as client:
+        response = client.get("/api/runtime")
+
+    assert response.status_code == 200
+    assert response.json()["history_bundle_supported"] is False
 
 
 def test_provision_runtime_awaits_manager_and_returns_safe_status(
@@ -377,10 +411,42 @@ def test_provision_runtime_awaits_manager_and_returns_safe_status(
         "artifact_version": "runner-v1",
         "last_error": None,
         "runner_public_key": None,
+        "history_bundle_supported": False,
     }
     assert manager.calls == [("provision", tenant.user_id)]
     assert tenant.user_id not in response.text
     assert "private-sprite" not in response.text
+
+
+def test_provision_runtime_advertises_bundle_for_current_ready_artifact(
+    auth_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Provision response advertises support only for the manager's ready artifact."""
+    from yinshi.api import managed_runtime
+    from yinshi.services.managed_runners import ManagedRuntimeStatus
+
+    tenant = getattr(auth_client, "yinshi_tenant")
+    manager = FakeManager(artifact_version="runner-v2")
+    manager.provision_result = ManagedRuntimeStatus(
+        user_id=tenant.user_id,
+        runner_id="managed-runner",
+        provider_name="fly_sprites",
+        sprite_name="private-sprite",
+        lifecycle_status="ready",
+        generation=1,
+        artifact_version="runner-v2",
+        created_at="2026-08-11T12:00:00Z",
+        updated_at="2026-08-11T12:00:00Z",
+        last_error=None,
+    )
+    monkeypatch.setattr(managed_runtime, "get_managed_runner_for_user", lambda user_id: None)
+
+    with _runtime_client(tenant, manager, public_launch_enabled=True) as client:
+        response = client.post("/api/runtime/provision")
+
+    assert response.status_code == 200
+    assert response.json()["history_bundle_supported"] is True
 
 
 @pytest.mark.parametrize(

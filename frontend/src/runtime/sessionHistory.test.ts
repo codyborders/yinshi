@@ -1,14 +1,673 @@
 import { describe, expect, it, vi } from "vitest";
+import { ApiError } from "../api/client";
 import type { RuntimeTransport } from "./runtimeTransport";
 import { loadSessionHistory } from "./sessionHistory";
 
 const SESSION_ID = "a".repeat(32);
 
-function transportWithGet(get: ReturnType<typeof vi.fn>): RuntimeTransport {
-  return { get } as unknown as RuntimeTransport;
+function transportWithGet(
+  get: ReturnType<typeof vi.fn>,
+  location: RuntimeTransport["runtime"]["location"] = "local",
+  historyBundleSupported = true,
+): RuntimeTransport {
+  const runtime =
+    location === "managed"
+      ? { location, runnerPublicKey: "x", historyBundleSupported }
+      : location === "byoc"
+        ? { location, runnerId: "runner", runnerPublicKey: "x" }
+        : { location };
+  return { get, runtime } as unknown as RuntimeTransport;
+}
+
+function base64Url(bytes: Uint8Array): string {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary)
+    .replace(/\+/gu, "-")
+    .replace(/\//gu, "_")
+    .replace(/=+$/u, "");
+}
+
+function historyCursor(createdAt: string, id: string): string {
+  const timestamp = new TextEncoder().encode(createdAt);
+  const raw = new Uint8Array(2 + timestamp.length + 16);
+  raw[0] = 1;
+  raw[1] = timestamp.length;
+  raw.set(timestamp, 2);
+  for (let index = 0; index < 16; index += 1) {
+    raw[2 + timestamp.length + index] = Number.parseInt(
+      id.slice(index * 2, index * 2 + 2),
+      16,
+    );
+  }
+  return base64Url(raw);
+}
+
+async function bundleEnvelope(
+  messages: unknown[],
+  options: {
+    cursor?: string | null;
+    nextCursor?: string | null;
+    through?: string | null;
+    snapshot?: number;
+    snapshotCount?: number;
+    snapshotTail?: string | null;
+  } = {},
+): Promise<Record<string, unknown>> {
+  const raw = new TextEncoder().encode(JSON.stringify(messages));
+  const source = new ReadableStream<BufferSource>({
+    start(controller) {
+      const input = new ArrayBuffer(raw.byteLength);
+      new Uint8Array(input).set(raw);
+      controller.enqueue(input);
+      controller.close();
+    },
+  });
+  const compressed = new Uint8Array(
+    await new Response(
+      source.pipeThrough(new CompressionStream("gzip")),
+    ).arrayBuffer(),
+  );
+  const lastMessage = messages[messages.length - 1];
+  const inferredSnapshotTail =
+    typeof lastMessage === "object" &&
+    lastMessage !== null &&
+    "created_at" in lastMessage &&
+    typeof lastMessage.created_at === "string" &&
+    "id" in lastMessage &&
+    typeof lastMessage.id === "string"
+      ? historyCursor(lastMessage.created_at, lastMessage.id)
+      : null;
+  return {
+    version: 1,
+    encoding: "gzip+base64url",
+    raw_bytes: raw.length,
+    message_count: messages.length,
+    cursor: options.cursor ?? null,
+    next_cursor: options.nextCursor ?? null,
+    through: options.through ?? null,
+    snapshot: options.snapshot ?? (messages.length > 0 ? 123 : 0),
+    snapshot_count: options.snapshotCount ?? messages.length,
+    snapshot_tail: options.snapshotTail ?? inferredSnapshotTail,
+    data: base64Url(compressed),
+  };
 }
 
 describe("loadSessionHistory", () => {
+  it("loads one complete managed tool trace from one compressed bundle", async () => {
+    const messageId = "1".repeat(32);
+    const createdAt = "2026-08-23T00:00:00Z";
+    const fullMessage = JSON.stringify({
+      schema: "yinshi.assistant_turn.v1",
+      events: [{ type: "tool_use", toolCallId: "tool-1", toolName: "read" }],
+    });
+    const messages = [
+      {
+        id: messageId,
+        created_at: createdAt,
+        session_id: SESSION_ID,
+        role: "assistant",
+        content: "done",
+        full_message: fullMessage,
+        turn_id: "turn-1",
+        turn_status: "completed",
+      },
+    ];
+    const get = vi.fn().mockResolvedValue(
+      await bundleEnvelope(messages, {
+        through: historyCursor(createdAt, messageId),
+      }),
+    );
+
+    await expect(
+      loadSessionHistory(transportWithGet(get, "managed"), SESSION_ID),
+    ).resolves.toEqual(messages);
+    expect(get).toHaveBeenCalledTimes(1);
+    expect(get).toHaveBeenCalledWith(
+      `/api/sessions/${SESSION_ID}/messages/bundle`,
+    );
+  });
+
+  it("loads bundle pages through one stable snapshot cursor", async () => {
+    const first = {
+      id: "1".repeat(32),
+      created_at: "2026-08-23T00:00:00Z",
+      session_id: SESSION_ID,
+      role: "user",
+      content: "first",
+      full_message: null,
+      turn_id: null,
+      turn_status: null,
+    };
+    const second = {
+      ...first,
+      id: "2".repeat(32),
+      created_at: "2026-08-23T00:00:01Z",
+      content: "second",
+    };
+    const cursor = historyCursor(first.created_at, first.id);
+    const through = historyCursor(second.created_at, second.id);
+    const get = vi
+      .fn()
+      .mockResolvedValueOnce(
+        await bundleEnvelope([first], {
+          nextCursor: cursor,
+          through,
+          snapshotCount: 2,
+          snapshotTail: through,
+        }),
+      )
+      .mockResolvedValueOnce(
+        await bundleEnvelope([second], {
+          cursor,
+          through,
+          snapshotCount: 2,
+          snapshotTail: through,
+        }),
+      );
+
+    await expect(
+      loadSessionHistory(transportWithGet(get, "managed"), SESSION_ID),
+    ).resolves.toEqual([first, second]);
+    expect(get).toHaveBeenNthCalledWith(
+      2,
+      `/api/sessions/${SESSION_ID}/messages/bundle?cursor=${encodeURIComponent(
+        cursor,
+      )}&through=${encodeURIComponent(
+        through,
+      )}&snapshot=123&snapshot_count=2&snapshot_tail=${encodeURIComponent(through)}`,
+    );
+  });
+
+  it("rejects a changed snapshot watermark on continuation", async () => {
+    const first = {
+      id: "1".repeat(32),
+      created_at: "2026-08-23T00:00:00Z",
+      session_id: SESSION_ID,
+      role: "user",
+      content: "first",
+      full_message: null,
+      turn_id: null,
+      turn_status: null,
+    };
+    const second = {
+      ...first,
+      id: "2".repeat(32),
+      created_at: "2026-08-23T00:00:01Z",
+      content: "second",
+    };
+    const cursor = historyCursor(first.created_at, first.id);
+    const through = historyCursor(second.created_at, second.id);
+    const get = vi
+      .fn()
+      .mockResolvedValueOnce(
+        await bundleEnvelope([first], {
+          nextCursor: cursor,
+          through,
+          snapshot: 123,
+          snapshotCount: 2,
+          snapshotTail: through,
+        }),
+      )
+      .mockResolvedValueOnce(
+        await bundleEnvelope([second], {
+          cursor,
+          through,
+          snapshot: 124,
+          snapshotCount: 2,
+          snapshotTail: through,
+        }),
+      );
+
+    await expect(
+      loadSessionHistory(transportWithGet(get, "managed"), SESSION_ID),
+    ).rejects.toThrow("snapshot changed");
+  });
+
+  it("rejects a changed snapshot count on continuation", async () => {
+    const first = {
+      id: "1".repeat(32),
+      created_at: "2026-08-23T00:00:00Z",
+      session_id: SESSION_ID,
+      role: "user",
+      content: "first",
+      full_message: null,
+      turn_id: null,
+      turn_status: null,
+    };
+    const second = {
+      ...first,
+      id: "2".repeat(32),
+      created_at: "2026-08-23T00:00:01Z",
+      content: "second",
+    };
+    const cursor = historyCursor(first.created_at, first.id);
+    const through = historyCursor(second.created_at, second.id);
+    const get = vi
+      .fn()
+      .mockResolvedValueOnce(
+        await bundleEnvelope([first], {
+          nextCursor: cursor,
+          through,
+          snapshotCount: 2,
+          snapshotTail: through,
+        }),
+      )
+      .mockResolvedValueOnce(
+        await bundleEnvelope([second], {
+          cursor,
+          through,
+          snapshotCount: 3,
+          snapshotTail: through,
+        }),
+      );
+
+    await expect(
+      loadSessionHistory(transportWithGet(get, "managed"), SESSION_ID),
+    ).rejects.toThrow("snapshot changed");
+  });
+
+  it("rejects a changed snapshot tail on continuation", async () => {
+    const first = {
+      id: "1".repeat(32),
+      created_at: "2026-08-23T00:00:00Z",
+      session_id: SESSION_ID,
+      role: "user",
+      content: "first",
+      full_message: null,
+      turn_id: null,
+      turn_status: null,
+    };
+    const second = {
+      ...first,
+      id: "2".repeat(32),
+      created_at: "2026-08-23T00:00:01Z",
+      content: "second",
+    };
+    const cursor = historyCursor(first.created_at, first.id);
+    const through = historyCursor(second.created_at, second.id);
+    const get = vi
+      .fn()
+      .mockResolvedValueOnce(
+        await bundleEnvelope([first], {
+          nextCursor: cursor,
+          through,
+          snapshotCount: 2,
+          snapshotTail: cursor,
+        }),
+      )
+      .mockResolvedValueOnce(
+        await bundleEnvelope([second], {
+          cursor,
+          through,
+          snapshotCount: 2,
+          snapshotTail: through,
+        }),
+      );
+
+    await expect(
+      loadSessionHistory(transportWithGet(get, "managed"), SESSION_ID),
+    ).rejects.toThrow("snapshot changed");
+  });
+
+  it("rejects an empty continuation page", async () => {
+    const message = {
+      id: "1".repeat(32),
+      created_at: "2026-08-23T00:00:00Z",
+      session_id: SESSION_ID,
+      role: "user",
+      content: "first",
+      full_message: null,
+      turn_id: null,
+      turn_status: null,
+    };
+    const cursor = historyCursor(message.created_at, message.id);
+    const through = historyCursor("2026-08-23T00:00:01Z", "2".repeat(32));
+    const get = vi
+      .fn()
+      .mockResolvedValueOnce(
+        await bundleEnvelope([message], {
+          nextCursor: cursor,
+          through,
+          snapshotCount: 2,
+          snapshotTail: cursor,
+        }),
+      )
+      .mockResolvedValueOnce(
+        await bundleEnvelope([], {
+          cursor,
+          through,
+          snapshot: 123,
+          snapshotCount: 2,
+          snapshotTail: cursor,
+        }),
+      );
+
+    await expect(
+      loadSessionHistory(transportWithGet(get, "managed"), SESSION_ID),
+    ).rejects.toThrow("Invalid message history bundle snapshot");
+  });
+
+  it("rejects a next cursor that skips the final decoded page message", async () => {
+    const first = {
+      id: "1".repeat(32),
+      created_at: "2026-08-23T00:00:00Z",
+      session_id: SESSION_ID,
+      role: "user",
+      content: "first",
+      full_message: null,
+      turn_id: null,
+      turn_status: null,
+    };
+    const second = {
+      ...first,
+      id: "2".repeat(32),
+      created_at: "2026-08-23T00:00:01Z",
+      content: "second",
+    };
+    const through = historyCursor(second.created_at, second.id);
+    const get = vi.fn().mockResolvedValue(
+      await bundleEnvelope([first, second], {
+        nextCursor: historyCursor(first.created_at, first.id),
+        through,
+      }),
+    );
+
+    await expect(
+      loadSessionHistory(transportWithGet(get, "managed"), SESSION_ID),
+    ).rejects.toThrow("final page message");
+    expect(get).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects a final through cursor that does not identify the final message", async () => {
+    const message = {
+      id: "1".repeat(32),
+      created_at: "2026-08-23T00:00:00Z",
+      session_id: SESSION_ID,
+      role: "user",
+      content: "only",
+      full_message: null,
+      turn_id: null,
+      turn_status: null,
+    };
+    const get = vi.fn().mockResolvedValue(
+      await bundleEnvelope([message], {
+        through: historyCursor("2026-08-23T00:00:01Z", "2".repeat(32)),
+      }),
+    );
+
+    await expect(
+      loadSessionHistory(transportWithGet(get, "managed"), SESSION_ID),
+    ).rejects.toThrow("snapshot end");
+    expect(get).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects a snapshot tail absent from final decoded history", async () => {
+    const message = {
+      id: "1".repeat(32),
+      created_at: "2026-08-23T00:00:00Z",
+      session_id: SESSION_ID,
+      role: "user",
+      content: "only",
+      full_message: null,
+      turn_id: null,
+      turn_status: null,
+    };
+    const get = vi.fn().mockResolvedValue(
+      await bundleEnvelope([message], {
+        through: historyCursor(message.created_at, message.id),
+        snapshotTail: historyCursor("2026-08-23T00:00:01Z", "2".repeat(32)),
+      }),
+    );
+
+    await expect(
+      loadSessionHistory(transportWithGet(get, "managed"), SESSION_ID),
+    ).rejects.toThrow("snapshot tail");
+  });
+
+  it.each([
+    [new ApiError(413, "large", { code: "history_bundle_message_too_large" })],
+  ])("falls back only for an oversized bundle response", async (error) => {
+    const get = vi
+      .fn()
+      .mockRejectedValueOnce(error)
+      .mockResolvedValueOnce({ messages: [], next_cursor: null });
+
+    await expect(
+      loadSessionHistory(transportWithGet(get, "managed"), SESSION_ID),
+    ).resolves.toEqual([]);
+    expect(get).toHaveBeenNthCalledWith(
+      2,
+      `/api/sessions/${SESSION_ID}/messages/page`,
+    );
+  });
+
+  it.each([
+    [new ApiError(401, "Unauthorized")],
+    [new ApiError(403, "Forbidden")],
+    [
+      new ApiError(409, "changed", {
+        code: "history_bundle_snapshot_changed",
+      }),
+    ],
+    [new ApiError(404, "Not Found")],
+    [new Error("Runner RPC method or path is not allowed")],
+    [new Error("Runner relay closed before responding")],
+    [new Error("timed out")],
+  ])(
+    "does not hide bundle transport or authorization failures",
+    async (error) => {
+      const get = vi.fn().mockRejectedValue(error);
+
+      await expect(
+        loadSessionHistory(transportWithGet(get, "managed"), SESSION_ID),
+      ).rejects.toBe(error);
+      expect(get).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("rejects malformed bundle counts without falling back", async () => {
+    const message = {
+      id: "1".repeat(32),
+      created_at: "2026-08-23T00:00:00Z",
+      session_id: SESSION_ID,
+      role: "user",
+      content: "x",
+      full_message: null,
+      turn_id: null,
+      turn_status: null,
+    };
+    const envelope = await bundleEnvelope([message], {
+      through: historyCursor(message.created_at, message.id),
+    });
+    envelope.message_count = 2;
+    envelope.snapshot_count = 2;
+    const get = vi.fn().mockResolvedValue(envelope);
+
+    await expect(
+      loadSessionHistory(transportWithGet(get, "managed"), SESSION_ID),
+    ).rejects.toThrow("count did not match");
+    expect(get).toHaveBeenCalledTimes(1);
+  });
+
+  it("accepts the shared maximum safe snapshot numeric range", async () => {
+    const message = {
+      id: "1".repeat(32),
+      created_at: "2026-08-23T00:00:00Z",
+      session_id: SESSION_ID,
+      role: "user",
+      content: "safe",
+      full_message: null,
+      turn_id: null,
+      turn_status: null,
+    };
+    const envelope = await bundleEnvelope([message], {
+      through: historyCursor(message.created_at, message.id),
+      snapshot: Number.MAX_SAFE_INTEGER,
+      snapshotCount: Number.MAX_SAFE_INTEGER,
+    });
+    const get = vi.fn().mockResolvedValue(envelope);
+
+    await expect(
+      loadSessionHistory(transportWithGet(get, "managed"), SESSION_ID),
+    ).resolves.toEqual([message]);
+  });
+
+  it("rejects an unsafe bundle snapshot watermark", async () => {
+    const envelope = await bundleEnvelope([]);
+    envelope.snapshot = Number.MAX_SAFE_INTEGER + 1;
+    const get = vi.fn().mockResolvedValue(envelope);
+
+    await expect(
+      loadSessionHistory(transportWithGet(get, "managed"), SESSION_ID),
+    ).rejects.toThrow("Invalid message history bundle");
+    expect(get).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects an unsafe bundle snapshot count", async () => {
+    const envelope = await bundleEnvelope([]);
+    envelope.snapshot_count = Number.MAX_SAFE_INTEGER + 1;
+    const get = vi.fn().mockResolvedValue(envelope);
+
+    await expect(
+      loadSessionHistory(transportWithGet(get, "managed"), SESSION_ID),
+    ).rejects.toThrow("Invalid message history bundle");
+    expect(get).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects a nonzero snapshot for an empty first history", async () => {
+    const envelope = await bundleEnvelope([], { snapshot: 1 });
+    const get = vi.fn().mockResolvedValue(envelope);
+
+    await expect(
+      loadSessionHistory(transportWithGet(get, "managed"), SESSION_ID),
+    ).rejects.toThrow("Invalid message history bundle snapshot");
+    expect(get).toHaveBeenCalledTimes(1);
+  });
+
+  it("aborts bundle decompression above four MiB", async () => {
+    const oversized = "x".repeat(4 * 1_024 * 1_024 + 1);
+    const envelope = await bundleEnvelope([oversized]);
+    envelope.raw_bytes = 4 * 1_024 * 1_024;
+    envelope.message_count = 1;
+    envelope.through = historyCursor("2026-08-23T00:00:00Z", "1".repeat(32));
+    envelope.snapshot_tail = envelope.through;
+    const get = vi.fn().mockResolvedValue(envelope);
+
+    await expect(
+      loadSessionHistory(transportWithGet(get, "managed"), SESSION_ID),
+    ).rejects.toThrow("decoded size limit");
+    expect(get).toHaveBeenCalledTimes(1);
+  });
+
+  it("falls back when browser gzip streaming is unavailable", async () => {
+    const get = vi.fn().mockResolvedValue({ messages: [], next_cursor: null });
+    vi.stubGlobal("DecompressionStream", undefined);
+    try {
+      await expect(
+        loadSessionHistory(transportWithGet(get, "managed"), SESSION_ID),
+      ).resolves.toEqual([]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    expect(get).toHaveBeenCalledWith(
+      `/api/sessions/${SESSION_ID}/messages/page`,
+    );
+  });
+
+  it("stops a managed bundle after navigation cancellation", async () => {
+    let release: ((value: unknown) => void) | undefined;
+    let cancelled = false;
+    const message = {
+      id: "1".repeat(32),
+      created_at: "2026-08-23T00:00:00Z",
+      session_id: SESSION_ID,
+      role: "user",
+      content: "x",
+      full_message: null,
+      turn_id: null,
+      turn_status: null,
+    };
+    const envelope = await bundleEnvelope([message], {
+      through: historyCursor(message.created_at, message.id),
+    });
+    const get = vi.fn().mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          release = resolve;
+        }),
+    );
+    const loading = loadSessionHistory(
+      transportWithGet(get, "managed"),
+      SESSION_ID,
+      { isCancelled: () => cancelled },
+    );
+    await Promise.resolve();
+    cancelled = true;
+    release?.(envelope);
+
+    await expect(loading).rejects.toThrow("cancelled");
+    expect(get).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects bundle messages outside canonical history order", async () => {
+    const later = {
+      id: "2".repeat(32),
+      created_at: "2026-08-23T00:00:01.000002Z",
+      session_id: SESSION_ID,
+      role: "user",
+      content: "later",
+      full_message: null,
+      turn_id: null,
+      turn_status: null,
+    };
+    const earlier = {
+      ...later,
+      id: "1".repeat(32),
+      created_at: "2026-08-23T00:00:01.000001Z",
+      content: "earlier",
+    };
+    const get = vi.fn().mockResolvedValue(
+      await bundleEnvelope([later, earlier], {
+        through: historyCursor(later.created_at, later.id),
+      }),
+    );
+
+    await expect(
+      loadSessionHistory(transportWithGet(get, "managed"), SESSION_ID),
+    ).rejects.toThrow("order is invalid");
+    expect(get).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses legacy loading when managed feature advertisement is absent", async () => {
+    const get = vi.fn().mockResolvedValue({ messages: [], next_cursor: null });
+    const transport = {
+      get,
+      runtime: { location: "managed", runnerPublicKey: "x" },
+    } as unknown as RuntimeTransport;
+
+    await expect(loadSessionHistory(transport, SESSION_ID)).resolves.toEqual(
+      [],
+    );
+    expect(get).toHaveBeenCalledWith(
+      `/api/sessions/${SESSION_ID}/messages/page`,
+    );
+  });
+
+  it("does not try bundles outside managed runtimes", async () => {
+    for (const location of ["local", "hosted", "byoc"] as const) {
+      const get = vi
+        .fn()
+        .mockResolvedValue({ messages: [], next_cursor: null });
+      await expect(
+        loadSessionHistory(transportWithGet(get, location), SESSION_ID),
+      ).resolves.toEqual([]);
+      expect(get).toHaveBeenCalledWith(
+        `/api/sessions/${SESSION_ID}/messages/page`,
+      );
+    }
+  });
+
   it("hydrates no more than eight independent fields before starting a ninth", async () => {
     const messageIds = Array.from({ length: 9 }, (_, index) =>
       (index + 1).toString(16).padStart(32, "0"),

@@ -17,6 +17,7 @@ export type RuntimeRef =
   | {
       readonly location: "managed";
       readonly runnerPublicKey: string;
+      readonly historyBundleSupported?: boolean;
     }
   | {
       readonly location: "byoc";
@@ -74,6 +75,9 @@ const SESSION_READ_PATH = new RegExp(
 const SESSION_HISTORY_PAGE_PATH = new RegExp(
   `^/api/sessions/${RESOURCE_ID}/messages/page$`,
 );
+const SESSION_HISTORY_BUNDLE_PATH = new RegExp(
+  `^/api/sessions/${RESOURCE_ID}/messages/bundle$`,
+);
 const SESSION_HISTORY_FIELD_PATH = new RegExp(
   `^/api/sessions/${RESOURCE_ID}/messages/${RESOURCE_ID}/field$`,
 );
@@ -126,6 +130,7 @@ function isBoundedSessionHistoryRequest(
   return (
     method === "GET" &&
     (SESSION_HISTORY_PAGE_PATH.test(path) ||
+      SESSION_HISTORY_BUNDLE_PATH.test(path) ||
       SESSION_HISTORY_FIELD_PATH.test(path))
   );
 }
@@ -147,7 +152,10 @@ function managedConnectionLane(
     scope === "session.read" &&
     isBoundedSessionHistoryRequest(method, path)
   ) {
-    if (SESSION_HISTORY_PAGE_PATH.test(path)) {
+    if (
+      SESSION_HISTORY_PAGE_PATH.test(path) ||
+      SESSION_HISTORY_BUNDLE_PATH.test(path)
+    ) {
       return "session.read:history:0";
     }
     const messageId = path.split("/")[5];
@@ -189,6 +197,7 @@ function requiredScope(method: RuntimeMethod, path: string): string {
   const sessionMember = SESSION_MEMBER_PATH.test(path);
   const sessionRead = SESSION_READ_PATH.test(path);
   const sessionHistoryPage = SESSION_HISTORY_PAGE_PATH.test(path);
+  const sessionHistoryBundle = SESSION_HISTORY_BUNDLE_PATH.test(path);
   const sessionHistoryField = SESSION_HISTORY_FIELD_PATH.test(path);
   if (
     method === "GET" &&
@@ -196,6 +205,7 @@ function requiredScope(method: RuntimeMethod, path: string): string {
       sessionMember ||
       sessionRead ||
       sessionHistoryPage ||
+      sessionHistoryBundle ||
       sessionHistoryField)
   ) {
     return "session.read";

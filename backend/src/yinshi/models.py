@@ -254,6 +254,24 @@ class MessageHistoryPageOut(BaseModel):
     next_cursor: str | None
 
 
+class MessageHistoryBundleOut(BaseModel):
+    """Bounded compressed page of complete stored messages."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    version: Literal[1]
+    encoding: Literal["gzip+base64url"]
+    raw_bytes: int = Field(ge=0, le=4 * 1_024 * 1_024)
+    message_count: int = Field(ge=0, le=64)
+    cursor: str | None = Field(default=None, max_length=128)
+    next_cursor: str | None = Field(default=None, max_length=128)
+    through: str | None = Field(default=None, max_length=128)
+    snapshot: int = Field(ge=0, le=9_007_199_254_740_991)
+    snapshot_count: int = Field(ge=0, le=9_007_199_254_740_991)
+    snapshot_tail: str | None = Field(default=None, max_length=128)
+    data: str = Field(max_length=900_000)
+
+
 class MessageHistoryFieldChunkOut(BaseModel):
     """Bounded character chunk from one stored message field."""
 

@@ -68,6 +68,7 @@ class ManagedRuntimeOut(BaseModel):
     artifact_version: str | None = None
     last_error: str | None = None
     runner_public_key: str | None = None
+    history_bundle_supported: bool = False
 
 
 router = APIRouter(tags=["runtime"])
@@ -76,6 +77,8 @@ router = APIRouter(tags=["runtime"])
 def _safe_runtime_status(
     user_id: str,
     runtime: ManagedRuntimeStatus | None,
+    *,
+    expected_artifact_version: str,
 ) -> ManagedRuntimeOut:
     """Convert persisted state to fixed public response fields."""
     if runtime is None:
@@ -98,6 +101,10 @@ def _safe_runtime_status(
         artifact_version=runtime.artifact_version,
         last_error=runtime.last_error,
         runner_public_key=runner_public_key,
+        history_bundle_supported=(
+            runtime.lifecycle_status == "ready"
+            and runtime.artifact_version == expected_artifact_version
+        ),
     )
 
 
@@ -211,6 +218,7 @@ def get_runtime(request: Request) -> ManagedRuntimeOut:
     return _safe_runtime_status(
         tenant.user_id,
         get_managed_runtime_status(tenant.user_id),
+        expected_artifact_version=manager.artifact_version,
     )
 
 
@@ -254,7 +262,11 @@ async def provision_runtime(request: Request) -> ManagedRuntimeOut:
             status_code=503,
             detail="Managed runtime wake timed out",
         ) from error
-    return _safe_runtime_status(tenant.user_id, runtime)
+    return _safe_runtime_status(
+        tenant.user_id,
+        runtime,
+        expected_artifact_version=manager.artifact_version,
+    )
 
 
 @router.post(

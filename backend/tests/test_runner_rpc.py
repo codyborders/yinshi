@@ -91,6 +91,7 @@ def test_bounded_history_routes_require_session_read_scope() -> None:
     message_id = "b" * 32
     for path in (
         f"/api/sessions/{session_id}/messages/page",
+        f"/api/sessions/{session_id}/messages/bundle",
         f"/api/sessions/{session_id}/messages/{message_id}/field",
     ):
         request = RunnerRpcRequest(
@@ -104,15 +105,18 @@ def test_bounded_history_routes_require_session_read_scope() -> None:
         )
         assert _required_scope(request) == "session.read"
 
-    for path in (
-        f"/api/sessions/{session_id}/messages/pages",
-        f"/api/sessions/{session_id}/messages/{message_id}/fields",
-    ):
+    rejected_routes = (
+        ("GET", f"/api/sessions/{session_id}/messages/pages"),
+        ("GET", f"/api/sessions/{session_id}/messages/bundles"),
+        ("GET", f"/api/sessions/{session_id}/messages/{message_id}/fields"),
+        ("POST", f"/api/sessions/{session_id}/messages/bundle"),
+    )
+    for method, path in rejected_routes:
         request = RunnerRpcRequest(
             version=2,
             sequence=0,
             request_id="11111111-1111-4111-8111-111111111111",
-            method="GET",
+            method=method,
             path=path,
             body=None,
             query={},
@@ -395,6 +399,10 @@ async def test_bounded_history_queries_reach_worker_unchanged(
     session_id = "a" * 32
     message_id = "b" * 32
     cursor = _history_cursor(message_id=message_id)
+    through = _history_cursor(
+        created_at="2026-08-23T00:00:01+00:00",
+        message_id="c" * 32,
+    )
     dispatcher = _HistoryQueryDispatcher()
     session, initiator = await _open_session(
         tmp_path,
@@ -404,6 +412,36 @@ async def test_bounded_history_queries_reach_worker_unchanged(
     requests = (
         (f"/api/sessions/{session_id}/messages/page", {}),
         (f"/api/sessions/{session_id}/messages/page", {"cursor": cursor}),
+        (f"/api/sessions/{session_id}/messages/bundle", {}),
+        (
+            f"/api/sessions/{session_id}/messages/bundle",
+            {
+                "cursor": cursor,
+                "through": through,
+                "snapshot": "123",
+                "snapshot_count": "66",
+                "snapshot_tail": through,
+            },
+        ),
+        (
+            f"/api/sessions/{session_id}/messages/bundle",
+            {
+                "cursor": _history_cursor(
+                    created_at="2026-08-23T00:00:00+00:00",
+                    message_id="a" * 32,
+                ),
+                "through": _history_cursor(
+                    created_at="2026-08-23T00:00:00Z",
+                    message_id="a" * 32,
+                ),
+                "snapshot": "9007199254740991",
+                "snapshot_count": "9007199254740991",
+                "snapshot_tail": _history_cursor(
+                    created_at="2026-08-23T00:00:00Z",
+                    message_id="a" * 32,
+                ),
+            },
+        ),
         (
             f"/api/sessions/{session_id}/messages/{message_id}/field",
             {"name": "content", "offset": "0"},
@@ -444,6 +482,104 @@ async def test_bounded_history_queries_reach_worker_unchanged(
         ("page", {"cursor": _history_cursor() + "="}),
         ("page", {"cursor": "abc_123"}),
         ("page", {"cursor": "A" * 129}),
+        ("bundle", {"cursor": _history_cursor()}),
+        ("bundle", {"through": _history_cursor()}),
+        ("bundle", {"snapshot": "1"}),
+        ("bundle", {"snapshot_count": "1"}),
+        (
+            "bundle",
+            {"cursor": _history_cursor(), "through": _history_cursor()},
+        ),
+        (
+            "bundle",
+            {
+                "cursor": _history_cursor(),
+                "through": _history_cursor(),
+                "snapshot": "1",
+                "snapshot_count": "1",
+            },
+        ),
+        (
+            "bundle",
+            {
+                "cursor": _history_cursor(),
+                "through": _history_cursor(created_at="2026-08-23T00:00:01+00:00"),
+                "snapshot": "1",
+                "snapshot_count": "1",
+                "snapshot_tail": "invalid",
+            },
+        ),
+        (
+            "bundle",
+            {
+                "cursor": _history_cursor(),
+                "through": _history_cursor(created_at="2026-08-23T00:00:01+00:00"),
+                "snapshot": "0",
+                "snapshot_count": "1",
+                "snapshot_tail": _history_cursor(),
+            },
+        ),
+        (
+            "bundle",
+            {
+                "cursor": _history_cursor(),
+                "through": _history_cursor(created_at="2026-08-23T00:00:01+00:00"),
+                "snapshot": "1",
+                "snapshot_count": "1",
+                "snapshot_tail": _history_cursor(),
+                "extra": "value",
+            },
+        ),
+        (
+            "bundle",
+            {
+                "cursor": "invalid",
+                "through": "invalid",
+                "snapshot": "1",
+                "snapshot_count": "1",
+                "snapshot_tail": "invalid",
+            },
+        ),
+        (
+            "bundle",
+            {
+                "cursor": _history_cursor(),
+                "through": _history_cursor(created_at="2026-08-23T00:00:01+00:00"),
+                "snapshot": "01",
+                "snapshot_count": "1",
+                "snapshot_tail": _history_cursor(),
+            },
+        ),
+        (
+            "bundle",
+            {
+                "cursor": _history_cursor(),
+                "through": _history_cursor(created_at="2026-08-23T00:00:01+00:00"),
+                "snapshot": "9007199254740992",
+                "snapshot_count": "1",
+                "snapshot_tail": _history_cursor(),
+            },
+        ),
+        (
+            "bundle",
+            {
+                "cursor": _history_cursor(),
+                "through": _history_cursor(created_at="2026-08-23T00:00:01+00:00"),
+                "snapshot": "1",
+                "snapshot_count": "01",
+                "snapshot_tail": _history_cursor(),
+            },
+        ),
+        (
+            "bundle",
+            {
+                "cursor": _history_cursor(),
+                "through": _history_cursor(created_at="2026-08-23T00:00:01+00:00"),
+                "snapshot": "1",
+                "snapshot_count": "9007199254740992",
+                "snapshot_tail": _history_cursor(),
+            },
+        ),
         ("field", {}),
         ("field", {"name": "content"}),
         ("field", {"offset": "0"}),
@@ -465,11 +601,12 @@ async def test_bounded_history_queries_reject_invalid_variants(
     """Malformed history query data must fail before worker dispatch."""
     session_id = "a" * 32
     message_id = "b" * 32
-    path = (
-        f"/api/sessions/{session_id}/messages/page"
-        if route == "page"
-        else f"/api/sessions/{session_id}/messages/{message_id}/field"
-    )
+    if route == "page":
+        path = f"/api/sessions/{session_id}/messages/page"
+    elif route == "bundle":
+        path = f"/api/sessions/{session_id}/messages/bundle"
+    else:
+        path = f"/api/sessions/{session_id}/messages/{message_id}/field"
     dispatcher = _HistoryQueryDispatcher()
     session, initiator = await _open_session(
         tmp_path,
