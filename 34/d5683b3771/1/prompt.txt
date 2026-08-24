@@ -1,0 +1,139 @@
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+You are a delegated subagent running from a fork of the parent session. Treat the inherited conversation as reference-only context, not a live thread to continue. Do not continue or answer prior messages as if they are waiting for a reply. Your sole job is to execute the task below and return a focused result for that task using your tools.
+
+Task:
+In /Users/user/projects/yinshi, implement backward-compatible pushed response fragments for managed history bundles. You are sole writer. Do not commit or touch .pi-subagents/. Strict red-green TDD. Current bundle is 275,186 base64 characters across five encrypted frames. Sequential pulls keep fresh readiness around 2.75 seconds. Target is under 2 seconds.
+Negotiation: add runner_rpc_push_supported boolean to ManagedRuntimeOut and managed RuntimeRef. It is true only when ready artifact matches manager artifact, like history_bundle_supported. Old or absent values mean false. Frontend uses push only when this exact flag is true.
+Protocol: extend RunnerRpcRequest and browser EncryptedRunnerRequest with optional response_mode:"push". Strict parser accepts only absent or literal push. Runner permits push only for exact GET /api/sessions/{id}/messages/bundle. Other routes with push fail closed. Old requests retain pull behavior byte-for-byte.
+Runner RPC: change handle_frame to return an ordered tuple of encrypted response frames. Handshake, unfragmented, ACK, pull, and legacy responses return one-element tuples. Push bundle responses encrypt all canonical response fragments 0..N-1 immediately in Noise nonce order and retain no response payload. Enforce existing 10 MiB transport limit before emission. Bundle worker response bounds keep pushed batches below relay queue capacity 16. A later pull after push fails closed.
+Runner agent relay: handle_binary returns ordered UUID-prefixed frame tuples. Runner websocket dispatch sends the full tuple sequentially under its send lock. Keep transfer busy until every frame sends. Cancellation, close, quiesce, errors, and task lease cleanup remain exact. Control relay routing and byte accounting must process every existing UUID-prefixed frame without format changes.
+Browser: when connection is created with push support and request asks push, serialize response_mode push. Install a connection-scoped binary inbox or equivalent listener before sending so immediately arriving frames cannot be lost. After first framed response, receive and decrypt count-1 messages without sending pulls. Validate kind, indices, count, total, max 10 MiB, binary-only frames, duplicates, order, close, and timeout. Pull path remains unchanged. Keep one pending request.
+RuntimeTransport adds response_mode push only for managed exact history bundle requests when runtime.runnerRpcPushSupported is true. All other requests use pull.
+TDD coverage: exact parser shapes, legacy pulls, push single and five-fragment responses, max bounded bundle batch, over-limit rejection before sends, nonce order, pull-after-push rejection, runner relay UUID prefix per frame, runner websocket send ordering and busy/cancel behavior, browser listener readiness, missing/reordered/duplicate/text/close failures, old/new compatibility matrix, runtime feature advertisement, and exact bundle-only selection.
+Do not raise relay queue capacity or any byte limit. Run focused tests after each red. Finish full backend and frontend suites, Black, isort, flake8, mypy, typecheck, changed-file Prettier, build, and diff check. Report changed files and residual risks.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+You are reviving a previous subagent conversation.
+
+Original run: 0a4c217e
+Original agent: worker
+Original session file: /Users/user/.pi/agent/sessions/--Users-user-projects-yinshi--/2026-08-24T19-10-57-957Z_01a0352e-d9a5-75b7-b176-88afaf3315f7.jsonl
+
+Use the stored session context as background. Answer the orchestrator's follow-up below. Do not assume the original child process is still alive.
+
+Follow-up:
+Fix review medium with strict red-green TDD. parseManagedRuntime must reject runner_rpc_push_supported when present and not boolean, matching history_bundle_supported. Add invalid string, number, null response tests for get and provision resolution paths. Also add direct browser inbox tests for pushed response timeout, extra queued frame poisoning next request, and close or dispose while a pushed receive is pending. Preserve all protocol behavior. Run focused and full validation, static checks, typecheck, formatting, build, diff check. Do not commit or touch .pi-subagents/.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+- criterion-2: Return evidence sufficient for an independent acceptance review
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Review gate: required by reviewer.
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    },
+    {
+      "id": "criterion-2",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
