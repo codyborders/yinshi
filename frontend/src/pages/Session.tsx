@@ -49,6 +49,30 @@ const INSPECTOR_WIDTH_MAX = 760;
 const DESKTOP_INSPECTOR_QUERY = "(min-width: 1024px)";
 const LEGACY_PI_CONTEXT_MESSAGE =
   "This session predates durable Pi context and cannot continue with exact model context. Start a new session in this workspace.";
+const SESSION_HISTORY_PERFORMANCE_MARKS = [
+  "yinshi:session-history-start",
+  "yinshi:session-history-cache-rendered",
+  "yinshi:session-history-live-rendered",
+  "yinshi:session-history-live-failed",
+] as const;
+
+type SessionHistoryPerformanceMark =
+  (typeof SESSION_HISTORY_PERFORMANCE_MARKS)[number];
+
+function markSessionHistory(name: SessionHistoryPerformanceMark): void {
+  if (typeof globalThis.performance?.mark === "function") {
+    globalThis.performance.mark(name);
+  }
+}
+
+function startSessionHistoryPerformanceTiming(): void {
+  if (typeof globalThis.performance?.clearMarks === "function") {
+    for (const name of SESSION_HISTORY_PERFORMANCE_MARKS) {
+      globalThis.performance.clearMarks(name);
+    }
+  }
+  markSessionHistory("yinshi:session-history-start");
+}
 
 function mapStoredHistory(
   history: Message[],
@@ -179,6 +203,7 @@ export default function Session() {
     const runtimeTransport = transport;
     const runtimeSessionId = id;
     const generation = ++historyGenerationRef.current;
+    startSessionHistoryPerformanceTiming();
     const isStale = () =>
       cancelled || historyGenerationRef.current !== generation;
 
@@ -216,6 +241,7 @@ export default function Session() {
             setHistoryRevalidating(true);
             setHistoryError(null);
             setLoadingHistory(false);
+            markSessionHistory("yinshi:session-history-cache-rendered");
           } catch {
             return;
           }
@@ -241,6 +267,7 @@ export default function Session() {
         discoveryFailed = false;
       }
       if (!historyResult.ok) {
+        markSessionHistory("yinshi:session-history-live-failed");
         if (receivedCachedHistory) {
           setHistoryError("Failed to refresh session history.");
           setHistoryRevalidating(false);
@@ -282,11 +309,13 @@ export default function Session() {
           mapStoredHistory(historyResult.history, activeRunId),
           activeRunId,
         );
+        markSessionHistory("yinshi:session-history-live-rendered");
         setHistoryError(
           discoveryFailed ? "Failed to resume the active response." : null,
         );
       } catch {
         if (!isStale()) {
+          markSessionHistory("yinshi:session-history-live-failed");
           if (activeRunId !== null) bootstrapSession([], activeRunId);
           setHistoryError("Failed to load session history.");
         }

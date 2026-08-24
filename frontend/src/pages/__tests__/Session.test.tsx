@@ -379,6 +379,7 @@ function renderSession() {
 describe("Session", () => {
   afterEach(() => {
     cleanup();
+    vi.restoreAllMocks();
   });
 
   beforeEach(() => {
@@ -667,8 +668,16 @@ describe("Session", () => {
     expect(apiGetMock).toHaveBeenCalledWith(`/api/sessions/${TEST_SESSION_ID}`);
   });
 
-  it("bootstraps complete cached managed history before live revalidation", async () => {
+  it("marks cached and live history rendering in order", async () => {
     mockCatalog();
+    const performanceMarks: string[] = [];
+    const clearMarksSpy = vi
+      .spyOn(performance, "clearMarks")
+      .mockImplementation(() => undefined);
+    vi.spyOn(performance, "mark").mockImplementation((name) => {
+      performanceMarks.push(name);
+      return {} as PerformanceMark;
+    });
     const runId = "b".repeat(32);
     const cachedMessage = {
       id: "c".repeat(32),
@@ -703,6 +712,16 @@ describe("Session", () => {
         runId,
       );
     });
+    expect(clearMarksSpy.mock.calls.map(([name]) => name)).toEqual([
+      "yinshi:session-history-start",
+      "yinshi:session-history-cache-rendered",
+      "yinshi:session-history-live-rendered",
+      "yinshi:session-history-live-failed",
+    ]);
+    expect(performanceMarks).toEqual([
+      "yinshi:session-history-start",
+      "yinshi:session-history-cache-rendered",
+    ]);
     expect(historyCacheClient.get).toHaveBeenCalledWith(
       "user-1",
       TEST_SESSION_ID,
@@ -726,12 +745,17 @@ describe("Session", () => {
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Send Prompt" })).toBeEnabled(),
     );
+    expect(performanceMarks).toEqual([
+      "yinshi:session-history-start",
+      "yinshi:session-history-cache-rendered",
+      "yinshi:session-history-live-rendered",
+    ]);
     expect(
       screen.queryByText("Refreshing session history before new prompts."),
     ).not.toBeInTheDocument();
   });
 
-  it("enables prompt input after cached history revalidation fails", async () => {
+  it("marks a failed live refresh after cached history renders", async () => {
     mockCatalog();
     const cachedMessage = {
       id: "c".repeat(32),
@@ -757,12 +781,21 @@ describe("Session", () => {
       return Promise.reject(new Error(`Unexpected GET ${path}`));
     });
     runtimeResourceOverride = managedRuntimeResource(transportGet);
+    const performanceMarks: string[] = [];
+    vi.spyOn(performance, "mark").mockImplementation((name) => {
+      performanceMarks.push(name);
+      return {} as PerformanceMark;
+    });
     renderSession();
     await waitFor(() =>
       expect(
         screen.getByRole("button", { name: "Send Prompt" }),
       ).toBeDisabled(),
     );
+    expect(performanceMarks).toEqual([
+      "yinshi:session-history-start",
+      "yinshi:session-history-cache-rendered",
+    ]);
 
     await act(async () => {
       liveBundle.reject(new Error("offline"));
@@ -774,6 +807,11 @@ describe("Session", () => {
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Send Prompt" })).toBeEnabled(),
     );
+    expect(performanceMarks).toEqual([
+      "yinshi:session-history-start",
+      "yinshi:session-history-cache-rendered",
+      "yinshi:session-history-live-failed",
+    ]);
   });
 
   it("bootstraps a bundle active run without discovery and deduplicates its assistant", async () => {
