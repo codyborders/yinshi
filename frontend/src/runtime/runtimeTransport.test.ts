@@ -448,7 +448,7 @@ describe("runtime transport", () => {
     ).toBe(true);
   });
 
-  it("rotates each managed history lane after eight successful requests", async () => {
+  it("rotates each managed history lane after 24 successful requests", async () => {
     const connections: Array<{
       request: ReturnType<typeof vi.fn>;
       close: ReturnType<typeof vi.fn>;
@@ -474,27 +474,24 @@ describe("runtime transport", () => {
     const pagePath = `/api/sessions/${sessionId}/messages/page`;
     const fieldPath = `/api/sessions/${sessionId}/messages/${messageId}/field`;
 
-    const requests = Array.from({ length: 9 }, (_value, index) =>
+    const requests = Array.from({ length: 25 }, (_value, index) =>
       transport.get(`${pagePath}?cursor=${index}`),
     );
     requests.push(
-      ...Array.from({ length: 9 }, (_value, index) =>
+      ...Array.from({ length: 24 }, (_value, index) =>
         transport.get(`${fieldPath}?name=content&offset=${index}`),
       ),
     );
 
-    await expect(Promise.all(requests)).resolves.toHaveLength(18);
+    await expect(Promise.all(requests)).resolves.toHaveLength(49);
 
-    expect(connectEncrypted).toHaveBeenCalledTimes(4);
-    expect(connections[0].request).toHaveBeenCalledTimes(8);
-    expect(connections[1].request).toHaveBeenCalledTimes(8);
+    expect(connectEncrypted).toHaveBeenCalledTimes(3);
+    expect(connections[0].request).toHaveBeenCalledTimes(24);
+    expect(connections[1].request).toHaveBeenCalledTimes(24);
+    expect(connections[2].request).toHaveBeenCalledTimes(1);
     expect(connections[0].close).toHaveBeenCalledTimes(1);
-    expect(connections[1].close).toHaveBeenCalledTimes(1);
-    expect(
-      connections
-        .slice(2)
-        .map((connection) => connection.request.mock.calls.length),
-    ).toEqual([1, 1]);
+    expect(connections[1].close).not.toHaveBeenCalled();
+    expect(connections[2].close).not.toHaveBeenCalled();
     for (const [options] of connectEncrypted.mock.calls) {
       expect(options).toMatchObject({
         scopes: ["session.read"],

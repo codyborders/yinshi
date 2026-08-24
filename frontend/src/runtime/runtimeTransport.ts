@@ -115,7 +115,10 @@ const PROVIDER_AUTH_CALLBACK_PATH =
   /^\/auth\/providers\/[a-z0-9-]{1,64}\/callback$/;
 const RUNTIME_TRANSPORT_SESSION_BYTES = 16 * 1024 * 1024;
 const MANAGED_HISTORY_CONNECTIONS = 4;
-const MANAGED_HISTORY_REQUESTS_PER_CONNECTION = 8;
+// Twenty-four worst-case bounded history exchanges stay below 12.7 MiB:
+// each uses a <524,500-byte response envelope, <=561 ciphertext bytes, and a <1 KiB request.
+// More than 4,000,000 bytes remain below the 16 MiB session limit.
+const MANAGED_HISTORY_REQUESTS_PER_CONNECTION = 24;
 
 function isBoundedSessionHistoryRequest(
   method: RuntimeMethod,
