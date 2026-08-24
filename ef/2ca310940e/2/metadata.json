@@ -1,0 +1,100 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "ef2ca310940e",
+  "session_id": "session",
+  "strategy": "manual-commit",
+  "created_at": "2026-08-24T20:45:35.41463Z",
+  "branch": "main",
+  "checkpoints_count": 2,
+  "save_step_count": 3,
+  "files_touched": [
+    "backend/src/yinshi/main.py",
+    "backend/tests/test_main.py",
+    "frontend/index.html",
+    "frontend/src/index-security.test.ts",
+    "frontend/src/pages/Session.tsx",
+    "frontend/src/pages/__tests__/Session.test.tsx",
+    "frontend/src/runtime/sessionHistory.test.ts",
+    "frontend/src/runtime/sessionHistory.ts"
+  ],
+  "agent": "Pi",
+  "model": "gpt-5.6-sol",
+  "turn_id": "9d365acf56f9",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 88372,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 484352,
+    "output_tokens": 7811,
+    "api_call_count": 14
+  },
+  "session_metrics": {
+    "turn_count": 61
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-08-24T20:45:35.229427Z",
+    "agent_lines": 508,
+    "agent_removed": 42,
+    "human_added": 986,
+    "human_modified": 12,
+    "human_removed": 0,
+    "total_committed": 1506,
+    "total_lines_changed": 1548,
+    "agent_percentage": 35.5297157622739,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 3,
+      "user_lines_added": 3105,
+      "user_lines_removed": 12,
+      "agent_lines_added": 203697,
+      "agent_lines_removed": 46,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/4ab0068b_reviewer_0_input.md": 56,
+        ".pi-subagents/artifacts/4ab0068b_reviewer_0_transcript.jsonl": 2,
+        ".pi-subagents/artifacts/823f51ad_reviewer_0_input.md": 58,
+        ".pi-subagents/artifacts/823f51ad_reviewer_0_meta.json": 114,
+        ".pi-subagents/artifacts/823f51ad_reviewer_0_output.md": 1,
+        ".pi-subagents/artifacts/823f51ad_reviewer_0_transcript.jsonl": 184,
+        ".pi-subagents/artifacts/acb98d50_reviewer_input.md": 65,
+        ".pi-subagents/artifacts/acb98d50_reviewer_transcript.jsonl": 4,
+        ".pi-subagents/artifacts/f831bb1e_worker_0_input.md": 75,
+        ".pi-subagents/artifacts/f831bb1e_worker_0_meta.json": 278,
+        ".pi-subagents/artifacts/f831bb1e_worker_0_output.md": 9,
+        ".pi-subagents/artifacts/f831bb1e_worker_0_transcript.jsonl": 294,
+        ".pi-subagents/artifacts/fac6cf93_worker_input.md": 79,
+        ".pi-subagents/artifacts/fac6cf93_worker_meta.json": 268,
+        ".pi-subagents/artifacts/fac6cf93_worker_output.md": 9,
+        ".pi-subagents/artifacts/fac6cf93_worker_transcript.jsonl": 204,
+        ".pi-subagents/missions/30df7f45-e906-44e4-8695-b59b301f0590.json": 24,
+        ".pi-subagents/missions/4f4240e6-5b7a-4f1e-8b3c-00826b1bcdde.json": 90,
+        ".pi-subagents/missions/c6af31e3-0c3c-41f0-a8c1-0e709a21d000.json": 254,
+        ".pi-subagents/missions/e324667d-bc10-4c74-8da6-c98c116d743d.json": 15,
+        ".pi-subagents/missions/ff7f8a94-ebd7-4578-8b56-3e0e99de0699.json": 24,
+        "frontend/src/pages/Session.tsx": 29,
+        "frontend/src/pages/__tests__/Session.test.tsx": 95,
+        "frontend/src/runtime/sessionHistory.test.ts": 43,
+        "frontend/src/runtime/sessionHistory.ts": 1,
+        "frontend/src/runtime/sessionHistoryCache.shared-worker.ts": 13,
+        "frontend/src/runtime/sessionHistoryCacheClient.test.ts": 102,
+        "frontend/src/runtime/sessionHistoryCacheClient.ts": 209,
+        "frontend/src/runtime/sessionHistoryCacheCore.test.ts": 152,
+        "frontend/src/runtime/sessionHistoryCacheCore.ts": 198,
+        "frontend/src/runtime/sessionHistoryCachePort.test.ts": 92,
+        "frontend/src/runtime/sessionHistoryCachePort.ts": 64
+      },
+      "user_removed_per_file": {
+        "frontend/src/pages/Session.tsx": 4,
+        "frontend/src/runtime/sessionHistory.test.ts": 8
+      }
+    }
+  ]
+}
