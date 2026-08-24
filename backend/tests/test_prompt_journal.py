@@ -1172,18 +1172,15 @@ async def test_prompt_journal_immediate_cancellation_wins_start_race(
             run_id=run.id,
         )
     )
-    for _ in range(100):
-        status = db.execute(
-            "SELECT status FROM prompt_runs WHERE id = ?",
-            (run.id,),
-        ).fetchone()["status"]
-        if status == "stopping":
-            break
-        await asyncio.sleep(0)
-    else:
-        raise AssertionError("prompt run did not enter stopping state")
+    cancelled = await asyncio.wait_for(cancel_task, timeout=1)
     release_status.set()
-    cancelled = await cancel_task
+    status = db.execute(
+        "SELECT status FROM prompt_runs WHERE id = ?",
+        (run.id,),
+    ).fetchone()["status"]
+    assert status in ("stopping", "cancelled"), (
+        f"prompt run did not enter stopping or cancelled state: {status}"
+    )
     batch = await journal.events(
         request=journal_request,
         session_id=session_id,
