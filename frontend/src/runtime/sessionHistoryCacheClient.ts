@@ -439,7 +439,6 @@ export class SessionHistoryCacheClient {
     const identity = cacheKey(userId, sessionId);
     this.incrementEpoch(identity);
     const mutationEpoch = this.currentEpoch(identity);
-    this.remove(userId, sessionId);
     const cachedKey = await this.fetchFreshKey(userId);
     if (cachedKey === null || !this.cryptoProvider?.subtle) return;
     let plaintext: Uint8Array;

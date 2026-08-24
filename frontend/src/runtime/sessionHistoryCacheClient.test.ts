@@ -122,15 +122,91 @@ describe("SessionHistoryCacheClient", () => {
     });
 
     await client.put(USER, SESSION, [{ data: "before switch" }]);
-    expect(
-      JSON.parse(sessionStorage.getItem(storageKey(USER, SESSION)) as string)
-        .key_id,
-    ).toBe("0000000000000001");
+    const previous = sessionStorage.getItem(storageKey(USER, SESSION));
+    expect(JSON.parse(previous as string).key_id).toBe("0000000000000001");
 
     await client.put(USER, SESSION, [{ data: "after switch" }]);
 
     expect(fetchKey).toHaveBeenCalledTimes(2);
-    expect(sessionStorage.getItem(storageKey(USER, SESSION))).toBeNull();
+    expect(sessionStorage.getItem(storageKey(USER, SESSION))).toBe(previous);
+  });
+
+  it("preserves current ciphertext when replacement preparation fails", async () => {
+    const seeded = clientFor();
+    await seeded.client.put(USER, SESSION, [{ data: "current" }]);
+    const previous = sessionStorage.getItem(storageKey(USER, SESSION));
+    expect(previous).not.toBeNull();
+
+    const failedKey = new SessionHistoryCacheClient({
+      storage: sessionStorage,
+      fetchKey: vi.fn().mockRejectedValue(new Error("offline")),
+    });
+    await failedKey.put(USER, SESSION, [{ data: "replacement" }]);
+    expect(sessionStorage.getItem(storageKey(USER, SESSION))).toBe(previous);
+
+    vi.useFakeTimers();
+    const timedOutKey = new SessionHistoryCacheClient({
+      storage: sessionStorage,
+      fetchKey: vi.fn(() => new Promise(() => undefined)),
+      keyFetchTimeoutMs: 25,
+    });
+    const timedOutPut = timedOutKey.put(USER, SESSION, [
+      { data: "replacement" },
+    ]);
+    await vi.advanceTimersByTimeAsync(26);
+    await timedOutPut;
+    vi.useRealTimers();
+    expect(sessionStorage.getItem(storageKey(USER, SESSION))).toBe(previous);
+
+    await seeded.client.put(USER, SESSION, [
+      "x".repeat(HISTORY_CACHE_MAX_ENTRY_BYTES),
+    ]);
+    expect(sessionStorage.getItem(storageKey(USER, SESSION))).toBe(previous);
+  });
+
+  it("preserves current ciphertext when encryption or storage replacement fails", async () => {
+    const seeded = clientFor();
+    await seeded.client.put(USER, SESSION, [{ data: "current" }]);
+    const previous = sessionStorage.getItem(storageKey(USER, SESSION));
+    expect(previous).not.toBeNull();
+
+    const nativeCrypto = globalThis.crypto;
+    const subtle = new Proxy(nativeCrypto.subtle, {
+      get(target, property) {
+        if (property === "encrypt") {
+          return vi.fn().mockRejectedValue(new Error("encryption failed"));
+        }
+        const value: unknown = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const failedEncryption = new SessionHistoryCacheClient({
+      storage: sessionStorage,
+      fetchKey: vi.fn().mockResolvedValue(keyResponse(USER, 1)),
+      cryptoProvider: {
+        subtle,
+        getRandomValues: nativeCrypto.getRandomValues.bind(nativeCrypto),
+      } as Crypto,
+    });
+    await failedEncryption.put(USER, SESSION, [{ data: "replacement" }]);
+    expect(sessionStorage.getItem(storageKey(USER, SESSION))).toBe(previous);
+
+    const fullStorage: Storage = {
+      length: sessionStorage.length,
+      clear: vi.fn(() => sessionStorage.clear()),
+      getItem: vi.fn((key) => sessionStorage.getItem(key)),
+      key: vi.fn((index) => sessionStorage.key(index)),
+      removeItem: vi.fn((key) => sessionStorage.removeItem(key)),
+      setItem: vi.fn(() => {
+        throw new DOMException("quota", "QuotaExceededError");
+      }),
+    };
+    const failedStorage = new SessionHistoryCacheClient({
+      storage: fullStorage,
+      fetchKey: vi.fn().mockResolvedValue(keyResponse(USER, 1)),
+    });
+    await failedStorage.put(USER, SESSION, [{ data: "replacement" }]);
+    expect(sessionStorage.getItem(storageKey(USER, SESSION))).toBe(previous);
   });
 
   it("makes deletion final against an in-flight write", async () => {
