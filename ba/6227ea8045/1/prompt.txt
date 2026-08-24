@@ -1,0 +1,219 @@
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+You are a delegated subagent running from a fork of the parent session. Treat the inherited conversation as reference-only context, not a live thread to continue. Do not continue or answer prior messages as if they are waiting for a reply. Your sole job is to execute the task below and return a focused result for that task using your tools.
+
+Task:
+User approved replacing the unreliable SharedWorker cache with an encrypted tab-scoped sessionStorage cache. Implement in /Users/user/projects/yinshi. You are sole writer. Do not commit or touch .pi-subagents/. Strict red-green TDD.
+Backend: add authenticated GET /api/runtime/history-cache-key. Derive a 32-byte AES key using HMAC-SHA256 from settings.secret_key with domain separation and current tenant user_id. Return strict key version 1, user_id, key_id, and canonical base64url key. Set Cache-Control no-store and Pragma no-cache. Never log key. Different users get different keys. Same user gets stable key. Add API tests for auth, headers, canonical key, user separation, and no secret leakage.
+Frontend: remove SharedWorker cache source, port, core, tests, worker CSP changes, and worker build assumptions. Keep cache client public behavior but implement encrypted sessionStorage. Fetch key from /api/runtime/history-cache-key through authenticated API. Validate exact response keys, user match, key version, canonical 32-byte key, and bounded key_id. Keep key only in module memory. Never store it.
+Cache payload: AES-GCM with random 12-byte IV. AAD binds version, userId, sessionId, and key_id. Encrypted plaintext is strict JSON containing createdAtMs and exact raw bundle envelope array. TTL 10 minutes. Maximum plaintext 1 MiB, ciphertext record 1.5 MiB, 8 entries, 4 MiB aggregate. Outer stored record has exact keys version, key_id, iv, ciphertext, stored_at only. Canonical base64url. Cache key partitions user and 32-hex session. Corrupt, expired, wrong-key, wrong-user, malformed, oversized, decrypt-failed data is deleted and treated as miss. sessionStorage unavailable or quota failure becomes miss/ignored write.
+Keep current cache-first loader, authoritative live revalidation, input gating, prompt-start invalidation, terminal refresh, generation guards, and active run behavior. Remove all SharedWorker and worker-src logic. Explicitly test stored sessionStorage text contains neither AES key nor known conversation markers. Test cross-user decrypt fails even if ciphertext is copied to another user key. Test refresh simulation with a new client instance decrypting prior ciphertext via fetched key. Test key fetch timeout/error fallback if existing client has such behavior.
+Update Session cache eligibility to managed browser, authenticated user, and sessionStorage availability. No BYOC, local, hosted, desktop, or auth-disabled cache. Preserve memory-only key and tab-close cache lifetime.
+Run red-green focused tests, full backend/frontend suites, Black, isort, flake8, mypy, typecheck, changed-file Prettier, build, verify no SharedWorker asset, and diff check. Report security properties and residual risks.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+- criterion-2: Return evidence sufficient for an independent acceptance review
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Review gate: required by reviewer.
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    },
+    {
+      "id": "criterion-2",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+You are reviving a previous subagent conversation.
+
+Original run: cf10923f
+Original agent: worker
+Original session file: /Users/user/.pi/agent/sessions/--Users-user-projects-yinshi--/2026-08-24T21-00-52-495Z_01a03593-798f-77a2-8721-afb22cfa07bf.jsonl
+
+Use the stored session context as background. Answer the orchestrator's follow-up below. Do not assume the original child process is still alive.
+
+Follow-up:
+Fix all encrypted cache review findings with strict red-green TDD. 1. Every put must fetch a fresh /api/runtime/history-cache-key response before encryption, then validate response user_id equals caller. Never use a cached key promise for writes. This prevents stale cross-tab identity from writing current-account data under a prior identity. Add deterministic cookie-switch simulation. 2. Add per-user/session mutation epochs. put captures epoch before async key/encryption work and checks it immediately before sessionStorage.setItem. delete increments epoch before remove, making invalidation final against in-flight writes. Add deferred encryption/key test. 3. Add bounded key cache expiry for reads, no longer than 30 seconds. If stored record key_id differs from cached key, force one fresh key fetch before declaring corruption. Writes always use fresh key. Add rotation tests proving a long-lived client accepts new-key records and stops writing old keys. Preserve latency, encryption, bounds, input gating, and all prior behavior. Run focused/full backend/frontend tests, static checks, typecheck, formatting, build, diff check. Do not commit or touch .pi-subagents/.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+- criterion-2: Return evidence sufficient for an independent acceptance review
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Review gate: required by reviewer.
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    },
+    {
+      "id": "criterion-2",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+You are reviving a previous subagent conversation.
+
+Original run: 4b6fb564
+Original agent: worker
+Original session file: /Users/user/.pi/agent/sessions/--Users-user-projects-yinshi--/2026-08-24T21-00-52-495Z_01a03593-798f-77a2-8721-afb22cfa07bf.jsonl
+
+Use the stored session context as background. Answer the orchestrator's follow-up below. Do not assume the original child process is still alive.
+
+Follow-up:
+Fix final medium with strict red-green TDD. Order concurrent puts per user/session. At put start, increment the same mutation epoch and capture its token. Immediately before sessionStorage.setItem, require current epoch equals token. A newer put or delete invalidates older pending writes. Add deterministic test where older put completes encryption last and prove newer ciphertext remains. Preserve delete behavior, fresh key fetch, rotation, and all bounds. Run focused/full validation, typecheck, formatting, build, diff check. Do not commit or touch .pi-subagents/.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+- criterion-2: Return evidence sufficient for an independent acceptance review
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Review gate: required by reviewer.
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    },
+    {
+      "id": "criterion-2",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
