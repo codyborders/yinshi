@@ -1,0 +1,63 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "a24ba047ed94",
+  "session_id": "01a02b99-2542-72d1-998c-77e7d9ddbe9f",
+  "strategy": "manual-commit",
+  "created_at": "2026-08-24T01:54:26.343101Z",
+  "branch": "main",
+  "checkpoints_count": 1,
+  "save_step_count": 1,
+  "files_touched": [],
+  "agent": "Pi",
+  "model": "gpt-5.6-sol",
+  "turn_id": "58e98ec49e15",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 6956672,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 209539200,
+    "output_tokens": 475420,
+    "api_call_count": 1225
+  },
+  "session_metrics": {
+    "turn_count": 8
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 3308,
+      "user_lines_removed": 0,
+      "agent_lines_added": 177498,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/1a5ada9c_reviewer_0_input.md": 56,
+        ".pi-subagents/artifacts/1a5ada9c_reviewer_0_transcript.jsonl": 113,
+        ".pi-subagents/artifacts/2e97ecec_worker_0_input.md": 71,
+        ".pi-subagents/artifacts/2e97ecec_worker_0_meta.json": 280,
+        ".pi-subagents/artifacts/2e97ecec_worker_0_output.md": 11,
+        ".pi-subagents/artifacts/2e97ecec_worker_0_transcript.jsonl": 132,
+        ".pi-subagents/artifacts/4747c964_reviewer_0_input.md": 56,
+        ".pi-subagents/artifacts/4747c964_reviewer_0_transcript.jsonl": 115,
+        ".pi-subagents/artifacts/4d77429c_worker_0_input.md": 63,
+        ".pi-subagents/artifacts/4d77429c_worker_0_meta.json": 233,
+        ".pi-subagents/artifacts/4d77429c_worker_0_output.md": 14,
+        ".pi-subagents/artifacts/4d77429c_worker_0_transcript.jsonl": 251,
+        ".pi-subagents/artifacts/66574b84_worker_0_input.md": 61,
+        ".pi-subagents/artifacts/66574b84_worker_0_meta.json": 123,
+        ".pi-subagents/artifacts/66574b84_worker_0_output.md": 15,
+        ".pi-subagents/artifacts/66574b84_worker_0_transcript.jsonl": 58,
+        ".pi-subagents/artifacts/aac3ae95_worker_0_input.md": 63,
+        ".pi-subagents/artifacts/aac3ae95_worker_0_transcript.jsonl": 120,
+        ".pi-subagents/artifacts/c9cdbf81_reviewer_0_input.md": 56,
+        ".pi-subagents/artifacts/c9cdbf81_reviewer_0_transcript.jsonl": 221,
+        ".pi-subagents/missions/3d27edd6-d3ea-48b0-ac67-74a8c7764d7b.json": 209,
+        ".pi-subagents/missions/87b47bc4-ff44-4f54-b251-bee6fd80f3cf.json": 99,
+        ".pi-subagents/missions/8ae0b636-54c6-4dab-ae1b-35ca33b86dc9.json": 162,
+        ".pi-subagents/missions/96e1d168-be75-431f-a6ff-c1b9768453f2.json": 141,
+        ".pi-subagents/missions/a7617db0-5095-4e55-ae17-6f298323a696.json": 191,
+        ".pi-subagents/missions/a841ffcd-4c77-4633-a35d-3789e03788bc.json": 138,
+        ".pi-subagents/missions/f866f191-9469-4c9c-8f31-644bc6a5a3dc.json": 256
+      }
+    }
+  ]
+}
