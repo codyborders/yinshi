@@ -375,7 +375,7 @@ describe("runtime transport", () => {
     expect(request).toHaveBeenCalledTimes(2);
   });
 
-  it("uses at most four sequential connections for managed history fields", async () => {
+  it("uses at most eight sequential connections for managed history fields", async () => {
     const connections: Array<{
       request: ReturnType<typeof vi.fn>;
       close: ReturnType<typeof vi.fn>;
@@ -416,23 +416,23 @@ describe("runtime transport", () => {
       },
     );
     const sessionId = "a".repeat(32);
-    const requests = Array.from({ length: 5 }, (_value, index) => {
+    const requests = Array.from({ length: 9 }, (_value, index) => {
       const messageId = index.toString(16).padStart(32, "0");
       return transport.get(
         `/api/sessions/${sessionId}/messages/${messageId}/field?name=content&offset=0`,
       );
     });
 
-    await vi.waitFor(() => expect(requestsStarted).toBe(4));
-    expect(connectEncrypted).toHaveBeenCalledTimes(4);
-    expect(maximumActiveRequests).toBe(4);
+    await vi.waitFor(() => expect(requestsStarted).toBe(8));
+    expect(connectEncrypted).toHaveBeenCalledTimes(8);
+    expect(maximumActiveRequests).toBe(8);
 
     releases[0]();
-    await vi.waitFor(() => expect(requestsStarted).toBe(5));
-    expect(connectEncrypted).toHaveBeenCalledTimes(4);
+    await vi.waitFor(() => expect(requestsStarted).toBe(9));
+    expect(connectEncrypted).toHaveBeenCalledTimes(8);
 
     for (const release of releases.slice(1)) release();
-    await expect(Promise.all(requests)).resolves.toHaveLength(5);
+    await expect(Promise.all(requests)).resolves.toHaveLength(9);
     expect(
       connections.every(
         (connection) => connection.request.mock.calls.length <= 2,

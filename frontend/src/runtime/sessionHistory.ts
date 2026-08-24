@@ -5,7 +5,7 @@ const MAX_HISTORY_PAGE_REQUESTS = 10_000;
 const MAX_HISTORY_FIELD_REQUESTS = 100_000;
 const MAX_HISTORY_MESSAGES = 640_000;
 const MAX_HISTORY_FIELD_LENGTH = 1_000_000_000;
-const HISTORY_FIELD_WORKERS = 4;
+const HISTORY_FIELD_WORKERS = 8;
 
 type HistoryFieldName = "content" | "full_message";
 

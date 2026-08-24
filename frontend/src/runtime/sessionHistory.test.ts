@@ -9,8 +9,8 @@ function transportWithGet(get: ReturnType<typeof vi.fn>): RuntimeTransport {
 }
 
 describe("loadSessionHistory", () => {
-  it("hydrates no more than four independent fields before starting a fifth", async () => {
-    const messageIds = Array.from({ length: 5 }, (_, index) =>
+  it("hydrates no more than eight independent fields before starting a ninth", async () => {
+    const messageIds = Array.from({ length: 9 }, (_, index) =>
       (index + 1).toString(16).padStart(32, "0"),
     );
     const started: string[] = [];
@@ -45,16 +45,16 @@ describe("loadSessionHistory", () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(started).toHaveLength(4);
-    expect(new Set(started).size).toBe(4);
+    expect(started).toHaveLength(8);
+    expect(new Set(started).size).toBe(8);
 
     releases.get(started[0])?.();
     await Promise.resolve();
     await Promise.resolve();
-    expect(started).toHaveLength(5);
+    expect(started).toHaveLength(9);
 
     for (const release of releases.values()) release();
-    await expect(loading).resolves.toHaveLength(5);
+    await expect(loading).resolves.toHaveLength(9);
   });
 
   it("preserves metadata order when independent fields resolve out of order", async () => {
@@ -141,7 +141,7 @@ describe("loadSessionHistory", () => {
   });
 
   it("stops scheduling fields after cancellation and drains started workers", async () => {
-    const messageIds = Array.from({ length: 5 }, (_, index) =>
+    const messageIds = Array.from({ length: 9 }, (_, index) =>
       (index + 8).toString(16).padStart(32, "0"),
     );
     const releases = new Map<string, () => void>();
@@ -181,18 +181,18 @@ describe("loadSessionHistory", () => {
     });
     await Promise.resolve();
     await Promise.resolve();
-    expect(started).toHaveLength(4);
+    expect(started).toHaveLength(8);
 
     cancelled = true;
-    for (const messageId of started.slice(0, 3)) releases.get(messageId)?.();
+    for (const messageId of started.slice(0, 7)) releases.get(messageId)?.();
     await Promise.resolve();
     await Promise.resolve();
     expect(settled).toBe(false);
-    expect(started).toHaveLength(4);
+    expect(started).toHaveLength(8);
 
-    releases.get(started[3])?.();
+    releases.get(started[7])?.();
     await expect(loading).rejects.toThrow("cancelled");
-    expect(started).toHaveLength(4);
+    expect(started).toHaveLength(8);
   });
 
   it("rejects with the first observed worker failure after draining started workers", async () => {
