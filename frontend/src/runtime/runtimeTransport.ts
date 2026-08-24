@@ -111,6 +111,18 @@ const PROVIDER_AUTH_START_PATH = /^\/auth\/providers\/[a-z0-9-]{1,64}\/start$/;
 const PROVIDER_AUTH_CALLBACK_PATH =
   /^\/auth\/providers\/[a-z0-9-]{1,64}\/callback$/;
 const RUNTIME_TRANSPORT_SESSION_BYTES = 16 * 1024 * 1024;
+const MANAGED_HISTORY_REQUESTS_PER_CONNECTION = 8;
+
+function isBoundedSessionHistoryRequest(
+  method: RuntimeMethod,
+  path: string,
+): boolean {
+  return (
+    method === "GET" &&
+    (SESSION_HISTORY_PAGE_PATH.test(path) ||
+      SESSION_HISTORY_FIELD_PATH.test(path))
+  );
+}
 
 function requiredScope(method: RuntimeMethod, path: string): string {
   const repositoryCollection = path === "/api/repos";
@@ -340,6 +352,8 @@ export function createRuntimeTransport(
   interface ManagedConnectionEntry {
     connection: Promise<EncryptedRunnerConnection>;
     tail: Promise<void>;
+    retired: boolean;
+    successfulHistoryRequests: number;
   }
 
   const managedConnections = new Map<string, ManagedConnectionEntry>();
@@ -366,7 +380,12 @@ export function createRuntimeTransport(
         maxSessionBytes: RUNTIME_TRANSPORT_SESSION_BYTES,
         capabilityEndpoint: "/api/runtime/capabilities",
       });
-      entry = { connection, tail: Promise.resolve() };
+      entry = {
+        connection,
+        tail: Promise.resolve(),
+        retired: false,
+        successfulHistoryRequests: 0,
+      };
       managedConnections.set(scope, entry);
       void connection.catch(() => {
         if (managedConnections.get(scope) === entry) {
@@ -382,10 +401,9 @@ export function createRuntimeTransport(
         throw new Error("Runtime transport is closed");
       }
       const now = runtimeDependencies.now ?? Date.now;
-      if (
-        connection.expiresAtMs !== undefined &&
-        connection.expiresAtMs <= now()
-      ) {
+      const connectionExpired =
+        connection.expiresAtMs !== undefined && connection.expiresAtMs <= now();
+      if (connectionExpired || activeEntry.retired) {
         connection.close();
         if (closed) {
           throw new Error("Runtime transport is closed");
@@ -398,6 +416,8 @@ export function createRuntimeTransport(
           capabilityEndpoint: "/api/runtime/capabilities",
         });
         activeEntry.connection = replacement;
+        activeEntry.retired = false;
+        activeEntry.successfulHistoryRequests = 0;
         try {
           connection = await replacement;
         } catch (error) {
@@ -412,12 +432,22 @@ export function createRuntimeTransport(
         }
       }
       try {
-        return await connection.request<T>({
+        const result = await connection.request<T>({
           method,
           path: pathname,
           query,
           body,
         });
+        if (isBoundedSessionHistoryRequest(method, pathname)) {
+          activeEntry.successfulHistoryRequests += 1;
+          if (
+            activeEntry.successfulHistoryRequests >=
+            MANAGED_HISTORY_REQUESTS_PER_CONNECTION
+          ) {
+            activeEntry.retired = true;
+          }
+        }
+        return result;
       } catch (error) {
         if (managedConnections.get(scope) === activeEntry) {
           managedConnections.delete(scope);
