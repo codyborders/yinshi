@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 from yinshi.api.deps import require_tenant
 from yinshi.api.runners import _request_relay_url
+from yinshi.config import get_settings
 from yinshi.models import RunnerCapabilityCreateIn, RunnerCapabilityOut
 from yinshi.rate_limit import limiter
 from yinshi.services.managed_backups import (
@@ -60,6 +64,17 @@ class ManagedBackupJobOut(BaseModel):
     last_error: str | None
 
 
+class HistoryCacheKeyOut(BaseModel):
+    """Authenticated browser cache key material."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    version: Literal[1]
+    user_id: str
+    key_id: str
+    key: str
+
+
 class ManagedRuntimeOut(BaseModel):
     """Public runtime state without provider authority or tenant identity."""
 
@@ -73,6 +88,45 @@ class ManagedRuntimeOut(BaseModel):
 
 
 router = APIRouter(tags=["runtime"])
+
+_HISTORY_CACHE_KEY_DOMAIN = b"yinshi/history-cache/aes-key/v1\x00"
+_HISTORY_CACHE_KEY_ID_DOMAIN = b"yinshi/history-cache/key-id/v1\x00"
+
+
+def _derive_history_cache_key(secret: str, user_id: str) -> tuple[str, str]:
+    """Derive stable, domain-separated browser cache key material."""
+    secret_bytes = secret.encode("utf-8")
+    user_bytes = user_id.encode("utf-8")
+    key_bytes = hmac.new(
+        secret_bytes,
+        _HISTORY_CACHE_KEY_DOMAIN + user_bytes,
+        hashlib.sha256,
+    ).digest()
+    key_id = hmac.new(
+        secret_bytes,
+        _HISTORY_CACHE_KEY_ID_DOMAIN + user_bytes,
+        hashlib.sha256,
+    ).hexdigest()[:16]
+    key = base64.urlsafe_b64encode(key_bytes).decode("ascii").rstrip("=")
+    return key_id, key
+
+
+@router.get(
+    "/api/runtime/history-cache-key",
+    response_model=HistoryCacheKeyOut,
+)
+def get_history_cache_key(request: Request, response: Response) -> HistoryCacheKeyOut:
+    """Return one authenticated tenant's tab-cache encryption key."""
+    tenant = require_tenant(request)
+    key_id, key = _derive_history_cache_key(get_settings().secret_key, tenant.user_id)
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Pragma"] = "no-cache"
+    return HistoryCacheKeyOut(
+        version=1,
+        user_id=tenant.user_id,
+        key_id=key_id,
+        key=key,
+    )
 
 
 def _safe_runtime_status(

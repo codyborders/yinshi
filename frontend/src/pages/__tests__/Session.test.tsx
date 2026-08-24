@@ -24,6 +24,7 @@ const historyCacheClient = {
   delete: vi.fn(),
 };
 let runtimeResourceOverride: Record<string, unknown> | null = null;
+let historyCacheAvailable = true;
 
 const minimaxProvider = {
   id: "minimax",
@@ -129,6 +130,7 @@ vi.mock("../../hooks/usePiCommands", () => ({
 
 vi.mock("../../runtime/sessionHistoryCacheClient", () => ({
   getSessionHistoryCacheClient: () => historyCacheClient,
+  isSessionHistoryCacheAvailable: () => historyCacheAvailable,
   invalidateSessionHistoryCache: (userId: string, sessionId: string) => {
     void historyCacheClient.delete(userId, sessionId);
   },
@@ -385,6 +387,7 @@ describe("Session", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     runtimeResourceOverride = null;
+    historyCacheAvailable = true;
     historyCacheClient.get.mockResolvedValue(null);
     historyCacheClient.put.mockResolvedValue(undefined);
     historyCacheClient.delete.mockResolvedValue(undefined);
@@ -666,6 +669,30 @@ describe("Session", () => {
       screen.queryByText("Failed to load session metadata."),
     ).not.toBeInTheDocument();
     expect(apiGetMock).toHaveBeenCalledWith(`/api/sessions/${TEST_SESSION_ID}`);
+  });
+
+  it("skips managed cache when tab storage is unavailable", async () => {
+    mockCatalog();
+    historyCacheAvailable = false;
+    const emptyBundle = await historyBundle([], null);
+    const transportGet = vi.fn((path: string) => {
+      if (path === `/api/sessions/${TEST_SESSION_ID}`) {
+        return Promise.resolve(sessionMetadata());
+      }
+      if (path === `/api/sessions/${TEST_SESSION_ID}/messages/bundle`) {
+        return Promise.resolve(emptyBundle);
+      }
+      return Promise.reject(new Error(`Unexpected GET ${path}`));
+    });
+    runtimeResourceOverride = managedRuntimeResource(transportGet);
+
+    renderSession();
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Send Prompt" })).toBeEnabled(),
+    );
+    expect(historyCacheClient.get).not.toHaveBeenCalled();
+    expect(historyCacheClient.put).not.toHaveBeenCalled();
   });
 
   it("marks cached and live history rendering in order", async () => {

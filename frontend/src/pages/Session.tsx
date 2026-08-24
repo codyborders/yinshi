@@ -34,7 +34,10 @@ import {
 } from "../models/sessionModelPreference";
 import { findActiveRuntimePromptRun } from "../runtime/promptStream";
 import { loadSessionHistory } from "../runtime/sessionHistory";
-import { invalidateSessionHistoryCache } from "../runtime/sessionHistoryCacheClient";
+import {
+  invalidateSessionHistoryCache,
+  isSessionHistoryCacheAvailable,
+} from "../runtime/sessionHistoryCacheClient";
 import { useRuntimeResource } from "../runtime/useRuntimeResource";
 import { parseStoredTurnBlocks } from "../utils/turnEvents";
 
@@ -181,6 +184,15 @@ export default function Session() {
     key: string;
     promise: Promise<void>;
   } | null>(null);
+  const historyCacheEligible = Boolean(
+    id &&
+    transport?.runtime.location === "managed" &&
+    transport.runtime.historyBundleSupported === true &&
+    typeof DecompressionStream === "function" &&
+    authStatus === "authenticated" &&
+    userId &&
+    isSessionHistoryCacheAvailable(),
+  );
 
   useEffect(() => {
     setLoadingHistory(true);
@@ -228,8 +240,7 @@ export default function Session() {
         { ok: true; history: Message[] } | { ok: false }
       > = loadSessionHistory(runtimeTransport, runtimeSessionId, {
         isCancelled: isStale,
-        cacheUserId:
-          authStatus === "authenticated" ? (userId ?? undefined) : undefined,
+        cacheUserId: historyCacheEligible ? (userId ?? undefined) : undefined,
         onCachedHistory: (history, activeRunId) => {
           if (isStale()) return;
           try {
@@ -331,7 +342,7 @@ export default function Session() {
     return () => {
       cancelled = true;
     };
-  }, [authStatus, bootstrapSession, id, transport, userId]);
+  }, [bootstrapSession, historyCacheEligible, id, transport, userId]);
 
   useEffect(() => {
     if (!id || !transport) return;
@@ -377,7 +388,7 @@ export default function Session() {
         transport?.runtime.location === "managed" &&
         transport.runtime.historyBundleSupported === true &&
         typeof DecompressionStream === "function" &&
-        authStatus === "authenticated" &&
+        historyCacheEligible &&
         userId
       ) {
         const runtimeTransport = transport;
@@ -406,7 +417,7 @@ export default function Session() {
       }
     }
     wasStreamingRef.current = streaming;
-  }, [authStatus, id, streaming, transport, userId]);
+  }, [historyCacheEligible, id, streaming, transport, userId]);
 
   const addSystemMessage = useCallback(
     (content: string) => {
@@ -684,13 +695,7 @@ export default function Session() {
   const handleSend = useCallback(
     async (prompt: string) => {
       if (inputDisabledReason) return;
-      if (
-        id &&
-        authStatus === "authenticated" &&
-        userId &&
-        transport?.runtime.location === "managed" &&
-        transport.runtime.historyBundleSupported === true
-      ) {
+      if (id && historyCacheEligible && userId) {
         invalidateSessionHistoryCache(userId, id);
       }
       if (piContextVersion < 1) {
@@ -706,7 +711,7 @@ export default function Session() {
       );
     },
     [
-      authStatus,
+      historyCacheEligible,
       id,
       inputDisabledReason,
       pendingModelSelection,

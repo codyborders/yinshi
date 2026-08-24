@@ -675,7 +675,7 @@ def test_desktop_mode_serves_spa_with_restricted_fallback_and_csp(
     csp = root_response.headers["Content-Security-Policy"]
     assert "default-src 'self'" in csp
     assert "connect-src 'self'" in csp
-    assert "worker-src 'self'" in csp
+    assert "worker-src" not in csp
     assert "frame-ancestors 'none'" in csp
 
 
