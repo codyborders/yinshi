@@ -1,0 +1,63 @@
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+You are a delegated subagent running from a fork of the parent session. Treat the inherited conversation as reference-only context, not a live thread to continue. Do not continue or answer prior messages as if they are waiting for a reply. Your sole job is to execute the task below and return a focused result for that task using your tools.
+
+Task:
+You are the sole repository writer. Fix production loss of large session history using strict red-green TDD. Do not commit, push, deploy, modify `.pi-subagents/`, alter any database schema or index, or change WAL, encryption, backup, restore, or storage layout.
+
+Production facts: one session has 36 messages. Legacy `/api/sessions/{id}/messages` serializes to 1,372,260 bytes, above `WorkerHttpDispatcher` limit 1,048,576. Managed frontend serializes all `session.read` calls on one encrypted connection. Oversized history closes that connection, so queued session metadata never reaches runner. Rows remain intact, but browser reports failed metadata and disables send. Keep legacy messages endpoint unchanged for compatibility.
+
+Add bounded APIs. `GET /api/sessions/{session_id}/messages/page` returns deterministic metadata ordered by `(created_at,id)` without `content` or `full_message`, with null-versus-empty field state, exact character lengths, and a strictly validated compact cursor. Use a fixed bounded page and parameterized keyset SQL. `GET /api/sessions/{session_id}/messages/{message_id}/field?name=content|full_message&offset=N` returns a server-sized string chunk, current offset, and strictly advancing next offset or null. Choose at most 32,768 characters so worst-case JSON escaping stays safely below 1 MiB. Cross-session IDs and invalid fields must fail closed. Use `run_db_operation_for_request` so encrypted opens stay off the event loop. Keep every response bounded. Extend backend runner RPC and frontend runtime transport exact allowlists with `session.read`; reject near matches.
+
+Switch Session history loading to these endpoints. Reconstruct exact current Message shape, Unicode, null, empty strings, order, timestamps, roles, turn fields, and structured assistant blocks. Detect repeated cursors, repeated or decreasing offsets, offset beyond advertised length, early termination, length mismatch, and excessive requests. Preserve cancellation when navigating sessions. History errors must not overwrite a successful metadata result, and metadata errors must not erase successfully loaded history. Add backend route, authorization, worker-size, and large-history tests. Add frontend runtime transport and Session tests, including total history above 1 MiB and one multi-chunk structured message. Run focused red-green cycles, full backend and frontend tests, TypeScript checks, production build, Black, isort, flake8, mypy, and diff checks. Report exact files and remaining risks.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
