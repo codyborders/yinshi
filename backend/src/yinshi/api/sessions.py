@@ -49,8 +49,8 @@ _EXCLUDED_DIRS = frozenset(
 _TREE_FILE_LIMIT = 5000
 _MESSAGE_HISTORY_PAGE_LIMIT = 64
 _MESSAGE_HISTORY_PAGE_BYTES_MAX = 262_144
-_MESSAGE_HISTORY_FIELD_CHARS_MAX = 32_768
-_MESSAGE_HISTORY_FIELD_BYTES_MAX = 524_288
+_MESSAGE_HISTORY_FIELD_CHARS_MAX = 262_144
+_MESSAGE_HISTORY_FIELD_BYTES_MAX = 900_000
 _MESSAGE_HISTORY_CURSOR_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 _MESSAGE_HISTORY_CURSOR_VERSION = 1
 
@@ -325,6 +325,62 @@ async def get_message_history_page(
     )
 
 
+def _message_history_field_response(
+    field_value: str,
+    offset: int,
+    chunk_length: int,
+) -> dict[str, Any]:
+    """Build one exact field response for bounded byte measurement."""
+    field_length = len(field_value)
+    if chunk_length < 0 or offset + chunk_length > field_length:
+        raise ValueError("message history field chunk length is invalid")
+    chunk_end = offset + chunk_length
+    next_offset: int | None = chunk_end if chunk_end < field_length else None
+    return {
+        "value": field_value[offset:chunk_end],
+        "offset": offset,
+        "next_offset": next_offset,
+    }
+
+
+def _message_history_field_response_bytes(response: dict[str, Any]) -> int:
+    """Return bytes from Starlette's compact UTF-8 JSON response encoding."""
+    return len(
+        json.dumps(
+            response,
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    )
+
+
+def _fit_message_history_field_response(field_value: str, offset: int) -> dict[str, Any]:
+    """Select the longest candidate field prefix within the response byte cap."""
+    remaining = len(field_value) - offset
+    candidate_length = min(remaining, _MESSAGE_HISTORY_FIELD_CHARS_MAX)
+    candidate = _message_history_field_response(field_value, offset, candidate_length)
+    if _message_history_field_response_bytes(candidate) <= _MESSAGE_HISTORY_FIELD_BYTES_MAX:
+        return candidate
+    if candidate_length == 0:
+        raise RuntimeError("empty message history field response exceeded the size limit")
+
+    best_response: dict[str, Any] | None = None
+    low = 1
+    high = candidate_length - 1
+    while low <= high:
+        chunk_length = (low + high) // 2
+        response = _message_history_field_response(field_value, offset, chunk_length)
+        if _message_history_field_response_bytes(response) <= _MESSAGE_HISTORY_FIELD_BYTES_MAX:
+            best_response = response
+            low = chunk_length + 1
+        else:
+            high = chunk_length - 1
+    if best_response is None:
+        raise RuntimeError("message history field response exceeded the size limit")
+    return best_response
+
+
 def _message_history_field_chunk(
     db: Any,
     session_id: str,
@@ -352,14 +408,7 @@ def _message_history_field_chunk(
     field_length = len(field_value)
     if offset > field_length or (field_length > 0 and offset == field_length):
         raise HTTPException(status_code=416, detail="Invalid message field offset")
-    value = field_value[offset : offset + _MESSAGE_HISTORY_FIELD_CHARS_MAX]
-    chunk_end = offset + len(value)
-    next_offset: int | None = chunk_end if chunk_end < field_length else None
-    response = {"value": value, "offset": offset, "next_offset": next_offset}
-    response_bytes = len(json.dumps(response, separators=(",", ":")).encode("utf-8"))
-    if response_bytes > _MESSAGE_HISTORY_FIELD_BYTES_MAX:
-        raise RuntimeError("message history field response exceeded the size limit")
-    return response
+    return _fit_message_history_field_response(field_value, offset)
 
 
 @router.get(

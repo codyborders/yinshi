@@ -1398,13 +1398,85 @@ def test_message_history_rejects_invalid_cursors_fields_and_cross_session_ids(
     assert excessive_offset.status_code == 416
 
 
-def test_message_history_field_response_handles_worst_case_json_escaping(
+def test_message_history_field_response_expands_to_candidate_character_limit(
     client: TestClient,
     session_id: str,
 ) -> None:
-    """One server-sized field chunk should stay below the worker response cap."""
-    message_id = "e" * 32
-    content = "\u0000" * 40_000
+    """Field chunks should use the largest candidate that fits the response cap."""
+    positive_message_id = "a" * 32
+    empty_message_id = "c" * 32
+    null_message_id = "d" * 32
+    ascii_message_id = "e" * 32
+    positive_content = "x"
+    null_content = "\u0000" * 40_000
+    ascii_content = "x" * 300_000
+    with get_db() as db:
+        db.executemany(
+            "INSERT INTO messages (id, session_id, role, content) VALUES (?, ?, 'user', ?)",
+            (
+                (positive_message_id, session_id, positive_content),
+                (empty_message_id, session_id, ""),
+                (null_message_id, session_id, null_content),
+                (ascii_message_id, session_id, ascii_content),
+            ),
+        )
+        db.commit()
+
+    positive_response = client.get(
+        f"/api/sessions/{session_id}/messages/{positive_message_id}/field",
+        params={"name": "content", "offset": 0},
+    )
+    empty_response = client.get(
+        f"/api/sessions/{session_id}/messages/{empty_message_id}/field",
+        params={"name": "content", "offset": 0},
+    )
+    null_response = client.get(
+        f"/api/sessions/{session_id}/messages/{null_message_id}/field",
+        params={"name": "content", "offset": 0},
+    )
+    ascii_response = client.get(
+        f"/api/sessions/{session_id}/messages/{ascii_message_id}/field",
+        params={"name": "content", "offset": 0},
+    )
+
+    assert positive_response.status_code == 200
+    assert positive_response.json() == {
+        "value": positive_content,
+        "offset": 0,
+        "next_offset": None,
+    }
+    assert empty_response.status_code == 200
+    assert empty_response.json() == {"value": "", "offset": 0, "next_offset": None}
+    assert null_response.status_code == 200
+    assert len(null_response.content) <= 900_000
+    assert null_response.json() == {
+        "value": null_content,
+        "offset": 0,
+        "next_offset": None,
+    }
+    assert ascii_response.status_code == 200
+    assert len(ascii_response.content) <= 900_000
+    ascii_data = ascii_response.json()
+    assert len(ascii_data["value"]) == 262_144
+    assert ascii_data["offset"] == 0
+    assert ascii_data["next_offset"] == 262_144
+    ascii_remainder = client.get(
+        f"/api/sessions/{session_id}/messages/{ascii_message_id}/field",
+        params={"name": "content", "offset": ascii_data["next_offset"]},
+    )
+    assert ascii_remainder.status_code == 200
+    assert ascii_remainder.json()["offset"] == 262_144
+    assert ascii_remainder.json()["next_offset"] is None
+    assert ascii_data["value"] + ascii_remainder.json()["value"] == ascii_content
+
+
+def test_message_history_field_response_adapts_to_json_escaping(
+    client: TestClient,
+    session_id: str,
+) -> None:
+    """Escaped chunks should advance and reconstruct within the exact byte cap."""
+    message_id = "f" * 32
+    content = "\u0000" * 300_000
     with get_db() as db:
         db.execute(
             "INSERT INTO messages (id, session_id, role, content) VALUES (?, ?, 'user', ?)",
@@ -1412,18 +1484,68 @@ def test_message_history_field_response_handles_worst_case_json_escaping(
         )
         db.commit()
 
-    response = client.get(
-        f"/api/sessions/{session_id}/messages/{message_id}/field",
-        params={"name": "content", "offset": 0},
-    )
+    chunks: list[str] = []
+    offset = 0
+    first_chunk_length: int | None = None
+    while True:
+        response = client.get(
+            f"/api/sessions/{session_id}/messages/{message_id}/field",
+            params={"name": "content", "offset": offset},
+        )
+        assert response.status_code == 200
+        assert len(response.content) <= 900_000
+        assert len(response.content) < 1_048_576
+        data = response.json()
+        assert data["offset"] == offset
+        assert data["value"]
+        if first_chunk_length is None:
+            first_chunk_length = len(data["value"])
+        chunks.append(data["value"])
+        if data["next_offset"] is None:
+            break
+        assert 0 <= 900_000 - len(response.content) < 8
+        assert data["next_offset"] > offset
+        offset = data["next_offset"]
 
-    assert response.status_code == 200
-    assert len(response.content) < 1_048_576
-    assert len(response.json()["value"]) == 32_768
-    assert response.json()["next_offset"] == 32_768
-    page = client.get(f"/api/sessions/{session_id}/messages/page")
-    assert page.status_code == 200
-    assert page.json()["messages"][0]["content_length"] == 40_000
+    assert first_chunk_length is not None
+    assert 32_768 < first_chunk_length < 262_144
+    assert "".join(chunks) == content
+
+
+def test_message_history_field_response_preserves_unicode_offsets(
+    client: TestClient,
+    session_id: str,
+) -> None:
+    """Adaptive byte limits should retain character offsets for astral Unicode."""
+    message_id = "b" * 32
+    content = "\U0001f600" * 300_000
+    with get_db() as db:
+        db.execute(
+            "INSERT INTO messages (id, session_id, role, content) VALUES (?, ?, 'user', ?)",
+            (message_id, session_id, content),
+        )
+        db.commit()
+
+    chunks: list[str] = []
+    offset = 0
+    while True:
+        response = client.get(
+            f"/api/sessions/{session_id}/messages/{message_id}/field",
+            params={"name": "content", "offset": offset},
+        )
+        assert response.status_code == 200
+        assert len(response.content) <= 900_000
+        data = response.json()
+        assert data["offset"] == offset
+        assert data["value"]
+        chunks.append(data["value"])
+        if data["next_offset"] is None:
+            break
+        assert 0 <= 900_000 - len(response.content) < 6
+        assert data["next_offset"] == offset + len(data["value"])
+        offset = data["next_offset"]
+
+    assert "".join(chunks) == content
 
 
 def test_prompt_session_not_found(client: TestClient) -> None:
