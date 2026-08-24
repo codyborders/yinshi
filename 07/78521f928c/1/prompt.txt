@@ -1,0 +1,131 @@
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+You are a delegated subagent running from a fork of the parent session. Treat the inherited conversation as reference-only context, not a live thread to continue. Do not continue or answer prior messages as if they are waiting for a reply. Your sole job is to execute the task below and return a focused result for that task using your tools.
+
+Task:
+Implement and test the active-prompt navigation fix in the current checkout. You are the only writer. Do not commit, push, deploy, or modify `.pi-subagents/`. Root cause is confirmed: switching sessions closes the old runtime transport, stops browser polling, but detached PromptJournal execution continues. Returning loads persisted messages only and never discovers the active run, so live tool calls vanish. Requirements: (1) add read-only active-run discovery to PromptJournal and GET `/api/sessions/{session_id}/runs/active`, returning a validated run or JSON null with normal ownership checks; (2) allow this exact route under `session.stream` in frontend runtimeTransport and backend runner_rpc; (3) refactor promptStream so start and attach share polling, while attach performs no POST and replays from sequence zero with current bounded retry and terminal draining behavior; (4) update useAgentStream and Session bootstrap so navigation aborts local polling without cancelling server execution, discovers an active run, loads current bounded history, then attaches safely; query active before history and query again after history only when initially absent, so completion and cross-tab races do not lose turns; (5) use run ID as replayed assistant turn ID, since existing messages already use run ID as turn_id; (6) add generation guards so stale history, polling, RAF, cancellation, errors, finalizers, or queued prompts from session A cannot mutate session B; (7) preserve explicit stop semantics, exact start idempotency, ordered tool blocks, large message history, managed/BYOC/hosted/local behavior, and all current APIs. No schema changes. Follow strict red-green TDD with public behavior tests. Run focused backend and frontend suites, formatting, type checks, and diff checks. Return changed paths, commands, failures, and remaining risks.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+You are reviving a previous subagent conversation.
+
+Original run: 1f507ea9
+Original agent: worker
+Original session file: /Users/user/.pi/agent/sessions/--Users-user-projects-yinshi--/2026-08-24T03-21-34-001Z_01a031c9-a631-7af2-9e62-d80df1ac7357.jsonl
+
+Use the stored session context as background. Answer the orchestrator's follow-up below. Do not assume the original child process is still alive.
+
+Follow-up:
+Address independent review blockers in the current checkout. Remain sole writer. Do not commit, push, deploy, or touch `.pi-subagents/`. Add red-green tests first. Required fixes: (1) prevent duplicate active-turn assistants. History assistant rows use database message IDs while replay uses run ID. Before bootstrap with an active run, remove any assistant history row whose `turn_id` equals that run ID, then replay the journal. Preserve the user row. Cover a run that completes while history loads and already has a stored assistant. (2) resumed runs must drain queued steering prompts exactly like newly started runs. If user sends while a resumed run is active, explicit cancellation still targets that resumed run, then the queued prompt starts once after the resumed run drains. Clear queued input on navigation and block stale session replay. Add focused hook coverage. (3) Improve the completed-during-history race without doubling every large history load. Keep active discovery before history. If initial discovery is null, discover again after history. If practical, add a lightweight latest-run or revision check so a run that starts and finishes during history field loading cannot be omitted. Prefer a latest-run read route only if it remains exact, bounded, tenant-safe, and avoids replay when history already contains a completed assistant for that turn. Otherwise document the remaining narrow race rather than adding expensive duplicate history loads. (4) If history loading fails after an active run was discovered, keep local history error reporting but still attach to the exact active run with an empty history so progress remains visible. Preserve all previous tests and run focused validation. Return exact changes and remaining risks.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+- criterion-2: Return evidence sufficient for an independent acceptance review
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Review gate: required by reviewer.
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    },
+    {
+      "id": "criterion-2",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
