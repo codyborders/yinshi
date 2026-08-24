@@ -1231,6 +1231,47 @@ def test_encrypted_initialization_rejects_symlink_migration_lock(
     assert lock_target.read_text(encoding="utf-8") == "target"
 
 
+def test_init_user_db_closes_with_database_gate(
+    tenant_env,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Initialization must acquire the database gate for connection close."""
+    from contextlib import contextmanager
+
+    import yinshi.tenant as tenant_module
+    from yinshi.tenant import init_user_db
+
+    database_path = str(Path(tenant_env["tmp_path"]) / "init-close.db")
+    gate_active = False
+
+    class FakeConnection:
+        def close(self) -> None:
+            assert gate_active is True
+
+    @contextmanager
+    def track_database_gate(path: str):
+        nonlocal gate_active
+        assert path == database_path
+        gate_active = True
+        try:
+            yield
+        finally:
+            gate_active = False
+
+    def open_connection(path: str, tenant) -> FakeConnection:
+        assert path == database_path
+        assert tenant is None
+        assert gate_active is False
+        return FakeConnection()
+
+    monkeypatch.setattr(tenant_module, "_tenant_migration_lock", track_database_gate)
+    monkeypatch.setattr(tenant_module, "_open_user_connection", open_connection)
+
+    init_user_db(database_path)
+
+    assert gate_active is False
+
+
 def test_concurrent_initializers_migrate_plaintext_once(
     tenant_env,
     monkeypatch,
@@ -1540,7 +1581,7 @@ def test_concurrent_current_encrypted_database_opens_are_serialized(
         for future in futures:
             future.result(timeout=5)
 
-    assert migration_lock_attempts == 2
+    assert migration_lock_attempts == 4
     assert key_calls == 2
     assert active_open_regions == 0
     assert maximum_active_open_regions == 1
@@ -1834,11 +1875,102 @@ def test_wrong_key_encrypted_database_fails_without_stdlib_fallback(
             pass
 
 
-def test_concurrent_encrypted_open_avoids_stdlib_during_active_operation(
+def test_blocked_encrypted_close_prevents_concurrent_open(
     tenant_env,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A live encrypted operation must not overlap any stdlib database open."""
+    """A second encrypted open must wait until an active close finishes."""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    import yinshi.tenant as tenant_module
+    from yinshi.config import get_settings
+    from yinshi.tenant import TenantContext, get_user_db
+
+    monkeypatch.setenv("TENANT_DB_ENCRYPTION", "required")
+    get_settings.cache_clear()
+    data_directory = Path(tenant_env["user_data_dir"]) / "ab" / "abcdef"
+    data_directory.mkdir(parents=True)
+    database_path = data_directory / "yinshi.db"
+    database_path.write_bytes(b"encrypted-primary" * 32)
+    tenant = TenantContext(
+        user_id="abcdef",
+        email="user@example.com",
+        data_dir=str(data_directory),
+        db_path=str(database_path),
+    )
+    first_opened = threading.Event()
+    release_first_use = threading.Event()
+    first_close_started = threading.Event()
+    release_first_close = threading.Event()
+    second_open_started = threading.Event()
+    second_connection_opened = threading.Event()
+
+    class FakeSqlcipherConnection:
+        def __init__(self, index: int) -> None:
+            self.index = index
+            self.closed = False
+
+        def execute(self, _statement: str):
+            return SimpleNamespace(fetchone=lambda: (1,))
+
+        def close(self) -> None:
+            if self.index == 0:
+                first_close_started.set()
+                assert release_first_close.wait(timeout=5)
+            self.closed = True
+
+    opened_connections: list[FakeSqlcipherConnection] = []
+
+    def open_sqlcipher(_path: str, _key: bytes) -> FakeSqlcipherConnection:
+        connection = FakeSqlcipherConnection(len(opened_connections))
+        opened_connections.append(connection)
+        if connection.index == 1:
+            second_connection_opened.set()
+        return connection
+
+    def first_connection_lifetime() -> None:
+        with get_user_db(tenant):
+            first_opened.set()
+            assert release_first_use.wait(timeout=5)
+
+    def second_connection_lifetime() -> bool:
+        second_open_started.set()
+        with get_user_db(tenant) as connection:
+            return connection.execute("SELECT 1").fetchone()[0] == 1
+
+    monkeypatch.setattr(tenant_module, "_tenant_database_key", lambda _tenant: b"k" * 32)
+    monkeypatch.setattr(tenant_module, "_load_sqlcipher_module", lambda: object())
+    monkeypatch.setattr(tenant_module, "_open_sqlcipher_connection", open_sqlcipher)
+    monkeypatch.setattr(
+        tenant_module,
+        "_ensure_current_user_db_schema",
+        lambda _connection: None,
+    )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first_lifetime = executor.submit(first_connection_lifetime)
+        assert first_opened.wait(timeout=5)
+        release_first_use.set()
+        assert first_close_started.wait(timeout=5)
+        second_lifetime = executor.submit(second_connection_lifetime)
+        assert second_open_started.wait(timeout=5)
+        opened_during_close = second_connection_opened.wait(timeout=0.1)
+        release_first_close.set()
+        first_lifetime.result(timeout=5)
+        assert second_lifetime.result(timeout=5) is True
+
+    assert opened_during_close is False
+    assert second_connection_opened.is_set()
+    assert len(opened_connections) == 2
+    assert all(connection.closed for connection in opened_connections)
+
+
+def test_concurrent_encrypted_open_is_allowed_during_connection_use(
+    tenant_env,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Established encrypted connection use must not retain the open-close gate."""
     import threading
     from concurrent.futures import ThreadPoolExecutor
 
@@ -1860,6 +1992,7 @@ def test_concurrent_encrypted_open_avoids_stdlib_during_active_operation(
     )
     operation_active = threading.Event()
     release_operation = threading.Event()
+    second_connection_opened = threading.Event()
 
     class FakeSqlcipherConnection:
         def __init__(self) -> None:
@@ -1876,19 +2009,17 @@ def test_concurrent_encrypted_open_avoids_stdlib_during_active_operation(
 
     opened_connections: list[FakeSqlcipherConnection] = []
 
-    def reject_stdlib_open(_path: str):
-        raise AssertionError("stdlib SQLite must not open an encrypted primary")
-
     def open_sqlcipher(_path: str, _key: bytes) -> FakeSqlcipherConnection:
         connection = FakeSqlcipherConnection()
         opened_connections.append(connection)
+        if len(opened_connections) == 2:
+            second_connection_opened.set()
         return connection
 
     def open_and_close() -> bool:
         with get_user_db(tenant) as connection:
             return connection.execute("SELECT 1").fetchone()[0] == 1
 
-    monkeypatch.setattr(tenant_module, "_open_connection", reject_stdlib_open)
     monkeypatch.setattr(tenant_module, "_tenant_database_key", lambda _tenant: b"k" * 32)
     monkeypatch.setattr(tenant_module, "_load_sqlcipher_module", lambda: object())
     monkeypatch.setattr(tenant_module, "_open_sqlcipher_connection", open_sqlcipher)
@@ -1898,19 +2029,89 @@ def test_concurrent_encrypted_open_avoids_stdlib_during_active_operation(
         lambda _connection: None,
     )
 
-    with get_user_db(tenant) as first_connection:
-        with ThreadPoolExecutor(max_workers=2) as executor:
+    executor = ThreadPoolExecutor(max_workers=2)
+    try:
+        with get_user_db(tenant) as first_connection:
             active_operation = executor.submit(first_connection.execute, "HOLD")
             assert operation_active.wait(timeout=5)
-            try:
-                concurrent_open = executor.submit(open_and_close)
-                assert concurrent_open.result(timeout=5) is True
-            finally:
-                release_operation.set()
+            concurrent_open = executor.submit(open_and_close)
+            opened_during_use = second_connection_opened.wait(timeout=0.1)
+            release_operation.set()
             active_operation.result(timeout=5)
+        assert concurrent_open.result(timeout=5) is True
+    finally:
+        release_operation.set()
+        executor.shutdown(wait=True)
 
+    assert opened_during_use is True
     assert len(opened_connections) == 2
     assert all(connection.closed for connection in opened_connections)
+
+
+@pytest.mark.parametrize(
+    "cleanup_name",
+    [
+        "_remove_validated_migration_rollback",
+        "_remove_plaintext_migration_backups",
+    ],
+)
+def test_encrypted_database_cleanup_failure_closes_connection(
+    tenant_env,
+    monkeypatch: pytest.MonkeyPatch,
+    cleanup_name: str,
+) -> None:
+    """Migration cleanup failures must close the validated SQLCipher connection."""
+    import yinshi.tenant as tenant_module
+    from yinshi.config import get_settings
+    from yinshi.tenant import (
+        TenantContext,
+        _open_user_connection_with_lock_held,
+        _tenant_migration_lock,
+    )
+
+    monkeypatch.setenv("TENANT_DB_ENCRYPTION", "required")
+    get_settings.cache_clear()
+    data_directory = Path(tenant_env["user_data_dir"]) / "ab" / "abcdef"
+    data_directory.mkdir(parents=True)
+    database_path = data_directory / "yinshi.db"
+    database_path.write_bytes(b"encrypted-primary")
+    tenant = TenantContext(
+        user_id="abcdef",
+        email="user@example.com",
+        data_dir=str(data_directory),
+        db_path=str(database_path),
+    )
+
+    class FakeConnection:
+        closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    connection = FakeConnection()
+
+    def fail_cleanup(_path: str) -> None:
+        raise RuntimeError("cleanup failed")
+
+    monkeypatch.setattr(tenant_module, "_tenant_database_key", lambda _tenant: b"k" * 32)
+    monkeypatch.setattr(tenant_module, "_load_sqlcipher_module", lambda: object())
+    monkeypatch.setattr(
+        tenant_module,
+        "_open_sqlcipher_connection",
+        lambda _path, _key: connection,
+    )
+    monkeypatch.setattr(
+        tenant_module,
+        "_ensure_current_user_db_schema",
+        lambda _connection: None,
+    )
+    monkeypatch.setattr(tenant_module, cleanup_name, fail_cleanup)
+
+    with pytest.raises(RuntimeError, match="cleanup failed"):
+        with _tenant_migration_lock(str(database_path)):
+            _open_user_connection_with_lock_held(str(database_path), tenant)
+
+    assert connection.closed is True
 
 
 def test_open_encrypted_database_removes_legacy_plaintext_backup(
@@ -1919,7 +2120,7 @@ def test_open_encrypted_database_removes_legacy_plaintext_backup(
 ) -> None:
     """Validated encrypted primaries should trigger cleanup of migration residue."""
     from yinshi.config import get_settings
-    from yinshi.tenant import TenantContext, _open_user_connection
+    from yinshi.tenant import TenantContext, _open_user_connection, _tenant_migration_lock
 
     monkeypatch.setenv("TENANT_DB_ENCRYPTION", "required")
     get_settings.cache_clear()
@@ -1935,7 +2136,14 @@ def test_open_encrypted_database_removes_legacy_plaintext_backup(
         data_dir=str(data_directory),
         db_path=str(database_path),
     )
-    fake_connection = object()
+
+    class FakeConnection:
+        closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    fake_connection = FakeConnection()
     monkeypatch.setattr("yinshi.tenant._tenant_database_key", lambda _tenant: b"k" * 32)
     monkeypatch.setattr("yinshi.tenant._load_sqlcipher_module", lambda: object())
     monkeypatch.setattr(
@@ -1948,9 +2156,11 @@ def test_open_encrypted_database_removes_legacy_plaintext_backup(
     )
 
     connection = _open_user_connection(str(database_path), tenant)
-
     assert connection is fake_connection
     assert not backup_path.exists()
+    with _tenant_migration_lock(str(database_path)):
+        connection.close()
+        assert fake_connection.closed is True
 
 
 def test_optional_sqlcipher_unavailable_rejects_existing_encrypted_database(

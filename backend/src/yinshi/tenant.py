@@ -642,7 +642,7 @@ def _migration_thread_lock(db_path: str) -> threading.Lock:
 
 @contextmanager
 def _tenant_migration_lock(db_path: str) -> Iterator[None]:
-    """Hold an owner-only advisory lock for tenant database migration work."""
+    """Hold an owner-only advisory lock for tenant database open and close work."""
     if not db_path:
         raise ValueError("db_path must not be empty")
     canonical_path = os.path.realpath(os.path.abspath(db_path))
@@ -899,63 +899,71 @@ def _ensure_user_data_encryption_marker(tenant: TenantContext) -> None:
     )
 
 
-def _open_user_connection(
+def _open_user_connection_with_lock_held(
     db_path: str,
     tenant: TenantContext | None,
 ) -> sqlite3.Connection:
-    """Open a tenant database using SQLCipher when policy enables it."""
+    """Open a tenant database while the caller holds its migration lock."""
     settings = get_settings()
     if tenant is not None:
         _ensure_user_data_encryption_marker(tenant)
     encryption_enabled = tenant_db_encryption_enabled(settings)
     encryption_required = tenant_db_encryption_required(settings)
-    with _tenant_migration_lock(db_path):
-        _recover_plaintext_migration_rollback(db_path)
-        if not encryption_enabled:
-            connection = _open_connection(db_path)
-            try:
-                _ensure_current_user_db_schema(connection)
-            except Exception:
-                connection.close()
-                raise
-            return connection
-        if tenant is None:
-            raise ValueError("tenant is required when tenant DB encryption is enabled")
-        try:
-            _load_sqlcipher_module()
-        except RuntimeError:
-            if encryption_required:
-                raise
-            database_header = _read_database_header(db_path)
-            if database_header is not None and database_header != _SQLITE_PLAINTEXT_HEADER:
-                raise RuntimeError("Tenant database cannot be opened without SQLCipher") from None
-            logger.warning("SQLCipher unavailable; opening tenant database without encryption")
-            connection = _open_connection(db_path)
-            try:
-                _ensure_current_user_db_schema(connection)
-            except Exception:
-                connection.close()
-                raise
-            return connection
-
-        sqlcipher_key = _tenant_database_key(tenant)
-        try:
-            connection = _open_sqlcipher_connection(db_path, sqlcipher_key)
-        except TenantDatabaseTemporarilyUnavailable:
-            raise
-        except _TenantDatabaseKeyOrFormatError:
-            if not _database_has_plaintext_header(db_path):
-                raise
-            _migrate_plaintext_user_database(db_path, sqlcipher_key)
-            connection = _open_sqlcipher_connection(db_path, sqlcipher_key)
+    _recover_plaintext_migration_rollback(db_path)
+    if not encryption_enabled:
+        connection = _open_connection(db_path)
         try:
             _ensure_current_user_db_schema(connection)
         except Exception:
             connection.close()
             raise
+        return connection
+    if tenant is None:
+        raise ValueError("tenant is required when tenant DB encryption is enabled")
+    try:
+        _load_sqlcipher_module()
+    except RuntimeError:
+        if encryption_required:
+            raise
+        database_header = _read_database_header(db_path)
+        if database_header is not None and database_header != _SQLITE_PLAINTEXT_HEADER:
+            raise RuntimeError("Tenant database cannot be opened without SQLCipher") from None
+        logger.warning("SQLCipher unavailable; opening tenant database without encryption")
+        connection = _open_connection(db_path)
+        try:
+            _ensure_current_user_db_schema(connection)
+        except Exception:
+            connection.close()
+            raise
+        return connection
+
+    sqlcipher_key = _tenant_database_key(tenant)
+    try:
+        connection = _open_sqlcipher_connection(db_path, sqlcipher_key)
+    except TenantDatabaseTemporarilyUnavailable:
+        raise
+    except _TenantDatabaseKeyOrFormatError:
+        if not _database_has_plaintext_header(db_path):
+            raise
+        _migrate_plaintext_user_database(db_path, sqlcipher_key)
+        connection = _open_sqlcipher_connection(db_path, sqlcipher_key)
+    try:
+        _ensure_current_user_db_schema(connection)
         _remove_validated_migration_rollback(db_path)
         _remove_plaintext_migration_backups(db_path)
         return connection
+    except Exception:
+        connection.close()
+        raise
+
+
+def _open_user_connection(
+    db_path: str,
+    tenant: TenantContext | None,
+) -> sqlite3.Connection:
+    """Open a tenant database while serializing native connection preparation."""
+    with _tenant_migration_lock(db_path):
+        return _open_user_connection_with_lock_held(db_path, tenant)
 
 
 def init_user_db(db_path: str, tenant: TenantContext | None = None) -> None:
@@ -965,7 +973,8 @@ def init_user_db(db_path: str, tenant: TenantContext | None = None) -> None:
         if os.path.exists(db_path):
             os.chmod(db_path, 0o600)
     finally:
-        conn.close()
+        with _tenant_migration_lock(db_path):
+            conn.close()
 
 
 @contextmanager
@@ -975,4 +984,5 @@ def get_user_db(tenant: TenantContext) -> Iterator[sqlite3.Connection]:
     try:
         yield conn
     finally:
-        conn.close()
+        with _tenant_migration_lock(tenant.db_path):
+            conn.close()
