@@ -460,6 +460,95 @@ describe("runtime transport", () => {
     expect(encryptedRequest).not.toHaveBeenCalled();
   });
 
+  it("passes managed bounded history query data unchanged", async () => {
+    const connection = {
+      request: vi.fn().mockResolvedValue({}),
+      close: vi.fn(),
+    };
+    const connectEncrypted = vi.fn().mockResolvedValue(connection);
+    const transport = createRuntimeTransport(
+      { location: "managed", runnerPublicKey },
+      {
+        apiClient: apiClient(),
+        encryptedRequest: vi.fn(),
+        connectEncrypted,
+      },
+    );
+    const sessionId = "a".repeat(32);
+    const messageId = "b".repeat(32);
+
+    await transport.get(
+      `/api/sessions/${sessionId}/messages/page?cursor=abc_123`,
+    );
+    await transport.get(
+      `/api/sessions/${sessionId}/messages/${messageId}/field?name=content&offset=32768`,
+    );
+
+    expect(connection.request).toHaveBeenNthCalledWith(1, {
+      method: "GET",
+      path: `/api/sessions/${sessionId}/messages/page`,
+      query: { cursor: "abc_123" },
+      body: null,
+    });
+    expect(connection.request).toHaveBeenNthCalledWith(2, {
+      method: "GET",
+      path: `/api/sessions/${sessionId}/messages/${messageId}/field`,
+      query: { name: "content", offset: "32768" },
+      body: null,
+    });
+  });
+
+  it("allows only exact bounded history routes with session read scope", async () => {
+    const encryptedRequest = vi.fn().mockResolvedValue({});
+    const transport = createRuntimeTransport(
+      { location: "byoc", runnerId: "runner-1", runnerPublicKey },
+      { apiClient: apiClient(), encryptedRequest },
+    );
+    const sessionId = "a".repeat(32);
+    const messageId = "b".repeat(32);
+
+    await transport.get(
+      `/api/sessions/${sessionId}/messages/page?cursor=abc_123`,
+    );
+    await transport.get(
+      `/api/sessions/${sessionId}/messages/${messageId}/field?name=full_message&offset=32768`,
+    );
+
+    expect(encryptedRequest).toHaveBeenNthCalledWith(1, {
+      expectedRunnerPublicKey: runnerPublicKey,
+      scopes: ["session.read"],
+      method: "GET",
+      path: `/api/sessions/${sessionId}/messages/page`,
+      query: { cursor: "abc_123" },
+      body: null,
+      maxSessionBytes: 16_777_216,
+    });
+    expect(encryptedRequest).toHaveBeenNthCalledWith(2, {
+      expectedRunnerPublicKey: runnerPublicKey,
+      scopes: ["session.read"],
+      method: "GET",
+      path: `/api/sessions/${sessionId}/messages/${messageId}/field`,
+      query: { name: "full_message", offset: "32768" },
+      body: null,
+      maxSessionBytes: 16_777_216,
+    });
+
+    await expect(
+      transport.get(`/api/sessions/${sessionId}/messages/pages`),
+    ).rejects.toThrow("not allowed");
+    await expect(
+      transport.get(
+        `/api/sessions/${sessionId}/messages/${messageId}/fields?name=content&offset=0`,
+      ),
+    ).rejects.toThrow("not allowed");
+    await expect(
+      transport.get(
+        `/api/sessions/${sessionId}/messages/${messageId}/field?name=content&%6eame=full_message&offset=0`,
+      ),
+    ).rejects.toThrow("query keys must be unique");
+    expect(encryptedRequest).toHaveBeenCalledTimes(2);
+  });
+
   it("separates workspace and session read and write scopes", async () => {
     const encryptedRequest = vi.fn().mockResolvedValue({});
     const transport = createRuntimeTransport(

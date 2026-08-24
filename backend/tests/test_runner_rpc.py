@@ -29,7 +29,11 @@ from yinshi.services.runner_noise_session import (
     RunnerCapabilityReplayStore,
     RunnerNoiseSession,
 )
-from yinshi.services.runner_rpc import EncryptedRunnerRpcSession
+from yinshi.services.runner_rpc import (
+    EncryptedRunnerRpcSession,
+    RunnerRpcRequest,
+    _required_scope,
+)
 from yinshi.services.runner_rpc_transport import (
     TRANSPORT_ACK,
     TRANSPORT_HEADER,
@@ -51,6 +55,42 @@ _CLIENT_PRIVATE_KEY = bytes.fromhex(
 )
 _USER_ID = "user-1"
 _WORKSPACE_ID = "11111111111141118111111111111111"
+
+
+def test_bounded_history_routes_require_session_read_scope() -> None:
+    """Only exact bounded history paths should receive session read authority."""
+    session_id = "a" * 32
+    message_id = "b" * 32
+    for path in (
+        f"/api/sessions/{session_id}/messages/page",
+        f"/api/sessions/{session_id}/messages/{message_id}/field",
+    ):
+        request = RunnerRpcRequest(
+            version=2,
+            sequence=0,
+            request_id="11111111-1111-4111-8111-111111111111",
+            method="GET",
+            path=path,
+            body=None,
+            query={},
+        )
+        assert _required_scope(request) == "session.read"
+
+    for path in (
+        f"/api/sessions/{session_id}/messages/pages",
+        f"/api/sessions/{session_id}/messages/{message_id}/fields",
+    ):
+        request = RunnerRpcRequest(
+            version=2,
+            sequence=0,
+            request_id="11111111-1111-4111-8111-111111111111",
+            method="GET",
+            path=path,
+            body=None,
+            query={},
+        )
+        with pytest.raises(ValueError, match="not allowed"):
+            _required_scope(request)
 
 
 def _public_key(private_key: bytes) -> bytes:
@@ -221,6 +261,32 @@ async def _transport_round_trip(
     return bytes(response)
 
 
+class _HistoryQueryDispatcher(WorkerHttpDispatcher):
+    """Record bounded history requests after encrypted validation."""
+
+    def __init__(self) -> None:
+        self.requests: list[tuple[str, str, object, dict[str, str] | None]] = []
+
+    @property
+    def user_id(self) -> str:
+        return _USER_ID
+
+    async def request(
+        self,
+        *,
+        method: str,
+        path: str,
+        body: object,
+        query: dict[str, str] | None = None,
+    ) -> WorkerHttpResponse:
+        self.requests.append((method, path, body, query))
+        return WorkerHttpResponse(
+            status_code=200,
+            body={"ok": True},
+            content_type="application/json",
+        )
+
+
 class _LargeResponseDispatcher(WorkerHttpDispatcher):
     """Test dispatcher that exercises RPC transport above worker route limits."""
 
@@ -279,6 +345,153 @@ def _encrypted_request(
         sort_keys=True,
     ).encode("utf-8")
     return bytes(initiator.encrypt(request)), request_id
+
+
+def _history_cursor(
+    *,
+    created_at: str = "2026-08-23T00:00:00+00:00",
+    message_id: str = "b" * 32,
+) -> str:
+    """Build one canonical bounded-history cursor for RPC validation tests."""
+    created_at_bytes = created_at.encode("utf-8")
+    raw = bytes((1, len(created_at_bytes))) + created_at_bytes + bytes.fromhex(message_id)
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
+
+
+@pytest.mark.asyncio
+async def test_bounded_history_queries_reach_worker_unchanged(
+    tmp_path: Path,
+    db: sqlite3.Connection,
+) -> None:
+    """Valid first-page, cursor, and field queries survive encrypted dispatch."""
+    session_id = "a" * 32
+    message_id = "b" * 32
+    cursor = _history_cursor(message_id=message_id)
+    dispatcher = _HistoryQueryDispatcher()
+    session, initiator = await _open_session(
+        tmp_path,
+        scopes=["session.read"],
+        dispatcher_factory=lambda _user_id: dispatcher,
+    )
+    requests = (
+        (f"/api/sessions/{session_id}/messages/page", {}),
+        (f"/api/sessions/{session_id}/messages/page", {"cursor": cursor}),
+        (
+            f"/api/sessions/{session_id}/messages/{message_id}/field",
+            {"name": "content", "offset": "0"},
+        ),
+        (
+            f"/api/sessions/{session_id}/messages/{message_id}/field",
+            {"name": "full_message", "offset": "1000000000"},
+        ),
+    )
+
+    for sequence, (path, query) in enumerate(requests):
+        encrypted_request, request_id = _encrypted_request(
+            initiator,
+            method="GET",
+            path=path,
+            sequence=sequence,
+            version=2,
+            query=query,
+        )
+        response = json.loads(
+            initiator.decrypt(
+                await session.handle_frame(encrypted_request, current_time=1_900_000_002)
+            )
+        )
+        assert response["request_id"] == request_id
+        assert response["status"] == 200
+
+    assert dispatcher.requests == [("GET", path, None, query) for path, query in requests]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("route", "query"),
+    [
+        ("page", {"cursor": ""}),
+        ("page", {"Cursor": _history_cursor()}),
+        ("page", {"cursor": _history_cursor(), "extra": "value"}),
+        ("page", {"cursor": _history_cursor() + "="}),
+        ("page", {"cursor": "abc_123"}),
+        ("page", {"cursor": "A" * 129}),
+        ("field", {}),
+        ("field", {"name": "content"}),
+        ("field", {"offset": "0"}),
+        ("field", {"name": "content", "offset": "0", "extra": "value"}),
+        ("field", {"name": "Content", "offset": "0"}),
+        ("field", {"name": "content", "Name": "full_message", "offset": "0"}),
+        ("field", {"name": "content", "offset": "+1"}),
+        ("field", {"name": "content", "offset": "-1"}),
+        ("field", {"name": "content", "offset": "01"}),
+        ("field", {"name": "content", "offset": "1000000001"}),
+    ],
+)
+async def test_bounded_history_queries_reject_invalid_variants(
+    tmp_path: Path,
+    db: sqlite3.Connection,
+    route: str,
+    query: dict[str, str],
+) -> None:
+    """Malformed history query data must fail before worker dispatch."""
+    session_id = "a" * 32
+    message_id = "b" * 32
+    path = (
+        f"/api/sessions/{session_id}/messages/page"
+        if route == "page"
+        else f"/api/sessions/{session_id}/messages/{message_id}/field"
+    )
+    dispatcher = _HistoryQueryDispatcher()
+    session, initiator = await _open_session(
+        tmp_path,
+        scopes=["session.read"],
+        dispatcher_factory=lambda _user_id: dispatcher,
+    )
+    encrypted_request, _ = _encrypted_request(
+        initiator,
+        method="GET",
+        path=path,
+        sequence=0,
+        version=2,
+        query=query,
+    )
+
+    with pytest.raises(ValueError, match="history"):
+        await session.handle_frame(encrypted_request, current_time=1_900_000_002)
+
+    assert dispatcher.requests == []
+
+
+@pytest.mark.asyncio
+async def test_bounded_history_query_rejects_duplicate_json_keys(
+    tmp_path: Path,
+    db: sqlite3.Connection,
+) -> None:
+    """Duplicate query keys must not normalize into one dispatched value."""
+    session_id = "a" * 32
+    message_id = "b" * 32
+    request_id = str(uuid.uuid4())
+    dispatcher = _HistoryQueryDispatcher()
+    session, initiator = await _open_session(
+        tmp_path,
+        scopes=["session.read"],
+        dispatcher_factory=lambda _user_id: dispatcher,
+    )
+    plaintext = (
+        '{"body":null,"method":"GET","path":"/api/sessions/'
+        f'{session_id}/messages/{message_id}/field","query":{{"name":"content",'
+        '"name":"full_message","offset":"0"},'
+        f'"request_id":"{request_id}","sequence":0,"type":"request","v":2}}'
+    ).encode("utf-8")
+
+    with pytest.raises(ValueError, match="unique"):
+        await session.handle_frame(
+            bytes(initiator.encrypt(plaintext)),
+            current_time=1_900_000_002,
+        )
+
+    assert dispatcher.requests == []
 
 
 @pytest.mark.asyncio

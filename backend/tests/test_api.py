@@ -5,10 +5,13 @@ import json
 import logging
 import sqlite3
 import subprocess
+import time
 from collections import namedtuple
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import AsyncMock, call, patch
 
+import httpx
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
@@ -16,6 +19,7 @@ from fastapi.testclient import TestClient
 from tests.conftest import reset_rate_limiter
 from tests.factories import create_full_stack, make_mock_sidecar, parse_sse_events
 from yinshi.config import get_settings
+from yinshi.db import get_db
 
 Entities = namedtuple("Entities", ["repo_id", "workspace_id", "session_id"])
 
@@ -1239,6 +1243,187 @@ def test_get_session_messages(client: TestClient, git_repo: str) -> None:
     resp = client.get(f"/api/sessions/{sess_id}/messages")
     assert resp.status_code == 200
     assert resp.json() == []
+
+
+def test_message_history_pages_and_fields_are_bounded(
+    client: TestClient,
+    session_id: str,
+) -> None:
+    """Bounded history APIs should reconstruct large fields in stable order."""
+    large_full_message = 'quoted: \\"\\\\\n' + ("界" * 70_000)
+    with get_db() as db:
+        for index in range(66):
+            message_id = f"{index:032x}"
+            content = None if index == 0 else ("" if index == 1 else f"message-{index}")
+            full_message = large_full_message if index == 2 else None
+            db.execute(
+                "INSERT INTO messages "
+                "(id, created_at, session_id, role, content, full_message, turn_id, turn_status) "
+                "VALUES (?, ?, ?, 'assistant', ?, ?, ?, 'completed')",
+                (
+                    message_id,
+                    "2026-08-23 12:00:00",
+                    session_id,
+                    content,
+                    full_message,
+                    f"turn-{index}",
+                ),
+            )
+        db.commit()
+
+    first = client.get(f"/api/sessions/{session_id}/messages/page")
+    assert first.status_code == 200
+    first_data = first.json()
+    assert len(first_data["messages"]) == 64
+    assert first_data["next_cursor"]
+    assert [message["id"] for message in first_data["messages"]] == [
+        f"{index:032x}" for index in range(64)
+    ]
+    assert "content" not in first_data["messages"][0]
+    assert "full_message" not in first_data["messages"][0]
+    assert first_data["messages"][0]["content_length"] is None
+    assert first_data["messages"][1]["content_length"] == 0
+    assert first_data["messages"][2]["full_message_length"] == len(large_full_message)
+
+    second = client.get(
+        f"/api/sessions/{session_id}/messages/page",
+        params={"cursor": first_data["next_cursor"]},
+    )
+    assert second.status_code == 200
+    assert [message["id"] for message in second.json()["messages"]] == [
+        f"{index:032x}" for index in range(64, 66)
+    ]
+    assert second.json()["next_cursor"] is None
+
+    chunks: list[str] = []
+    offset = 0
+    while True:
+        response = client.get(
+            f"/api/sessions/{session_id}/messages/{2:032x}/field",
+            params={"name": "full_message", "offset": offset},
+        )
+        assert response.status_code == 200
+        assert len(response.content) < 1_048_576
+        data = response.json()
+        assert data["offset"] == offset
+        chunks.append(data["value"])
+        if data["next_offset"] is None:
+            break
+        assert data["next_offset"] > offset
+        offset = data["next_offset"]
+
+    assert "".join(chunks) == large_full_message
+
+
+@pytest.mark.asyncio
+async def test_message_history_database_wait_does_not_block_event_loop(
+    client: TestClient,
+    session_id: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """History database opens should run outside the active request event loop."""
+    from yinshi.api import deps
+
+    original_database_for_request = deps.get_db_for_request
+    stop_ticker = asyncio.Event()
+    ticks = 0
+
+    @contextmanager
+    def blocking_database_for_request(request):
+        time.sleep(0.2)
+        with original_database_for_request(request) as database:
+            yield database
+
+    async def ticker() -> None:
+        nonlocal ticks
+        while not stop_ticker.is_set():
+            ticks += 1
+            await asyncio.sleep(0.01)
+
+    monkeypatch.setattr(deps, "get_db_for_request", blocking_database_for_request)
+    ticker_task = asyncio.create_task(ticker())
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=client.app),
+            base_url="http://testserver",
+        ) as async_client:
+            response = await async_client.get(f"/api/sessions/{session_id}/messages/page")
+    finally:
+        stop_ticker.set()
+        await ticker_task
+
+    assert response.status_code == 200, response.text
+    assert ticks >= 5
+
+
+def test_message_history_rejects_invalid_cursors_fields_and_cross_session_ids(
+    client: TestClient,
+    git_repo: str,
+) -> None:
+    """History readers should fail closed on malformed or mismatched selectors."""
+    first_stack = create_full_stack(client, git_repo, name="history-first")
+    second_stack = create_full_stack(client, git_repo, name="history-second")
+    first_session_id = first_stack["session"]["id"]
+    second_session_id = second_stack["session"]["id"]
+    message_id = "f" * 32
+    with get_db() as db:
+        db.execute(
+            "INSERT INTO messages (id, session_id, role, content) VALUES (?, ?, 'user', 'x')",
+            (message_id, first_session_id),
+        )
+        db.commit()
+
+    invalid_cursor = client.get(
+        f"/api/sessions/{first_session_id}/messages/page",
+        params={"cursor": "not-a-canonical-cursor"},
+    )
+    assert invalid_cursor.status_code == 422
+
+    invalid_field = client.get(
+        f"/api/sessions/{first_session_id}/messages/{message_id}/field",
+        params={"name": "role", "offset": 0},
+    )
+    assert invalid_field.status_code == 422
+
+    cross_session = client.get(
+        f"/api/sessions/{second_session_id}/messages/{message_id}/field",
+        params={"name": "content", "offset": 0},
+    )
+    assert cross_session.status_code == 404
+
+    excessive_offset = client.get(
+        f"/api/sessions/{first_session_id}/messages/{message_id}/field",
+        params={"name": "content", "offset": 2},
+    )
+    assert excessive_offset.status_code == 416
+
+
+def test_message_history_field_response_handles_worst_case_json_escaping(
+    client: TestClient,
+    session_id: str,
+) -> None:
+    """One server-sized field chunk should stay below the worker response cap."""
+    message_id = "e" * 32
+    content = "\u0000" * 40_000
+    with get_db() as db:
+        db.execute(
+            "INSERT INTO messages (id, session_id, role, content) VALUES (?, ?, 'user', ?)",
+            (message_id, session_id, content),
+        )
+        db.commit()
+
+    response = client.get(
+        f"/api/sessions/{session_id}/messages/{message_id}/field",
+        params={"name": "content", "offset": 0},
+    )
+
+    assert response.status_code == 200
+    assert len(response.content) < 1_048_576
+    assert len(response.json()["value"]) == 32_768
+    assert response.json()["next_offset"] == 32_768
+    page = client.get(f"/api/sessions/{session_id}/messages/page")
+    assert page.status_code == 200
+    assert page.json()["messages"][0]["content_length"] == 40_000
 
 
 def test_prompt_session_not_found(client: TestClient) -> None:

@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import re
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -44,6 +47,14 @@ _WORKSPACE_MEMBER_PATH = re.compile(rf"^/api/workspaces/{_RESOURCE_ID}$")
 _SESSION_COLLECTION_PATH = re.compile(rf"^/api/workspaces/{_RESOURCE_ID}/sessions$")
 _SESSION_MEMBER_PATH = re.compile(rf"^/api/sessions/{_RESOURCE_ID}$")
 _SESSION_READ_PATH = re.compile(rf"^/api/sessions/{_RESOURCE_ID}/(?:messages|tree)$")
+_SESSION_HISTORY_PAGE_PATH = re.compile(rf"^/api/sessions/{_RESOURCE_ID}/messages/page$")
+_SESSION_HISTORY_FIELD_PATH = re.compile(
+    rf"^/api/sessions/{_RESOURCE_ID}/messages/{_RESOURCE_ID}/field$"
+)
+_SESSION_HISTORY_CURSOR_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+_SESSION_HISTORY_CURSOR_VERSION = 1
+_SESSION_HISTORY_OFFSET_PATTERN = re.compile(r"^(?:0|[1-9][0-9]{0,9})$")
+_SESSION_HISTORY_OFFSET_MAX = 1_000_000_000
 _PROMPT_RUN_COLLECTION_PATH = re.compile(rf"^/api/sessions/{_RESOURCE_ID}/runs$")
 _PROMPT_RUN_EVENTS_PATH = re.compile(
     rf"^/api/sessions/{_RESOURCE_ID}/runs/{_RESOURCE_ID}/events/[0-9]{{1,6}}$"
@@ -75,6 +86,16 @@ _PI_UPLOAD_MEMBER_PATH = re.compile(rf"^/api/settings/pi-config/uploads/{_RESOUR
 DispatcherFactory = Callable[[str], WorkerHttpDispatcher]
 
 
+def _json_object_without_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """Build one JSON object while rejecting ambiguous duplicate keys."""
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("Runner RPC JSON object keys must be unique")
+        result[key] = value
+    return result
+
+
 @dataclass(frozen=True, slots=True)
 class RunnerRpcRequest:
     """Validated ordered request decrypted only inside the user's runner."""
@@ -95,7 +116,10 @@ def _parse_request(plaintext: bytes, *, expected_sequence: int) -> RunnerRpcRequ
     if not plaintext or len(plaintext) > _REQUEST_BYTES_MAX:
         raise ValueError("Runner RPC request has an invalid length")
     try:
-        payload = json.loads(plaintext)
+        payload = json.loads(
+            plaintext,
+            object_pairs_hook=_json_object_without_duplicates,
+        )
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValueError("Runner RPC request is not valid UTF-8 JSON") from exc
     if not isinstance(payload, dict):
@@ -173,7 +197,15 @@ def _required_scope(request: RunnerRpcRequest) -> str:
     is_session_collection = _SESSION_COLLECTION_PATH.fullmatch(request.path) is not None
     is_session_member = _SESSION_MEMBER_PATH.fullmatch(request.path) is not None
     is_session_read = _SESSION_READ_PATH.fullmatch(request.path) is not None
-    if request.method == "GET" and (is_session_collection or is_session_member or is_session_read):
+    is_session_history_page = _SESSION_HISTORY_PAGE_PATH.fullmatch(request.path) is not None
+    is_session_history_field = _SESSION_HISTORY_FIELD_PATH.fullmatch(request.path) is not None
+    if request.method == "GET" and (
+        is_session_collection
+        or is_session_member
+        or is_session_read
+        or is_session_history_page
+        or is_session_history_field
+    ):
         return "session.read"
     if request.method == "POST" and is_session_collection:
         return "session.write"
@@ -239,8 +271,58 @@ def _required_scope(request: RunnerRpcRequest) -> str:
     raise ValueError("Runner RPC method or path is not allowed")
 
 
+def _validate_history_cursor(cursor: str) -> None:
+    """Reject any cursor that the bounded history API would not accept."""
+    if _SESSION_HISTORY_CURSOR_PATTERN.fullmatch(cursor) is None:
+        raise ValueError("Runner message history cursor is invalid")
+    padding = "=" * (-len(cursor) % 4)
+    try:
+        raw = base64.b64decode(
+            cursor.replace("-", "+").replace("_", "/") + padding,
+            validate=True,
+        )
+    except (binascii.Error, ValueError) as exc:
+        raise ValueError("Runner message history cursor is invalid") from exc
+    canonical = base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
+    if canonical != cursor or len(raw) < 19:
+        raise ValueError("Runner message history cursor is invalid")
+    version = raw[0]
+    created_at_length = raw[1]
+    if (
+        version != _SESSION_HISTORY_CURSOR_VERSION
+        or not 1 <= created_at_length <= 64
+        or len(raw) != 2 + created_at_length + 16
+    ):
+        raise ValueError("Runner message history cursor is invalid")
+    try:
+        created_at = raw[2 : 2 + created_at_length].decode("utf-8")
+        datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise ValueError("Runner message history cursor is invalid") from exc
+
+
 def _validate_route_query(request: RunnerRpcRequest) -> None:
-    """Allow query values only on file routes whose contract requires a path."""
+    """Allow only exact query contracts for restricted runner routes."""
+    if request.method == "GET" and _SESSION_HISTORY_PAGE_PATH.fullmatch(request.path):
+        if not request.query:
+            return
+        if set(request.query) != {"cursor"}:
+            raise ValueError("Runner message history page query is invalid")
+        _validate_history_cursor(request.query["cursor"])
+        return
+    if request.method == "GET" and _SESSION_HISTORY_FIELD_PATH.fullmatch(request.path):
+        if set(request.query) != {"name", "offset"}:
+            raise ValueError("Runner message history field query is invalid")
+        field_name = request.query["name"]
+        offset = request.query["offset"]
+        if field_name not in {"content", "full_message"}:
+            raise ValueError("Runner message history field name is invalid")
+        if (
+            _SESSION_HISTORY_OFFSET_PATTERN.fullmatch(offset) is None
+            or int(offset) > _SESSION_HISTORY_OFFSET_MAX
+        ):
+            raise ValueError("Runner message history field offset is invalid")
+        return
     if request.method == "GET" and _PROVIDER_AUTH_CALLBACK_PATH.fullmatch(request.path):
         flow_id = request.query.get("flow_id")
         if set(request.query) != {"flow_id"} or not isinstance(flow_id, str):

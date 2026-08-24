@@ -1,18 +1,31 @@
 """Endpoints for agent sessions."""
 
+import base64
+import binascii
+import json
 import logging
 import os
-from typing import Any
+import re
+from datetime import datetime
+from typing import Any, Literal
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 
 from yinshi.api.deps import (
     check_session_owner,
     check_workspace_owner,
     get_db_for_request,
+    run_db_operation_for_request,
 )
 from yinshi.model_catalog import normalize_model_ref
-from yinshi.models import MessageOut, SessionCreate, SessionOut, SessionUpdate
+from yinshi.models import (
+    MessageHistoryFieldChunkOut,
+    MessageHistoryPageOut,
+    MessageOut,
+    SessionCreate,
+    SessionOut,
+    SessionUpdate,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["sessions"])
@@ -34,6 +47,12 @@ _EXCLUDED_DIRS = frozenset(
     }
 )
 _TREE_FILE_LIMIT = 5000
+_MESSAGE_HISTORY_PAGE_LIMIT = 64
+_MESSAGE_HISTORY_PAGE_BYTES_MAX = 262_144
+_MESSAGE_HISTORY_FIELD_CHARS_MAX = 32_768
+_MESSAGE_HISTORY_FIELD_BYTES_MAX = 524_288
+_MESSAGE_HISTORY_CURSOR_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+_MESSAGE_HISTORY_CURSOR_VERSION = 1
 
 
 def _normalize_session_row(db: Any, row: Any) -> dict[str, Any]:
@@ -165,6 +184,207 @@ def get_messages(session_id: str, request: Request) -> list[dict[str, Any]]:
             (session_id,),
         ).fetchall()
         return [dict(r) for r in rows]
+
+
+def _encode_message_history_cursor(created_at: str, message_id: str) -> str:
+    """Encode one canonical keyset cursor without exposing message content."""
+    created_at_bytes = created_at.encode("utf-8")
+    if not 1 <= len(created_at_bytes) <= 64:
+        raise RuntimeError("message history timestamp has an invalid length")
+    try:
+        message_id_bytes = bytes.fromhex(message_id)
+    except ValueError as exc:
+        raise RuntimeError("message history ID is invalid") from exc
+    if len(message_id_bytes) != 16 or message_id_bytes.hex() != message_id:
+        raise RuntimeError("message history ID is invalid")
+    raw = (
+        bytes(
+            (
+                _MESSAGE_HISTORY_CURSOR_VERSION,
+                len(created_at_bytes),
+            )
+        )
+        + created_at_bytes
+        + message_id_bytes
+    )
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
+
+
+def _decode_message_history_cursor(cursor: str) -> tuple[str, str]:
+    """Decode and strictly validate one canonical keyset cursor."""
+    if _MESSAGE_HISTORY_CURSOR_PATTERN.fullmatch(cursor) is None:
+        raise HTTPException(status_code=422, detail="Invalid message history cursor")
+    padding = "=" * (-len(cursor) % 4)
+    try:
+        raw = base64.b64decode(
+            cursor.replace("-", "+").replace("_", "/") + padding,
+            validate=True,
+        )
+    except (binascii.Error, ValueError) as exc:
+        raise HTTPException(status_code=422, detail="Invalid message history cursor") from exc
+    canonical = base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
+    if canonical != cursor or len(raw) < 19:
+        raise HTTPException(status_code=422, detail="Invalid message history cursor")
+    version = raw[0]
+    created_at_length = raw[1]
+    if (
+        version != _MESSAGE_HISTORY_CURSOR_VERSION
+        or not 1 <= created_at_length <= 64
+        or len(raw) != 2 + created_at_length + 16
+    ):
+        raise HTTPException(status_code=422, detail="Invalid message history cursor")
+    try:
+        created_at = raw[2 : 2 + created_at_length].decode("utf-8")
+        datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail="Invalid message history cursor") from exc
+    message_id = raw[-16:].hex()
+    return created_at, message_id
+
+
+def _utf8_character_length(value: bytes | None) -> int | None:
+    """Count Unicode characters without treating embedded nulls as terminators."""
+    if value is None:
+        return None
+    return len(value.decode("utf-8"))
+
+
+def _message_history_page(
+    db: Any,
+    session_id: str,
+    request: Request,
+    cursor: tuple[str, str] | None,
+) -> dict[str, Any]:
+    """Read one bounded metadata page from a single database connection."""
+    session = db.execute("SELECT id FROM sessions WHERE id = ?", (session_id,)).fetchone()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    check_session_owner(db, session_id, request)
+
+    db.create_function(
+        "yinshi_character_length",
+        1,
+        _utf8_character_length,
+        deterministic=True,
+    )
+    parameters: list[Any] = [session_id]
+    cursor_clause = ""
+    if cursor is not None:
+        created_at, message_id = cursor
+        cursor_clause = "AND (created_at > ? OR (created_at = ? AND id > ?)) "
+        parameters.extend((created_at, created_at, message_id))
+    parameters.append(_MESSAGE_HISTORY_PAGE_LIMIT + 1)
+    rows = db.execute(
+        "SELECT id, created_at, session_id, role, "
+        "yinshi_character_length(CAST(content AS BLOB)) AS content_length, "
+        "yinshi_character_length(CAST(full_message AS BLOB)) AS full_message_length, "
+        "turn_id, turn_status "
+        "FROM messages WHERE session_id = ? "
+        f"{cursor_clause}"  # noqa: S608
+        "ORDER BY created_at, id LIMIT ?",
+        parameters,
+    ).fetchall()
+
+    messages: list[dict[str, Any]] = []
+    page_bytes = 32
+    for row in rows[:_MESSAGE_HISTORY_PAGE_LIMIT]:
+        message = dict(row)
+        message_bytes = len(json.dumps(message, separators=(",", ":"), default=str).encode("utf-8"))
+        if page_bytes + message_bytes > _MESSAGE_HISTORY_PAGE_BYTES_MAX:
+            if not messages:
+                raise RuntimeError("message history metadata exceeded the size limit")
+            break
+        messages.append(message)
+        page_bytes += message_bytes
+
+    has_more = len(rows) > len(messages)
+    next_cursor = None
+    if has_more:
+        last_message = messages[-1]
+        next_cursor = _encode_message_history_cursor(
+            str(last_message["created_at"]),
+            str(last_message["id"]),
+        )
+    return {"messages": messages, "next_cursor": next_cursor}
+
+
+@router.get(
+    "/api/sessions/{session_id}/messages/page",
+    response_model=MessageHistoryPageOut,
+)
+async def get_message_history_page(
+    session_id: str,
+    request: Request,
+    cursor: str | None = Query(default=None, min_length=1, max_length=128),
+) -> dict[str, Any]:
+    """Return bounded message metadata using deterministic keyset pagination."""
+    decoded_cursor = _decode_message_history_cursor(cursor) if cursor is not None else None
+    return await run_db_operation_for_request(
+        request,
+        lambda db: _message_history_page(db, session_id, request, decoded_cursor),
+    )
+
+
+def _message_history_field_chunk(
+    db: Any,
+    session_id: str,
+    message_id: str,
+    request: Request,
+    field_name: Literal["content", "full_message"],
+    offset: int,
+) -> dict[str, Any]:
+    """Read one bounded character chunk from an allowlisted message field."""
+    session = db.execute("SELECT id FROM sessions WHERE id = ?", (session_id,)).fetchone()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    check_session_owner(db, session_id, request)
+    row = db.execute(
+        f"SELECT {field_name} AS value "  # noqa: S608
+        "FROM messages WHERE id = ? AND session_id = ?",
+        (message_id, session_id),
+    ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Message not found")
+    field_value = row["value"]
+    if field_value is None:
+        raise HTTPException(status_code=404, detail="Message field not found")
+    assert isinstance(field_value, str)
+    field_length = len(field_value)
+    if offset > field_length or (field_length > 0 and offset == field_length):
+        raise HTTPException(status_code=416, detail="Invalid message field offset")
+    value = field_value[offset : offset + _MESSAGE_HISTORY_FIELD_CHARS_MAX]
+    chunk_end = offset + len(value)
+    next_offset: int | None = chunk_end if chunk_end < field_length else None
+    response = {"value": value, "offset": offset, "next_offset": next_offset}
+    response_bytes = len(json.dumps(response, separators=(",", ":")).encode("utf-8"))
+    if response_bytes > _MESSAGE_HISTORY_FIELD_BYTES_MAX:
+        raise RuntimeError("message history field response exceeded the size limit")
+    return response
+
+
+@router.get(
+    "/api/sessions/{session_id}/messages/{message_id}/field",
+    response_model=MessageHistoryFieldChunkOut,
+)
+async def get_message_history_field(
+    session_id: str,
+    message_id: str,
+    request: Request,
+    name: Literal["content", "full_message"] = Query(),
+    offset: int = Query(default=0, ge=0, le=1_000_000_000),
+) -> dict[str, Any]:
+    """Return one bounded text chunk for a message in the same session."""
+    return await run_db_operation_for_request(
+        request,
+        lambda db: _message_history_field_chunk(
+            db,
+            session_id,
+            message_id,
+            request,
+            name,
+            offset,
+        ),
+    )
 
 
 @router.get("/api/sessions/{session_id}/tree")

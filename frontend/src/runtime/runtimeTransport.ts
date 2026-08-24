@@ -71,6 +71,12 @@ const SESSION_MEMBER_PATH = new RegExp(`^/api/sessions/${RESOURCE_ID}$`);
 const SESSION_READ_PATH = new RegExp(
   `^/api/sessions/${RESOURCE_ID}/(?:messages|tree)$`,
 );
+const SESSION_HISTORY_PAGE_PATH = new RegExp(
+  `^/api/sessions/${RESOURCE_ID}/messages/page$`,
+);
+const SESSION_HISTORY_FIELD_PATH = new RegExp(
+  `^/api/sessions/${RESOURCE_ID}/messages/${RESOURCE_ID}/field$`,
+);
 const PROMPT_RUN_COLLECTION_PATH = new RegExp(
   `^/api/sessions/${RESOURCE_ID}/runs$`,
 );
@@ -134,7 +140,16 @@ function requiredScope(method: RuntimeMethod, path: string): string {
   const sessionCollection = SESSION_COLLECTION_PATH.test(path);
   const sessionMember = SESSION_MEMBER_PATH.test(path);
   const sessionRead = SESSION_READ_PATH.test(path);
-  if (method === "GET" && (sessionCollection || sessionMember || sessionRead)) {
+  const sessionHistoryPage = SESSION_HISTORY_PAGE_PATH.test(path);
+  const sessionHistoryField = SESSION_HISTORY_FIELD_PATH.test(path);
+  if (
+    method === "GET" &&
+    (sessionCollection ||
+      sessionMember ||
+      sessionRead ||
+      sessionHistoryPage ||
+      sessionHistoryField)
+  ) {
     return "session.read";
   }
   if (method === "POST" && sessionCollection) {

@@ -32,6 +32,7 @@ import {
   initializeSessionModelPreference,
   rememberSessionModel,
 } from "../models/sessionModelPreference";
+import { loadSessionHistory } from "../runtime/sessionHistory";
 import { useRuntimeResource } from "../runtime/useRuntimeResource";
 import { parseStoredTurnBlocks } from "../utils/turnEvents";
 
@@ -98,6 +99,7 @@ export default function Session() {
   const [sessionModel, setSessionModel] = useState(DEFAULT_SESSION_MODEL);
   const [loadingHistory, setLoadingHistory] = useState(true);
   const [historyError, setHistoryError] = useState<string | null>(null);
+  const [metadataError, setMetadataError] = useState<string | null>(null);
   const [updatingModel, setUpdatingModel] = useState(false);
   const [pendingModelSelection, setPendingModelSelection] = useState<
     string | null
@@ -115,6 +117,7 @@ export default function Session() {
   useEffect(() => {
     setLoadingHistory(true);
     setHistoryError(null);
+    setMetadataError(null);
   }, [encodedSessionId]);
 
   useEffect(() => {
@@ -129,11 +132,14 @@ export default function Session() {
     if (!id || !transport) return;
     let cancelled = false;
     const runtimeTransport = transport;
+    const runtimeSessionId = id;
 
     async function loadHistory() {
       try {
-        const history = await runtimeTransport.get<Message[]>(
-          `/api/sessions/${id}/messages`,
+        const history: Message[] = await loadSessionHistory(
+          runtimeTransport,
+          runtimeSessionId,
+          { isCancelled: () => cancelled },
         );
         if (cancelled) return;
         const mapped: ChatMessage[] = history.map((m) => {
@@ -174,6 +180,7 @@ export default function Session() {
     if (!id || !transport) return;
     let cancelled = false;
     const runtimeTransport = transport;
+    setMetadataError(null);
 
     async function loadSession() {
       try {
@@ -186,7 +193,7 @@ export default function Session() {
         setWorkspaceId(session.workspace_id);
         setPiContextVersion(session.pi_context_version);
       } catch {
-        if (!cancelled) setHistoryError("Failed to load session metadata.");
+        if (!cancelled) setMetadataError("Failed to load session metadata.");
       }
     }
 
@@ -632,6 +639,11 @@ export default function Session() {
                   Selected model requires a {selectedProviderLabel} connection.
                   Pick a connected provider from the model list or add{" "}
                   {selectedProviderLabel} in Settings.
+                </div>
+              )}
+              {metadataError && (
+                <div className="mx-4 mt-4 rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-300">
+                  {metadataError}
                 </div>
               )}
               {historyError && (

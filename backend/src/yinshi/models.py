@@ -234,6 +234,34 @@ class MessageOut(BaseModel):
     turn_status: str | None = None
 
 
+class MessageHistoryMetadataOut(BaseModel):
+    """Message metadata returned without potentially large text fields."""
+
+    id: str
+    created_at: datetime
+    session_id: str
+    role: str
+    content_length: int | None
+    full_message_length: int | None
+    turn_id: str | None = None
+    turn_status: str | None = None
+
+
+class MessageHistoryPageOut(BaseModel):
+    """Bounded page of stable message metadata."""
+
+    messages: list[MessageHistoryMetadataOut]
+    next_cursor: str | None
+
+
+class MessageHistoryFieldChunkOut(BaseModel):
+    """Bounded character chunk from one stored message field."""
+
+    value: str
+    offset: int
+    next_offset: int | None
+
+
 class WSPrompt(BaseModel):
     """WebSocket message from client to send a prompt."""
 

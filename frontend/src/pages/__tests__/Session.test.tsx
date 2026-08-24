@@ -171,8 +171,54 @@ function mockSessionApi(
         runner_public_key: null,
       });
     }
-    if (path === `/api/sessions/${TEST_SESSION_ID}/messages`) {
-      return Promise.resolve(messages);
+    const pagePath = `/api/sessions/${TEST_SESSION_ID}/messages/page`;
+    if (path === pagePath) {
+      return Promise.resolve({
+        messages: messages.map((message) => {
+          const stored = message as Record<string, unknown>;
+          const content = stored.content as string | null;
+          const fullMessage = stored.full_message as string | null;
+          return {
+            id: stored.id,
+            created_at: stored.created_at,
+            session_id: stored.session_id,
+            role: stored.role,
+            content_length:
+              content == null ? null : Array.from(content).length,
+            full_message_length:
+              fullMessage == null ? null : Array.from(fullMessage).length,
+            turn_id: stored.turn_id ?? null,
+            turn_status: stored.turn_status ?? null,
+          };
+        }),
+        next_cursor: null,
+      });
+    }
+    if (path.startsWith(`/api/sessions/${TEST_SESSION_ID}/messages/`)) {
+      const url = new URL(path, "https://yinshi.test");
+      const parts = url.pathname.split("/");
+      const messageId = parts[parts.length - 2];
+      const fieldName = url.searchParams.get("name");
+      const offset = Number(url.searchParams.get("offset"));
+      const stored = messages.find(
+        (message) => (message as Record<string, unknown>).id === messageId,
+      ) as Record<string, unknown> | undefined;
+      if (!stored || (fieldName !== "content" && fieldName !== "full_message")) {
+        return Promise.reject(new Error("Unexpected history field request"));
+      }
+      const fieldValue = stored[fieldName] as string;
+      const characters = Array.from(fieldValue);
+      const value = characters
+        .filter(
+          (_character, index) => index >= offset && index < offset + 32_768,
+        )
+        .join("");
+      const nextOffset = offset + Array.from(value).length;
+      return Promise.resolve({
+        value,
+        offset,
+        next_offset: nextOffset < characters.length ? nextOffset : null,
+      });
     }
     if (path === `/api/sessions/${TEST_SESSION_ID}`) {
       return Promise.resolve(metadata);
@@ -441,11 +487,160 @@ describe("Session", () => {
     expect(thinkingSelect).toHaveTextContent("XHigh");
   });
 
+  it("keeps metadata success when bounded history loading fails", async () => {
+    mockCatalog();
+    apiGetMock.mockImplementation((path: string) => {
+      if (path === "/api/runtime") {
+        return Promise.resolve({
+          provider: "local",
+          status: "ready",
+          artifact_version: null,
+          last_error: null,
+          runner_public_key: null,
+        });
+      }
+      if (path === `/api/sessions/${TEST_SESSION_ID}`) {
+        return Promise.resolve(sessionMetadata());
+      }
+      if (path === `/api/sessions/${TEST_SESSION_ID}/messages/page`) {
+        return Promise.reject(new Error("history unavailable"));
+      }
+      return Promise.reject(new Error(`Unexpected GET ${path}`));
+    });
+
+    renderSession();
+
+    expect(
+      await screen.findByText("Failed to load session history."),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("Failed to load session metadata."),
+    ).not.toBeInTheDocument();
+    expect(apiGetMock).toHaveBeenCalledWith(`/api/sessions/${TEST_SESSION_ID}`);
+  });
+
+  it("keeps loaded history when metadata loading fails", async () => {
+    mockCatalog();
+    apiGetMock.mockImplementation((path: string) => {
+      if (path === "/api/runtime") {
+        return Promise.resolve({
+          provider: "local",
+          status: "ready",
+          artifact_version: null,
+          last_error: null,
+          runner_public_key: null,
+        });
+      }
+      if (path === `/api/sessions/${TEST_SESSION_ID}`) {
+        return Promise.reject(new Error("metadata unavailable"));
+      }
+      if (path === `/api/sessions/${TEST_SESSION_ID}/messages/page`) {
+        return Promise.resolve({ messages: [], next_cursor: null });
+      }
+      return Promise.reject(new Error(`Unexpected GET ${path}`));
+    });
+
+    renderSession();
+
+    await waitFor(() => expect(setMessagesMock).toHaveBeenCalledWith([]));
+    expect(
+      await screen.findByText("Failed to load session metadata."),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("Failed to load session history."),
+    ).not.toBeInTheDocument();
+  });
+
+  it("loads history above one MiB with a multi-chunk structured message", async () => {
+    mockCatalog();
+    const largeToolOutput = "界".repeat(70_000);
+    const storedMessages = Array.from({ length: 36 }, (_, index) => {
+      const messageId = (index + 1).toString(16).padStart(32, "0");
+      const isLast = index === 35;
+      return {
+        id: messageId,
+        created_at: `2026-04-26T00:00:${String(index).padStart(2, "0")}Z`,
+        session_id: TEST_SESSION_ID,
+        role: "assistant",
+        content: `Done ${index}`,
+        full_message: JSON.stringify({
+          schema: "yinshi.assistant_turn.v1",
+          events: isLast
+            ? [
+                {
+                  type: "tool_use",
+                  id: "tool-large",
+                  name: "read",
+                  input: { path: "large.txt" },
+                },
+                {
+                  type: "tool_result",
+                  tool_use_id: "tool-large",
+                  content: largeToolOutput,
+                },
+                {
+                  type: "assistant",
+                  message: { content: [{ type: "text", text: "Done" }] },
+                },
+                { type: "result" },
+              ]
+            : [
+                {
+                  type: "assistant",
+                  message: {
+                    content: [{ type: "text", text: "x".repeat(30_000) }],
+                  },
+                },
+                { type: "result" },
+              ],
+        }),
+        turn_id: `turn-${index}`,
+        turn_status: "completed",
+      };
+    });
+    const storedBytes = new TextEncoder().encode(
+      JSON.stringify(storedMessages),
+    ).length;
+    expect(storedBytes).toBeGreaterThan(1_048_576);
+    mockSessionApi(sessionMetadata(), storedMessages);
+
+    renderSession();
+
+    await waitFor(() => {
+      expect(setMessagesMock).toHaveBeenCalled();
+    });
+    const mappedMessages = setMessagesMock.mock.calls[0]?.[0];
+    expect(mappedMessages).toHaveLength(36);
+    expect(mappedMessages[35]).toMatchObject({
+      id: (36).toString(16).padStart(32, "0"),
+      role: "assistant",
+      content: "Done 35",
+      blocks: [
+        {
+          type: "tool_use",
+          toolName: "read",
+          toolInput: { path: "large.txt" },
+          toolOutput: largeToolOutput,
+        },
+        { type: "text", text: "Done" },
+      ],
+    });
+    const lastMessageId = (36).toString(16).padStart(32, "0");
+    const largeFieldCalls = apiGetMock.mock.calls.filter(
+      ([path]) =>
+        typeof path === "string" &&
+        path.includes(`/messages/${lastMessageId}/field`) &&
+        path.includes("name=full_message"),
+    );
+    expect(largeFieldCalls.length).toBeGreaterThan(2);
+    expect(apiGetMock).toHaveBeenCalledWith(`/api/sessions/${TEST_SESSION_ID}`);
+  });
+
   it("reconstructs assistant trace blocks from stored full messages", async () => {
     mockCatalog();
     mockSessionApi({ model: minimaxModel.ref }, [
       {
-        id: "message-1",
+        id: "b".repeat(32),
         created_at: "2026-04-26T00:00:00Z",
         session_id: TEST_SESSION_ID,
         role: "assistant",
@@ -489,7 +684,7 @@ describe("Session", () => {
 
     expect(mappedMessages).toMatchObject([
       {
-        id: "message-1",
+        id: "b".repeat(32),
         role: "assistant",
         content: "Done",
         blocks: [

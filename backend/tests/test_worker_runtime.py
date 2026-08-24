@@ -7,6 +7,7 @@ connection-specific bearer sets one tenant and that control-plane routes stay ab
 from __future__ import annotations
 
 import asyncio
+import json
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
@@ -175,6 +176,95 @@ async def test_worker_shared_storage_budget_returns_before_transport_timeout(
     assert response.status_code == 503
     assert elapsed < 0.5
     assert first_calls == 2
+
+
+@pytest.mark.asyncio
+async def test_worker_history_responses_stay_bounded_above_legacy_limit(
+    tmp_path: Path,
+    db: sqlite3.Connection,
+) -> None:
+    """Chunked history should keep every worker response below one MiB."""
+    from yinshi.main import create_app
+    from yinshi.tenant import get_user_db
+
+    principal = _principal(tmp_path)
+    Path(principal.tenant.data_dir).mkdir(mode=0o700, parents=True)
+    session_id = "a" * 32
+    with get_user_db(principal.tenant) as user_db:
+        user_db.execute(
+            "INSERT INTO repos (id, name, root_path) VALUES (?, 'repo', ?)",
+            ("b" * 32, str(tmp_path / "repo")),
+        )
+        user_db.execute(
+            "INSERT INTO workspaces (id, repo_id, name, branch, path) "
+            "VALUES (?, ?, 'workspace', 'main', ?)",
+            ("c" * 32, "b" * 32, str(tmp_path / "workspace")),
+        )
+        user_db.execute(
+            "INSERT INTO sessions (id, workspace_id) VALUES (?, ?)",
+            (session_id, "c" * 32),
+        )
+        for index in range(36):
+            user_db.execute(
+                "INSERT INTO messages "
+                "(id, session_id, role, content, full_message) "
+                "VALUES (?, ?, 'assistant', ?, ?)",
+                (
+                    f"{index + 1:032x}",
+                    session_id,
+                    f"done-{index}",
+                    "x" * 40_000,
+                ),
+            )
+        user_db.commit()
+
+    dispatcher = WorkerHttpDispatcher(
+        app=create_app(mode="worker", worker_principal=principal),
+        principal=principal,
+    )
+    with pytest.raises(RuntimeError, match="response exceeded the size limit"):
+        await dispatcher.request(
+            method="GET",
+            path=f"/api/sessions/{session_id}/messages",
+            body=None,
+        )
+
+    page = await dispatcher.request(
+        method="GET",
+        path=f"/api/sessions/{session_id}/messages/page",
+        body=None,
+    )
+    assert page.status_code == 200
+    assert len(json.dumps(page.body).encode("utf-8")) < 1_048_576
+    assert len(page.body["messages"]) == 36
+
+    message_id = page.body["messages"][0]["id"]
+    offset = 0
+    reconstructed: list[str] = []
+    while True:
+        chunk = await dispatcher.request(
+            method="GET",
+            path=f"/api/sessions/{session_id}/messages/{message_id}/field",
+            query={"name": "full_message", "offset": str(offset)},
+            body=None,
+        )
+        assert chunk.status_code == 200
+        assert len(json.dumps(chunk.body).encode("utf-8")) < 1_048_576
+        reconstructed.append(chunk.body["value"])
+        next_offset = chunk.body["next_offset"]
+        if next_offset is None:
+            break
+        assert next_offset > offset
+        offset = next_offset
+    assert "".join(reconstructed) == "x" * 40_000
+
+    session = await dispatcher.request(
+        method="GET",
+        path=f"/api/sessions/{session_id}",
+        body=None,
+    )
+    assert session.status_code == 200
+    assert session.body["id"] == session_id
 
 
 def test_worker_principal_rejects_short_secret(tmp_path: Path) -> None:
