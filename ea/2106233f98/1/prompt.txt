@@ -1,0 +1,69 @@
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+You are a delegated subagent running from a fork of the parent session. Treat the inherited conversation as reference-only context, not a live thread to continue. Do not continue or answer prior messages as if they are waiting for a reply. Your sole job is to execute the task below and return a focused result for that task using your tools.
+
+Task:
+You are the sole repository writer. Correct the current SQLCipher concurrency regression using strict red-green TDD. Do not commit, push, deploy, or modify `.pi-subagents/`.
+
+Production reproduction on deployed `17dc3c3`: while a 300-line prompt streamed, an external process held the tenant migration lock for 35 seconds. Browser polling and prompt persistence created concurrent encrypted opens. Native stack capture found two asyncio worker threads deadlocked inside SQLite unix mutexes during `get_user_dek`: one in `sqlite3WalClose` while closing the control DB, another in `unixOpen/findReusableFd` while opening it. Relay dropped, heartbeat stopped, and control restarted runner. Main event loop was no longer directly blocked, confirming route offloading worked. The new lock-free current-encrypted fast path allowed concurrent key/control-database and tenant opens. Before that fast path, `_tenant_migration_lock` serialized key derivation and SQLCipher opening per tenant.
+
+Remove the phase-1 lock-free encrypted fast path and restore all tenant opens to the existing migration lock. Remove helpers and tests used only by that fast path. Keep SQLCipher-first classification inside the lock, exact-header plaintext gating, wrong-key and HMAC fail-closed behavior, exact transient error handling, rollback recovery, schema behavior, and all async route, watchdog, bounded-history, cancellation, and filesystem fixes. Add a regression test proving concurrent opens of a current encrypted tenant database cannot enter key derivation or SQLCipher open concurrently. Keep or strengthen event-loop tests proving a blocked migration lock in offloaded terminal, workspace, and history work does not block an independent ticker. Do not add a new global control-DB lock, schema change, cache, timeout that abandons a thread, WAL change, or storage change. Run focused red-green tests, full backend and frontend suites, static checks, type checks, production build, and diff checks. Report exact files and remaining risks.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+- criterion-2: Return evidence sufficient for an independent acceptance review
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Review gate: required by reviewer.
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    },
+    {
+      "id": "criterion-2",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
