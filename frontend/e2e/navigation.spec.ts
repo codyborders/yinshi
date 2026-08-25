@@ -65,21 +65,20 @@ test("mobile workspace controls render and switch panels", async ({ page }) => {
   await page.goto(`/app/session/${seeded.session.id}`);
 
   // Small bounding-box helper: assert a locator is visible and fully inside viewport.
-  async function assertInViewport(
-    locator: ReturnType<typeof page.locator>,
-    name: string,
-  ) {
+  async function assertInViewport(locator: ReturnType<typeof page.locator>) {
     await expect(locator).toBeVisible();
     const box = await locator.boundingBox();
+    const viewport = page.viewportSize();
     expect(box).not.toBeNull();
+    expect(viewport).not.toBeNull();
     const x = box!.x;
     const y = box!.y;
     const w = box!.width;
     const h = box!.height;
     expect(x).toBeGreaterThanOrEqual(0);
     expect(y).toBeGreaterThanOrEqual(0);
-    expect(x + w).toBeLessThanOrEqual(390);
-    expect(y + h).toBeLessThanOrEqual(844);
+    expect(x + w).toBeLessThanOrEqual(viewport!.width);
+    expect(y + h).toBeLessThanOrEqual(viewport!.height);
   }
 
   // All header controls visible and in-viewport before any interaction.
@@ -88,15 +87,15 @@ test("mobile workspace controls render and switch panels", async ({ page }) => {
   const modelSelect = page.locator("#session-model");
   const thinkingSelect = page.locator("#thinking-level");
 
-  // Screenshot: initial session state (before any clicks).
+  await assertInViewport(filesButton);
+  await assertInViewport(terminalButton);
+  await assertInViewport(modelSelect);
+  await assertInViewport(thinkingSelect);
+
+  // Screenshot: initial session state after controls are ready.
   await page.screenshot({
     path: test.info().outputPath("00-initial-session.png"),
   });
-
-  await assertInViewport(filesButton, "Files");
-  await assertInViewport(terminalButton, "Terminal");
-  await assertInViewport(modelSelect, "Model");
-  await assertInViewport(thinkingSelect, "Thinking");
 
   // Click Files — explorer mode opens.
   await filesButton.click();

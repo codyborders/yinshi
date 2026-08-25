@@ -13,7 +13,10 @@ import {
   type ThinkingLevel,
 } from "../api/client";
 import ChatView from "../components/ChatView";
-import WorkspaceInspector from "../components/WorkspaceInspector";
+import WorkspaceInspector, {
+  WORKSPACE_TOOL_DESCRIPTORS,
+  type WorkspaceTool,
+} from "../components/WorkspaceInspector";
 import { useAgentStream, type ChatMessage } from "../hooks/useAgentStream";
 import { useAuth } from "../hooks/useAuth";
 import { useCatalog } from "../hooks/useCatalog";
@@ -174,8 +177,8 @@ export default function Session() {
     useState<ThinkingLevel | null>(null);
   const [workspaceId, setWorkspaceId] = useState<string | null>(null);
   const [piContextVersion, setPiContextVersion] = useState(0);
-  const [workspacePanelOpen, setWorkspacePanelOpen] = useState<
-    "files" | "terminal" | null
+  const [activeMobileWorkspaceView, setActiveMobileWorkspaceView] = useState<
+    WorkspaceTool | null
   >(null);
   const [inspectorWidth, setInspectorWidth] = useState(storedInspectorWidth);
   const [fileRefreshKey, setFileRefreshKey] = useState(0);
@@ -762,20 +765,16 @@ export default function Session() {
         </div>
         {workspaceId && (
           <div className="order-3 flex w-full items-center gap-1 lg:hidden md:order-none md:w-auto">
-            <button
-              type="button"
-              onClick={() => setWorkspacePanelOpen("files")}
-              className="min-h-11 flex-1 rounded-lg border border-gray-800 px-3 text-xs text-gray-300 hover:border-gray-700 hover:bg-gray-900 md:flex-none"
-            >
-              Files
-            </button>
-            <button
-              type="button"
-              onClick={() => setWorkspacePanelOpen("terminal")}
-              className="min-h-11 flex-1 rounded-lg border border-gray-800 px-3 text-xs text-gray-300 hover:border-gray-700 hover:bg-gray-900 md:flex-none"
-            >
-              Terminal
-            </button>
+            {WORKSPACE_TOOL_DESCRIPTORS.map((tool) => (
+              <button
+                key={tool.key}
+                type="button"
+                onClick={() => setActiveMobileWorkspaceView(tool.key)}
+                className="min-h-11 flex-1 rounded-lg border border-gray-800 px-3 text-xs text-gray-300 hover:border-gray-700 hover:bg-gray-900 md:flex-none"
+              >
+                {tool.label}
+              </button>
+            ))}
           </div>
         )}
         <div className="order-2 flex w-0 min-w-0 max-w-full flex-1 items-center gap-2 md:order-none md:w-auto md:flex-none">
@@ -910,7 +909,7 @@ export default function Session() {
       </div>
       {workspaceId &&
         transport &&
-        workspacePanelOpen !== null &&
+        activeMobileWorkspaceView !== null &&
         !isDesktopInspectorVisible && (
           <div
             className={[
@@ -923,24 +922,20 @@ export default function Session() {
           >
             <div className="flex h-full min-h-0 flex-col">
               <div className="flex items-center gap-1 border-b border-gray-800 px-4 py-3">
-                <button
-                  type="button"
-                  onClick={() => setWorkspacePanelOpen("files")}
-                  className={`min-h-11 rounded-lg px-3 text-xs font-medium ${workspacePanelOpen === "files" ? "bg-gray-800 text-gray-100" : "text-gray-500 hover:bg-gray-900 hover:text-gray-200"}`}
-                >
-                  Files
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setWorkspacePanelOpen("terminal")}
-                  className={`min-h-11 rounded-lg px-3 text-xs font-medium ${workspacePanelOpen === "terminal" ? "bg-gray-800 text-gray-100" : "text-gray-500 hover:bg-gray-900 hover:text-gray-200"}`}
-                >
-                  Terminal
-                </button>
+                {WORKSPACE_TOOL_DESCRIPTORS.map((tool) => (
+                  <button
+                    key={tool.key}
+                    type="button"
+                    onClick={() => setActiveMobileWorkspaceView(tool.key)}
+                    className={`min-h-11 rounded-lg px-3 text-xs font-medium ${activeMobileWorkspaceView === tool.key ? "bg-gray-800 text-gray-100" : "text-gray-500 hover:bg-gray-900 hover:text-gray-200"}`}
+                  >
+                    {tool.label}
+                  </button>
+                ))}
                 <button
                   type="button"
                   aria-label="Close workspace"
-                  onClick={() => setWorkspacePanelOpen(null)}
+                  onClick={() => setActiveMobileWorkspaceView(null)}
                   className="ml-auto min-h-11 rounded-lg border border-gray-800 px-3 text-xs text-gray-300"
                 >
                   Close
@@ -950,7 +945,7 @@ export default function Session() {
                 workspaceId={workspaceId}
                 transport={transport}
                 refreshKey={fileRefreshKey}
-                view={workspacePanelOpen}
+                view={activeMobileWorkspaceView}
                 className="flex-1"
               />
             </div>

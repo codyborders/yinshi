@@ -18,7 +18,13 @@ import type { RuntimeTransport } from "../runtime/runtimeTransport";
 
 type InspectorTab = "files" | "changes";
 type ViewerMode = "preview" | "diff" | "edit";
-type InspectorView = "combined" | "files" | "terminal";
+export const WORKSPACE_TOOL_DESCRIPTORS = [
+  { key: "files", label: "Files" },
+  { key: "terminal", label: "Terminal" },
+] as const;
+export type WorkspaceTool =
+  (typeof WORKSPACE_TOOL_DESCRIPTORS)[number]["key"];
+type InspectorView = "combined" | WorkspaceTool;
 
 interface WorkspaceInspectorProps {
   workspaceId: string;
@@ -565,9 +571,10 @@ export default function WorkspaceInspector({
   const [viewerMode, setViewerMode] = useState<ViewerMode>("preview");
   const [terminalHeight, setTerminalHeight] = useState(storedTerminalHeight);
   const [error, setError] = useState<string | null>(null);
+  const hasFileActivity = active && view !== "terminal";
 
   const refresh = useCallback(async () => {
-    if (!active || view === "terminal") return;
+    if (!hasFileActivity) return;
     try {
       const [treeResponse, changedResponse] = await Promise.all([
         transport.get<{ files: WorkspaceFileNode[] }>(
@@ -587,10 +594,10 @@ export default function WorkspaceInspector({
           : "Failed to load workspace files",
       );
     }
-  }, [active, transport, view, workspaceId]);
+  }, [hasFileActivity, transport, workspaceId]);
 
   const refreshChanges = useCallback(async () => {
-    if (!active || view === "terminal") return;
+    if (!hasFileActivity) return;
     try {
       const changedResponse = await transport.get<{
         files: WorkspaceChangedFile[];
@@ -604,14 +611,14 @@ export default function WorkspaceInspector({
           : "Failed to load workspace changes",
       );
     }
-  }, [active, transport, view, workspaceId]);
+  }, [hasFileActivity, transport, workspaceId]);
 
   useEffect(() => {
     void refresh();
   }, [refresh, refreshKey]);
 
   useEffect(() => {
-    if (!active || view === "terminal") return;
+    if (!hasFileActivity) return;
     const interval = window.setInterval(() => {
       if (document.visibilityState === "visible") {
         void refreshChanges();
@@ -623,7 +630,7 @@ export default function WorkspaceInspector({
       window.clearInterval(interval);
       window.removeEventListener("focus", onFocus);
     };
-  }, [active, refresh, refreshChanges, view]);
+  }, [hasFileActivity, refresh, refreshChanges]);
 
   const beginTerminalResize = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>) => {

@@ -85,6 +85,10 @@ vi.mock("../../api/client", async (importOriginal) => {
 });
 
 vi.mock("../../components/WorkspaceInspector", () => ({
+  WORKSPACE_TOOL_DESCRIPTORS: [
+    { key: "files", label: "Files" },
+    { key: "terminal", label: "Terminal" },
+  ],
   default: ({ view = "combined" }: { view?: string }) => (
     <div data-testid="workspace-inspector" data-view={view} />
   ),
