@@ -1,0 +1,103 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "1e568d6da0a6",
+  "session_id": "session",
+  "strategy": "manual-commit",
+  "created_at": "2026-08-25T14:50:28.000442Z",
+  "branch": "main",
+  "checkpoints_count": 4,
+  "save_step_count": 5,
+  "files_touched": [
+    "frontend/e2e/navigation.spec.ts",
+    "frontend/src/components/WorkspaceInspector.tsx",
+    "frontend/src/pages/Session.tsx",
+    "frontend/src/pages/__tests__/Session.test.tsx"
+  ],
+  "agent": "Pi",
+  "model": "gpt-5.6-luna",
+  "turn_id": "02cbb5f5a724",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 107801,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 1309184,
+    "output_tokens": 10903,
+    "api_call_count": 49
+  },
+  "session_metrics": {
+    "turn_count": 77
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-08-25T14:50:27.742424Z",
+    "agent_lines": 58,
+    "agent_removed": 53,
+    "human_added": 88,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 146,
+    "total_lines_changed": 199,
+    "agent_percentage": 55.778894472361806,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 91,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/3d5ef22d_scout_0_input.md": 56,
+        ".pi-subagents/artifacts/3d5ef22d_scout_0_transcript.jsonl": 2,
+        ".pi-subagents/missions/925fb5a5-d1da-4b19-94cc-f2157f324c55.json": 33
+      }
+    },
+    {
+      "checkpoint_number": 3,
+      "user_lines_added": 140,
+      "user_lines_removed": 0,
+      "agent_lines_added": 473,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/3d5ef22d_scout_0_input.md": 56,
+        ".pi-subagents/artifacts/3d5ef22d_scout_0_transcript.jsonl": 51,
+        ".pi-subagents/missions/925fb5a5-d1da-4b19-94cc-f2157f324c55.json": 33
+      }
+    },
+    {
+      "checkpoint_number": 4,
+      "user_lines_added": 428,
+      "user_lines_removed": 0,
+      "agent_lines_added": 756,
+      "agent_lines_removed": 53,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/1e3044c5_reviewer_0_input.md": 56,
+        ".pi-subagents/artifacts/1e3044c5_reviewer_0_transcript.jsonl": 2,
+        ".pi-subagents/artifacts/3883745b_worker_0_transcript.jsonl": 209,
+        ".pi-subagents/artifacts/3d5ef22d_scout_0_input.md": 56,
+        ".pi-subagents/artifacts/3d5ef22d_scout_0_transcript.jsonl": 51,
+        ".pi-subagents/missions/925fb5a5-d1da-4b19-94cc-f2157f324c55.json": 39,
+        ".pi-subagents/missions/b1ab9db9-3bec-42ef-b296-e3af614100ed.json": 15
+      }
+    },
+    {
+      "checkpoint_number": 5,
+      "user_lines_added": 760,
+      "user_lines_removed": 0,
+      "agent_lines_added": 930,
+      "agent_lines_removed": 53,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/1e3044c5_reviewer_0_input.md": 56,
+        ".pi-subagents/artifacts/1e3044c5_reviewer_0_transcript.jsonl": 100,
+        ".pi-subagents/artifacts/3883745b_worker_0_transcript.jsonl": 209,
+        ".pi-subagents/artifacts/3d5ef22d_scout_0_input.md": 56,
+        ".pi-subagents/artifacts/3d5ef22d_scout_0_transcript.jsonl": 51,
+        ".pi-subagents/artifacts/89f191d3_worker_input.md": 73,
+        ".pi-subagents/artifacts/89f191d3_worker_transcript.jsonl": 2,
+        ".pi-subagents/missions/925fb5a5-d1da-4b19-94cc-f2157f324c55.json": 39,
+        ".pi-subagents/missions/a533b0bd-cca7-4a50-9ee8-7e66136f4fd0.json": 39,
+        ".pi-subagents/missions/b1ab9db9-3bec-42ef-b296-e3af614100ed.json": 135
+      }
+    }
+  ]
+}
