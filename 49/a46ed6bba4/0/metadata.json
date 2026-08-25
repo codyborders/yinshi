@@ -1,0 +1,113 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "49a46ed6bba4",
+  "session_id": "session",
+  "strategy": "manual-commit",
+  "created_at": "2026-08-25T16:10:04.367659Z",
+  "branch": "main",
+  "checkpoints_count": 3,
+  "save_step_count": 4,
+  "files_touched": [
+    ".github/workflows/ci.yml",
+    "backend/src/yinshi/db.py",
+    "backend/tests/test_db.py",
+    "backend/tests/test_prompt_journal.py"
+  ],
+  "agent": "Pi",
+  "model": "glm-5.3",
+  "turn_id": "1cf27db7b49a",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 208530,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 14357952,
+    "output_tokens": 89669,
+    "api_call_count": 149
+  },
+  "session_metrics": {
+    "turn_count": 80
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-08-25T16:10:03.961988Z",
+    "agent_lines": 31,
+    "agent_removed": 7,
+    "human_added": 129,
+    "human_modified": 48,
+    "human_removed": 0,
+    "total_committed": 208,
+    "total_lines_changed": 215,
+    "agent_percentage": 17.674418604651162,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 1037,
+      "user_lines_removed": 48,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".github/workflows/ci.yml": 1,
+        ".pi-subagents/artifacts/7e24f07e_worker-advanced_input.md": 66,
+        ".pi-subagents/artifacts/7e24f07e_worker-advanced_transcript.jsonl": 2,
+        ".pi-subagents/artifacts/b7103d7c_worker-advanced_0_input.md": 74,
+        ".pi-subagents/artifacts/b7103d7c_worker-advanced_0_meta.json": 151,
+        ".pi-subagents/artifacts/b7103d7c_worker-advanced_0_output.md": 1,
+        ".pi-subagents/artifacts/b7103d7c_worker-advanced_0_transcript.jsonl": 488,
+        ".pi-subagents/missions/23aeb650-a10d-46c3-9e17-8274b05fc80e.json": 39,
+        ".pi-subagents/missions/de10df8c-db90-4f33-838f-9136c3cf24fc.json": 39,
+        "backend/src/yinshi/db.py": 63,
+        "backend/tests/test_db.py": 88,
+        "backend/tests/test_prompt_journal.py": 25
+      },
+      "user_removed_per_file": {
+        ".github/workflows/ci.yml": 1,
+        "backend/src/yinshi/db.py": 38,
+        "backend/tests/test_prompt_journal.py": 9
+      }
+    },
+    {
+      "checkpoint_number": 3,
+      "user_lines_added": 1024,
+      "user_lines_removed": 0,
+      "agent_lines_added": 370,
+      "agent_lines_removed": 51,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/35f5b365_reviewer_0_input.md": 58,
+        ".pi-subagents/artifacts/35f5b365_reviewer_0_transcript.jsonl": 2,
+        ".pi-subagents/artifacts/7e24f07e_worker-advanced_input.md": 66,
+        ".pi-subagents/artifacts/7e24f07e_worker-advanced_transcript.jsonl": 91,
+        ".pi-subagents/artifacts/b7103d7c_worker-advanced_0_input.md": 74,
+        ".pi-subagents/artifacts/b7103d7c_worker-advanced_0_meta.json": 151,
+        ".pi-subagents/artifacts/b7103d7c_worker-advanced_0_output.md": 1,
+        ".pi-subagents/artifacts/b7103d7c_worker-advanced_0_transcript.jsonl": 488,
+        ".pi-subagents/missions/23aeb650-a10d-46c3-9e17-8274b05fc80e.json": 39,
+        ".pi-subagents/missions/de10df8c-db90-4f33-838f-9136c3cf24fc.json": 39,
+        ".pi-subagents/missions/e46ae366-aa97-4d1f-b415-1096d42ea696.json": 15
+      }
+    },
+    {
+      "checkpoint_number": 4,
+      "user_lines_added": 1779,
+      "user_lines_removed": 0,
+      "agent_lines_added": 623,
+      "agent_lines_removed": 51,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/02bd6654_worker-advanced_input.md": 75,
+        ".pi-subagents/artifacts/02bd6654_worker-advanced_transcript.jsonl": 2,
+        ".pi-subagents/artifacts/35f5b365_reviewer_0_input.md": 58,
+        ".pi-subagents/artifacts/35f5b365_reviewer_0_transcript.jsonl": 504,
+        ".pi-subagents/artifacts/7e24f07e_worker-advanced_input.md": 66,
+        ".pi-subagents/artifacts/7e24f07e_worker-advanced_transcript.jsonl": 91,
+        ".pi-subagents/artifacts/b7103d7c_worker-advanced_0_input.md": 74,
+        ".pi-subagents/artifacts/b7103d7c_worker-advanced_0_meta.json": 151,
+        ".pi-subagents/artifacts/b7103d7c_worker-advanced_0_output.md": 1,
+        ".pi-subagents/artifacts/b7103d7c_worker-advanced_0_transcript.jsonl": 488,
+        ".pi-subagents/missions/23aeb650-a10d-46c3-9e17-8274b05fc80e.json": 39,
+        ".pi-subagents/missions/ae2a8397-ff51-4768-ba75-ec00e28187d5.json": 39,
+        ".pi-subagents/missions/de10df8c-db90-4f33-838f-9136c3cf24fc.json": 39,
+        ".pi-subagents/missions/e46ae366-aa97-4d1f-b415-1096d42ea696.json": 152
+      }
+    }
+  ]
+}
