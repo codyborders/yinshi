@@ -1,1 +1,1 @@
-I'm not seeing the file explorer or the terminal when using yinshi on mobile /Users/user/Downloads/IMG_4307.png
+Commit, run a `/skill:software-design` against the commit, document all findings, then run an `/orchestra` to fix every finding. Review per the prompt instructions and when complete bring it back to me so we can merge and deploy.
