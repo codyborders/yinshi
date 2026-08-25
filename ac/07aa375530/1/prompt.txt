@@ -1,0 +1,57 @@
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+You are a delegated subagent running from a fork of the parent session. Treat the inherited conversation as reference-only context, not a live thread to continue. Do not continue or answer prior messages as if they are waiting for a reply. Your sole job is to execute the task below and return a focused result for that task using your tools.
+
+Task:
+In /Users/user/projects/yinshi, fix production `terminal limit reached` after repeated same-tab session refreshes. You are sole writer. Do not commit or touch .pi-subagents/. Follow strict red-green TDD. Root cause confirmed: each reload creates a new TerminalJournal channel, React cleanup DELETE can be aborted by navigation, limit is 8, idle retention is two hours. Implement stable same-tab terminal ownership and server-side replacement without affecting prompt runs. Requirements: frontend creates a random validated owner ID retained in sessionStorage across reloads, includes it in terminal start body, and never treats it as secret. Backend TerminalStartRequest accepts an optional bounded owner ID for backward compatibility. TerminalJournal stores owner ID and serializes concurrent starts for the same user+owner. A new channel with the same owner must replace and detach the old channel atomically enough that repeated reloads never consume extra account slots. A failed new attach should preserve the old channel. Older clients without owner IDs must retain existing limit behavior. Distinct owners must still hit the 8-channel cap. Avoid stale DELETE closing a replacement by always assigning a new terminal ID. Ensure any replaced terminal container lease is released, without changing the three-field frontend start response. Explicit close, idle expiry, local, hosted, managed/BYOC runner, and desktop compatibility must remain. Add regression tests at public API/journal/frontend boundaries, including 8 lost closes then same-owner reopen, distinct-owner cap, failed replacement preservation, concurrent same-owner starts, stable reload owner ID, malformed owner rejection, and start payload. Run full backend tests, formatting, lint, mypy, full frontend tests, typecheck, Prettier for changed files, production build, desktop tests if relevant, and diff check. Report changed files/results. Do not deploy or commit.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
