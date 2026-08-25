@@ -18,11 +18,13 @@ import type { RuntimeTransport } from "../runtime/runtimeTransport";
 
 type InspectorTab = "files" | "changes";
 type ViewerMode = "preview" | "diff" | "edit";
+type InspectorView = "combined" | "files" | "terminal";
 
 interface WorkspaceInspectorProps {
   workspaceId: string;
   transport: RuntimeTransport;
   refreshKey: number;
+  view?: InspectorView;
   active?: boolean;
   className?: string;
   style?: CSSProperties;
@@ -551,6 +553,7 @@ export default function WorkspaceInspector({
   workspaceId,
   transport,
   refreshKey,
+  view = "combined",
   active = true,
   className = "",
   style,
@@ -564,7 +567,7 @@ export default function WorkspaceInspector({
   const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
-    if (!active) return;
+    if (!active || view === "terminal") return;
     try {
       const [treeResponse, changedResponse] = await Promise.all([
         transport.get<{ files: WorkspaceFileNode[] }>(
@@ -584,10 +587,10 @@ export default function WorkspaceInspector({
           : "Failed to load workspace files",
       );
     }
-  }, [active, transport, workspaceId]);
+  }, [active, transport, view, workspaceId]);
 
   const refreshChanges = useCallback(async () => {
-    if (!active) return;
+    if (!active || view === "terminal") return;
     try {
       const changedResponse = await transport.get<{
         files: WorkspaceChangedFile[];
@@ -601,14 +604,14 @@ export default function WorkspaceInspector({
           : "Failed to load workspace changes",
       );
     }
-  }, [active, transport, workspaceId]);
+  }, [active, transport, view, workspaceId]);
 
   useEffect(() => {
     void refresh();
   }, [refresh, refreshKey]);
 
   useEffect(() => {
-    if (!active) return;
+    if (!active || view === "terminal") return;
     const interval = window.setInterval(() => {
       if (document.visibilityState === "visible") {
         void refreshChanges();
@@ -620,7 +623,7 @@ export default function WorkspaceInspector({
       window.clearInterval(interval);
       window.removeEventListener("focus", onFocus);
     };
-  }, [active, refresh, refreshChanges]);
+  }, [active, refresh, refreshChanges, view]);
 
   const beginTerminalResize = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -650,109 +653,134 @@ export default function WorkspaceInspector({
 
   return (
     <aside
+      aria-label={
+        view === "files"
+          ? "Workspace files"
+          : view === "terminal"
+            ? "Workspace terminal"
+            : "Workspace inspector"
+      }
       style={style}
       className={`flex min-h-0 flex-col border-l border-gray-800 bg-gray-900 ${className}`}
     >
-      <div className="flex items-center border-b border-gray-800 px-3 py-2">
-        <button
-          type="button"
-          onClick={() => setTab("files")}
-          className={`rounded px-2 py-1 text-xs font-medium ${tab === "files" ? "bg-gray-800 text-gray-100" : "text-gray-500 hover:text-gray-200"}`}
-        >
-          All files <span className="text-gray-500">{countFiles(files)}</span>
-        </button>
-        <button
-          type="button"
-          onClick={() => setTab("changes")}
-          className={`ml-1 rounded px-2 py-1 text-xs font-medium ${tab === "changes" ? "bg-gray-800 text-gray-100" : "text-gray-500 hover:text-gray-200"}`}
-        >
-          Changes <span className="text-gray-500">{changes.length}</span>
-        </button>
-        <button
-          type="button"
-          onClick={() => void refresh()}
-          className="ml-auto rounded px-2 py-1 text-[11px] text-gray-500 hover:bg-gray-800 hover:text-gray-200"
-        >
-          Refresh
-        </button>
-      </div>
-
-      {error && (
-        <div className="border-b border-red-900/40 bg-red-950/40 px-3 py-2 text-xs text-red-200">
-          {error}
-        </div>
-      )}
-
-      <div className="flex min-h-0 flex-1 flex-col">
-        <div className="min-h-0 flex-1 overflow-auto p-2">
-          {tab === "files" ? (
-            files.length ? (
-              <FileTree
-                nodes={files}
-                selectedPath={selectedPath}
-                onSelect={(path) => {
-                  setSelectedPath(path);
-                  setViewerMode("preview");
-                }}
-              />
-            ) : (
-              <div className="p-3 text-xs text-gray-500">No visible files.</div>
-            )
-          ) : changes.length ? (
-            <div className="space-y-1">
-              {changes.map((file) => (
-                <button
-                  key={`${file.status}-${file.path}`}
-                  type="button"
-                  onClick={() => {
-                    setSelectedPath(file.path);
-                    setViewerMode("diff");
-                  }}
-                  className={`flex w-full items-center gap-2 rounded px-2 py-1 text-left text-xs ${
-                    selectedPath === file.path
-                      ? "bg-blue-500/15 text-blue-200"
-                      : "text-gray-300 hover:bg-gray-800 hover:text-gray-100"
-                  }`}
-                  title={file.path}
-                >
-                  <span className="w-5 shrink-0 rounded bg-gray-800 px-1 text-center font-mono text-[10px] text-gray-400">
-                    {statusLabel(file)}
-                  </span>
-                  <span className="truncate">{file.path}</span>
-                </button>
-              ))}
-            </div>
-          ) : (
-            <div className="p-3 text-xs text-gray-500">
-              No uncommitted changes.
-            </div>
-          )}
-        </div>
-        <div className="h-[42%] min-h-[180px] max-h-[50%]">
-          <FileViewer
+      {view === "terminal" ? (
+        <div className="min-h-0 flex-1">
+          <RuntimeTerminalPane
             workspaceId={workspaceId}
             transport={transport}
-            path={selectedPath}
-            mode={viewerMode}
-            onModeChange={setViewerMode}
-            onSaved={() => void refresh()}
+            active={active}
           />
         </div>
-      </div>
+      ) : (
+        <>
+          <div className="flex items-center border-b border-gray-800 px-3 py-2">
+            <button
+              type="button"
+              onClick={() => setTab("files")}
+              className={`rounded px-2 py-1 text-xs font-medium ${tab === "files" ? "bg-gray-800 text-gray-100" : "text-gray-500 hover:text-gray-200"}`}
+            >
+              All files <span className="text-gray-500">{countFiles(files)}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setTab("changes")}
+              className={`ml-1 rounded px-2 py-1 text-xs font-medium ${tab === "changes" ? "bg-gray-800 text-gray-100" : "text-gray-500 hover:text-gray-200"}`}
+            >
+              Changes <span className="text-gray-500">{changes.length}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => void refresh()}
+              className="ml-auto rounded px-2 py-1 text-[11px] text-gray-500 hover:bg-gray-800 hover:text-gray-200"
+            >
+              Refresh
+            </button>
+          </div>
 
-      <div
-        role="separator"
-        aria-label="Resize terminal"
-        onPointerDown={beginTerminalResize}
-        className="h-1.5 cursor-row-resize border-y border-gray-800 bg-gray-800/80 hover:bg-blue-500/40"
-      />
-      <div style={{ height: terminalHeight }} className="shrink-0">
-        <RuntimeTerminalPane
-          workspaceId={workspaceId}
-          transport={transport}
-          active={active}
-        />
-      </div>
+          {error && (
+            <div className="border-b border-red-900/40 bg-red-950/40 px-3 py-2 text-xs text-red-200">
+              {error}
+            </div>
+          )}
+
+          <div className="flex min-h-0 flex-1 flex-col">
+            <div className="min-h-0 flex-1 overflow-auto p-2">
+              {tab === "files" ? (
+                files.length ? (
+                  <FileTree
+                    nodes={files}
+                    selectedPath={selectedPath}
+                    onSelect={(path) => {
+                      setSelectedPath(path);
+                      setViewerMode("preview");
+                    }}
+                  />
+                ) : (
+                  <div className="p-3 text-xs text-gray-500">
+                    No visible files.
+                  </div>
+                )
+              ) : changes.length ? (
+                <div className="space-y-1">
+                  {changes.map((file) => (
+                    <button
+                      key={`${file.status}-${file.path}`}
+                      type="button"
+                      onClick={() => {
+                        setSelectedPath(file.path);
+                        setViewerMode("diff");
+                      }}
+                      className={`flex w-full items-center gap-2 rounded px-2 py-1 text-left text-xs ${
+                        selectedPath === file.path
+                          ? "bg-blue-500/15 text-blue-200"
+                          : "text-gray-300 hover:bg-gray-800 hover:text-gray-100"
+                      }`}
+                      title={file.path}
+                    >
+                      <span className="w-5 shrink-0 rounded bg-gray-800 px-1 text-center font-mono text-[10px] text-gray-400">
+                        {statusLabel(file)}
+                      </span>
+                      <span className="truncate">{file.path}</span>
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <div className="p-3 text-xs text-gray-500">
+                  No uncommitted changes.
+                </div>
+              )}
+            </div>
+            <div className="h-[42%] min-h-[180px] max-h-[50%]">
+              <FileViewer
+                workspaceId={workspaceId}
+                transport={transport}
+                path={selectedPath}
+                mode={viewerMode}
+                onModeChange={setViewerMode}
+                onSaved={() => void refresh()}
+              />
+            </div>
+          </div>
+
+          {view === "combined" && (
+            <>
+              <div
+                role="separator"
+                aria-label="Resize terminal"
+                onPointerDown={beginTerminalResize}
+                className="h-1.5 cursor-row-resize border-y border-gray-800 bg-gray-800/80 hover:bg-blue-500/40"
+              />
+              <div style={{ height: terminalHeight }} className="shrink-0">
+                <RuntimeTerminalPane
+                  workspaceId={workspaceId}
+                  transport={transport}
+                  active={active}
+                />
+              </div>
+            </>
+          )}
+        </>
+      )}
     </aside>
   );
 }

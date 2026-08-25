@@ -174,7 +174,9 @@ export default function Session() {
     useState<ThinkingLevel | null>(null);
   const [workspaceId, setWorkspaceId] = useState<string | null>(null);
   const [piContextVersion, setPiContextVersion] = useState(0);
-  const [workspacePanelOpen, setWorkspacePanelOpen] = useState(false);
+  const [workspacePanelOpen, setWorkspacePanelOpen] = useState<
+    "files" | "terminal" | null
+  >(null);
   const [inspectorWidth, setInspectorWidth] = useState(storedInspectorWidth);
   const [fileRefreshKey, setFileRefreshKey] = useState(0);
   const isDesktopInspectorVisible = useMediaQuery(DESKTOP_INSPECTOR_QUERY);
@@ -752,22 +754,31 @@ export default function Session() {
   return (
     <>
       {/* Header */}
-      <header className="flex items-center gap-3 border-b border-gray-800 px-4 py-2 pl-14 md:pl-4">
+      <header className="flex flex-wrap items-center gap-3 border-b border-gray-800 px-4 py-2 pl-14 md:flex-nowrap md:pl-4">
         <div className="flex-1 min-w-0">
           <div className="text-sm font-medium text-gray-100 truncate">
             Session {id?.slice(0, 8)}
           </div>
         </div>
         {workspaceId && (
-          <button
-            type="button"
-            onClick={() => setWorkspacePanelOpen(true)}
-            className="rounded-lg border border-gray-800 px-3 py-1 text-xs text-gray-300 hover:border-gray-700 hover:bg-gray-900 lg:hidden"
-          >
-            Workspace
-          </button>
+          <div className="order-3 flex w-full items-center gap-1 lg:hidden md:order-none md:w-auto">
+            <button
+              type="button"
+              onClick={() => setWorkspacePanelOpen("files")}
+              className="min-h-11 flex-1 rounded-lg border border-gray-800 px-3 text-xs text-gray-300 hover:border-gray-700 hover:bg-gray-900 md:flex-none"
+            >
+              Files
+            </button>
+            <button
+              type="button"
+              onClick={() => setWorkspacePanelOpen("terminal")}
+              className="min-h-11 flex-1 rounded-lg border border-gray-800 px-3 text-xs text-gray-300 hover:border-gray-700 hover:bg-gray-900 md:flex-none"
+            >
+              Terminal
+            </button>
+          </div>
         )}
-        <div className="flex items-center gap-2">
+        <div className="order-2 flex w-0 min-w-0 max-w-full flex-1 items-center gap-2 md:order-none md:w-auto md:flex-none">
           <label
             htmlFor="session-model"
             className="hidden text-xs text-gray-500 sm:block"
@@ -781,7 +792,7 @@ export default function Session() {
             onChange={(event) => {
               handleModelChange(event.target.value);
             }}
-            className="rounded-lg border border-gray-800 bg-gray-900 px-2 py-1 text-xs text-gray-300 outline-none focus:border-blue-500 disabled:cursor-not-allowed disabled:opacity-60"
+            className="w-0 min-w-0 max-w-full flex-1 rounded-lg border border-gray-800 bg-gray-900 px-2 py-1 text-xs text-gray-300 outline-none focus:border-blue-500 disabled:cursor-not-allowed disabled:opacity-60 md:w-auto md:flex-none"
           >
             {!selectedModelOption && (
               <option value={sessionModel}>{sessionModel}</option>
@@ -816,7 +827,7 @@ export default function Session() {
                 value === "default" ? null : (value as ThinkingLevel),
               );
             }}
-            className="rounded-lg border border-gray-800 bg-gray-900 px-2 py-1 text-xs text-gray-300 outline-none focus:border-blue-500 disabled:cursor-not-allowed disabled:opacity-40"
+            className="w-0 min-w-0 max-w-full flex-1 rounded-lg border border-gray-800 bg-gray-900 px-2 py-1 text-xs text-gray-300 outline-none focus:border-blue-500 disabled:cursor-not-allowed disabled:opacity-40 md:w-auto md:flex-none"
             title={
               canOverrideThinking
                 ? "Select a thinking level for the next prompt"
@@ -899,18 +910,38 @@ export default function Session() {
       </div>
       {workspaceId &&
         transport &&
-        workspacePanelOpen &&
+        workspacePanelOpen !== null &&
         !isDesktopInspectorVisible && (
-          <div className="fixed inset-0 z-50 bg-gray-950 lg:hidden">
+          <div
+            className={[
+              "fixed inset-0 z-50 bg-gray-950 lg:hidden",
+              "pt-[env(safe-area-inset-top)]",
+              "pr-[env(safe-area-inset-right)]",
+              "pb-[env(safe-area-inset-bottom)]",
+              "pl-[env(safe-area-inset-left)]",
+            ].join(" ")}
+          >
             <div className="flex h-full min-h-0 flex-col">
-              <div className="flex items-center justify-between border-b border-gray-800 px-4 py-3">
-                <div className="text-sm font-medium text-gray-100">
-                  Workspace
-                </div>
+              <div className="flex items-center gap-1 border-b border-gray-800 px-4 py-3">
                 <button
                   type="button"
-                  onClick={() => setWorkspacePanelOpen(false)}
-                  className="rounded-lg border border-gray-800 px-3 py-1 text-xs text-gray-300"
+                  onClick={() => setWorkspacePanelOpen("files")}
+                  className={`min-h-11 rounded-lg px-3 text-xs font-medium ${workspacePanelOpen === "files" ? "bg-gray-800 text-gray-100" : "text-gray-500 hover:bg-gray-900 hover:text-gray-200"}`}
+                >
+                  Files
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setWorkspacePanelOpen("terminal")}
+                  className={`min-h-11 rounded-lg px-3 text-xs font-medium ${workspacePanelOpen === "terminal" ? "bg-gray-800 text-gray-100" : "text-gray-500 hover:bg-gray-900 hover:text-gray-200"}`}
+                >
+                  Terminal
+                </button>
+                <button
+                  type="button"
+                  aria-label="Close workspace"
+                  onClick={() => setWorkspacePanelOpen(null)}
+                  className="ml-auto min-h-11 rounded-lg border border-gray-800 px-3 text-xs text-gray-300"
                 >
                   Close
                 </button>
@@ -919,6 +950,7 @@ export default function Session() {
                 workspaceId={workspaceId}
                 transport={transport}
                 refreshKey={fileRefreshKey}
+                view={workspacePanelOpen}
                 className="flex-1"
               />
             </div>

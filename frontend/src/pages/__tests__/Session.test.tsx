@@ -85,7 +85,9 @@ vi.mock("../../api/client", async (importOriginal) => {
 });
 
 vi.mock("../../components/WorkspaceInspector", () => ({
-  default: () => <div data-testid="workspace-inspector" />,
+  default: ({ view = "combined" }: { view?: string }) => (
+    <div data-testid="workspace-inspector" data-view={view} />
+  ),
 }));
 
 vi.mock("../../components/ChatView", () => ({
@@ -413,6 +415,60 @@ describe("Session", () => {
     apiPatchMock.mockResolvedValue({ model: minimaxModel.ref });
   });
 
+  it("opens mobile workspace files and terminal overlays from explicit controls", async () => {
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn(() => ({
+        matches: false,
+        media: "(min-width: 1024px)",
+        onchange: null,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      })),
+    );
+    mockCatalog();
+    mockSessionApi();
+
+    renderSession();
+
+    expect(await screen.findByRole("button", { name: "Files" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Terminal" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Workspace" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Files" }));
+    expect(screen.getByTestId("workspace-inspector")).toHaveAttribute(
+      "data-view",
+      "files",
+    );
+    const workspaceOverlay = screen
+      .getByTestId("workspace-inspector")
+      .parentElement?.parentElement;
+    expect(workspaceOverlay).toHaveClass("fixed");
+    expect(workspaceOverlay).toHaveClass(
+      "pt-[env(safe-area-inset-top)]",
+      "pb-[env(safe-area-inset-bottom)]",
+      "pr-[env(safe-area-inset-right)]",
+      "pl-[env(safe-area-inset-left)]",
+    );
+    expect(
+      screen.getByRole("button", { name: "Close workspace" }),
+    ).toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getAllByRole("button", { name: "Terminal" })[1],
+    );
+    expect(screen.getByTestId("workspace-inspector")).toHaveAttribute(
+      "data-view",
+      "terminal",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Close workspace" }));
+    expect(screen.queryByTestId("workspace-inspector")).toBeNull();
+  });
+
   it("keeps one workspace inspector mounted when mobile layout becomes desktop", async () => {
     let desktopMatches = false;
     const mediaListeners = new Set<() => void>();
@@ -439,7 +495,7 @@ describe("Session", () => {
     mockSessionApi();
 
     renderSession();
-    fireEvent.click(await screen.findByRole("button", { name: "Workspace" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Files" }));
     expect(screen.getAllByTestId("workspace-inspector")).toHaveLength(1);
 
     act(() => {
