@@ -27,7 +27,7 @@ jobs:
           python-version: "3.11"
           cache: pip
           cache-dependency-path: backend/requirements/*.txt
-      - run: python -m pip install --upgrade pip==26.1.2
+      - run: python -m pip install --upgrade pip==26.2
       - run: python -m pip install -r requirements/base.txt --no-deps
       - run: python -m pip install --no-deps -e .
       - name: Validate staging configuration without exposing values

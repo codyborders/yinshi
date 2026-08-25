@@ -23,7 +23,7 @@ jobs:
           python-version: "3.11"
           cache: pip
           cache-dependency-path: backend/requirements/*.txt
-      - run: python -m pip install --upgrade pip==26.1.2
+      - run: python -m pip install --upgrade pip==26.2
       - run: python -m pip install -r requirements/dev.txt pip-audit==2.10.1
       - run: python -m pip install --no-deps -e .
       - run: pytest -q
@@ -70,7 +70,7 @@ jobs:
             desktop/package-lock.json
             frontend/package-lock.json
             sidecar/package-lock.json
-      - run: python -m pip install --upgrade pip==26.1.2
+      - run: python -m pip install --upgrade pip==26.2
       - run: python -m pip install -r backend/requirements/dev.txt
       - run: npm ci --prefix frontend
       - run: npm ci --prefix sidecar
