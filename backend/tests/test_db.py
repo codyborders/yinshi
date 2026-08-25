@@ -1311,6 +1311,147 @@ def test_control_db_expands_existing_managed_runner_roles(
         get_settings.cache_clear()
 
 
+def test_runner_table_replacement_drops_dependent_triggers_first(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No trigger may reference user_runners while that table is replaced."""
+    control_path = tmp_path / "control.db"
+    monkeypatch.setenv("CONTROL_DB_PATH", str(control_path))
+    monkeypatch.setenv("SECRET_KEY", "test-secret")
+    monkeypatch.setenv("ENCRYPTION_PEPPER", "a" * 64)
+    monkeypatch.setenv("TENANT_DB_ENCRYPTION", "disabled")
+    connection = sqlite3.connect(control_path)
+    connection.executescript("""
+        CREATE TABLE users (
+            id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE,
+            credit_used_cents INTEGER DEFAULT 0, credit_limit_cents INTEGER DEFAULT 500
+        );
+        CREATE TABLE user_runners (
+            id TEXT PRIMARY KEY,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            kind TEXT DEFAULT 'byoc' NOT NULL CHECK (kind IN ('byoc', 'managed')),
+            name TEXT NOT NULL, cloud_provider TEXT NOT NULL, region TEXT NOT NULL,
+            status TEXT DEFAULT 'pending' NOT NULL, registration_token_hash TEXT,
+            registration_token_expires_at TEXT, runner_token_hash TEXT,
+            registered_at TEXT, last_heartbeat_at TEXT, runner_version TEXT,
+            capabilities_json TEXT DEFAULT '{}' NOT NULL, data_dir TEXT,
+            revoked_at TEXT, noise_public_key TEXT, noise_public_key_confirmed_at TEXT,
+            restore_job_id TEXT,
+            UNIQUE(user_id, kind)
+        );
+        INSERT INTO users (id, email) VALUES ('user-1', 'runner@example.com');
+        INSERT INTO user_runners (
+            id, user_id, kind, name, cloud_provider, region
+        ) VALUES ('runner-1', 'user-1', 'managed', 'Managed', 'fly_sprites', 'ord');
+        """)
+    connection.commit()
+    connection.close()
+    from yinshi.config import get_settings
+    from yinshi.db import CONTROL_SCHEMA_SQL, _migrate_control
+
+    get_settings.cache_clear()
+    database = sqlite3.connect(control_path)
+    database.row_factory = sqlite3.Row
+    drop_table_statements: list[str] = []
+
+    class GuardedConnection:
+        def __init__(self, guarded: sqlite3.Connection) -> None:
+            self._guarded = guarded
+
+        def execute(self, sql: str, parameters: object = ()) -> object:
+            if "DROP TABLE user_runners" in sql:
+                drop_table_statements.append(sql)
+                dangling = self._guarded.execute("""SELECT name FROM sqlite_master
+                       WHERE type = 'trigger' AND sql LIKE '%user_runners%'""").fetchall()
+                surviving = [row["name"] for row in dangling]
+                assert not surviving, (
+                    f"triggers {surviving} still reference user_runners "
+                    "while it is being replaced"
+                )
+            return self._guarded.execute(sql, parameters)
+
+        def executescript(self, script: str) -> None:
+            self._guarded.executescript(script)
+
+        def commit(self) -> None:
+            self._guarded.commit()
+
+        def rollback(self) -> None:
+            self._guarded.rollback()
+
+    try:
+        database.executescript(CONTROL_SCHEMA_SQL)
+        _migrate_control(GuardedConnection(database))
+        assert drop_table_statements, "runner table replacement must run during migration"
+        surviving = database.execute("""SELECT name FROM sqlite_master
+               WHERE type = 'trigger' AND sql LIKE '%user_runners%'""").fetchall()
+        assert {row["name"] for row in surviving} == {
+            "update_user_runners_updated_at",
+            "validate_managed_runtime_runner_insert",
+            "validate_managed_runtime_runner_update",
+            "protect_linked_managed_runner_update",
+        }
+    finally:
+        database.close()
+        get_settings.cache_clear()
+
+
+def test_activation_guard_trigger_replacement_rolls_back_on_failure(
+    tmp_path,
+) -> None:
+    """A failed guard-trigger replacement leaves the existing triggers intact."""
+    from yinshi.db import CONTROL_SCHEMA_SQL, _migrate_managed_runtime_activation_guards
+
+    database = sqlite3.connect(tmp_path / "control.db")
+    database.row_factory = sqlite3.Row
+    database.executescript(CONTROL_SCHEMA_SQL)
+    database.commit()
+    trigger_names = (
+        "update_user_runners_updated_at",
+        "validate_managed_runtime_runner_insert",
+        "validate_managed_runtime_runner_update",
+        "protect_linked_managed_runner_update",
+    )
+
+    def trigger_snapshot() -> dict[str, str]:
+        return {
+            row["name"]: row["sql"]
+            for row in database.execute(
+                """SELECT name, sql FROM sqlite_master WHERE type = 'trigger'
+                   AND name IN (?, ?, ?, ?)""",
+                trigger_names,
+            )
+        }
+
+    snapshot_before = trigger_snapshot()
+    assert set(snapshot_before) == set(trigger_names)
+
+    class FailingRecreationConnection:
+        def __init__(self, guarded: sqlite3.Connection) -> None:
+            self._guarded = guarded
+
+        def execute(self, sql: str, parameters: object = ()) -> object:
+            if sql.lstrip().startswith("CREATE TRIGGER"):
+                raise sqlite3.OperationalError("injected trigger recreation failure")
+            return self._guarded.execute(sql, parameters)
+
+        def commit(self) -> None:
+            self._guarded.commit()
+
+        def rollback(self) -> None:
+            self._guarded.rollback()
+
+    try:
+        with pytest.raises(sqlite3.OperationalError, match="injected trigger recreation failure"):
+            _migrate_managed_runtime_activation_guards(FailingRecreationConnection(database))
+        assert trigger_snapshot() == snapshot_before
+    finally:
+        database.close()
+
+
 def test_runner_kind_migration_rolls_back_invalid_foreign_keys(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,

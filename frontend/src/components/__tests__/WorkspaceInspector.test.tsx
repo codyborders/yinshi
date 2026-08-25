@@ -167,6 +167,84 @@ describe("WorkspaceInspector terminal", () => {
     vi.stubGlobal("ResizeObserver", FakeResizeObserver);
   });
 
+  it("labels each requested inspector view", async () => {
+    const rendered = render(
+      <WorkspaceInspector
+        workspaceId={WORKSPACE_ID}
+        transport={runtimeTransport}
+        refreshKey={0}
+        view="files"
+      />,
+    );
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole("complementary", { name: "Workspace files" }),
+      ).toBeInTheDocument();
+    });
+
+    rendered.rerender(
+      <WorkspaceInspector
+        workspaceId={WORKSPACE_ID}
+        transport={runtimeTransport}
+        refreshKey={0}
+        view="terminal"
+      />,
+    );
+    await waitFor(() => {
+      expect(
+        screen.getByRole("complementary", { name: "Workspace terminal" }),
+      ).toBeInTheDocument();
+    });
+
+    rendered.rerender(
+      <WorkspaceInspector
+        workspaceId={WORKSPACE_ID}
+        transport={runtimeTransport}
+        refreshKey={0}
+      />,
+    );
+    await waitFor(() => {
+      expect(
+        screen.getByRole("complementary", { name: "Workspace inspector" }),
+      ).toBeInTheDocument();
+    });
+  });
+
+  it("renders only requested view and avoids terminal connections in files mode", async () => {
+    render(
+      <WorkspaceInspector
+        workspaceId={WORKSPACE_ID}
+        transport={runtimeTransport}
+        refreshKey={0}
+        view="files"
+      />,
+    );
+
+    await waitFor(() => {
+      expect(apiGetMock).toHaveBeenCalledWith(
+        `/api/workspaces/${WORKSPACE_ID}/files/tree`,
+      );
+    });
+    expect(screen.queryByText("Terminal")).toBeNull();
+    expect(openRuntimeTerminalMock).not.toHaveBeenCalled();
+
+    cleanup();
+    apiGetMock.mockClear();
+    render(
+      <WorkspaceInspector
+        workspaceId={WORKSPACE_ID}
+        transport={runtimeTransport}
+        refreshKey={0}
+        view="terminal"
+      />,
+    );
+
+    await waitForTerminalChannelCount(1);
+    expect(apiGetMock).not.toHaveBeenCalled();
+    expect(screen.getByText("Terminal")).toBeInTheDocument();
+  });
+
   it("restarts the location-aware terminal channel", async () => {
     render(
       <WorkspaceInspector
