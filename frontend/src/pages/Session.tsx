@@ -897,28 +897,33 @@ export default function Session() {
           </>
         )}
       </div>
-      {workspaceId && transport && workspacePanelOpen && (
-        <div className="fixed inset-0 z-50 bg-gray-950 lg:hidden">
-          <div className="flex h-full min-h-0 flex-col">
-            <div className="flex items-center justify-between border-b border-gray-800 px-4 py-3">
-              <div className="text-sm font-medium text-gray-100">Workspace</div>
-              <button
-                type="button"
-                onClick={() => setWorkspacePanelOpen(false)}
-                className="rounded-lg border border-gray-800 px-3 py-1 text-xs text-gray-300"
-              >
-                Close
-              </button>
+      {workspaceId &&
+        transport &&
+        workspacePanelOpen &&
+        !isDesktopInspectorVisible && (
+          <div className="fixed inset-0 z-50 bg-gray-950 lg:hidden">
+            <div className="flex h-full min-h-0 flex-col">
+              <div className="flex items-center justify-between border-b border-gray-800 px-4 py-3">
+                <div className="text-sm font-medium text-gray-100">
+                  Workspace
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setWorkspacePanelOpen(false)}
+                  className="rounded-lg border border-gray-800 px-3 py-1 text-xs text-gray-300"
+                >
+                  Close
+                </button>
+              </div>
+              <WorkspaceInspector
+                workspaceId={workspaceId}
+                transport={transport}
+                refreshKey={fileRefreshKey}
+                className="flex-1"
+              />
             </div>
-            <WorkspaceInspector
-              workspaceId={workspaceId}
-              transport={transport}
-              refreshKey={fileRefreshKey}
-              className="flex-1"
-            />
           </div>
-        </div>
-      )}
+        )}
     </>
   );
 }

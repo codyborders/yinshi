@@ -1186,6 +1186,21 @@ async def test_encrypted_workspace_and_session_crud_use_scoped_worker_routes(
         "result",
     ]
 
+    terminal_reader.feed_data(
+        (
+            json.dumps(
+                {
+                    "id": workspace_id,
+                    "type": "terminal_ready",
+                    "cwd": "/workspace",
+                    "pid": 123,
+                    "replay": "",
+                },
+                separators=(",", ":"),
+            )
+            + "\n"
+        ).encode("utf-8")
+    )
     terminal_sequence = request_sequence + 1
     start_terminal_request, _ = _encrypted_request(
         initiator,
@@ -1226,7 +1241,14 @@ async def test_encrypted_workspace_and_session_crud_use_scoped_worker_routes(
         )
     )
     assert terminal_events_response["body"]["events"] == [
-        {"type": "terminal_data", "data": "ready\r\n"}
+        {
+            "id": workspace_id,
+            "type": "terminal_ready",
+            "cwd": "/workspace",
+            "pid": 123,
+            "replay": "",
+        },
+        {"type": "terminal_data", "data": "ready\r\n"},
     ]
 
     terminal_input_request, _ = _encrypted_request(

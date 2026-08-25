@@ -19,6 +19,8 @@ _OUTPUT_EVENT_COUNT_MAX = 1_000
 _TERMINALS_PER_USER_MAX = 8
 _EVENT_BATCH_BYTES_MAX = 48_000
 _EVENT_BATCH_COUNT_MAX = 100
+_TERMINAL_ATTACH_TIMEOUT_S = 10.0
+_TERMINAL_CLOSE_TIMEOUT_S = 2.0
 
 
 class TerminalWriter(Protocol):
@@ -54,11 +56,19 @@ class TerminalEventBatch:
     closed: bool
 
 
+@dataclass(frozen=True, slots=True)
+class TerminalStartResult:
+    terminal_id: str
+    replaced_terminal_id: str | None
+    replaced_workspace_id: str | None
+
+
 @dataclass(slots=True)
 class _TerminalChannel:
     id: str
     user_id: str
     workspace_id: str
+    owner_id: str | None
     reader: asyncio.StreamReader
     writer: TerminalWriter
     attach_options: dict[str, Any]
@@ -115,6 +125,8 @@ class TerminalJournal:
         self._idle_seconds = selected_idle_seconds
         self._channels: dict[str, _TerminalChannel] = {}
         self._starting_by_user: dict[str, int] = {}
+        self._starting_by_owner: dict[tuple[str, str], asyncio.Event] = {}
+        self._replacement_close_tasks: set[asyncio.Task[None]] = set()
         self._channels_lock = asyncio.Lock()
         self._closing = False
 
@@ -127,85 +139,152 @@ class TerminalJournal:
         cwd: str,
         cols: int,
         rows: int,
-    ) -> str:
+        owner_id: str | None = None,
+    ) -> TerminalStartResult:
         """Attach one terminal channel after enforcing per-account limits."""
         self._validate_identity(user_id, "user_id")
         self._validate_resource_id(workspace_id, "workspace_id")
+        if owner_id is not None:
+            self._validate_resource_id(owner_id, "owner_id")
         if not isinstance(socket_path, str) or not socket_path:
             raise ValueError("socket_path must not be empty")
         if not isinstance(cwd, str) or not cwd:
             raise ValueError("cwd must not be empty")
         self._validate_size(cols, rows)
-        await self._reap_idle_channels()
-        async with self._channels_lock:
-            if self._closing:
-                raise RuntimeError("terminal journal is closing")
-            closed_terminal_ids = tuple(
-                terminal_id
-                for terminal_id, channel in self._channels.items()
-                if channel.user_id == user_id and channel.closed
-            )
-            for terminal_id in closed_terminal_ids:
-                self._channels.pop(terminal_id, None)
-            active_count = sum(
-                1
-                for channel in self._channels.values()
-                if channel.user_id == user_id and not channel.closed
-            )
-            starting_count = self._starting_by_user.get(user_id, 0)
-            if active_count + starting_count >= _TERMINALS_PER_USER_MAX:
-                raise TerminalLimitError("terminal limit reached")
-            self._starting_by_user[user_id] = starting_count + 1
-
+        owner_key = (user_id, owner_id) if owner_id is not None else None
+        if owner_key is not None:
+            await self._claim_owner_start(owner_key)
+        reservation_held = False
         try:
-            reader, writer = await self._connector(socket_path)
-        except BaseException:
-            await self._release_start_reservation(user_id)
-            raise
-        try:
-            init_line = await asyncio.wait_for(reader.readline(), timeout=10)
-            if not init_line:
-                raise ConnectionError("sidecar disconnected before terminal attach")
-            init_message = self._decode_message(init_line)
-            if init_message.get("type") != "init_status" or not init_message.get("success"):
-                raise ConnectionError("sidecar terminal initialization failed")
-            terminal_id = uuid.uuid4().hex
-            attach_options = {
-                "workspaceId": workspace_id,
-                "cwd": cwd,
-                "cols": cols,
-                "rows": rows,
-                "scrollbackLines": self._scrollback_lines,
-            }
-            channel = _TerminalChannel(
-                id=terminal_id,
-                user_id=user_id,
-                workspace_id=workspace_id,
-                reader=reader,
-                writer=writer,
-                attach_options=attach_options,
-            )
-            await self._send(
-                channel,
-                {"type": "terminal_attach", "id": workspace_id, "options": attach_options},
-            )
+            await self._reap_idle_channels()
             async with self._channels_lock:
                 if self._closing:
                     raise RuntimeError("terminal journal is closing")
-                if terminal_id in self._channels:
-                    raise RuntimeError("terminal ID collision")
-                self._channels[terminal_id] = channel
-                channel.reader_task = asyncio.create_task(
-                    self._read_output(channel),
-                    name=f"terminal-journal-{terminal_id}",
+                closed_terminal_ids = tuple(
+                    terminal_id
+                    for terminal_id, channel in self._channels.items()
+                    if channel.user_id == user_id and channel.closed
                 )
-            return terminal_id
-        except BaseException:
-            writer.close()
-            await writer.wait_closed()
-            raise
+                for terminal_id in closed_terminal_ids:
+                    self._channels.pop(terminal_id, None)
+                replaced_channel = (
+                    next(
+                        (
+                            channel
+                            for channel in self._channels.values()
+                            if channel.user_id == user_id and channel.owner_id == owner_id
+                        ),
+                        None,
+                    )
+                    if owner_id is not None
+                    else None
+                )
+                active_count = sum(
+                    1
+                    for channel in self._channels.values()
+                    if channel.user_id == user_id and not channel.closed
+                )
+                retained_count = active_count - (1 if replaced_channel is not None else 0)
+                starting_count = self._starting_by_user.get(user_id, 0)
+                if retained_count + starting_count >= _TERMINALS_PER_USER_MAX:
+                    raise TerminalLimitError("terminal limit reached")
+                self._starting_by_user[user_id] = starting_count + 1
+                reservation_held = True
+
+            reader, writer = await self._connector(socket_path)
+            committed = False
+            try:
+                init_line = await asyncio.wait_for(
+                    reader.readline(),
+                    timeout=_TERMINAL_ATTACH_TIMEOUT_S,
+                )
+                if not init_line:
+                    raise ConnectionError("sidecar disconnected before terminal attach")
+                init_message = self._decode_message(init_line)
+                if init_message.get("type") != "init_status" or not init_message.get("success"):
+                    raise ConnectionError("sidecar terminal initialization failed")
+                terminal_id = uuid.uuid4().hex
+                attach_options = {
+                    "workspaceId": workspace_id,
+                    "cwd": cwd,
+                    "cols": cols,
+                    "rows": rows,
+                    "scrollbackLines": self._scrollback_lines,
+                }
+                channel = _TerminalChannel(
+                    id=terminal_id,
+                    user_id=user_id,
+                    workspace_id=workspace_id,
+                    owner_id=owner_id,
+                    reader=reader,
+                    writer=writer,
+                    attach_options=attach_options,
+                )
+                await self._send(
+                    channel,
+                    {"type": "terminal_attach", "id": workspace_id, "options": attach_options},
+                )
+                ready_line = await asyncio.wait_for(
+                    reader.readline(),
+                    timeout=_TERMINAL_ATTACH_TIMEOUT_S,
+                )
+                if not ready_line:
+                    raise ConnectionError("sidecar disconnected before terminal ready")
+                ready_message = self._decode_message(ready_line)
+                if ready_message.get("type") == "error":
+                    raise ConnectionError("sidecar terminal attach failed")
+                self._validate_terminal_ready(ready_message, workspace_id)
+                for ready_event in self._split_event(ready_message):
+                    self._append_event(channel, ready_event)
+
+                async with self._channels_lock:
+                    if self._closing:
+                        raise RuntimeError("terminal journal is closing")
+                    if terminal_id in self._channels:
+                        raise RuntimeError("terminal ID collision")
+                    current_replacement = (
+                        self._channels.get(replaced_channel.id)
+                        if replaced_channel is not None
+                        else None
+                    )
+                    if replaced_channel is not None and current_replacement is replaced_channel:
+                        self._channels.pop(replaced_channel.id)
+                    else:
+                        replaced_channel = None
+                    self._channels[terminal_id] = channel
+                    channel.reader_task = asyncio.create_task(
+                        self._read_output(channel),
+                        name=f"terminal-journal-{terminal_id}",
+                    )
+                    committed = True
+                if replaced_channel is not None:
+                    self._schedule_replacement_close(replaced_channel)
+                return TerminalStartResult(
+                    terminal_id=terminal_id,
+                    replaced_terminal_id=(
+                        replaced_channel.id if replaced_channel is not None else None
+                    ),
+                    replaced_workspace_id=(
+                        replaced_channel.workspace_id if replaced_channel is not None else None
+                    ),
+                )
+            except BaseException:
+                if not committed:
+                    await self._close_uncommitted_writer(writer)
+                raise
         finally:
-            await self._release_start_reservation(user_id)
+            release_task = asyncio.create_task(
+                self._release_start_state(
+                    user_id=user_id,
+                    reservation_held=reservation_held,
+                    owner_key=owner_key,
+                )
+            )
+            try:
+                await asyncio.shield(release_task)
+            except asyncio.CancelledError:
+                await release_task
+                raise
 
     async def input(
         self,
@@ -338,16 +417,95 @@ class TerminalJournal:
         async with self._channels_lock:
             self._channels.pop(terminal_id, None)
 
-    async def _release_start_reservation(self, user_id: str) -> None:
-        """Release one in-flight terminal slot after connection succeeds or fails."""
+    async def _claim_owner_start(self, owner_key: tuple[str, str]) -> None:
+        """Serialize terminal replacement attempts for one account and tab owner."""
+        while True:
+            async with self._channels_lock:
+                active_start = self._starting_by_owner.get(owner_key)
+                if active_start is None:
+                    self._starting_by_owner[owner_key] = asyncio.Event()
+                    return
+            await active_start.wait()
+
+    async def _release_start_state(
+        self,
+        *,
+        user_id: str,
+        reservation_held: bool,
+        owner_key: tuple[str, str] | None,
+    ) -> None:
+        """Release capacity and wake the next owner start in one lock acquisition."""
         async with self._channels_lock:
-            count = self._starting_by_user.get(user_id, 0)
-            if count <= 0:
-                raise RuntimeError("terminal start reservation is missing")
-            if count == 1:
-                self._starting_by_user.pop(user_id, None)
-            else:
-                self._starting_by_user[user_id] = count - 1
+            if reservation_held:
+                count = self._starting_by_user.get(user_id, 0)
+                if count <= 0:
+                    raise RuntimeError("terminal start reservation is missing")
+                if count == 1:
+                    self._starting_by_user.pop(user_id, None)
+                else:
+                    self._starting_by_user[user_id] = count - 1
+            if owner_key is not None:
+                active_start = self._starting_by_owner.pop(owner_key, None)
+                if active_start is None:
+                    raise RuntimeError("terminal owner start reservation is missing")
+                active_start.set()
+
+    async def _close_uncommitted_writer(self, writer: TerminalWriter) -> None:
+        """Close a rejected sidecar socket without holding start state indefinitely."""
+        writer.close()
+        close_task = asyncio.create_task(writer.wait_closed())
+        close_task.add_done_callback(self._consume_task_result)
+        done, _pending = await asyncio.wait(
+            {close_task},
+            timeout=_TERMINAL_CLOSE_TIMEOUT_S,
+        )
+        if not done:
+            close_task.cancel()
+            writer.close()
+
+    def _schedule_replacement_close(self, channel: _TerminalChannel) -> None:
+        """Detach a replaced channel in bounded background cleanup."""
+        task = asyncio.create_task(
+            self._close_replaced_channel(channel),
+            name=f"terminal-replacement-close-{channel.id}",
+        )
+        self._replacement_close_tasks.add(task)
+        task.add_done_callback(self._replacement_close_done)
+
+    def _replacement_close_done(self, task: asyncio.Task[None]) -> None:
+        """Forget one cleanup task after retrieving every terminal failure."""
+        self._replacement_close_tasks.discard(task)
+        self._consume_task_result(task)
+
+    async def _close_replaced_channel(self, channel: _TerminalChannel) -> None:
+        """Consume every replacement cleanup failure and force the socket closed."""
+        close_task = asyncio.create_task(self._close_channel(channel, detach=True))
+        close_task.add_done_callback(self._consume_task_result)
+        try:
+            done, _pending = await asyncio.wait(
+                {close_task},
+                timeout=_TERMINAL_CLOSE_TIMEOUT_S,
+            )
+        except BaseException:
+            done = set()
+        if not done:
+            close_task.cancel()
+            channel.closed = True
+            channel.output_available.set()
+            if channel.reader_task is not None and not channel.reader_task.done():
+                channel.reader_task.cancel()
+            try:
+                channel.writer.close()
+            except BaseException:
+                pass
+
+    @staticmethod
+    def _consume_task_result(task: asyncio.Task[Any]) -> None:
+        """Retrieve a detached cleanup result so event loops report no task error."""
+        try:
+            task.result()
+        except BaseException:
+            pass
 
     async def _reap_idle_channels(self) -> None:
         """Close channels that no client has polled or written within the idle limit."""
@@ -371,6 +529,9 @@ class TerminalJournal:
             self._channels.clear()
         for channel in channels:
             await self._close_channel(channel, detach=True)
+        cleanup_tasks = tuple(self._replacement_close_tasks)
+        if cleanup_tasks:
+            await asyncio.gather(*cleanup_tasks, return_exceptions=True)
 
     async def _read_output(self, channel: _TerminalChannel) -> None:
         try:
@@ -507,6 +668,22 @@ class TerminalJournal:
             await channel.writer.wait_closed()
         except OSError:
             pass
+
+    @staticmethod
+    def _validate_terminal_ready(message: dict[str, Any], workspace_id: str) -> None:
+        """Require the exact bounded sidecar attach acknowledgement schema."""
+        if set(message) != {"id", "type", "cwd", "pid", "replay"}:
+            raise ConnectionError("sidecar terminal ready schema is invalid")
+        if message["id"] != workspace_id or message["type"] != "terminal_ready":
+            raise ConnectionError("sidecar terminal ready identity is invalid")
+        cwd = message["cwd"]
+        if not isinstance(cwd, str) or not cwd.startswith("/") or len(cwd) > 4096:
+            raise ConnectionError("sidecar terminal ready cwd is invalid")
+        pid = message["pid"]
+        if type(pid) is not int or pid <= 0:
+            raise ConnectionError("sidecar terminal ready pid is invalid")
+        if not isinstance(message["replay"], str):
+            raise ConnectionError("sidecar terminal ready replay is invalid")
 
     @staticmethod
     def _decode_message(line: bytes) -> dict[str, Any]:

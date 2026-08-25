@@ -13,7 +13,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.testclient import TestClient
 
 from yinshi.api import terminal_channels
-from yinshi.services.terminal_journal import TerminalEventBatch
+from yinshi.services.terminal_journal import TerminalEventBatch, TerminalStartResult
 from yinshi.tenant import TenantContext
 
 
@@ -66,11 +66,19 @@ class FakeTerminalJournal:
         self.manager = manager
         self.calls: list[str] = []
         self.closed_events = False
+        self.replaced_terminal_id: str | None = None
+        self.replaced_workspace_id: str | None = None
+        self.start_kwargs: dict[str, object] = {}
 
-    async def start(self, **_kwargs: object) -> str:
+    async def start(self, **kwargs: object) -> TerminalStartResult:
         assert self.manager.calls[-1][0] == "acquire"
         self.manager.calls.append(("journal-start",))
-        return "terminal-id"
+        self.start_kwargs = kwargs
+        return TerminalStartResult(
+            terminal_id="terminal-id",
+            replaced_terminal_id=self.replaced_terminal_id,
+            replaced_workspace_id=self.replaced_workspace_id,
+        )
 
     async def input(self, **_kwargs: object) -> None:
         self.calls.append("input")
@@ -149,8 +157,12 @@ async def test_terminal_start_database_open_does_not_block_event_loop(
             yield database
 
     class PublicTerminalJournal:
-        async def start(self, **_kwargs: object) -> str:
-            return "terminal-id"
+        async def start(self, **_kwargs: object) -> TerminalStartResult:
+            return TerminalStartResult(
+                terminal_id="terminal-id",
+                replaced_terminal_id=None,
+                replaced_workspace_id=None,
+            )
 
     async def prepare_workspace(
         _tenant: TenantContext,
@@ -208,6 +220,17 @@ async def test_terminal_start_database_open_does_not_block_event_loop(
     assert ticks >= 5
 
 
+def test_terminal_start_rejects_malformed_owner_id(auth_client: TestClient) -> None:
+    """The public start endpoint rejects an owner outside the bounded hex format."""
+    response = auth_client.post(
+        f"/api/workspaces/{'a' * 32}/terminals",
+        json={"cols": 80, "rows": 24, "owner_id": "not-a-tab-owner"},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["loc"][-1] == "owner_id"
+
+
 @pytest.mark.asyncio
 async def test_start_holds_exact_activity_until_lease_is_installed(
     monkeypatch: pytest.MonkeyPatch,
@@ -243,6 +266,7 @@ async def test_start_holds_exact_activity_until_lease_is_installed(
     )
 
     assert response.id == "terminal-id"
+    assert journal.start_kwargs["owner_id"] is None
     assert manager.calls == [
         ("acquire", tenant.user_id, "workspace-id"),
         ("journal-start",),
@@ -252,6 +276,149 @@ async def test_start_holds_exact_activity_until_lease_is_installed(
             "terminal:workspace-id:terminal-id",
             321,
             "workspace-id",
+        ),
+        ("release", manager.reservation),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_start_passes_owner_and_releases_replaced_terminal_lease(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A replacement installs its lease before releasing the old channel lease."""
+    manager = FakeContainerManager()
+    request = _request(manager)
+    journal = FakeTerminalJournal(manager)
+    journal.replaced_terminal_id = "replaced-terminal"
+    journal.replaced_workspace_id = "previous-workspace"
+    tenant = _tenant()
+
+    async def terminal_context(
+        _request: Request,
+        workspace_id: str,
+    ) -> tuple[str, TenantContext, str, str, str]:
+        return tenant.user_id, tenant, "/runtime.sock", "/workspace", workspace_id
+
+    monkeypatch.setattr(terminal_channels, "_journal", lambda _request: journal)
+    monkeypatch.setattr(terminal_channels, "_terminal_context", terminal_context)
+    monkeypatch.setattr(
+        terminal_channels,
+        "get_settings",
+        lambda: SimpleNamespace(container_enabled=True, terminal_keepalive_s=321),
+    )
+    monkeypatch.setattr(
+        "yinshi.services.sidecar_runtime.get_settings",
+        lambda: SimpleNamespace(container_enabled=True),
+    )
+
+    response = await terminal_channels.start_terminal_channel(
+        "workspace-id",
+        terminal_channels.TerminalStartRequest(
+            cols=80,
+            rows=24,
+            owner_id="a" * 32,
+        ),
+        request,
+    )
+
+    assert response.id == "terminal-id"
+    assert journal.start_kwargs["owner_id"] == "a" * 32
+    assert manager.calls == [
+        ("acquire", tenant.user_id, "workspace-id"),
+        ("journal-start",),
+        (
+            "protect",
+            tenant.user_id,
+            "terminal:workspace-id:terminal-id",
+            321,
+            "workspace-id",
+        ),
+        (
+            "unprotect",
+            tenant.user_id,
+            "terminal:previous-workspace:replaced-terminal",
+            "previous-workspace",
+        ),
+        ("release", manager.reservation),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_repeatedly_cancelled_start_finalizes_replacement_leases_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Repeated cancellation cannot interrupt commit or duplicate lease transfer."""
+    manager = FakeContainerManager()
+    request = _request(manager)
+    journal = FakeTerminalJournal(manager)
+    tenant = _tenant()
+    start_entered = asyncio.Event()
+    release_start = asyncio.Event()
+
+    async def terminal_context(
+        _request: Request,
+        workspace_id: str,
+    ) -> tuple[str, TenantContext, str, str, str]:
+        return tenant.user_id, tenant, "/runtime.sock", "/workspace", workspace_id
+
+    async def delayed_start(**_kwargs: object) -> TerminalStartResult:
+        manager.calls.append(("journal-start",))
+        start_entered.set()
+        await release_start.wait()
+        return TerminalStartResult(
+            terminal_id="terminal-id",
+            replaced_terminal_id="replaced-terminal",
+            replaced_workspace_id="previous-workspace",
+        )
+
+    monkeypatch.setattr(journal, "start", delayed_start)
+    monkeypatch.setattr(terminal_channels, "_journal", lambda _request: journal)
+    monkeypatch.setattr(terminal_channels, "_terminal_context", terminal_context)
+    monkeypatch.setattr(
+        terminal_channels,
+        "get_settings",
+        lambda: SimpleNamespace(container_enabled=True, terminal_keepalive_s=321),
+    )
+    monkeypatch.setattr(
+        "yinshi.services.sidecar_runtime.get_settings",
+        lambda: SimpleNamespace(container_enabled=True),
+    )
+
+    start_task = asyncio.create_task(
+        terminal_channels.start_terminal_channel(
+            "workspace-id",
+            terminal_channels.TerminalStartRequest(
+                cols=80,
+                rows=24,
+                owner_id="a" * 32,
+            ),
+            request,
+        )
+    )
+    await start_entered.wait()
+    start_task.cancel()
+    await asyncio.sleep(0)
+    start_task.cancel()
+    release_start.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await start_task
+
+    assert manager.calls == [
+        ("acquire", tenant.user_id, "workspace-id"),
+        ("journal-start",),
+        (
+            "protect",
+            tenant.user_id,
+            "terminal:workspace-id:terminal-id",
+            321,
+            "workspace-id",
+        ),
+        (
+            "unprotect",
+            tenant.user_id,
+            "terminal:previous-workspace:replaced-terminal",
+            "previous-workspace",
         ),
         ("release", manager.reservation),
     ]
@@ -274,9 +441,13 @@ async def test_terminals_in_one_workspace_hold_distinct_leases(
     ) -> tuple[str, TenantContext, str, str, str]:
         return tenant.user_id, tenant, "/runtime.sock", "/workspace", workspace_id
 
-    async def start_terminal(**_kwargs: object) -> str:
+    async def start_terminal(**_kwargs: object) -> TerminalStartResult:
         manager.calls.append(("journal-start",))
-        return next(terminal_ids)
+        return TerminalStartResult(
+            terminal_id=next(terminal_ids),
+            replaced_terminal_id=None,
+            replaced_workspace_id=None,
+        )
 
     monkeypatch.setattr(journal, "start", start_terminal)
     monkeypatch.setattr(terminal_channels, "_journal", lambda _request: journal)

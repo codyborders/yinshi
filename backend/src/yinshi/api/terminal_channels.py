@@ -42,6 +42,12 @@ router = APIRouter()
 class TerminalStartRequest(BaseModel):
     cols: int = Field(default=100, ge=2, le=500)
     rows: int = Field(default=30, ge=2, le=500)
+    owner_id: str | None = Field(
+        default=None,
+        min_length=32,
+        max_length=32,
+        pattern=r"^[0-9a-f]{32}$",
+    )
 
 
 class TerminalStartResponse(BaseModel):
@@ -201,15 +207,45 @@ async def start_terminal_channel(
             tenant,
             runtime_id=runtime_id,
         ):
-            terminal_id = await _journal(request).start(
-                user_id=user_id,
-                workspace_id=workspace_id,
-                socket_path=socket_path,
-                cwd=cwd,
-                cols=body.cols,
-                rows=body.rows,
+            start_task = asyncio.create_task(
+                _journal(request).start(
+                    user_id=user_id,
+                    workspace_id=workspace_id,
+                    socket_path=socket_path,
+                    cwd=cwd,
+                    cols=body.cols,
+                    rows=body.rows,
+                    owner_id=body.owner_id,
+                )
             )
+            cancellation: asyncio.CancelledError | None = None
+            while True:
+                try:
+                    start_result = await asyncio.shield(start_task)
+                except asyncio.CancelledError as exc:
+                    cancellation = cancellation or exc
+                    if not start_task.done():
+                        continue
+                    try:
+                        start_result = start_task.result()
+                    except BaseException:
+                        raise cancellation
+                break
+            terminal_id = start_result.terminal_id
             _refresh_terminal_lease(request, tenant, workspace_id, terminal_id)
+            if start_result.replaced_terminal_id is not None:
+                if start_result.replaced_workspace_id is None:
+                    raise RuntimeError("replaced terminal workspace is missing")
+                _release_terminal_lease(
+                    request,
+                    tenant,
+                    start_result.replaced_workspace_id,
+                    start_result.replaced_terminal_id,
+                )
+            elif start_result.replaced_workspace_id is not None:
+                raise RuntimeError("replaced terminal ID is missing")
+            if cancellation is not None:
+                raise cancellation
     except TerminalLimitError as exc:
         raise HTTPException(status_code=429, detail=str(exc)) from exc
     except (

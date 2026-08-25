@@ -84,6 +84,10 @@ vi.mock("../../api/client", async (importOriginal) => {
   };
 });
 
+vi.mock("../../components/WorkspaceInspector", () => ({
+  default: () => <div data-testid="workspace-inspector" />,
+}));
+
 vi.mock("../../components/ChatView", () => ({
   default: ({
     onSend,
@@ -382,6 +386,7 @@ describe("Session", () => {
   afterEach(() => {
     cleanup();
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
 
   beforeEach(() => {
@@ -406,6 +411,50 @@ describe("Session", () => {
       bootstrapSession: bootstrapSessionMock,
     });
     apiPatchMock.mockResolvedValue({ model: minimaxModel.ref });
+  });
+
+  it("keeps one workspace inspector mounted when mobile layout becomes desktop", async () => {
+    let desktopMatches = false;
+    const mediaListeners = new Set<() => void>();
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn(() => ({
+        get matches() {
+          return desktopMatches;
+        },
+        media: "(min-width: 1024px)",
+        onchange: null,
+        addEventListener: (_type: string, listener: () => void) => {
+          mediaListeners.add(listener);
+        },
+        removeEventListener: (_type: string, listener: () => void) => {
+          mediaListeners.delete(listener);
+        },
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      })),
+    );
+    mockCatalog();
+    mockSessionApi();
+
+    renderSession();
+    fireEvent.click(await screen.findByRole("button", { name: "Workspace" }));
+    expect(screen.getAllByTestId("workspace-inspector")).toHaveLength(1);
+
+    act(() => {
+      desktopMatches = true;
+      for (const listener of mediaListeners) listener();
+    });
+
+    expect(screen.getAllByTestId("workspace-inspector")).toHaveLength(1);
+
+    act(() => {
+      desktopMatches = false;
+      for (const listener of mediaListeners) listener();
+    });
+
+    expect(screen.getAllByTestId("workspace-inspector")).toHaveLength(1);
   });
 
   it("does not override the persisted model or thinking settings before the user changes them", async () => {

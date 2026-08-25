@@ -1,6 +1,14 @@
 import type { RuntimeTransport } from "./runtimeTransport";
 
 const RESOURCE_ID_PATTERN = /^[0-9a-f]{32}$/;
+const TERMINAL_OWNER_STORAGE_KEY = "yinshi:terminal-owner-id:v1";
+const TERMINAL_OWNER_CHANNEL_NAME = "yinshi:terminal-owner-claims:v1";
+const TERMINAL_OWNER_CLAIM_WAIT_MS = 40;
+const TERMINAL_OWNER_CLAIM_ATTEMPTS_MAX = 4;
+let terminalOwnerIdInMemory: string | null = null;
+let terminalOwnerIdPromise: Promise<string> | null = null;
+let terminalOwnerChannel: BroadcastChannel | null = null;
+const terminalOwnerDocumentId = randomResourceId();
 const TERMINAL_EVENT_TYPES = new Set([
   "error",
   "terminal_data",
@@ -27,6 +35,206 @@ export interface RuntimeTerminalChannel {
   resize(cols: number, rows: number): Promise<void>;
   restart(): Promise<void>;
   close(): Promise<void>;
+}
+
+interface TerminalOwnerMessage {
+  readonly type: "probe" | "claim";
+  readonly owner_id: string;
+  readonly document_id: string;
+  readonly target_document_id?: string;
+  readonly established?: boolean;
+}
+
+function randomResourceId(): string {
+  const randomBytes = crypto.getRandomValues(new Uint8Array(16));
+  const resourceId = Array.from(randomBytes, (value) =>
+    value.toString(16).padStart(2, "0"),
+  ).join("");
+  if (!RESOURCE_ID_PATTERN.test(resourceId)) {
+    throw new Error("Terminal owner generation failed");
+  }
+  return resourceId;
+}
+
+function storedTerminalOwnerId(): string | null {
+  try {
+    const storedOwnerId = window.sessionStorage.getItem(
+      TERMINAL_OWNER_STORAGE_KEY,
+    );
+    return storedOwnerId !== null && RESOURCE_ID_PATTERN.test(storedOwnerId)
+      ? storedOwnerId
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function storeTerminalOwnerId(ownerId: string): void {
+  terminalOwnerIdInMemory = ownerId;
+  try {
+    window.sessionStorage.setItem(TERMINAL_OWNER_STORAGE_KEY, ownerId);
+  } catch {
+    // The random identifier is not secret and remains valid in module memory.
+  }
+}
+
+function ownerClaimDelay(): Promise<void> {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, TERMINAL_OWNER_CLAIM_WAIT_MS);
+  });
+}
+
+function validTerminalOwnerMessage(
+  value: unknown,
+): value is TerminalOwnerMessage {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const message = value as Record<string, unknown>;
+  if (message.type !== "probe" && message.type !== "claim") return false;
+  if (
+    typeof message.owner_id !== "string" ||
+    !RESOURCE_ID_PATTERN.test(message.owner_id) ||
+    typeof message.document_id !== "string" ||
+    !RESOURCE_ID_PATTERN.test(message.document_id)
+  ) {
+    return false;
+  }
+  if (
+    message.target_document_id !== undefined &&
+    (typeof message.target_document_id !== "string" ||
+      !RESOURCE_ID_PATTERN.test(message.target_document_id))
+  ) {
+    return false;
+  }
+  return (
+    message.established === undefined ||
+    typeof message.established === "boolean"
+  );
+}
+
+async function claimTerminalOwnerId(): Promise<string> {
+  let candidateOwnerId =
+    storedTerminalOwnerId() ?? terminalOwnerIdInMemory ?? randomResourceId();
+  if (typeof BroadcastChannel !== "function") {
+    storeTerminalOwnerId(candidateOwnerId);
+    return candidateOwnerId;
+  }
+
+  let channel: BroadcastChannel;
+  try {
+    channel = new BroadcastChannel(TERMINAL_OWNER_CHANNEL_NAME);
+  } catch {
+    storeTerminalOwnerId(candidateOwnerId);
+    return candidateOwnerId;
+  }
+  terminalOwnerChannel = channel;
+  let pendingOwnerId: string | null = null;
+  let establishedOwnerId: string | null = null;
+  let collisionDetected = false;
+
+  const rotateEstablishedOwner = () => {
+    const replacementOwnerId = randomResourceId();
+    establishedOwnerId = replacementOwnerId;
+    pendingOwnerId = null;
+    storeTerminalOwnerId(replacementOwnerId);
+    terminalOwnerIdPromise = Promise.resolve(replacementOwnerId);
+    channel.postMessage({
+      type: "probe",
+      owner_id: replacementOwnerId,
+      document_id: terminalOwnerDocumentId,
+    } satisfies TerminalOwnerMessage);
+  };
+
+  channel.onmessage = (event: MessageEvent<unknown>) => {
+    if (!validTerminalOwnerMessage(event.data)) return;
+    const message = event.data;
+    if (message.document_id === terminalOwnerDocumentId) return;
+    if (message.type === "probe") {
+      const established = establishedOwnerId === message.owner_id;
+      const contending = pendingOwnerId === message.owner_id;
+      if (!established && !contending) return;
+      channel.postMessage({
+        type: "claim",
+        owner_id: message.owner_id,
+        document_id: terminalOwnerDocumentId,
+        target_document_id: message.document_id,
+        established,
+      } satisfies TerminalOwnerMessage);
+      const otherDocumentWins =
+        message.document_id.localeCompare(terminalOwnerDocumentId) < 0;
+      if (contending && otherDocumentWins) collisionDetected = true;
+      if (established && otherDocumentWins) rotateEstablishedOwner();
+      return;
+    }
+    if (message.target_document_id !== terminalOwnerDocumentId) return;
+    const otherDocumentWins =
+      message.document_id.localeCompare(terminalOwnerDocumentId) < 0;
+    if (message.owner_id === pendingOwnerId) {
+      if (message.established === true || otherDocumentWins) {
+        collisionDetected = true;
+      }
+      return;
+    }
+    if (
+      message.owner_id === establishedOwnerId &&
+      message.established === true &&
+      otherDocumentWins
+    ) {
+      rotateEstablishedOwner();
+    }
+  };
+  window.addEventListener(
+    "pagehide",
+    (event: PageTransitionEvent) => {
+      establishedOwnerId = null;
+      pendingOwnerId = null;
+      channel.close();
+      if (terminalOwnerChannel === channel) terminalOwnerChannel = null;
+      if (event.persisted) terminalOwnerIdPromise = null;
+    },
+    { once: true },
+  );
+  window.addEventListener(
+    "pageshow",
+    (event: PageTransitionEvent) => {
+      if (event.persisted) terminalOwnerIdPromise = null;
+    },
+    { once: true },
+  );
+
+  for (
+    let attempt = 0;
+    attempt < TERMINAL_OWNER_CLAIM_ATTEMPTS_MAX;
+    attempt += 1
+  ) {
+    pendingOwnerId = candidateOwnerId;
+    collisionDetected = false;
+    channel.postMessage({
+      type: "probe",
+      owner_id: candidateOwnerId,
+      document_id: terminalOwnerDocumentId,
+    } satisfies TerminalOwnerMessage);
+    await ownerClaimDelay();
+    if (!collisionDetected) {
+      establishedOwnerId = candidateOwnerId;
+      pendingOwnerId = null;
+      storeTerminalOwnerId(candidateOwnerId);
+      return candidateOwnerId;
+    }
+    candidateOwnerId = randomResourceId();
+    storeTerminalOwnerId(candidateOwnerId);
+  }
+
+  establishedOwnerId = candidateOwnerId;
+  pendingOwnerId = null;
+  storeTerminalOwnerId(candidateOwnerId);
+  return candidateOwnerId;
+}
+
+function terminalOwnerId(): Promise<string> {
+  terminalOwnerIdPromise ??= claimTerminalOwnerId();
+  return terminalOwnerIdPromise;
 }
 
 function validateResourceId(value: unknown, field: string): string {
@@ -102,9 +310,10 @@ export async function openRuntimeTerminal(
   ) {
     throw new Error("Terminal poll delay is invalid");
   }
+  const ownerId = await terminalOwnerId();
   const openedValue = await transport.post<unknown>(
     `/api/workspaces/${workspaceId}/terminals`,
-    { cols: options.cols, rows: options.rows },
+    { cols: options.cols, rows: options.rows, owner_id: ownerId },
   );
   if (
     openedValue === null ||
