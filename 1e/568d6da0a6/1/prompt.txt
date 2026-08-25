@@ -1,0 +1,1 @@
+Commit, run a `/skill:software-design` against the commit, document all findings, then run an `/orchestra` to fix every finding. Review per the prompt instructions and when complete bring it back to me so we can merge and deploy.
