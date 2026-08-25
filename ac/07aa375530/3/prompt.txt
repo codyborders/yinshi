@@ -1,0 +1,65 @@
+Task: [Read from: /Users/user/projects/yinshi/context.md, /Users/user/projects/yinshi/plan.md]
+
+You are a delegated subagent running from a fork of the parent session. Treat the inherited conversation as reference-only context, not a live thread to continue. Do not continue or answer prior messages as if they are waiting for a reply. Your sole job is to execute the task below and return a focused result for that task using your tools.
+
+Task:
+In /Users/user/projects/yinshi, fix all material independent-review findings in current uncommitted terminal owner replacement. You are sole writer. Do not commit or touch .pi-subagents/. Strict red-green TDD for each behavior. Findings to fix: (1) Journal currently commits after sending terminal_attach but before reading sidecar terminal_ready. Sidecar can reply with error. Read and validate terminal_ready before commit, retain that ready event for the first poll, and preserve old channel on attach error/timeout. (2) Post-commit old-channel close is awaited, so cancellation can prevent API lease installation. Once new channel is committed, schedule bounded non-failing old close in background and return the result without waiting. Route must shield start and guarantee new lease installation plus old lease release even if request cancellation arrives during start; then propagate cancellation. Do not leave start reservations or owner claims. (3) Old close drain/wait_closed must not hold owner claim or capacity indefinitely. Use bounded cleanup with forced writer close and consumed task errors. (4) Duplicated tabs clone sessionStorage owner IDs and can replace each other forever. Add robust live-document collision detection, preferably BroadcastChannel with deterministic arbitration, so reload retains owner when no other live document claims it while a duplicated or opener-cloned tab rotates to a new owner. Keep module-memory fallback for unavailable storage and avoid reconnect leaks. Include bounded handshake latency and fallback when BroadcastChannel is unavailable. Tests must cover attach error after terminal_attach, ready-event preservation, cancellation with lease finalization, bounded cleanup, duplicate-tab collision, simultaneous startup arbitration, reload persistence, storage failure, nine same-owner reloads, distinct-owner cap, and old clients. Verify actual sidecar message shapes. Run full backend 1,656+ tests, full frontend tests, sidecar tests, desktop tests, all backend format/lint/mypy checks, frontend typecheck/Prettier/build, desktop typecheck/build, and diff check. Report details. Do not deploy or commit.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+- criterion-2: Return evidence sufficient for an independent acceptance review
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Review gate: required by reviewer.
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    },
+    {
+      "id": "criterion-2",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
