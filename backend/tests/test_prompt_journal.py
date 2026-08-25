@@ -72,8 +72,14 @@ async def _wait_for_terminal(
     request: Request,
     session_id: str,
     run_id: str,
+    *,
+    timeout_seconds: float = 10.0,
+    interval_seconds: float = 0.01,
 ) -> str:
-    for _ in range(100):
+    """Poll caller-visible journal events until one run reaches a terminal state."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout_seconds
+    while True:
         batch = await journal.events(
             request=request,
             session_id=session_id,
@@ -82,8 +88,12 @@ async def _wait_for_terminal(
         )
         if batch.status not in {"starting", "running", "stopping"}:
             return batch.status
-        await asyncio.sleep(0)
-    raise AssertionError("prompt journal did not reach a terminal state")
+        if loop.time() >= deadline:
+            raise AssertionError(
+                f"prompt journal run stayed at {batch.status!r}; "
+                f"expected a terminal state within {timeout_seconds} seconds"
+            )
+        await asyncio.sleep(interval_seconds)
 
 
 async def _wait_for_stored_run_status(
