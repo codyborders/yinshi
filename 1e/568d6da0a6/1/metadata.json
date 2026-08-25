@@ -1,0 +1,44 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "1e568d6da0a6",
+  "session_id": "01a0392a-e224-7b42-9419-556811115327",
+  "strategy": "manual-commit",
+  "created_at": "2026-08-25T14:50:27.537969Z",
+  "branch": "main",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "code_reviews/2026-08-25-840b021-software-design-review.md",
+    "frontend/e2e/navigation.spec.ts",
+    "frontend/src/components/WorkspaceInspector.tsx",
+    "frontend/src/pages/Session.tsx",
+    "frontend/src/pages/__tests__/Session.test.tsx"
+  ],
+  "agent": "Pi",
+  "model": "gpt-5.6-sol",
+  "turn_id": "2ed822eb0263",
+  "checkpoint_transcript_start": 172,
+  "transcript_lines_at_start": 172,
+  "compact_transcript_start": 58,
+  "token_usage": {
+    "input_tokens": 105210,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 2781440,
+    "output_tokens": 11070,
+    "api_call_count": 31
+  },
+  "session_metrics": {
+    "turn_count": 1
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-08-25T14:50:27.415195Z",
+    "agent_lines": 58,
+    "agent_removed": 53,
+    "human_added": 88,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 146,
+    "total_lines_changed": 199,
+    "agent_percentage": 55.778894472361806,
+    "metric_version": 2
+  }
+}
