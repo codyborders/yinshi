@@ -1203,38 +1203,81 @@ def _migrate_control(conn: sqlite3.Connection) -> None:
     _migrate_encrypted_control_fields(conn)
 
 
+_USER_RUNNER_DEPENDENT_TRIGGER_NAMES: tuple[str, ...] = (
+    "update_user_runners_updated_at",
+    "validate_managed_runtime_runner_insert",
+    "validate_managed_runtime_runner_update",
+    "protect_linked_managed_runner_update",
+)
+_USER_RUNNER_DEPENDENT_TRIGGER_DDL: tuple[str, ...] = (
+    """CREATE TRIGGER IF NOT EXISTS update_user_runners_updated_at
+    AFTER UPDATE ON user_runners
+    BEGIN
+        UPDATE user_runners SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id;
+    END""",
+    """CREATE TRIGGER IF NOT EXISTS validate_managed_runtime_runner_insert
+    BEFORE INSERT ON managed_runtimes
+    WHEN NOT EXISTS (
+        SELECT 1 FROM user_runners
+        WHERE id = NEW.runner_id AND user_id = NEW.user_id AND kind = 'managed'
+    )
+    BEGIN
+        SELECT RAISE(ABORT, 'managed runtime must reference matching managed runner');
+    END""",
+    """CREATE TRIGGER IF NOT EXISTS validate_managed_runtime_runner_update
+    BEFORE UPDATE OF user_id, runner_id ON managed_runtimes
+    WHEN NOT EXISTS (
+        SELECT 1 FROM user_runners
+        WHERE id = NEW.runner_id AND user_id = NEW.user_id AND kind = 'managed'
+    )
+    AND NOT EXISTS (
+        SELECT 1 FROM managed_runtime_activation_guards WHERE user_id = NEW.user_id
+    )
+    BEGIN
+        SELECT RAISE(ABORT, 'managed runtime must reference matching managed runner');
+    END""",
+    """CREATE TRIGGER IF NOT EXISTS protect_linked_managed_runner_update
+    BEFORE UPDATE OF user_id, kind ON user_runners
+    WHEN EXISTS (SELECT 1 FROM managed_runtimes WHERE runner_id = OLD.id)
+        AND (NEW.user_id != OLD.user_id OR NEW.kind != OLD.kind)
+        AND NOT EXISTS (
+            SELECT 1 FROM managed_runtime_activation_guards WHERE user_id = OLD.user_id
+        )
+    BEGIN
+        SELECT RAISE(ABORT, 'cannot change linked managed runtime runner');
+    END""",
+)
+
+
+def _drop_user_runner_dependent_triggers(conn: sqlite3.Connection) -> None:
+    """Drop every trigger that depends on user_runners before table replacement."""
+    for trigger_name in _USER_RUNNER_DEPENDENT_TRIGGER_NAMES:
+        conn.execute(f"DROP TRIGGER IF EXISTS {trigger_name}")
+
+
+def _recreate_user_runner_dependent_triggers(conn: sqlite3.Connection) -> None:
+    """Recreate the canonical guard-aware triggers around a user_runners table."""
+    for trigger_definition in _USER_RUNNER_DEPENDENT_TRIGGER_DDL:
+        conn.execute(trigger_definition)
+
+
 def _migrate_managed_runtime_activation_guards(conn: sqlite3.Connection) -> None:
     """Install the durable guard and replacement-aware integrity triggers."""
-    conn.execute("""CREATE TABLE IF NOT EXISTS managed_runtime_activation_guards (
+    conn.commit()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("""CREATE TABLE IF NOT EXISTS managed_runtime_activation_guards (
                user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
                job_id TEXT NOT NULL UNIQUE,
                lease_token TEXT NOT NULL
            )""")
-    conn.execute("DROP TRIGGER IF EXISTS validate_managed_runtime_runner_update")
-    conn.execute("DROP TRIGGER IF EXISTS protect_linked_managed_runner_update")
-    conn.executescript("""CREATE TRIGGER validate_managed_runtime_runner_update
-           BEFORE UPDATE OF user_id, runner_id ON managed_runtimes
-           WHEN NOT EXISTS (
-               SELECT 1 FROM user_runners
-               WHERE id = NEW.runner_id AND user_id = NEW.user_id AND kind = 'managed'
-           )
-           AND NOT EXISTS (
-               SELECT 1 FROM managed_runtime_activation_guards WHERE user_id = NEW.user_id
-           )
-           BEGIN
-               SELECT RAISE(ABORT, 'managed runtime must reference matching managed runner');
-           END;
-           CREATE TRIGGER protect_linked_managed_runner_update
-           BEFORE UPDATE OF user_id, kind ON user_runners
-           WHEN EXISTS (SELECT 1 FROM managed_runtimes WHERE runner_id = OLD.id)
-               AND (NEW.user_id != OLD.user_id OR NEW.kind != OLD.kind)
-               AND NOT EXISTS (
-                   SELECT 1 FROM managed_runtime_activation_guards WHERE user_id = OLD.user_id
-               )
-           BEGIN
-               SELECT RAISE(ABORT, 'cannot change linked managed runtime runner');
-           END;""")
-    conn.commit()
+        conn.execute("DROP TRIGGER IF EXISTS validate_managed_runtime_runner_update")
+        conn.execute("DROP TRIGGER IF EXISTS protect_linked_managed_runner_update")
+        _recreate_user_runner_dependent_triggers(conn)
+        conn.commit()
+    except sqlite3.Error:
+        conn.rollback()
+        raise
 
 
 def _migrate_managed_backup_archive_statuses(conn: sqlite3.Connection) -> None:
@@ -1433,10 +1476,7 @@ def _migrate_runner_kinds(conn: sqlite3.Connection) -> None:
     conn.execute("PRAGMA foreign_keys = OFF")
     try:
         conn.execute("BEGIN IMMEDIATE")
-        conn.execute("DROP TRIGGER IF EXISTS update_user_runners_updated_at")
-        conn.execute("DROP TRIGGER IF EXISTS validate_managed_runtime_runner_insert")
-        conn.execute("DROP TRIGGER IF EXISTS validate_managed_runtime_runner_update")
-        conn.execute("DROP TRIGGER IF EXISTS protect_linked_managed_runner_update")
+        _drop_user_runner_dependent_triggers(conn)
         conn.execute("""
             CREATE TABLE user_runners_with_kinds (
                 id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
@@ -1491,13 +1531,7 @@ def _migrate_runner_kinds(conn: sqlite3.Connection) -> None:
         conn.execute(
             "CREATE INDEX idx_user_runners_runner_token ON user_runners(runner_token_hash)"
         )
-        conn.execute("""
-            CREATE TRIGGER update_user_runners_updated_at
-            AFTER UPDATE ON user_runners
-            BEGIN
-                UPDATE user_runners SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id;
-            END
-            """)
+        _recreate_user_runner_dependent_triggers(conn)
         foreign_key_issue = conn.execute("PRAGMA foreign_key_check").fetchone()
         if foreign_key_issue is not None:
             raise sqlite3.IntegrityError("Runner kind migration left an invalid foreign key")
@@ -1520,7 +1554,7 @@ def _migrate_managed_restore_runner_kind(conn: sqlite3.Connection) -> None:
     conn.execute("PRAGMA foreign_keys = OFF")
     try:
         conn.execute("BEGIN IMMEDIATE")
-        conn.execute("DROP TRIGGER IF EXISTS update_user_runners_updated_at")
+        _drop_user_runner_dependent_triggers(conn)
         conn.execute("""CREATE TABLE user_runners_expanded (
                    id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
@@ -1550,10 +1584,7 @@ def _migrate_managed_restore_runner_kind(conn: sqlite3.Connection) -> None:
         conn.execute(
             "CREATE INDEX idx_user_runners_runner_token ON user_runners(runner_token_hash)"
         )
-        conn.execute("""CREATE TRIGGER update_user_runners_updated_at
-               AFTER UPDATE ON user_runners BEGIN
-                   UPDATE user_runners SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id;
-               END""")
+        _recreate_user_runner_dependent_triggers(conn)
         if conn.execute("PRAGMA foreign_key_check").fetchone() is not None:
             raise sqlite3.IntegrityError(
                 "Managed restore runner migration left an invalid foreign key"

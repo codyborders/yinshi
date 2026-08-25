@@ -86,6 +86,32 @@ async def _wait_for_terminal(
     raise AssertionError("prompt journal did not reach a terminal state")
 
 
+async def _wait_for_stored_run_status(
+    database: sqlite3.Connection,
+    run_id: str,
+    expected_status: str,
+    *,
+    timeout_seconds: float = 5.0,
+    interval_seconds: float = 0.001,
+) -> str:
+    """Poll caller-visible prompt run status at a real bounded interval."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout_seconds
+    while True:
+        status = database.execute(
+            "SELECT status FROM prompt_runs WHERE id = ?",
+            (run_id,),
+        ).fetchone()["status"]
+        if status == expected_status:
+            return status
+        if loop.time() >= deadline:
+            raise AssertionError(
+                f"prompt run status stayed at {status!r}; "
+                f"expected {expected_status!r} within {timeout_seconds} seconds"
+            )
+        await asyncio.sleep(interval_seconds)
+
+
 @pytest.mark.asyncio
 async def test_active_run_discovery_excludes_terminal_runs(
     db: sqlite3.Connection,
@@ -628,6 +654,7 @@ async def test_prompt_journal_serializes_concurrent_idempotent_starts(
     session_id = _seed_session(db)
     executor_calls = 0
     release_executor = asyncio.Event()
+    executor_entered = asyncio.Event()
 
     async def blocked_events(
         request: Request,
@@ -637,6 +664,7 @@ async def test_prompt_journal_serializes_concurrent_idempotent_starts(
         nonlocal executor_calls
         assert selected_session_id == session_id
         executor_calls += 1
+        executor_entered.set()
         await release_executor.wait()
         yield {"type": "result"}
 
@@ -657,7 +685,7 @@ async def test_prompt_journal_serializes_concurrent_idempotent_starts(
             body={"prompt": "hello"},
         ),
     )
-    await asyncio.sleep(0)
+    await asyncio.wait_for(executor_entered.wait(), timeout=1)
 
     assert first.id == second.id
     assert executor_calls == 1
@@ -716,6 +744,7 @@ async def test_prompt_journal_recovers_committed_start_before_registration(
     idempotency_key = str(uuid.uuid4())
     executor_calls = 0
     release_executor = asyncio.Event()
+    executor_entered = asyncio.Event()
 
     async def blocked_events(
         request: Request,
@@ -725,6 +754,7 @@ async def test_prompt_journal_recovers_committed_start_before_registration(
         nonlocal executor_calls
         assert selected_session_id == session_id
         executor_calls += 1
+        executor_entered.set()
         await release_executor.wait()
         yield {"type": "result"}
 
@@ -773,7 +803,7 @@ async def test_prompt_journal_recovers_committed_start_before_registration(
         idempotency_key=idempotency_key,
         body={"prompt": "hello"},
     )
-    await asyncio.sleep(0)
+    await asyncio.wait_for(executor_entered.wait(), timeout=1)
 
     assert recovered.id == stored_run["id"]
     assert repeated.id == recovered.id
@@ -1137,6 +1167,7 @@ async def test_prompt_journal_immediate_cancellation_wins_start_race(
     session_id = _seed_session(db)
     status_started = asyncio.Event()
     release_status = asyncio.Event()
+    release_terminal = asyncio.Event()
 
     async def never_started_events(
         request: Request,
@@ -1149,13 +1180,19 @@ async def test_prompt_journal_immediate_cancellation_wins_start_race(
     journal_request = _request()
     journal = PromptJournal(executor=never_started_events)
     original_set_status = journal._set_status
+    original_set_terminal_status = journal._set_terminal_status
 
     async def paused_set_status(*args: Any, **kwargs: Any) -> None:
         status_started.set()
         await release_status.wait()
         await original_set_status(*args, **kwargs)
 
+    async def paused_set_terminal_status(*args: Any, **kwargs: Any) -> None:
+        await release_terminal.wait()
+        await original_set_terminal_status(*args, **kwargs)
+
     monkeypatch.setattr(journal, "_set_status", paused_set_status)
+    monkeypatch.setattr(journal, "_set_terminal_status", paused_set_terminal_status)
     run = await journal.start(
         request=journal_request,
         session_id=session_id,
@@ -1170,17 +1207,9 @@ async def test_prompt_journal_immediate_cancellation_wins_start_race(
             run_id=run.id,
         )
     )
-    for _ in range(100):
-        status = db.execute(
-            "SELECT status FROM prompt_runs WHERE id = ?",
-            (run.id,),
-        ).fetchone()["status"]
-        if status == "stopping":
-            break
-        await asyncio.sleep(0)
-    else:
-        raise AssertionError("prompt run did not enter stopping state")
+    assert await _wait_for_stored_run_status(db, run.id, "stopping") == "stopping"
     release_status.set()
+    release_terminal.set()
     cancelled = await cancel_task
     batch = await journal.events(
         request=journal_request,
