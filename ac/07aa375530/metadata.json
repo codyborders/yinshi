@@ -3,13 +3,15 @@
   "checkpoint_id": "ac07aa375530",
   "strategy": "manual-commit",
   "branch": "main",
-  "checkpoints_count": 5,
+  "checkpoints_count": 6,
   "files_touched": [
     "backend/src/yinshi/api/terminal_channels.py",
     "backend/src/yinshi/services/terminal_journal.py",
     "backend/tests/test_runner_rpc.py",
     "backend/tests/test_terminal_channels.py",
     "backend/tests/test_terminal_journal.py",
+    "frontend/src/pages/Session.tsx",
+    "frontend/src/pages/__tests__/Session.test.tsx",
     "frontend/src/runtime/terminalChannel.test.ts",
     "frontend/src/runtime/terminalChannel.ts"
   ],
@@ -48,13 +50,20 @@
       "compact_transcript": "/ac/07aa375530/4/transcript.jsonl",
       "content_hash": "/ac/07aa375530/4/content_hash.txt",
       "prompt": "/ac/07aa375530/4/prompt.txt"
+    },
+    {
+      "metadata": "/ac/07aa375530/5/metadata.json",
+      "transcript": "/ac/07aa375530/5/full.jsonl",
+      "compact_transcript": "/ac/07aa375530/5/transcript.jsonl",
+      "content_hash": "/ac/07aa375530/5/content_hash.txt",
+      "prompt": "/ac/07aa375530/5/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 39508518,
+    "input_tokens": 49307758,
     "cache_creation_tokens": 0,
-    "cache_read_tokens": 1468175360,
-    "output_tokens": 2781430,
-    "api_call_count": 7534
+    "cache_read_tokens": 1832054400,
+    "output_tokens": 3462583,
+    "api_call_count": 9387
   }
 }
