@@ -1,0 +1,109 @@
+Use GPT-5.6 Sol to direct this task. Use local Qwen for implementation.
+
+Task: Tried to import my `codyborders/my-pi` github repo but it failed /Users/user/Desktop/Screenshot\ 2026-08-22\ at\ 3.30.38 PM.png Also tried importing another rpeo from my github account and it failed too /Users/user/Desktop/Screenshot\ 2026-08-22\ at\ 3.31.52 PM.png
+
+Follow this process:
+
+1. Keep the parent model unchanged. The parent plans the work and makes decisions. It reviews each change and runs final checks.
+2. Run `pilocal server orchestra`. Stop and report the error if the implementation model cannot become healthy.
+3. Inspect relevant project files and define expected behavior before delegation.
+4. Build a task packet. The task packet must include the expanded task, parent plan, expected behavior, file scope, constraints, and required checks.
+5. Launch one implementation child through `subagent`. Replace `<task packet>` with that complete text. Set `async: false` on the `subagent` call.
+
+```js
+return runs.run("implementation", {
+  agent: "qwen-implementer",
+  task: "<task packet>"
+});
+```
+
+6. Wait for the implementation result. Keep Qwen as the only writer in the active checkout.
+7. Inspect reported changes before review. Build a review task that names the changed files and expected behavior.
+8. Launch a fresh review child without a model override. Replace `<review task>` with the complete review text. Set `async: false` again.
+
+```js
+return runs.run("review", {
+  agent: "reviewer",
+  task: "<review task>"
+});
+```
+
+9. Evaluate every review finding. Send accepted fixes to one `qwen-implementer` child with the concrete finding and file scope. Wait for completion.
+10. Run focused checks in the parent. Inspect the final diff before reporting completion.
+11. Do not commit, push, release, or discard unrelated changes without user authorization.
+
+---
+
+Commit, run /skill:software-design, implement every fix, the commit again and push
+
+---
+
+stop. we should not be using qwen models for the review. /orchestra should be turned off for this.
+
+---
+
+You don't need to stop the server. simply do not follow the instructions of /orchestra here. just using your normal subagents that use codex models.
+
+---
+
+go
+
+---
+
+Pushed to the `yinshi` vm?
+
+---
+
+go
+
+---
+
+Fails when I try to prompt /Users/user/Desktop/Screenshot\ 2026-08-22\ at\ 9.58.26 PM.png
+
+---
+
+So, it works now but while returning a response to the user there was an error
+
+---
+
+So, it works now but while returning a response to the user there was an error /Users/user/Desktop/Screenshot\ 2026-08-23\ at\ 7.11.06 AM.png
+
+---
+
+Happened again. We need to figure out why this is happening and fix it.
+
+---
+
+Happened again. We need to figure out why this is happening and fix it. /Users/user/Desktop/Screenshot\ 2026-08-23\ at\ 8.04.25 AM.png
+
+---
+
+Failed again. Do not come back to me until users can prompt without interruption. /Users/user/Desktop/Screenshot\ 2026-08-23\ at\ 11.03.31 AM.png
+
+---
+
+Same error, again. The session lasted longer, then froze for 25-30 seconds, then threw the error. Then I refreshed and all the session info is gone? /Users/user/Desktop/Screenshot\ 2026-08-23\ at\ 1.57.44 PM.png /Users/user/Desktop/Screenshot\ 2026-08-23\ at\ 1.58.30 PM.png
+
+---
+
+It says skills are imported, but when I try to invoke a skill it doesn't load any of mine. Why? /Users/user/Desktop/Screenshot\ 2026-08-23\ at\ 6.15.27 PM.png /Users/user/Desktop/Screenshot\ 2026-08-23\ at\ 6.15.45 PM.png
+
+---
+
+I started this session and sent a prompt and there were 17+ tool calls shown. Then I switched to a different worktree, and when I came back the work was stopped and the tool calls disappeared. Why? /Users/user/Desktop/Screenshot\ 2026-08-23\ at\ 8.05.52 PM.png
+
+---
+
+Seems to be working better now, but the Sprites temrinal is *sloooow*, like 15-20 seconds for text to populate when I type. Is there any way to speed that up?
+
+---
+
+Ok, now the issue is when I'm in a session and refresh the page it can take 20-30 seconds to reloead the conversation history. The file explorer, terminal, and workspace list all load quickly, but the session conversation takes forever.
+
+---
+
+10 seconds is not acceptable. We need to be under 2 seconds.
+
+---
+
+Much faster, but now the terminal won't load and there's a message saying "terminal limit reached" /Users/user/Desktop/Screenshot\ 2026-08-24\ at\ 3.39.43 PM.png
