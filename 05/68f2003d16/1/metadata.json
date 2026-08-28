@@ -1,0 +1,64 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "0568f2003d16",
+  "session_id": "session",
+  "strategy": "manual-commit",
+  "created_at": "2026-08-28T23:24:00.760716Z",
+  "branch": "main",
+  "checkpoints_count": 1,
+  "save_step_count": 2,
+  "files_touched": [
+    "backend/src/yinshi/services/pi_config.py",
+    "backend/src/yinshi/services/workspace_files.py",
+    "backend/src/yinshi/utils/paths.py",
+    "backend/tests/test_container.py",
+    "backend/tests/test_pi_config.py",
+    "backend/tests/test_workspace_files.py"
+  ],
+  "agent": "Pi",
+  "model": "gpt-5.6-luna",
+  "turn_id": "2eec745ae3e8",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 79132,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 1440768,
+    "output_tokens": 11051,
+    "api_call_count": 33
+  },
+  "session_metrics": {
+    "turn_count": 104
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-08-28T23:24:00.375541Z",
+    "agent_lines": 105,
+    "agent_removed": 9,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 105,
+    "total_lines_changed": 114,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 491,
+      "user_lines_removed": 0,
+      "agent_lines_added": 11928,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/c9ba8db2_worker-advanced_input.md": 67,
+        ".pi-subagents/artifacts/c9ba8db2_worker-advanced_transcript.jsonl": 140,
+        ".pi-subagents/artifacts/d0ab17f8_worker_input.md": 66,
+        ".pi-subagents/artifacts/d0ab17f8_worker_transcript.jsonl": 44,
+        ".pi-subagents/artifacts/fab7db4f_worker_0_input.md": 61,
+        ".pi-subagents/artifacts/fab7db4f_worker_0_transcript.jsonl": 2,
+        ".pi-subagents/missions/4dc42cfc-da49-4eb9-b7bb-25477da3d5de.json": 39,
+        ".pi-subagents/missions/b325a05e-3779-4503-9d93-ee75ae292f2f.json": 39,
+        ".pi-subagents/missions/d697925d-0061-442f-bf50-3deef511cca0.json": 33
+      }
+    }
+  ]
+}
