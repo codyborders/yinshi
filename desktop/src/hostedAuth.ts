@@ -11,6 +11,9 @@ const AUTHORIZATION_DURATION_SECONDS_MAX = 10 * 60;
 const AUTHORIZATION_EXPIRY_ROUNDING_MILLISECONDS = 1_000;
 const REFRESH_DURATION_SECONDS_MAX = 90 * 24 * 60 * 60;
 
+/** Tolerance for desktop clocks that drift behind the issuing server. */
+export const HOSTED_AUTH_CLOCK_SKEW_SECONDS = 120;
+
 export interface HostedAuthCredentialStore {
   load(): Promise<DesktopCredentialProfile | null>;
   save(profile: DesktopCredentialProfile): Promise<void>;
@@ -219,14 +222,14 @@ export async function readHostedDesktopTokenResponse(
   if (
     accessTokenExpiresAt <= options.currentTimeSeconds ||
     accessTokenExpiresAt - options.currentTimeSeconds >
-      ACCESS_DURATION_SECONDS_MAX
+      ACCESS_DURATION_SECONDS_MAX + HOSTED_AUTH_CLOCK_SKEW_SECONDS
   ) {
     return invalidResponse();
   }
   if (
     refreshTokenExpiresAt <= options.currentTimeSeconds ||
     refreshTokenExpiresAt - options.currentTimeSeconds >
-      REFRESH_DURATION_SECONDS_MAX
+      REFRESH_DURATION_SECONDS_MAX + HOSTED_AUTH_CLOCK_SKEW_SECONDS
   ) {
     return invalidResponse();
   }
@@ -325,7 +328,8 @@ export async function startHostedSignIn(
     authorizationExpiresAtMilliseconds <= currentTimeMilliseconds ||
     authorizationExpiresAtMilliseconds - currentTimeMilliseconds >
       AUTHORIZATION_DURATION_SECONDS_MAX * 1_000 +
-        AUTHORIZATION_EXPIRY_ROUNDING_MILLISECONDS
+        AUTHORIZATION_EXPIRY_ROUNDING_MILLISECONDS +
+        HOSTED_AUTH_CLOCK_SKEW_SECONDS * 1_000
   ) {
     return invalidResponse();
   }

@@ -29,7 +29,7 @@ describe("runner repository contract", () => {
       path: "/api/repos",
       query: {},
       body: null,
-      maxSessionBytes: 262_144,
+      maxSessionBytes: 16 * 1024 * 1024,
     });
   });
 
@@ -60,7 +60,7 @@ describe("runner repository contract", () => {
         name: "project",
         remote_url: "https://example.com/team/project.git",
       },
-      maxSessionBytes: 262_144,
+      maxSessionBytes: 16 * 1024 * 1024,
     });
 
     await expect(

@@ -883,23 +883,144 @@ def test_init_user_db_preserves_plaintext_database_when_wal_checkpoint_is_busy(
         assert connection.execute("SELECT value FROM marker").fetchone()[0] == "original"
 
 
-def test_plaintext_migration_failure_durably_restores_original(
+def test_plaintext_migration_keeps_committed_replacement_when_later_chmod_fails(
     tenant_env,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Post-replacement validation failure should atomically restore plaintext."""
+    """A chmod failure after the durable commit point must keep the replacement."""
+    import shutil
+
+    import yinshi.tenant as tenant_module
+    from yinshi.tenant import _migrate_plaintext_user_database
+
+    database_path = Path(tenant_env["tmp_path"]) / "committed-migration.db"
+    rollback_path = Path(f"{database_path}.plaintext.rollback")
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("CREATE TABLE marker (value TEXT NOT NULL)")
+        connection.execute("INSERT INTO marker VALUES ('original')")
+
+    def fake_copy(_source_path: str, target_path: str, _key: bytes) -> None:
+        replacement = sqlite3.connect(target_path)
+        replacement.execute("CREATE TABLE marker (value TEXT NOT NULL)")
+        replacement.execute("INSERT INTO marker VALUES ('replacement')")
+        replacement.commit()
+        replacement.close()
+
+    replace_targets: list[str] = []
+    original_replace = os.replace
+    original_chmod = os.chmod
+
+    def replace(source_path: str, target_path: str) -> None:
+        replace_targets.append(os.fspath(target_path))
+        original_replace(source_path, target_path)
+
+    def chmod(path, mode: int) -> None:
+        if os.fspath(path) == str(database_path) and replace_targets:
+            raise OSError("chmod denied after commit")
+        original_chmod(path, mode)
+
+    monkeypatch.setattr(tenant_module, "_copy_plaintext_user_database", fake_copy)
+    monkeypatch.setattr(tenant_module, "_validate_encrypted_user_database", lambda *_args: None)
+    monkeypatch.setattr(tenant_module, "_validate_export_matches_source", lambda *_args: None)
+    monkeypatch.setattr(
+        tenant_module,
+        "_create_private_rollback_copy",
+        lambda source, rollback: shutil.copyfile(source, rollback),
+        raising=False,
+    )
+    monkeypatch.setattr(tenant_module.os, "replace", replace)
+    monkeypatch.setattr(tenant_module.os, "chmod", chmod)
+
+    with pytest.raises(OSError, match="chmod denied"):
+        _migrate_plaintext_user_database(str(database_path), b"k" * 32)
+
+    primary = sqlite3.connect(database_path)
+    assert primary.execute("SELECT value FROM marker").fetchone()[0] == "replacement"
+    primary.close()
+    assert rollback_path.exists(), "committed replacement must retain its rollback"
+
+
+def test_plaintext_migration_failure_before_commit_restores_original(
+    tenant_env,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pre-commit fsync failure should atomically restore the plaintext primary."""
     import shutil
 
     import yinshi.tenant as tenant_module
     from yinshi.tenant import _migrate_plaintext_user_database
 
     database_path = Path(tenant_env["tmp_path"]) / "restore-migration.db"
+    rollback_path = Path(f"{database_path}.plaintext.rollback")
+    temp_path = Path(f"{database_path}.encrypted.tmp")
     with sqlite3.connect(database_path) as connection:
         connection.execute("CREATE TABLE marker (value TEXT NOT NULL)")
         connection.execute("INSERT INTO marker VALUES ('original')")
 
-    def fake_copy(source_path: str, target_path: str, _key: bytes) -> None:
-        shutil.copyfile(source_path, target_path)
+    def fake_copy(_source_path: str, target_path: str, _key: bytes) -> None:
+        shutil.copyfile(database_path, target_path)
+
+    events: list[str] = []
+    original_replace = os.replace
+
+    def replace(source_path: str, target_path: str) -> None:
+        events.append(f"replace:{Path(source_path).name}->{Path(target_path).name}")
+        original_replace(source_path, target_path)
+
+    def fsync_file(path) -> None:
+        if os.fspath(path) == str(rollback_path):
+            raise OSError("rollback fsync denied")
+
+    monkeypatch.setattr(tenant_module, "_copy_plaintext_user_database", fake_copy)
+    monkeypatch.setattr(tenant_module, "_validate_encrypted_user_database", lambda *_args: None)
+    monkeypatch.setattr(tenant_module, "_validate_export_matches_source", lambda *_args: None)
+    monkeypatch.setattr(
+        tenant_module,
+        "_create_private_rollback_copy",
+        lambda source, rollback: shutil.copyfile(source, rollback),
+        raising=False,
+    )
+    monkeypatch.setattr(tenant_module, "_fsync_file", fsync_file, raising=False)
+    monkeypatch.setattr(
+        tenant_module,
+        "_fsync_parent_directory",
+        lambda path: events.append(f"sync-parent:{Path(path).name}"),
+        raising=False,
+    )
+    monkeypatch.setattr(tenant_module.os, "replace", replace)
+
+    with pytest.raises(OSError, match="rollback fsync denied"):
+        _migrate_plaintext_user_database(str(database_path), b"k" * 32)
+
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute("SELECT value FROM marker").fetchone()[0] == "original"
+    assert not rollback_path.exists()
+    assert not temp_path.exists()
+    assert "replace:restore-migration.db.plaintext.rollback->restore-migration.db" in events
+
+
+def test_plaintext_migration_keeps_committed_replacement_when_post_commit_validation_fails(
+    tenant_env,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Post-commit validation failure must not reinstall the plaintext rollback."""
+    import shutil
+
+    import yinshi.tenant as tenant_module
+    from yinshi.tenant import _migrate_plaintext_user_database
+
+    database_path = Path(tenant_env["tmp_path"]) / "committed-validation-migration.db"
+    rollback_path = Path(f"{database_path}.plaintext.rollback")
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("CREATE TABLE marker (value TEXT NOT NULL)")
+        connection.execute("INSERT INTO marker VALUES ('original')")
+
+    def fake_copy(_source_path: str, target_path: str, _key: bytes) -> None:
+        replacement = sqlite3.connect(target_path)
+        replacement.execute("CREATE TABLE marker (value TEXT NOT NULL)")
+        replacement.execute("INSERT INTO marker VALUES ('replacement')")
+        replacement.commit()
+        replacement.close()
 
     validation_count = 0
 
@@ -942,16 +1063,14 @@ def test_plaintext_migration_failure_durably_restores_original(
     with pytest.raises(RuntimeError, match="replacement invalid"):
         _migrate_plaintext_user_database(str(database_path), b"k" * 32)
 
-    with sqlite3.connect(database_path) as connection:
-        assert connection.execute("SELECT value FROM marker").fetchone()[0] == "original"
-    assert "replace:restore-migration.db.plaintext.rollback->restore-migration.db" in events
-    restore_index = events.index(
-        "replace:restore-migration.db.plaintext.rollback->restore-migration.db"
+    primary = sqlite3.connect(database_path)
+    assert primary.execute("SELECT value FROM marker").fetchone()[0] == "replacement"
+    primary.close()
+    assert rollback_path.exists()
+    assert (
+        "replace:committed-validation-migration.db.plaintext.rollback"
+        "->committed-validation-migration.db" not in events
     )
-    assert events[restore_index + 1 :] == [
-        "fsync:restore-migration.db",
-        "sync-parent:restore-migration.db",
-    ]
 
 
 def test_init_user_db_recovers_rollback_before_optional_sqlcipher_fallback(

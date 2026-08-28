@@ -1,5 +1,4 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { createInterface } from "node:readline";
 import { Readable } from "node:stream";
 
 import { parseHelperReadyLine, type HelperReadyMessage } from "./helperProtocol.js";
@@ -43,7 +42,7 @@ function waitForExit(child: ChildProcess, timeoutMs: number): Promise<boolean> {
 }
 
 async function stopChild(child: ChildProcess, timeoutMs: number): Promise<void> {
-  if (!childIsRunning(child)) {
+  if (child.pid === undefined || !childIsRunning(child)) {
     return;
   }
 
@@ -60,31 +59,64 @@ async function stopChild(child: ChildProcess, timeoutMs: number): Promise<void> 
   }
 }
 
-async function readFirstReadyLine(readyPipe: Readable, timeoutMs: number): Promise<string> {
-  const lines = createInterface({ input: readyPipe, crlfDelay: Infinity });
-  let timeout: NodeJS.Timeout | undefined;
-  const timeoutResult = new Promise<never>((_, reject) => {
+const MAX_HELPER_READY_LINE_BYTES = 4096;
+
+function readFirstReadyLine(readyPipe: Readable, timeoutMs: number): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let line = Buffer.alloc(0);
+    let timeout: NodeJS.Timeout | undefined;
+
+    const cleanup = (): void => {
+      if (timeout !== undefined) {
+        clearTimeout(timeout);
+      }
+      readyPipe.off("data", onData);
+      readyPipe.off("end", onEnd);
+      readyPipe.off("error", onError);
+      readyPipe.pause();
+    };
+    const fail = (error: Error): void => {
+      cleanup();
+      reject(error);
+    };
+    const onData = (chunk: Buffer | string): void => {
+      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      const newlineIndex = bytes.indexOf(0x0a);
+      const lineBytes =
+        newlineIndex === -1 ? bytes : bytes.subarray(0, newlineIndex);
+      if (line.length + lineBytes.length > MAX_HELPER_READY_LINE_BYTES) {
+        fail(
+          new Error(
+            `helper readiness line exceeds ${MAX_HELPER_READY_LINE_BYTES} bytes`,
+          ),
+        );
+        return;
+      }
+      const next = Buffer.concat([line, lineBytes]);
+      if (newlineIndex !== -1) {
+        const lineEnd = next[next.length - 1] === 0x0d ? next.length - 1 : next.length;
+        cleanup();
+        resolve(next.subarray(0, lineEnd).toString("utf8"));
+        return;
+      }
+      line = next;
+    };
+    const onEnd = (): void => {
+      fail(new Error("helper closed readiness pipe without a message"));
+    };
+    const onError = (error: Error): void => {
+      fail(error);
+    };
+
+    readyPipe.on("data", onData);
+    readyPipe.once("end", onEnd);
+    readyPipe.once("error", onError);
     timeout = setTimeout(
-      () => reject(new Error("helper readiness timed out")),
+      () => fail(new Error("helper readiness timed out")),
       timeoutMs,
     );
+    readyPipe.resume();
   });
-
-  try {
-    const firstLine = await Promise.race([
-      lines[Symbol.asyncIterator]().next(),
-      timeoutResult,
-    ]);
-    if (firstLine.done || typeof firstLine.value !== "string") {
-      throw new Error("helper closed readiness pipe without a message");
-    }
-    return firstLine.value;
-  } finally {
-    if (timeout !== undefined) {
-      clearTimeout(timeout);
-    }
-    lines.close();
-  }
 }
 
 export async function startManagedHelper(
@@ -102,6 +134,23 @@ export async function startManagedHelper(
     env: options.environment,
     stdio: ["ignore", "ignore", "ignore", "pipe"],
   });
+
+  // Node reports ENOENT, EACCES, and invalid working directories through
+  // the "error" event. Keep a listener attached for the child's whole
+  // lifetime so the event can never become an unhandled EventEmitter
+  // failure, and surface the error while startup is still pending.
+  let startupPending = true;
+  let failStartup: ((error: Error) => void) | undefined;
+  const spawnFailure = new Promise<never>((_, reject) => {
+    failStartup = reject;
+  });
+  spawnFailure.catch(() => undefined);
+  child.on("error", (error: Error) => {
+    if (startupPending) {
+      failStartup?.(error);
+    }
+  });
+
   const readyPipe = child.stdio[3];
   if (!(readyPipe instanceof Readable)) {
     await stopChild(child, options.shutdownTimeoutMs);
@@ -110,12 +159,16 @@ export async function startManagedHelper(
 
   let ready: HelperReadyMessage;
   try {
-    const readyLine = await readFirstReadyLine(readyPipe, options.readinessTimeoutMs);
+    const readyLine = await Promise.race([
+      readFirstReadyLine(readyPipe, options.readinessTimeoutMs),
+      spawnFailure,
+    ]);
     ready = parseHelperReadyLine(readyLine);
   } catch (error) {
     await stopChild(child, options.shutdownTimeoutMs);
     throw error;
   }
+  startupPending = false;
   if (child.pid === undefined || child.pid < 1) {
     await stopChild(child, options.shutdownTimeoutMs);
     throw new Error("helper process id was unavailable");

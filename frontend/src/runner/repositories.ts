@@ -72,7 +72,7 @@ function requestRunnerRepository<T>(
     path: "/api/repos",
     query: {},
     body,
-    maxSessionBytes: 262_144,
+    maxSessionBytes: 16 * 1024 * 1024,
   });
 }
 

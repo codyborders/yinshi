@@ -95,7 +95,7 @@ function fillGitCredential(credentialBroker) {
 }
 
 test("credential capability survives Git askpass execution", async () => {
-  const credentialBroker = await createGitCredentialBroker("inert-git-credential");
+  const credentialBroker = await createGitCredentialBroker("inert-git-credential", "github.com");
   try {
     const result = await fillGitCredential(credentialBroker);
 
@@ -107,8 +107,41 @@ test("credential capability survives Git askpass execution", async () => {
   }
 });
 
+test("credential broker denies issuance for hosts other than the approved host", async () => {
+  // An attacker-controlled remote, an HTTP redirect, or an insteadOf
+  // rewrite must never receive the scoped installation token.
+  const credentialBroker = await createGitCredentialBroker("inert-credential", "github.com");
+  try {
+    const redirectedHost = await runAskpass(
+      credentialBroker,
+      "Password for 'https://evil.example.com': ",
+      true,
+    );
+    assert.notEqual(redirectedHost.exitCode, 0);
+    assert.doesNotMatch(redirectedHost.stdout, /inert-credential/);
+
+    const rewrittenTarget = await runAskpass(
+      credentialBroker,
+      "Password for 'https://x-access-token@evil.example.com': ",
+      true,
+    );
+    assert.notEqual(rewrittenTarget.exitCode, 0);
+    assert.doesNotMatch(rewrittenTarget.stdout, /inert-credential/);
+
+    const usernameProbe = await runAskpass(
+      credentialBroker,
+      "Username for 'https://evil.example.com': ",
+      true,
+    );
+    assert.notEqual(usernameProbe.exitCode, 0);
+    assert.doesNotMatch(usernameProbe.stdout, /x-access-token/);
+  } finally {
+    credentialBroker.cleanup();
+  }
+});
+
 test("credential broker requires an inherited capability and issues once", async () => {
-  const credentialBroker = await createGitCredentialBroker("inert-credential");
+  const credentialBroker = await createGitCredentialBroker("inert-credential", "github.com");
   try {
     assert.deepEqual(
       fs.readdirSync(path.dirname(credentialBroker.askpassPath)).sort(),
@@ -118,15 +151,27 @@ test("credential broker requires an inherited capability and issues once", async
     assert.notEqual(denied.exitCode, 0);
     assert.doesNotMatch(denied.stdout, /inert-credential/);
 
-    const username = await runAskpass(credentialBroker, "Username for GitHub", true);
+    const username = await runAskpass(
+      credentialBroker,
+      "Username for 'https://github.com': ",
+      true,
+    );
     assert.equal(username.exitCode, 0);
     assert.equal(username.stdout.trim(), "x-access-token");
 
-    const password = await runAskpass(credentialBroker, "Password for GitHub", true);
+    const password = await runAskpass(
+      credentialBroker,
+      "Password for 'https://x-access-token@github.com': ",
+      true,
+    );
     assert.equal(password.exitCode, 0);
     assert.equal(password.stdout.trim(), "inert-credential");
 
-    const replay = await runAskpass(credentialBroker, "Password for GitHub", true);
+    const replay = await runAskpass(
+      credentialBroker,
+      "Password for 'https://x-access-token@github.com': ",
+      true,
+    );
     assert.notEqual(replay.exitCode, 0);
     assert.doesNotMatch(replay.stdout, /inert-credential/);
   } finally {

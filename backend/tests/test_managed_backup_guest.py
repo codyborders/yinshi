@@ -821,6 +821,134 @@ def test_run_restore_job_replaces_data_and_writes_private_result(tmp_path: Path)
     assert result_path.stat().st_mode & 0o777 == 0o600
 
 
+def test_run_restore_job_retries_pending_journal_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cleanup-pending committed restore must stay valid and converge on retry."""
+    import base64
+    import json
+    import shutil
+
+    from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
+
+    from yinshi.managed_backup_guest import (
+        ManagedArchiveContext,
+        create_managed_backup_archive,
+        run_managed_backup_job,
+    )
+    from yinshi.services.managed_backup_crypto import seal_managed_backup_job
+
+    source = tmp_path / "source"
+    source_sqlite = source / "sqlite"
+    source_files = source / "files"
+    source_sqlite.mkdir(parents=True)
+    source_files.mkdir()
+    (source_sqlite / "control.db").write_bytes(b"restored-database")
+    _write_data_key(source_sqlite)
+    (source_files / "workspace.txt").write_bytes(b"restored-files")
+    job_id = "018f47a2-9d3a-7f3b-8f0f-1a2b3c4d5e81"
+    context = ManagedArchiveContext(
+        archive_id="018f47a2-9d3a-7f3b-8f0f-1a2b3c4d5e82",
+        created_at="2026-08-12T12:00:00+00:00",
+        owner_digest="a" * 64,
+        runtime_generation=8,
+    )
+    archive_key = b"j" * 32
+    state_root = tmp_path / "state"
+    maintenance_root = state_root / "maintenance"
+    maintenance_root.mkdir(parents=True, mode=0o700)
+    archive_path = maintenance_root / f"{job_id}.archive.enc"
+    create_managed_backup_archive(
+        sqlite_root=source_sqlite,
+        files_root=source_files,
+        archive_path=archive_path,
+        archive_key=archive_key,
+        context=context,
+    )
+    sqlite_root = state_root / "sqlite"
+    files_root = state_root / "files"
+    sqlite_root.mkdir()
+    files_root.mkdir()
+    (sqlite_root / "control.db").write_bytes(b"stale")
+    (files_root / "workspace.txt").write_bytes(b"stale")
+    runner_key = X25519PrivateKey.generate()
+    envelope = seal_managed_backup_job(
+        {
+            "archive_context": {
+                "archive_id": context.archive_id,
+                "created_at": context.created_at,
+                "owner_digest": context.owner_digest,
+                "runtime_generation": context.runtime_generation,
+            },
+            "archive_key": base64.urlsafe_b64encode(archive_key).rstrip(b"=").decode("ascii"),
+            "job_id": job_id,
+            "operation": "restore",
+            "version": 1,
+        },
+        runner_public_key=(
+            base64.urlsafe_b64encode(runner_key.public_key().public_bytes_raw())
+            .rstrip(b"=")
+            .decode("ascii")
+        ),
+        job_id=job_id,
+    )
+    job_path = maintenance_root / f"{job_id}.job"
+    result_path = maintenance_root / f"{job_id}.result"
+    job_path.write_bytes(envelope)
+    job_path.chmod(0o600)
+
+    original_rmtree = shutil.rmtree
+    interrupted = False
+
+    def interrupt_cleanup(path: object, *args: object, **kwargs: object) -> None:
+        nonlocal interrupted
+        target = Path(path)
+        if target.name == ".yinshi-restore-cleanup" and not interrupted:
+            interrupted = True
+            (target / "state.json").unlink()
+            raise OSError("injected journal cleanup crash")
+        original_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(shutil, "rmtree", interrupt_cleanup)
+    run_managed_backup_job(
+        job_path=job_path,
+        result_path=result_path,
+        runner_private_key=runner_key.private_bytes_raw(),
+        sqlite_root=sqlite_root,
+        files_root=files_root,
+        maintenance_root=maintenance_root,
+        expected_job_id=job_id,
+    )
+    monkeypatch.setattr(shutil, "rmtree", original_rmtree)
+
+    assert json.loads(result_path.read_text(encoding="utf-8")) == {
+        "cleanup_pending": True,
+        "job_id": job_id,
+        "status": "restored",
+    }
+    assert (state_root / ".yinshi-restore-cleanup").is_dir()
+
+    run_managed_backup_job(
+        job_path=job_path,
+        result_path=result_path,
+        runner_private_key=runner_key.private_bytes_raw(),
+        sqlite_root=sqlite_root,
+        files_root=files_root,
+        maintenance_root=maintenance_root,
+        expected_job_id=job_id,
+    )
+
+    assert (sqlite_root / "control.db").read_bytes() == b"restored-database"
+    assert (files_root / "workspace.txt").read_bytes() == b"restored-files"
+    assert not (state_root / ".yinshi-restore-cleanup").exists()
+    assert json.loads(result_path.read_text(encoding="utf-8")) == {
+        "cleanup_pending": False,
+        "job_id": job_id,
+        "status": "restored",
+    }
+
+
 def test_guest_command_uses_fixed_managed_paths(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

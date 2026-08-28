@@ -12,7 +12,7 @@ import StreamingDots from "./StreamingDots";
 function computeSlashRegion(
   input: string,
   caret: number,
-): { start: number; token: string } | null {
+): { start: number; end: number; token: string } | null {
   let scanIndex = caret;
   while (
     scanIndex > 0 &&
@@ -29,7 +29,11 @@ function computeSlashRegion(
   if (slashIndex > 0 && !/\s/.test(input[slashIndex - 1])) {
     return null;
   }
-  return { start: slashIndex, token: input.slice(scanIndex, caret) };
+  let end = caret;
+  while (end < input.length && !/\s/.test(input[end]) && input[end] !== "/") {
+    end++;
+  }
+  return { start: slashIndex, end, token: input.slice(scanIndex, caret) };
 }
 
 const SLASH_COMMANDS: SlashCommand[] = [
@@ -140,6 +144,13 @@ export default function ChatView({
         )
       : [];
   const menuVisible = slashFilter !== null && filteredCommands.length > 0;
+  const filteredCommandSignature = filteredCommands
+    .map((command) => `${command.source}:${command.name}`)
+    .join("\0");
+
+  useEffect(() => {
+    setMenuIndex(0);
+  }, [slashFilter, filteredCommandSignature]);
 
   const selectCommand = useCallback(
     (command: SlashCommand) => {
@@ -154,7 +165,7 @@ export default function ChatView({
       // the existing "click to execute" behavior. Anywhere else (mid-prompt,
       // or a pi command) we insert text so multiple commands can be chained.
       const selectionCoversEntireInput =
-        region.start === 0 && caret === input.length;
+        region.start === 0 && region.end === input.length && caret === input.length;
       if (command.source === "builtin" && selectionCoversEntireInput) {
         setInput("");
         pendingCaretRef.current = 0;
@@ -166,11 +177,11 @@ export default function ChatView({
       // Only append a trailing space when the caret isn't already followed by
       // whitespace -- avoids "/name  more" double-space when inserting into
       // the middle of existing text.
-      const nextChar = input.charAt(caret);
+      const nextChar = input.charAt(region.end);
       const needsTrailingSpace = nextChar === "" || !/\s/.test(nextChar);
       const replacement = `/${command.name}${needsTrailingSpace ? " " : ""}`;
       const newText =
-        input.slice(0, region.start) + replacement + input.slice(caret);
+        input.slice(0, region.start) + replacement + input.slice(region.end);
       pendingCaretRef.current = region.start + replacement.length;
       setInput(newText);
     },

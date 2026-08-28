@@ -38,6 +38,7 @@ logger = logging.getLogger(__name__)
 
 _SIDECAR_MESSAGE_LIMIT_BYTES = 1024 * 1024 * 8
 _SIDECAR_WARMUP_TIMEOUT_SECONDS = 30.0
+_SIDECAR_CATALOG_TIMEOUT_SECONDS = 5.0
 _SIDECAR_CANCELLATION_TIMEOUT_SECONDS = 30.0
 
 
@@ -90,15 +91,20 @@ class SidecarClient:
                 socket_path,
                 limit=_SIDECAR_MESSAGE_LIMIT_BYTES,
             )
-            self._connected = True
 
             init_line = await self._reader.readline()
-            if init_line:
-                init_msg = json.loads(init_line.decode())
-                if init_msg.get("type") == "init_status" and init_msg.get("success"):
-                    logger.info("Connected to sidecar runtime")
-                else:
-                    raise SidecarError(f"Sidecar init failed: {init_msg}")
+            if not init_line:
+                # An immediate peer close is a failed handshake, not a live
+                # connection. Clear transport state so later operations fail
+                # with the accurate not-connected error.
+                await self.disconnect()
+                raise SidecarError("Sidecar closed the connection before the init handshake")
+            init_msg = json.loads(init_line.decode())
+            if init_msg.get("type") == "init_status" and init_msg.get("success"):
+                self._connected = True
+                logger.info("Connected to sidecar runtime")
+            else:
+                raise SidecarError(f"Sidecar init failed: {init_msg}")
         except FileNotFoundError:
             raise SidecarNotConnectedError(
                 f"Sidecar socket not found at {socket_path}. Is the sidecar running?"
@@ -368,7 +374,11 @@ class SidecarClient:
                 "options": {"agentDir": agent_dir} if agent_dir else {},
             }
         )
-        msg = await self._read_line()
+        try:
+            async with asyncio.timeout(_SIDECAR_CATALOG_TIMEOUT_SECONDS):
+                msg = await self._read_line()
+        except (asyncio.TimeoutError, json.JSONDecodeError) as exc:
+            raise SidecarError("Catalog response unavailable") from exc
         if msg is None:
             raise SidecarError("Sidecar connection lost during catalog request")
         if msg.get("type") == "error":

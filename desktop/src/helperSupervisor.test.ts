@@ -45,6 +45,48 @@ describe("startManagedHelper", () => {
     expect(helper?.running).toBe(false);
   });
 
+  it("rejects startup when the helper cannot spawn", async () => {
+    await expect(
+      startManagedHelper({
+        command: "/nonexistent/yinshi-helper-binary",
+        arguments: [],
+        environment: {},
+        readinessTimeoutMs: 2_000,
+        shutdownTimeoutMs: 2_000,
+      }),
+    ).rejects.toThrow();
+
+    await expect(
+      startManagedHelper({
+        command: process.execPath,
+        arguments: ["--eval", fakeHelperScript()],
+        environment: {},
+        workingDirectory: "/nonexistent/yinshi-working-directory",
+        readinessTimeoutMs: 2_000,
+        shutdownTimeoutMs: 2_000,
+      }),
+    ).rejects.toThrow();
+  });
+
+  it.each([true, false])(
+    "rejects oversized %s readiness input before parsing",
+    async (terminatedWithNewline) => {
+      const payload = "x".repeat(4097) + (terminatedWithNewline ? "\\n" : "");
+      await expect(
+        startManagedHelper({
+          command: process.execPath,
+          arguments: [
+            "--eval",
+            `require('node:fs').writeSync(3, ${JSON.stringify(payload)});`,
+          ],
+          environment: {},
+          readinessTimeoutMs: 2_000,
+          shutdownTimeoutMs: 2_000,
+        }),
+      ).rejects.toThrow("helper readiness line exceeds 4096 bytes");
+    },
+  );
+
   it("times out and stops a helper that never signals readiness", async () => {
     const startPromise = startManagedHelper({
       command: process.execPath,

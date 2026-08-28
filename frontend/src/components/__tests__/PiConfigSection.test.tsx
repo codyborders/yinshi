@@ -72,6 +72,40 @@ describe("PiConfigSection", () => {
     expect(toggleCategory).toHaveBeenCalledWith("settings", true);
   });
 
+  it("disables all conflicting controls while any mutation is in flight", () => {
+    usePiConfigMock.mockReturnValue({
+      config: {
+        id: "cfg-1",
+        created_at: "2026-03-20T12:00:00Z",
+        updated_at: "2026-03-20T00:00:00Z",
+        source_type: "github",
+        source_label: "example/repo",
+        last_synced_at: "2026-03-20T12:00:00Z",
+        status: "ready",
+        error_message: null,
+        available_categories: ["settings"],
+        enabled_categories: ["settings"],
+      },
+      loading: false,
+      error: null,
+      importing: false,
+      syncing: true,
+      updatingCategories: false,
+      busy: true,
+      importFromGithub: vi.fn(),
+      importFromUpload: vi.fn(),
+      loadConfig: vi.fn(),
+      syncConfig: vi.fn(),
+      removeConfig: vi.fn(),
+      toggleCategory: vi.fn(),
+    });
+
+    render(<PiConfigSection transport={transport} />);
+    expect(screen.getByRole("button", { name: "Syncing..." })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Remove" })).toBeDisabled();
+    expect(screen.getByRole("checkbox")).toBeDisabled();
+  });
+
   it("disables category checkboxes while a toggle request is in flight", () => {
     usePiConfigMock.mockReturnValue({
       config: {
@@ -91,6 +125,7 @@ describe("PiConfigSection", () => {
       importing: false,
       syncing: false,
       updatingCategories: true,
+      busy: true,
       importFromGithub: vi.fn(),
       importFromUpload: vi.fn(),
       loadConfig: vi.fn(),

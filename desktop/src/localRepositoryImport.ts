@@ -34,6 +34,54 @@ export interface ClonedRepository {
   readonly path: string;
 }
 
+export interface RegisteredLocalRepository {
+  readonly id: string;
+  readonly name: string;
+}
+
+export interface RegisterLocalRepositoryOptions {
+  readonly repository: ClonedRepository;
+  readonly fetchRegistration: () => Promise<Response>;
+  readonly removeClone: (repositoryPath: string) => Promise<void>;
+}
+
+export async function registerLocalRepository(
+  options: RegisterLocalRepositoryOptions,
+): Promise<RegisteredLocalRepository> {
+  let response: Response;
+  try {
+    response = await options.fetchRegistration();
+  } catch {
+    // The registration outcome is unknown: the server may have committed a
+    // row that points at the clone. Keep the clone rather than orphan it.
+    throw new Error("local repository registration outcome is unknown");
+  }
+  if (response.status !== 201) {
+    if (response.status >= 400 && response.status < 500) {
+      // The server definitively rejected the registration, so nothing was
+      // committed and the clone can be discarded.
+      await options.removeClone(options.repository.path);
+    }
+    throw new Error("local repository registration failed");
+  }
+  // A 201 response means the server committed a row that references the
+  // clone path. Never delete the clone after this point.
+  let value: unknown;
+  try {
+    value = await response.json();
+  } catch {
+    throw new Error("local repository registration response is invalid");
+  }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("local repository registration response is invalid");
+  }
+  const registered = value as Record<string, unknown>;
+  if (typeof registered.id !== "string" || typeof registered.name !== "string") {
+    throw new Error("local repository registration response is invalid");
+  }
+  return { id: registered.id, name: registered.name };
+}
+
 function isInside(candidatePath: string, basePath: string): boolean {
   const relativePath = path.relative(basePath, candidatePath);
   return relativePath !== "" && !relativePath.startsWith(`..${path.sep}`) && relativePath !== "..";
@@ -51,12 +99,22 @@ async function pathExists(candidatePath: string): Promise<boolean> {
   }
 }
 
+// Repository-local configuration can name executables (core.fsmonitor,
+// core.hooksPath). Override them for every Git invocation so importing a
+// prepared checkout never runs programs from its .git/config.
+const GIT_EXECUTION_CONFIG_ARGUMENTS = [
+  "-c",
+  "core.fsmonitor=false",
+  "-c",
+  "core.hooksPath=/dev/null",
+] as const;
+
 async function runGit(
   gitCommand: string,
   arguments_: readonly string[],
 ): Promise<{ stdout: string; stderr: string }> {
   try {
-    return await executeFile(gitCommand, [...arguments_], {
+    return await executeFile(gitCommand, [...GIT_EXECUTION_CONFIG_ARGUMENTS, ...arguments_], {
       encoding: "utf8",
       env: {
         HOME: process.env.HOME ?? "/var/empty",

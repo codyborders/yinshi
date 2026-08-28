@@ -78,6 +78,17 @@ def test_workspace_update_valid_states():
     assert WorkspaceUpdate().state is None
 
 
+def test_workspace_update_rejects_explicit_null_state():
+    """WorkspaceUpdate should distinguish omitted state from explicit null."""
+    import pytest
+    from pydantic import ValidationError
+
+    from yinshi.models import WorkspaceUpdate
+
+    with pytest.raises(ValidationError):
+        WorkspaceUpdate(state=None)
+
+
 def test_workspace_update_invalid_state():
     """WorkspaceUpdate should reject invalid state values."""
     import pytest

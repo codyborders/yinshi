@@ -730,6 +730,56 @@ def test_client_websocket_does_not_close_twice_after_concurrent_teardown(
     assert disconnect.value.code == 4004
 
 
+def test_client_relay_releases_permit_when_broker_detach_fails(
+    auth_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Exceptional broker detach must not exhaust the client relay permit."""
+    from unittest.mock import AsyncMock
+
+    from yinshi.api import runner_relay as runner_relay_api
+
+    transfer_id = str(uuid.uuid4())
+    grant = RunnerTransferGrant(
+        transfer_id=transfer_id,
+        runner_id="runner-1",
+        expires_at=1_900_000_300,
+        max_session_bytes=65_536,
+    )
+    limited_connections = asyncio.Semaphore(1)
+    monkeypatch.setattr(runner_relay_api, "_CLIENT_CONNECTION_LIMIT", limited_connections)
+    monkeypatch.setattr(
+        runner_relay_api,
+        "claim_runner_transfer_grant",
+        lambda _transfer_id, _capability: grant,
+    )
+    monkeypatch.setattr(
+        runner_relay_api.runner_relay_broker,
+        "attach_client",
+        AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(
+        runner_relay_api.runner_relay_broker,
+        "send_client_frames",
+        AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(
+        runner_relay_api.runner_relay_broker,
+        "detach_client",
+        AsyncMock(side_effect=RuntimeError("broker detach cleanup failed")),
+    )
+
+    with auth_client.websocket_connect(f"/api/runner/relay/{transfer_id}") as client_socket:
+        client_socket.send_text("capability")
+        assert client_socket.receive_json() == {"type": "ready"}
+
+    assert limited_connections._value == 1
+
+    with auth_client.websocket_connect(f"/api/runner/relay/{transfer_id}") as client_socket:
+        client_socket.send_text("capability")
+        assert client_socket.receive_json() == {"type": "ready"}
+
+
 def test_websocket_relay_authenticates_runner_and_exact_capability(
     auth_client: TestClient,
 ) -> None:

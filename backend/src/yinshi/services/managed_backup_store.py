@@ -398,6 +398,11 @@ class S3ManagedBackupStore:
         )
         metadata = head.get("Metadata")
         size_bytes = head.get("ContentLength")
+        created_by_this_operation = (
+            isinstance(metadata, dict)
+            and metadata.get("archive-id") == archive_id
+            and metadata.get("format") == "yinshi-managed-backup-v1"
+        )
         if (
             size_bytes != expected_size
             or not isinstance(metadata, dict)
@@ -410,14 +415,20 @@ class S3ManagedBackupStore:
             )
             or head.get("VersionId") != version
         ):
+            if created_by_this_operation:
+                await self._delete_invalid_version(key, version)
             raise RuntimeError("backup upload reconciliation validation failed")
         if not self._require_object_encryption_confirmation:
-            await self._verify_remote_digest(
-                key=key,
-                version=version,
-                expected_size=expected_size,
-                expected_sha256=expected_sha256,
-            )
+            try:
+                await self._verify_remote_digest(
+                    key=key,
+                    version=version,
+                    expected_size=expected_size,
+                    expected_sha256=expected_sha256,
+                )
+            except RuntimeError:
+                await self._delete_invalid_version(key, version)
+                raise
         return StoredManagedBackup(
             version=version,
             size_bytes=size_bytes,

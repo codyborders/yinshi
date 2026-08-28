@@ -470,6 +470,72 @@ def test_callback_provider_auth_persists_completed_oauth_connection(
     touch_container.assert_called_once()
 
 
+def test_callback_provider_auth_returns_json_when_database_write_fails(
+    auth_client: TestClient,
+) -> None:
+    """A completed OAuth flow returns a stable JSON error when storage fails."""
+    from yinshi.db import get_control_db
+
+    async def unexpected_query(*args: object, **kwargs: object):
+        if False:
+            yield {}
+        raise AssertionError("query should not be called")
+
+    mock_sidecar = make_mock_sidecar(unexpected_query)
+    mock_sidecar.get_oauth_flow_status = AsyncMock(
+        return_value={
+            "flow_id": "flow-database-failure",
+            "provider": "openai-codex",
+            "status": "complete",
+            "authorization_mode": "browser",
+            "user_code": None,
+            "instructions": "Open the browser and sign in.",
+            "progress": [],
+            "manual_input_required": False,
+            "manual_input_prompt": None,
+            "manual_input_submitted": False,
+            "credentials": {
+                "access": "oauth-access-token",
+                "refresh": "oauth-refresh-token",
+                "expires": 1_800_000_000_000,
+                "accountId": "acct_database_failure",
+            },
+        }
+    )
+    mock_sidecar.clear_oauth_flow = AsyncMock()
+    with get_control_db() as database:
+        database.execute("""CREATE TRIGGER reject_provider_connection_insert
+               BEFORE INSERT ON provider_connections
+               BEGIN
+                   SELECT RAISE(ABORT, 'forced provider insert failure');
+               END""")
+        database.commit()
+    try:
+        with (
+            patch(
+                "yinshi.api.auth_routes.create_sidecar_connection",
+                return_value=mock_sidecar,
+            ),
+            patch(
+                "yinshi.api.auth_routes.resolve_tenant_sidecar_context",
+                new=AsyncMock(return_value=_tenant_sidecar_context()),
+            ),
+            patch("yinshi.api.auth_routes.touch_tenant_container"),
+        ):
+            response = auth_client.get(
+                "/auth/providers/openai-codex/callback?flow_id=flow-database-failure"
+            )
+    finally:
+        with get_control_db() as database:
+            database.execute("DROP TRIGGER reject_provider_connection_insert")
+            database.commit()
+
+    assert response.status_code == 503
+    assert response.headers["content-type"].startswith("application/json")
+    assert response.json() == {"detail": "Provider credentials could not be saved"}
+    mock_sidecar.clear_oauth_flow.assert_not_awaited()
+
+
 def test_start_provider_auth_returns_503_when_sidecar_is_unavailable(
     auth_client: TestClient,
 ) -> None:

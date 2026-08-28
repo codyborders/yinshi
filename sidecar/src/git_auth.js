@@ -289,8 +289,28 @@ function requestHasCapability(request, capability) {
   return timingSafeEqual(receivedCapability, expectedCapability);
 }
 
-export async function createGitCredentialBroker(accessToken) {
+const CREDENTIAL_PROMPT_URL_PATTERN = /'([^']+)'/;
+
+function credentialPromptTargetHost(prompt) {
+  const urlMatch = prompt.match(CREDENTIAL_PROMPT_URL_PATTERN);
+  if (urlMatch === null) {
+    return null;
+  }
+  let promptUrl;
+  try {
+    promptUrl = new URL(urlMatch[1]);
+  } catch {
+    return null;
+  }
+  if (promptUrl.protocol !== "https:") {
+    return null;
+  }
+  return promptUrl.hostname;
+}
+
+export async function createGitCredentialBroker(accessToken, approvedHost) {
   let credential = assertNonEmptyString(accessToken, "accessToken");
+  const normalizedApprovedHost = assertNonEmptyString(approvedHost, "approvedHost");
   let capability = randomBytes(32).toString("hex");
   const askpassBundle = createGitAskpassBundle();
   let capabilityFd;
@@ -326,6 +346,10 @@ export async function createGitCredentialBroker(accessToken) {
       }
       const prompt = request.prompt;
       if (typeof prompt !== "string" || prompt.length === 0 || prompt.length > 1024) {
+        socket.destroy();
+        return;
+      }
+      if (credentialPromptTargetHost(prompt) !== normalizedApprovedHost) {
         socket.destroy();
         return;
       }
@@ -402,7 +426,10 @@ async function executeGitCommand(parsedGitCommand, execOptions, gitAuth) {
   if (normalizedGitAuth === null) {
     throw new Error("gitAuth is required for authenticated git execution");
   }
-  const credentialBroker = await createGitCredentialBroker(normalizedGitAuth.accessToken);
+  const credentialBroker = await createGitCredentialBroker(
+    normalizedGitAuth.accessToken,
+    normalizedGitAuth.host,
+  );
   const gitCommandArguments = createGitCommandArguments(parsedGitCommand.gitArguments);
   const gitEnvironment = createGitExecutionEnvironment(
     execOptions?.env,

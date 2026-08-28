@@ -18,7 +18,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from yinshi.api.deps import check_workspace_owner, get_tenant, run_db_operation_for_request
-from yinshi.exceptions import GitError, WorkspaceNotFoundError
+from yinshi.exceptions import GitError, RepoNotFoundError, WorkspaceNotFoundError
 from yinshi.services.workspace_files import (
     _open_workspace_parent,
     build_file_tree,
@@ -43,6 +43,7 @@ _EXPECTED_FILE_ERRORS = (
     TypeError,
     ValueError,
     GitError,
+    RepoNotFoundError,
     WorkspaceNotFoundError,
 )
 
@@ -128,6 +129,8 @@ async def _prepare_workspace_files(
 
 def _map_file_error(exc: Exception) -> HTTPException:
     """Convert file service exceptions into stable HTTP responses."""
+    if isinstance(exc, RepoNotFoundError):
+        return HTTPException(status_code=404, detail="Repo not found")
     if isinstance(exc, (FileNotFoundError, WorkspaceNotFoundError)):
         return HTTPException(status_code=404, detail=str(exc) or "File not found")
     if isinstance(exc, PermissionError):

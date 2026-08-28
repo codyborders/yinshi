@@ -1077,6 +1077,12 @@ async def callback_provider_auth(provider: str, flow_id: str, request: Request) 
                 _build_provider_auth_status_payload(flow, status="complete"),
                 headers={"Cache-Control": "no-store"},
             )
+    except sqlite3.Error as error:
+        logger.exception("Provider OAuth credential persistence failed")
+        raise HTTPException(
+            status_code=503,
+            detail="Provider credentials could not be saved",
+        ) from error
     except (ContainerNotReadyError, ContainerStartError, OSError, SidecarError) as error:
         raise _provider_auth_sidecar_http_error(error) from error
     finally:
@@ -1160,6 +1166,12 @@ async def submit_provider_auth_callback(
                 ),
                 headers={"Cache-Control": "no-store"},
             )
+    except sqlite3.Error as error:
+        logger.exception("Provider OAuth credential persistence failed")
+        raise HTTPException(
+            status_code=503,
+            detail="Provider credentials could not be saved",
+        ) from error
     except (ContainerNotReadyError, ContainerStartError, OSError, SidecarError) as error:
         raise _provider_auth_sidecar_http_error(error) from error
     finally:

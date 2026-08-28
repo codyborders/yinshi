@@ -856,7 +856,7 @@ def register_runner(
         capabilities_text = _capabilities_json(merged_capabilities)
         normalized_data_dir = str(merged_capabilities["data_dir"])
 
-        db.execute(
+        registration_update = db.execute(
             """
             UPDATE user_runners
             SET status = 'online',
@@ -874,7 +874,7 @@ def register_runner(
                     WHEN noise_public_key = ? THEN noise_public_key_confirmed_at
                     ELSE NULL
                 END
-            WHERE id = ?
+            WHERE id = ? AND revoked_at IS NULL
             """,
             (
                 runner_token_hash,
@@ -889,6 +889,9 @@ def register_runner(
                 row["id"],
             ),
         )
+        if registration_update.rowcount != 1:
+            db.rollback()
+            raise RunnerRegistrationError("Runner was revoked during registration")
         db.commit()
 
     return {
@@ -964,7 +967,7 @@ def record_runner_heartbeat(
         capabilities_text = _capabilities_json(merged_capabilities)
         normalized_data_dir = str(merged_capabilities["data_dir"])
 
-        db.execute(
+        heartbeat_update = db.execute(
             """
             UPDATE user_runners
             SET status = 'online',
@@ -972,7 +975,7 @@ def record_runner_heartbeat(
                 runner_version = ?,
                 capabilities_json = ?,
                 data_dir = ?
-            WHERE id = ?
+            WHERE id = ? AND revoked_at IS NULL
             """,
             (
                 now_text,
@@ -982,6 +985,9 @@ def record_runner_heartbeat(
                 row["id"],
             ),
         )
+        if heartbeat_update.rowcount != 1:
+            db.rollback()
+            raise RunnerAuthenticationError("Runner token is invalid")
         db.commit()
 
     return {

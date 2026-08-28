@@ -153,6 +153,8 @@ export default function Session() {
   const runtimeState = useRuntimeResource(encodedSessionId);
   const runtimeResource = runtimeState.resource;
   const id = runtimeResource?.resourceId;
+  const currentSessionIdRef = useRef<string | undefined>(id);
+  currentSessionIdRef.current = id;
   const transport = runtimeResource?.transport;
   const {
     messages,
@@ -204,6 +206,8 @@ export default function Session() {
     setHistoryError(null);
     setHistoryRevalidating(false);
     setMetadataError(null);
+    setUpdatingModel(false);
+    setPendingModelSelection(null);
   }, [encodedSessionId]);
 
   useEffect(() => {
@@ -491,12 +495,16 @@ export default function Session() {
         return false;
       }
 
+      const requestSessionId = id;
       setUpdatingModel(true);
       try {
         const updated = await transport.patch<{ model: string }>(
           `/api/sessions/${id}`,
           { model: resolvedModel },
         );
+        if (currentSessionIdRef.current !== requestSessionId) {
+          return false;
+        }
         setSessionModel(updated.model);
         rememberSessionModel(userId, updated.model);
         if (announce) {
@@ -506,12 +514,14 @@ export default function Session() {
         }
         return true;
       } catch {
-        if (announce) {
+        if (currentSessionIdRef.current === requestSessionId && announce) {
           addSystemMessage("Failed to update model.");
         }
         return false;
       } finally {
-        setUpdatingModel(false);
+        if (currentSessionIdRef.current === requestSessionId) {
+          setUpdatingModel(false);
+        }
       }
     },
     [addSystemMessage, catalog, id, transport, userId],

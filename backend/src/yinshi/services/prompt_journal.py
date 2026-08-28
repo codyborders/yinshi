@@ -18,7 +18,7 @@ from fastapi import Request
 
 from yinshi.api.deps import run_db_operation_for_request
 from yinshi.config import get_settings
-from yinshi.services.run_coordinator import get_run_coordinator
+from yinshi.services.run_coordinator import CancelOutcome, get_run_coordinator
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +34,11 @@ _TERMINAL_STATUS_ATTEMPTS = 3
 _TERMINAL_STATUS_RETRY_DELAY_SECONDS = 0.05
 _SQLITE_BUSY_CODES = frozenset({sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED})
 _SQLITE_BUSY_MESSAGES = frozenset({"database is locked", "database table is locked"})
+_TERMINAL_EVENT_FINAL_STATUSES = {
+    "result": "completed",
+    "cancelled": "cancelled",
+    "error": "failed",
+}
 _ACTIVE_PROMPT_RUN_ID: ContextVar[str | None] = ContextVar(
     "active_prompt_run_id",
     default=None,
@@ -392,8 +397,8 @@ class PromptJournal:
         run, should_cancel = await run_db_operation_for_request(request, request_stop)
         if not should_cancel:
             return run
-        cancellation_found = await get_run_coordinator().request_cancel(session_id)
-        if not cancellation_found:
+        cancellation_outcome = await get_run_coordinator().request_cancel(session_id)
+        if cancellation_outcome is CancelOutcome.ABSENT:
             async with self._tasks_lock:
                 task = self._tasks.get(run_id)
             if task is not None and not task.done():
@@ -426,6 +431,30 @@ class PromptJournal:
                     self._tasks.clear()
                     self._append_locks.clear()
 
+    @staticmethod
+    def _derive_terminal_status_from_events(
+        database: sqlite3.Connection,
+        run_id: str,
+    ) -> str | None:
+        """Derive one terminal status from the last persisted terminal event."""
+        for row in database.execute(
+            "SELECT event_json FROM prompt_events WHERE run_id = ? ORDER BY sequence DESC",
+            (run_id,),
+        ):
+            try:
+                event = json.loads(row["event_json"])
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(event, dict):
+                continue
+            event_type = event.get("type")
+            if not isinstance(event_type, str):
+                continue
+            final_status = _TERMINAL_EVENT_FINAL_STATUSES.get(event_type)
+            if final_status is not None:
+                return final_status
+        return None
+
     async def _recover_database(self, request: Request) -> None:
         """Mark active rows from a previous process as interrupted once per tenant DB."""
         database_path = self._database_path(request)
@@ -440,26 +469,37 @@ class PromptJournal:
 
             def recover(database: sqlite3.Connection) -> None:
                 database.execute("BEGIN IMMEDIATE")
-                rows = database.execute("""SELECT id, session_id FROM prompt_runs
+                rows = database.execute("""SELECT id, session_id, status FROM prompt_runs
                        WHERE status IN ('starting', 'running', 'stopping')""").fetchall()
                 for row in rows:
-                    sequence_row = database.execute(
-                        """SELECT COALESCE(MAX(sequence), -1) + 1 AS next_sequence
-                           FROM prompt_events WHERE run_id = ?""",
-                        (row["id"],),
-                    ).fetchone()
-                    if sequence_row is None or type(sequence_row["next_sequence"]) is not int:
-                        raise RuntimeError("prompt journal recovery sequence is invalid")
-                    existing = database.execute(
-                        "SELECT event_json FROM prompt_events WHERE run_id = ? AND sequence = ?",
-                        (row["id"], sequence_row["next_sequence"]),
-                    ).fetchone()
-                    if existing is None and sequence_row["next_sequence"] < _EVENT_COUNT_MAX:
-                        database.execute(
-                            """INSERT INTO prompt_events (run_id, sequence, event_json)
-                               VALUES (?, ?, ?)""",
-                            (row["id"], sequence_row["next_sequence"], event_json),
-                        )
+                    derived_status = self._derive_terminal_status_from_events(
+                        database,
+                        row["id"],
+                    )
+                    if derived_status is None:
+                        sequence_row = database.execute(
+                            """SELECT COALESCE(MAX(sequence), -1) + 1 AS next_sequence
+                               FROM prompt_events WHERE run_id = ?""",
+                            (row["id"],),
+                        ).fetchone()
+                        if sequence_row is None or type(sequence_row["next_sequence"]) is not int:
+                            raise RuntimeError("prompt journal recovery sequence is invalid")
+                        existing = database.execute(
+                            """SELECT event_json FROM prompt_events
+                               WHERE run_id = ? AND sequence = ?""",
+                            (row["id"], sequence_row["next_sequence"]),
+                        ).fetchone()
+                        if existing is None and sequence_row["next_sequence"] < _EVENT_COUNT_MAX:
+                            database.execute(
+                                """INSERT INTO prompt_events (run_id, sequence, event_json)
+                                   VALUES (?, ?, ?)""",
+                                (row["id"], sequence_row["next_sequence"], event_json),
+                            )
+                        final_status = "interrupted"
+                    elif row["status"] == "stopping":
+                        final_status = "cancelled"
+                    else:
+                        final_status = derived_status
                     database.execute(
                         """UPDATE sessions SET status = 'idle'
                            WHERE id = ? AND status = 'running'
@@ -470,9 +510,12 @@ class PromptJournal:
                              )""",
                         (row["session_id"], row["id"], row["session_id"]),
                     )
-                database.execute("""UPDATE prompt_runs
-                       SET status = 'interrupted', updated_at = CURRENT_TIMESTAMP
-                       WHERE status IN ('starting', 'running', 'stopping')""")
+                    database.execute(
+                        """UPDATE prompt_runs
+                           SET status = ?, updated_at = CURRENT_TIMESTAMP
+                           WHERE id = ? AND status IN ('starting', 'running', 'stopping')""",
+                        (final_status, row["id"]),
+                    )
                 database.commit()
 
             await run_db_operation_for_request(request, recover)

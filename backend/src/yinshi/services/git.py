@@ -367,7 +367,9 @@ async def clone_repo(
                 logger.warning("Repository refresh failed; reusing existing refs")
                 return dest
             if not had_remote_refs_before_fetch and not await _has_remote_refs(dest):
-                raise GitError("Existing clone is incomplete and missing remote refs")
+                # The origin already matched and the fetch reached it, so zero
+                # refs mean a valid empty remote rather than a damaged clone.
+                logger.info("Reusing an existing clone of an empty remote repository")
             return dest
         raise GitError("Destination already exists but is not a git repository")
     dest_path.parent.mkdir(parents=True, exist_ok=True)
@@ -442,6 +444,43 @@ async def resolve_remote_base_ref(
     raise GitError("Could not determine the remote default branch")
 
 
+async def _head_commit_exists(repo_path: str) -> bool:
+    """Return whether HEAD resolves to a commit."""
+    try:
+        await _run_git(["rev-parse", "--verify", "--quiet", "HEAD"], cwd=repo_path)
+    except GitError:
+        return False
+    return True
+
+
+async def _create_empty_root_commit(repo_path: str) -> str:
+    """Create one empty root commit for a repository with an unborn branch.
+
+    ``git worktree add`` cannot branch from an unborn HEAD, so a clone of an
+    empty remote needs an explicit base commit. The commit carries the empty
+    tree only, uses a fixed Yinshi identity, and leaves every existing branch
+    untouched.
+    """
+    empty_tree_id = await _run_git(
+        ["hash-object", "-w", "-t", "tree", os.devnull],
+        cwd=repo_path,
+    )
+    commit_id = await _run_git(
+        [
+            "-c",
+            "user.name=Yinshi",
+            "-c",
+            "user.email=noreply@yinshi.local",
+            "commit-tree",
+            empty_tree_id,
+            "-m",
+            "Initialize workspace on an empty repository",
+        ],
+        cwd=repo_path,
+    )
+    return commit_id
+
+
 async def create_worktree(
     repo_path: str,
     worktree_path: str,
@@ -461,6 +500,8 @@ async def create_worktree(
         if not normalized_base_ref:
             raise ValueError("base_ref must not be empty when provided")
         worktree_add_args.append(normalized_base_ref)
+    elif not await _head_commit_exists(repo_path):
+        worktree_add_args.append(await _create_empty_root_commit(repo_path))
     await _run_git(worktree_add_args, cwd=repo_path)
     logger.info("Repository worktree created")
     return worktree_path

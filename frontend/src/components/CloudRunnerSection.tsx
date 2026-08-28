@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import {
   api,
@@ -271,20 +271,37 @@ export default function CloudRunnerSection() {
   const [runnerRepositoryName, setRunnerRepositoryName] = useState("");
   const [runnerRepositoryUrl, setRunnerRepositoryUrl] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const mutationGenerationRef = useRef(0);
 
-  async function loadRunner() {
+  function beginMutation(): number {
+    mutationGenerationRef.current += 1;
+    return mutationGenerationRef.current;
+  }
+
+  function isCurrentMutation(generation: number): boolean {
+    return mutationGenerationRef.current === generation;
+  }
+
+  async function loadRunner(generation?: number) {
     setLoading(true);
     try {
       const loadedRunner = await api.get<CloudRunner | null>(
         "/api/settings/runner",
       );
+      if (generation !== undefined && !isCurrentMutation(generation)) {
+        return;
+      }
       setRunner(loadedRunner);
       setSelectedOption(optionForRunner(loadedRunner));
       setError(null);
     } catch (loadError) {
-      setError(errorMessage(loadError, "Failed to load cloud runner"));
+      if (generation === undefined || isCurrentMutation(generation)) {
+        setError(errorMessage(loadError, "Failed to load cloud runner"));
+      }
     } finally {
-      setLoading(false);
+      if (generation === undefined || isCurrentMutation(generation)) {
+        setLoading(false);
+      }
     }
   }
 
@@ -312,6 +329,7 @@ export default function CloudRunnerSection() {
       return;
     }
 
+    const generation = beginMutation();
     setSaving(true);
     setError(null);
     try {
@@ -324,13 +342,19 @@ export default function CloudRunnerSection() {
           storage_profile: storageProfile,
         },
       );
-      setRegistration(createdRegistration);
-      setRunner(createdRegistration.runner);
-      setSelectedOption(optionForRunner(createdRegistration.runner));
+      if (isCurrentMutation(generation)) {
+        setRegistration(createdRegistration);
+        setRunner(createdRegistration.runner);
+        setSelectedOption(optionForRunner(createdRegistration.runner));
+      }
     } catch (createError) {
-      setError(errorMessage(createError, "Failed to create cloud runner"));
+      if (isCurrentMutation(generation)) {
+        setError(errorMessage(createError, "Failed to create cloud runner"));
+      }
     } finally {
-      setSaving(false);
+      if (isCurrentMutation(generation)) {
+        setSaving(false);
+      }
     }
   }
 
@@ -437,16 +461,24 @@ export default function CloudRunnerSection() {
     if (!runner) {
       return;
     }
+    const generation = beginMutation();
     setRevoking(true);
     setError(null);
     try {
       await api.delete("/api/settings/runner");
+      if (!isCurrentMutation(generation)) {
+        return;
+      }
       setRegistration(null);
-      await loadRunner();
+      await loadRunner(generation);
     } catch (revokeError) {
-      setError(errorMessage(revokeError, "Failed to revoke cloud runner"));
+      if (isCurrentMutation(generation)) {
+        setError(errorMessage(revokeError, "Failed to revoke cloud runner"));
+      }
     } finally {
-      setRevoking(false);
+      if (isCurrentMutation(generation)) {
+        setRevoking(false);
+      }
     }
   }
 
@@ -669,7 +701,7 @@ export default function CloudRunnerSection() {
               onClick={() => {
                 void createRunner();
               }}
-              disabled={saving}
+              disabled={saving || revoking}
               className="btn-primary px-4 py-2 text-sm disabled:opacity-50"
             >
               {saving ? "Creating..." : createButtonLabel}
@@ -718,7 +750,7 @@ export default function CloudRunnerSection() {
             onClick={() => {
               void revokeRunner();
             }}
-            disabled={revoking}
+            disabled={revoking || saving}
             className="text-sm text-red-400 hover:text-red-300 disabled:opacity-50"
           >
             {revoking ? "Revoking..." : "Revoke Runner"}

@@ -1,11 +1,50 @@
 """Tests for the provider/model catalog and unsupported-provider guardrails."""
 
+import json
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from fastapi.testclient import TestClient
 
 from tests.factories import create_full_stack, make_mock_sidecar
+
+
+def test_catalog_malformed_host_response_uses_tenant_fallback(
+    auth_client: TestClient,
+) -> None:
+    """Malformed host catalog responses should use tenant fallback."""
+
+    async def unexpected_query(*_args: object, **_kwargs: object):
+        if False:
+            yield {}
+        raise AssertionError("query should not be called")
+
+    host_sidecar = make_mock_sidecar(unexpected_query)
+    host_sidecar.get_catalog = AsyncMock(side_effect=json.JSONDecodeError("bad catalog", "{", 0))
+    tenant_sidecar = make_mock_sidecar(unexpected_query)
+    tenant_sidecar.get_catalog = AsyncMock(
+        return_value={
+            "default_model": "openai/gpt-4o-mini",
+            "providers": [{"id": "openai", "model_count": 1}],
+            "models": [],
+        }
+    )
+
+    with (
+        patch(
+            "yinshi.api.catalog.create_sidecar_connection",
+            new=AsyncMock(side_effect=[host_sidecar, tenant_sidecar]),
+        ),
+        patch(
+            "yinshi.api.catalog.resolve_tenant_sidecar_context",
+            new=AsyncMock(return_value=Mock(socket_path="/tmp/tenant.sock", agent_dir=None)),
+        ),
+        patch("yinshi.api.catalog.touch_tenant_container"),
+    ):
+        response = auth_client.get("/api/catalog")
+
+    assert response.status_code == 200
+    assert response.json()["default_model"] == "openai/gpt-4o-mini"
 
 
 def test_catalog_filters_unsupported_providers(auth_client: TestClient) -> None:

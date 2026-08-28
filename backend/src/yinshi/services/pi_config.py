@@ -354,6 +354,17 @@ def _require_pi_config_row(user_id: str) -> dict[str, Any]:
     return row
 
 
+def _pi_config_row_exists(user_id: str) -> bool:
+    """Return whether a Pi config row exists without decrypting metadata."""
+    normalized_user_id = _validate_user_id(user_id)
+    with get_control_db() as db:
+        row = db.execute(
+            "SELECT 1 FROM pi_configs WHERE user_id = ?",
+            (normalized_user_id,),
+        ).fetchone()
+    return row is not None
+
+
 def _insert_pi_config_row(
     user_id: str,
     *,
@@ -993,7 +1004,10 @@ async def sync_pi_config(
 
 async def remove_pi_config(user_id: str, data_dir: str) -> None:
     """Delete the imported Pi config directory and database rows."""
-    _require_pi_config_row(user_id)
+    # Deletion must stay possible when optional stored metadata is malformed
+    # or undecryptable, so existence is checked without decrypting fields.
+    if not _pi_config_row_exists(user_id):
+        raise PiConfigNotFoundError("Pi config not found")
     config_root = _pi_config_root_path(data_dir)
     _remove_path(config_root)
     _delete_pi_config_row(user_id)

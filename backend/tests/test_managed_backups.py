@@ -29,6 +29,60 @@ def _ready_runtime(auth_client, *, generation: int):
     return tenant
 
 
+def _seed_ready_archive(
+    user_id: str,
+    archive_id: str,
+    object_key: str,
+    *,
+    object_version: str = "version-1",
+) -> None:
+    """Insert one tenant-owned ready archive row for retry-fence tests."""
+    from yinshi.db import get_control_db
+
+    with get_control_db() as database:
+        database.execute(
+            """INSERT INTO managed_backup_archives (
+                   id, user_id, runtime_generation, status, object_key,
+                   object_version, size_bytes, sha256, wrapped_key, key_id,
+                   owner_digest, created_at, completed_at
+               ) VALUES (?, ?, 2, 'ready', ?, ?, 1024, ?, ?, ?, ?, ?, ?)""",
+            (
+                archive_id,
+                user_id,
+                object_key,
+                object_version,
+                "d" * 64,
+                b"wrapped-key",
+                "backup-v1",
+                "c" * 64,
+                "2026-08-11T12:00:00Z",
+                "2026-08-11T12:01:00Z",
+            ),
+        )
+        database.commit()
+
+
+def _fail_user_operation(
+    user_id: str,
+    *,
+    failure_class: str,
+    lease_owner: str | None = None,
+    lease_token: str | None = None,
+) -> None:
+    """Mark one account's operation row durably failed for retry tests."""
+    from yinshi.db import get_control_db
+
+    with get_control_db() as database:
+        database.execute(
+            """UPDATE managed_backup_operations
+               SET status = 'failed', failure_class = ?,
+                   lease_owner = ?, lease_token = ?
+               WHERE user_id = ?""",
+            (failure_class, lease_owner, lease_token, user_id),
+        )
+        database.commit()
+
+
 def test_fail_operation_persists_semantic_failure_class(auth_client) -> None:
     """Failure persistence must retain operation meaning for monitoring."""
     from yinshi.db import get_control_db
@@ -166,6 +220,289 @@ def test_failed_operation_does_not_block_a_retry(auth_client) -> None:
     )
 
     assert retry.operation.status == "running"
+
+
+def test_failed_restore_operation_does_not_block_a_retry(auth_client) -> None:
+    """A failed restore row should release its account fence for a new claim."""
+    from yinshi.db import get_control_db
+    from yinshi.services.managed_backups import start_managed_backup_restore
+
+    tenant = _ready_runtime(auth_client, generation=3)
+    now = datetime(2026, 8, 12, 12, 0, tzinfo=timezone.utc)
+    archive_id = "018f47a2-9d3a-7f3b-8f0f-1a2b3c4d5f01"
+    _seed_ready_archive(tenant.user_id, archive_id, "managed/v1/restore-retry.enc")
+    first = start_managed_backup_restore(
+        tenant.user_id,
+        archive_id=archive_id,
+        runtime_generation=3,
+        job_id="018f47a2-9d3a-7f3b-8f0f-1a2b3c4d5f02",
+        now=now,
+    )
+    _fail_user_operation(tenant.user_id, failure_class="restore_failed")
+
+    retry = start_managed_backup_restore(
+        tenant.user_id,
+        archive_id=archive_id,
+        runtime_generation=3,
+        job_id="018f47a2-9d3a-7f3b-8f0f-1a2b3c4d5f03",
+        now=now,
+    )
+
+    assert retry.operation.status == "running"
+    assert retry.operation.job_id == "018f47a2-9d3a-7f3b-8f0f-1a2b3c4d5f03"
+    assert retry.operation.job_id != first.operation.job_id
+    with get_control_db() as database:
+        rows = database.execute(
+            "SELECT job_id, status FROM managed_backup_operations WHERE user_id = ?",
+            (tenant.user_id,),
+        ).fetchall()
+    assert [tuple(row) for row in rows] == [("018f47a2-9d3a-7f3b-8f0f-1a2b3c4d5f03", "running")]
+
+
+def test_running_operation_blocks_a_restore_retry(auth_client) -> None:
+    """A genuinely running operation must keep its exclusive account fence."""
+    from yinshi.services.managed_backups import (
+        ManagedBackupConflictError,
+        start_managed_backup_restore,
+    )
+
+    tenant = _ready_runtime(auth_client, generation=3)
+    now = datetime(2026, 8, 12, 12, 0, tzinfo=timezone.utc)
+    archive_id = "018f47a2-9d3a-7f3b-8f0f-1a2b3c4d5f04"
+    _seed_ready_archive(tenant.user_id, archive_id, "managed/v1/restore-running.enc")
+    start_managed_backup_restore(
+        tenant.user_id,
+        archive_id=archive_id,
+        runtime_generation=3,
+        job_id="018f47a2-9d3a-7f3b-8f0f-1a2b3c4d5f05",
+        now=now,
+    )
+
+    try:
+        start_managed_backup_restore(
+            tenant.user_id,
+            archive_id=archive_id,
+            runtime_generation=3,
+            job_id="018f47a2-9d3a-7f3b-8f0f-1a2b3c4d5f06",
+            now=now,
+        )
+    except ManagedBackupConflictError:
+        pass
+    else:
+        raise AssertionError("running managed restore operation was replaced")
+
+
+def test_failed_deletion_operation_does_not_block_a_retry(auth_client) -> None:
+    """A failed deletion row and its deleting archive should permit retry."""
+    from yinshi.services.managed_backups import (
+        get_managed_backup_archive,
+        start_managed_backup_deletion,
+    )
+
+    tenant = _ready_runtime(auth_client, generation=4)
+    now = datetime(2026, 8, 12, 12, 0, tzinfo=timezone.utc)
+    archive_id = "018f47a2-9d3a-7f3b-8f0f-1a2b3c4d5f07"
+    _seed_ready_archive(
+        tenant.user_id,
+        archive_id,
+        "managed/v1/delete-retry.enc",
+        object_version="version-4",
+    )
+    start_managed_backup_deletion(
+        tenant.user_id,
+        archive_id=archive_id,
+        runtime_generation=4,
+        job_id="018f47a2-9d3a-7f3b-8f0f-1a2b3c4d5f08",
+        now=now,
+    )
+    _fail_user_operation(tenant.user_id, failure_class="deletion_failed")
+
+    retry = start_managed_backup_deletion(
+        tenant.user_id,
+        archive_id=archive_id,
+        runtime_generation=4,
+        job_id="018f47a2-9d3a-7f3b-8f0f-1a2b3c4d5f09",
+        now=now,
+    )
+
+    assert retry.operation.status == "running"
+    assert retry.operation.job_id == "018f47a2-9d3a-7f3b-8f0f-1a2b3c4d5f09"
+    archive = get_managed_backup_archive(tenant.user_id, archive_id)
+    assert archive is not None
+    assert archive.status == "deleting"
+    assert archive.object_version == "version-4"
+    assert archive.wrapped_key == b"wrapped-key"
+
+
+def test_failed_deletion_returns_stuck_archive_to_retryable_restore(
+    auth_client,
+) -> None:
+    """Clearing a failed deletion fence must restore the archive to ready."""
+    from yinshi.services.managed_backups import (
+        get_managed_backup_archive,
+        start_managed_backup_deletion,
+        start_managed_backup_restore,
+    )
+
+    tenant = _ready_runtime(auth_client, generation=3)
+    now = datetime(2026, 8, 12, 12, 0, tzinfo=timezone.utc)
+    archive_id = "018f47a2-9d3a-7f3b-8f0f-1a2b3c4d5f0a"
+    _seed_ready_archive(
+        tenant.user_id,
+        archive_id,
+        "managed/v1/stuck-delete.enc",
+        object_version="version-5",
+    )
+    start_managed_backup_deletion(
+        tenant.user_id,
+        archive_id=archive_id,
+        runtime_generation=3,
+        job_id="018f47a2-9d3a-7f3b-8f0f-1a2b3c4d5f0b",
+        now=now,
+    )
+    _fail_user_operation(tenant.user_id, failure_class="deletion_failed")
+
+    claim = start_managed_backup_restore(
+        tenant.user_id,
+        archive_id=archive_id,
+        runtime_generation=3,
+        job_id="018f47a2-9d3a-7f3b-8f0f-1a2b3c4d5f0c",
+        now=now,
+    )
+
+    assert claim.operation.operation == "restore"
+    assert claim.operation.status == "running"
+    archive = get_managed_backup_archive(tenant.user_id, archive_id)
+    assert archive is not None
+    assert archive.status == "ready"
+
+
+def test_stale_worker_cannot_mutate_newly_claimed_retry_operation(
+    auth_client,
+) -> None:
+    """A stale worker holding the retired job must not touch the new claim."""
+    from yinshi.db import get_control_db
+    from yinshi.services.managed_backups import (
+        advance_managed_backup_operation,
+        start_managed_backup_restore,
+    )
+    from yinshi.services.managed_operation_failures import fail_managed_backup_operation
+
+    tenant = _ready_runtime(auth_client, generation=3)
+    now = datetime(2026, 8, 12, 12, 0, tzinfo=timezone.utc)
+    archive_id = "018f47a2-9d3a-7f3b-8f0f-1a2b3c4d5f10"
+    _seed_ready_archive(
+        tenant.user_id,
+        archive_id,
+        "managed/v1/stale-worker.enc",
+        object_version="version-7",
+    )
+    start_managed_backup_restore(
+        tenant.user_id,
+        archive_id=archive_id,
+        runtime_generation=3,
+        job_id="018f47a2-9d3a-7f3b-8f0f-1a2b3c4d5f11",
+        now=now,
+    )
+    _fail_user_operation(
+        tenant.user_id,
+        failure_class="restore_failed",
+        lease_owner="stale-worker",
+        lease_token="stale-lease",
+    )
+    retry = start_managed_backup_restore(
+        tenant.user_id,
+        archive_id=archive_id,
+        runtime_generation=3,
+        job_id="018f47a2-9d3a-7f3b-8f0f-1a2b3c4d5f12",
+        now=now,
+    )
+
+    assert not fail_managed_backup_operation(
+        job_id="018f47a2-9d3a-7f3b-8f0f-1a2b3c4d5f11",
+        runtime_generation=3,
+        lease_owner="stale-worker",
+        lease_token="stale-lease",
+        failure_class="restore_failed",
+        error_code="restore_coordination_failed",
+        now=now,
+    )
+    assert not advance_managed_backup_operation(
+        job_id="018f47a2-9d3a-7f3b-8f0f-1a2b3c4d5f11",
+        lease_token="stale-lease",
+        runtime_generation=3,
+        expected_phase="claimed",
+        next_phase="candidate_provisioning",
+        now=now,
+    )
+    with get_control_db() as database:
+        rows = database.execute(
+            "SELECT job_id, status FROM managed_backup_operations WHERE user_id = ?",
+            (tenant.user_id,),
+        ).fetchall()
+    assert [tuple(row) for row in rows] == [(retry.operation.job_id, "running")]
+
+
+def test_creation_retry_repairs_archive_stranded_by_failed_deletion(
+    auth_client,
+) -> None:
+    """Clearing a failed deletion fence through creation must reset its archive."""
+    from yinshi.db import get_control_db
+    from yinshi.services.managed_backups import (
+        get_managed_backup_archive,
+        start_managed_backup_creation,
+        start_managed_backup_deletion,
+    )
+
+    tenant = _ready_runtime(auth_client, generation=4)
+    now = datetime(2026, 8, 12, 12, 0, tzinfo=timezone.utc)
+    archive_id = "018f47a2-9d3a-7f3b-8f0f-1a2b3c4d5f13"
+    _seed_ready_archive(
+        tenant.user_id,
+        archive_id,
+        "managed/v1/stranded-delete.enc",
+        object_version="version-8",
+    )
+    start_managed_backup_deletion(
+        tenant.user_id,
+        archive_id=archive_id,
+        runtime_generation=4,
+        job_id="018f47a2-9d3a-7f3b-8f0f-1a2b3c4d5f14",
+        now=now,
+    )
+    _fail_user_operation(tenant.user_id, failure_class="deletion_failed")
+
+    creation = start_managed_backup_creation(
+        tenant.user_id,
+        runtime_generation=4,
+        archive_id="018f47a2-9d3a-7f3b-8f0f-1a2b3c4d5f15",
+        job_id="018f47a2-9d3a-7f3b-8f0f-1a2b3c4d5f16",
+        object_key="managed/v1/creation-repair.enc",
+        wrapped_key=b"wrapped-key",
+        key_id="backup-v1",
+        owner_digest="a" * 64,
+        now=now,
+    )
+    assert creation.operation.status == "running"
+    with get_control_db() as database:
+        database.execute(
+            "DELETE FROM managed_backup_operations WHERE user_id = ?",
+            (tenant.user_id,),
+        )
+        database.commit()
+
+    deletion = start_managed_backup_deletion(
+        tenant.user_id,
+        archive_id=archive_id,
+        runtime_generation=4,
+        job_id="018f47a2-9d3a-7f3b-8f0f-1a2b3c4d5f17",
+        now=now,
+    )
+
+    assert deletion.operation.status == "running"
+    archive = get_managed_backup_archive(tenant.user_id, archive_id)
+    assert archive is not None
+    assert archive.status == "deleting"
 
 
 def test_claim_due_operation_uses_expiring_owner_token(auth_client) -> None:

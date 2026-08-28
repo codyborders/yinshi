@@ -643,3 +643,24 @@ def test_auto_tenant_db_encryption_is_required_in_authenticated_production(monke
     settings = get_settings()
     assert tenant_db_encryption_required(settings) is True
     get_settings.cache_clear()
+
+
+@pytest.mark.parametrize("mode_variable", ["TENANT_DB_ENCRYPTION", "CONTROL_FIELD_ENCRYPTION"])
+def test_required_encryption_modes_reject_missing_key_material_without_auth(
+    monkeypatch,
+    mode_variable,
+):
+    """Required encryption modes must demand key material even with auth disabled."""
+    monkeypatch.setenv("DISABLE_AUTH", "true")
+    monkeypatch.setenv("HOST", "127.0.0.1")
+    monkeypatch.setenv("CONTAINER_ENABLED", "false")
+    monkeypatch.setenv(mode_variable, "required")
+    monkeypatch.delenv("ENCRYPTION_PEPPER", raising=False)
+    monkeypatch.delenv("KEY_ENCRYPTION_KEY", raising=False)
+
+    from yinshi.config import get_settings
+
+    get_settings.cache_clear()
+    with pytest.raises(RuntimeError, match="KEY_ENCRYPTION_KEY or ENCRYPTION_PEPPER"):
+        get_settings()
+    get_settings.cache_clear()

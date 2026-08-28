@@ -7,7 +7,7 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useNavigate } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const apiGetMock = vi.fn();
@@ -282,6 +282,7 @@ function mockCatalog({
 }
 
 const TEST_SESSION_ID = "a".repeat(32);
+const SECOND_SESSION_ID = "b".repeat(32);
 
 function sessionMetadata(overrides: Record<string, unknown> = {}) {
   return {
@@ -539,6 +540,70 @@ describe("Session", () => {
         undefined,
       );
     });
+  });
+
+  it("ignores a model update that finishes after navigating to another session", async () => {
+    let resolvePatch: (value: { model: string }) => void = () => {};
+    apiPatchMock.mockReturnValue(
+      new Promise<{ model: string }>((resolve) => {
+        resolvePatch = resolve;
+      }),
+    );
+    mockCatalog({
+      providers: [minimaxProvider, openaiProvider],
+      models: [minimaxModel, openaiModel],
+    });
+    mockSessionApi({ model: minimaxModel.ref });
+    const getCurrentSession = apiGetMock.getMockImplementation();
+    if (!getCurrentSession) throw new Error("Session GET mock was not initialized");
+    apiGetMock.mockImplementation((path: string) => {
+      if (path === `/api/sessions/${SECOND_SESSION_ID}`) {
+        return Promise.resolve(sessionMetadata({
+          id: SECOND_SESSION_ID,
+          model: minimaxModel.ref,
+        }));
+      }
+      return getCurrentSession(path);
+    });
+    localStorage.setItem("yinshi:last-session-model:user-1", minimaxModel.ref);
+    const Navigation = () => {
+      const navigate = useNavigate();
+      return (
+        <>
+          <button
+            type="button"
+            onClick={() => navigate(`/app/sessions/${SECOND_SESSION_ID}`)}
+          >
+            Next Session
+          </button>
+          <Session />
+        </>
+      );
+    };
+
+    render(
+      <MemoryRouter initialEntries={[`/app/sessions/${TEST_SESSION_ID}`]}>
+        <Routes>
+          <Route
+            path="/app/sessions/:id"
+            element={<Navigation />}
+          />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    const modelSelect = await screen.findByLabelText("Model");
+    fireEvent.change(modelSelect, { target: { value: openaiModel.ref } });
+    await waitFor(() => expect(apiPatchMock).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByRole("button", { name: "Next Session" }));
+
+    await act(async () => {
+      resolvePatch({ model: openaiModel.ref });
+    });
+
+    expect(localStorage.getItem("yinshi:last-session-model:user-1")).toBe(
+      minimaxModel.ref,
+    );
   });
 
   it("uses a newly selected model for prompts while the save is still pending", async () => {

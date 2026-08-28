@@ -6,7 +6,7 @@ import sqlite3
 import uuid
 from typing import Any, Literal, cast
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, HTTPException, Path, Request, status
 from pydantic import BaseModel, Field, field_validator
 
 from yinshi.api.deps import check_session_owner, run_db_operation_for_request
@@ -156,9 +156,9 @@ async def get_active_prompt_run(
 )
 async def get_prompt_events(
     session_id: str,
-    run_id: str,
-    next_sequence: int,
     request: Request,
+    run_id: str = Path(..., pattern=r"^[0-9a-f]{32}$"),
+    next_sequence: int = Path(..., ge=0),
 ) -> PromptEventBatchResponse:
     """Return one bounded contiguous journal page from the supplied cursor."""
     await _require_session(request, session_id)
@@ -180,8 +180,8 @@ async def get_prompt_events(
 )
 async def cancel_prompt_run(
     session_id: str,
-    run_id: str,
     request: Request,
+    run_id: str = Path(..., pattern=r"^[0-9a-f]{32}$"),
 ) -> PromptRunResponse:
     """Cancel one run idempotently without depending on a live HTTP stream."""
     await _require_session(request, session_id)

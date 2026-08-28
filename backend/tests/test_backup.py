@@ -653,6 +653,87 @@ def test_restore_validates_encrypted_tenants_with_keys_from_staged_control(
     assert validated[0][1] == expected_key
 
 
+def test_restore_accepts_data_root_directory_member(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Restore should accept an archive directory entry naming configured data root."""
+    _configure_test_env(monkeypatch, tmp_path, auth_enabled=False)
+    monkeypatch.setenv("BACKUP_ENCRYPTION_KEY", "ab" * 32)
+
+    from yinshi.backup import _encrypt_archive, restore_backup
+    from yinshi.config import get_settings
+
+    get_settings.cache_clear()
+    tar_path = tmp_path / "root.tar.gz"
+    control_path = tmp_path / "archive-control.db"
+    with sqlite3.connect(control_path) as database:
+        database.execute("CREATE TABLE marker (value TEXT)")
+        database.execute("INSERT INTO marker VALUES ('restored')")
+        database.commit()
+    manifest = json.dumps(
+        {
+            "created_at": "2025-01-01T00:00:00+00:00",
+            "format": "yinshi-backup-v1",
+            "tenant_database_count": 0,
+        }
+    ).encode()
+    with tarfile.open(tar_path, mode="w:gz") as archive:
+        root = tarfile.TarInfo("users/")
+        root.type = tarfile.DIRTYPE
+        archive.addfile(root)
+        manifest_member = tarfile.TarInfo("manifest.json")
+        manifest_member.size = len(manifest)
+        archive.addfile(manifest_member, io.BytesIO(manifest))
+        archive.add(control_path, arcname="control.db")
+    archive_path = tmp_path / "root.tar.gz.enc"
+    _encrypt_archive(tar_path, archive_path, bytes.fromhex("ab" * 32))
+
+    restore_backup(archive_path, confirm_replace=True)
+
+    with sqlite3.connect(get_settings().control_db_path) as database:
+        assert database.execute("SELECT value FROM marker").fetchone() == ("restored",)
+
+
+def test_restore_reports_missing_key_encryption_configuration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Public restore should distinguish missing key configuration from a wrong key."""
+    _configure_test_env(monkeypatch, tmp_path, auth_enabled=False)
+    monkeypatch.setenv("BACKUP_DIR", str(tmp_path / "backups"))
+    monkeypatch.setenv("BACKUP_ENCRYPTION_KEY", "ab" * 32)
+    monkeypatch.setenv("KEY_ENCRYPTION_KEY", "11" * 32)
+    monkeypatch.setenv("KEY_ENCRYPTION_KEY_ID", "current")
+
+    from yinshi.backup import create_backup, restore_backup
+    from yinshi.config import get_settings
+    from yinshi.db import init_control_db
+    from yinshi.services.accounts import resolve_or_create_user
+    from yinshi.tenant import get_user_db
+
+    get_settings.cache_clear()
+    init_control_db()
+    tenant = resolve_or_create_user(
+        provider="google",
+        provider_user_id="missing-restore-key",
+        email="missing-restore-key@example.com",
+        display_name="Missing Restore Key",
+    )
+    with get_user_db(tenant):
+        pass
+    archive_path = create_backup()
+
+    monkeypatch.setenv("TENANT_DB_ENCRYPTION", "required")
+    monkeypatch.setenv("KEY_ENCRYPTION_KEY", "")
+    monkeypatch.setenv("KEY_ENCRYPTION_KEYS_PREVIOUS", "")
+    get_settings.cache_clear()
+
+    with pytest.raises(
+        ValueError,
+        match="^KEY_ENCRYPTION_KEY must be configured to restore encrypted tenant databases$",
+    ):
+        restore_backup(archive_path, confirm_replace=True)
+
+
 @pytest.mark.parametrize(
     ("failure_kind", "expected_error"),
     [
