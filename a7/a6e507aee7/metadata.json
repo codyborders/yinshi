@@ -3,7 +3,7 @@
   "checkpoint_id": "a7a6e507aee7",
   "strategy": "manual-commit",
   "branch": "main",
-  "checkpoints_count": 3,
+  "checkpoints_count": 5,
   "files_touched": [
     "backend/src/yinshi/api/auth_routes.py"
   ],
@@ -14,13 +14,20 @@
       "compact_transcript": "/a7/a6e507aee7/0/transcript.jsonl",
       "content_hash": "/a7/a6e507aee7/0/content_hash.txt",
       "prompt": "/a7/a6e507aee7/0/prompt.txt"
+    },
+    {
+      "metadata": "/a7/a6e507aee7/1/metadata.json",
+      "transcript": "/a7/a6e507aee7/1/full.jsonl",
+      "compact_transcript": "/a7/a6e507aee7/1/transcript.jsonl",
+      "content_hash": "/a7/a6e507aee7/1/content_hash.txt",
+      "prompt": "/a7/a6e507aee7/1/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 8117728,
+    "input_tokens": 10415616,
     "cache_creation_tokens": 0,
-    "cache_read_tokens": 241956992,
-    "output_tokens": 566978,
-    "api_call_count": 1450
+    "cache_read_tokens": 337030016,
+    "output_tokens": 733416,
+    "api_call_count": 2005
   }
 }

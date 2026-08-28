@@ -1,0 +1,9 @@
+Fix ci
+
+---
+
+Merge and deploy if you haven't already
+
+---
+
+Run /bug-bash, but investigate each bug to make sure 1. it's relevant and impacting the current version of `main` and 2. it's an actual bug we should care about. Don't make code changes yet. Produce a report summarizing your findings.
