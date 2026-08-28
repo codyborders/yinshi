@@ -47,8 +47,10 @@ _MAX_TREE_ENTRIES = 5000
 _MAX_TEXT_BYTES = 512 * 1024
 _GUARDRAIL_MARKER = "# Yinshi secret guardrails"
 _GUARDRAIL_PATTERNS = (".env", ".env.*")
-_PRE_COMMIT_MARKER = "# Yinshi secret commit guard"
-_PRE_PUSH_MARKER = "# Yinshi secret push guard"
+_PRE_COMMIT_LEGACY_MARKER = "# Yinshi secret commit guard"
+_PRE_PUSH_LEGACY_MARKER = "# Yinshi secret push guard"
+_PRE_COMMIT_MARKER = "# Yinshi secret commit guard v2"
+_PRE_PUSH_MARKER = "# Yinshi secret push guard v2"
 _SECRET_PATH_GREP = "grep -E '(^|/)\\.env(\\..*)?$' >/dev/null"
 _PRE_COMMIT_GUARD = f"""{_PRE_COMMIT_MARKER}
 if git diff --cached --name-only --diff-filter=ACM | {_SECRET_PATH_GREP}; then
@@ -62,6 +64,14 @@ if git ls-files | {_SECRET_PATH_GREP}; then
   exit 1
 fi
 """
+_PRE_COMMIT_LEGACY_GUARD = _PRE_COMMIT_GUARD.replace(
+    _PRE_COMMIT_MARKER,
+    _PRE_COMMIT_LEGACY_MARKER,
+)
+_PRE_PUSH_LEGACY_GUARD = _PRE_PUSH_GUARD.replace(
+    _PRE_PUSH_MARKER,
+    _PRE_PUSH_LEGACY_MARKER,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -549,10 +559,17 @@ async def diff_file(workspace_path: str, relative_path: str) -> str:
     )
 
 
-def _install_secret_hook_guard(hook_path: Path, marker: str, guard_script: str) -> None:
-    """Install a secret guard before any existing hook body can exit."""
+def _install_secret_hook_guard(
+    hook_path: Path,
+    marker: str,
+    guard_script: str,
+    legacy_guard_script: str = "",
+) -> None:
+    """Install current secret guard before any existing hook body can exit."""
     existing_hook = hook_path.read_text(encoding="utf-8") if hook_path.exists() else "#!/bin/sh\n"
     if marker not in existing_hook:
+        if legacy_guard_script:
+            existing_hook = existing_hook.replace(legacy_guard_script, "")
         if existing_hook.startswith("#!"):
             shebang, separator, remainder = existing_hook.partition("\n")
             existing_body = remainder if separator else ""
@@ -589,5 +606,15 @@ def ensure_secret_guardrails(repo_root_path: str) -> None:
 
     hooks_dir = git_dir / "hooks"
     hooks_dir.mkdir(parents=True, exist_ok=True)
-    _install_secret_hook_guard(hooks_dir / "pre-commit", _PRE_COMMIT_MARKER, _PRE_COMMIT_GUARD)
-    _install_secret_hook_guard(hooks_dir / "pre-push", _PRE_PUSH_MARKER, _PRE_PUSH_GUARD)
+    _install_secret_hook_guard(
+        hooks_dir / "pre-commit",
+        _PRE_COMMIT_MARKER,
+        _PRE_COMMIT_GUARD,
+        _PRE_COMMIT_LEGACY_GUARD,
+    )
+    _install_secret_hook_guard(
+        hooks_dir / "pre-push",
+        _PRE_PUSH_MARKER,
+        _PRE_PUSH_GUARD,
+        _PRE_PUSH_LEGACY_GUARD,
+    )

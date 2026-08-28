@@ -500,6 +500,33 @@ def test_workspace_file_preview_rejects_tenant_path_outside_storage(
     assert response.status_code == 403
 
 
+def test_secret_guardrails_upgrade_legacy_hook_before_early_exit(tmp_path: Path) -> None:
+    """Guardrail upgrades should replace legacy guards before user early exits."""
+    from yinshi.services import workspace_files
+
+    repo_root = tmp_path / "repo"
+    (repo_root / ".git" / "hooks").mkdir(parents=True)
+    hook_path = repo_root / ".git" / "hooks" / "pre-commit"
+    legacy_marker = "# Yinshi secret commit guard"
+    legacy_guard = workspace_files._PRE_COMMIT_GUARD.replace(
+        workspace_files._PRE_COMMIT_MARKER,
+        legacy_marker,
+    )
+    user_hook = "#!/bin/sh\necho user hook\nexit 0\n"
+    hook_path.write_text(user_hook + legacy_guard, encoding="utf-8")
+
+    workspace_files.ensure_secret_guardrails(str(repo_root))
+
+    hook_text = hook_path.read_text(encoding="utf-8")
+    assert hook_text.startswith("#!/bin/sh\n" + workspace_files._PRE_COMMIT_GUARD)
+    assert hook_text.count(workspace_files._PRE_COMMIT_MARKER) == 1
+    assert hook_text.splitlines().count(legacy_marker) == 0
+    assert "echo user hook\nexit 0\n" in hook_text
+
+    workspace_files.ensure_secret_guardrails(str(repo_root))
+    assert hook_path.read_text(encoding="utf-8") == hook_text
+
+
 def test_workspace_creation_installs_env_git_guardrails(
     noauth_client: TestClient,
     git_repo: str,

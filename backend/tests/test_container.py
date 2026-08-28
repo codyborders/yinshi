@@ -40,6 +40,9 @@ class TestIsPathInside:
         # "/var/lib/users/abcdef" should NOT be inside "/var/lib/users/abc"
         assert is_path_inside("/var/lib/users/abcdef", "/var/lib/users/abc") is False
 
+    def test_absolute_descendant_is_inside_root(self):
+        assert is_path_inside("/var/lib/users/abc", "/") is True
+
 
 # ---------------------------------------------------------------------------
 # Path remapping tests (pure function, no mocks needed)

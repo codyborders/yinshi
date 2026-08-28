@@ -1022,6 +1022,41 @@ def test_github_import_failure_message_is_sanitized(auth_client: TestClient) -> 
     assert payload["error_message"] == "Import failed. Check server logs for details."
 
 
+def test_sync_retries_pi_config_from_error_state(auth_client: TestClient) -> None:
+    """Sync should atomically claim an errored Pi config for retry."""
+    from yinshi.services.pi_config import _insert_pi_config_row, get_pi_config
+
+    tenant = getattr(auth_client, "yinshi_tenant")
+    _insert_pi_config_row(
+        tenant.user_id,
+        source_type="github",
+        source_label="example",
+        repo_url="https://github.com/example/pi-config.git",
+        status="error",
+        available_categories=[],
+        enabled_categories=[],
+    )
+
+    async def fake_clone_repo(url: str, dest: str, access_token: str | None = None) -> str:
+        del url, access_token
+        dest_path = Path(dest)
+        (dest_path / "agent").mkdir(parents=True, exist_ok=True)
+        (dest_path / ".git").mkdir(exist_ok=True)
+        (dest_path / "agent" / "settings.json").write_text("{}", encoding="utf-8")
+        return dest
+
+    with (
+        patch("yinshi.services.pi_config.clone_repo", side_effect=fake_clone_repo),
+        patch("yinshi.services.pi_config._run_git", new=AsyncMock(return_value="")),
+    ):
+        response = auth_client.post("/api/settings/pi-config/sync")
+
+    assert response.status_code == 200
+    payload = get_pi_config(tenant.user_id)
+    assert payload is not None
+    assert payload["status"] == "ready"
+
+
 def test_sync_failure_message_is_sanitized(auth_client: TestClient) -> None:
     """Pi config sync failures should store a generic user-facing error message."""
     from yinshi.services.pi_config import _insert_pi_config_row, get_pi_config, sync_pi_config

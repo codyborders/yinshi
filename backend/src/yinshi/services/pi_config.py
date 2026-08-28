@@ -958,11 +958,11 @@ async def sync_pi_config(
     with get_control_db() as db:
         result = db.execute(
             "UPDATE pi_configs SET status = 'syncing', error_message = NULL "
-            "WHERE user_id = ? AND status = 'ready'",
+            "WHERE user_id = ? AND status IN ('ready', 'error')",
             (normalized_user_id,),
         )
         if result.rowcount == 0:
-            raise PiConfigError("Pi config is not ready for sync")
+            raise PiConfigError("Pi config is currently syncing")
         db.commit()
     try:
         await clone_repo(clone_url, str(config_root), access_token=access_token)
