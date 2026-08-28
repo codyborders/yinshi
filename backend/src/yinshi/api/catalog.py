@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
@@ -86,6 +88,8 @@ async def _load_catalog_with_tenant_container(
         ContainerStartError,
         OSError,
         SidecarError,
+        asyncio.TimeoutError,
+        json.JSONDecodeError,
     ) as error:
         raise HTTPException(
             status_code=503,
@@ -115,7 +119,7 @@ async def get_catalog(request: Request) -> dict[str, Any]:
             socket_path=None,
             agent_dir=runtime_inputs.agent_dir,
         )
-    except (OSError, SidecarError):
+    except (OSError, SidecarError, asyncio.TimeoutError, json.JSONDecodeError):
         catalog = await _load_catalog_with_tenant_container(request, tenant)
 
     supported_provider_ids = {

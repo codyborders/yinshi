@@ -59,6 +59,18 @@ def test_active_prompt_run_route_returns_run_or_null(
     assert missing.status_code == 404
 
 
+def test_prompt_run_parameters_are_client_validated(auth_client: TestClient, git_repo: str) -> None:
+    """Malformed run IDs and negative cursors should return validation errors."""
+    stack = create_full_stack(auth_client, git_repo, name="run-validation")
+    session_id = stack["session"]["id"]
+
+    malformed = auth_client.get(f"/api/sessions/{session_id}/runs/not-a-run/events/0")
+    negative = auth_client.get(f"/api/sessions/{session_id}/runs/{uuid.uuid4().hex}/events/-1")
+
+    assert malformed.status_code == 422
+    assert negative.status_code == 422
+
+
 def test_prompt_run_start_and_sequence_reconnect(
     auth_client: TestClient,
     git_repo: str,

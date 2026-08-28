@@ -262,6 +262,46 @@ describe("Sidebar repo settings", () => {
     });
   });
 
+  it("creates only one session when a workspace is double-clicked", async () => {
+    mockGet.mockImplementation(async (path: string) => {
+      if (path === "/api/repos") {
+        return [{
+          id: "repo-1",
+          created_at: "2026-04-12T00:00:00Z",
+          updated_at: "2026-04-12T00:00:00Z",
+          name: "demo-repo",
+          remote_url: null,
+          root_path: "/tmp/demo-repo",
+          custom_prompt: null,
+          agents_md: null,
+        }];
+      }
+      if (path === "/api/github/installations") return [];
+      if (path === "/api/repos/repo-1/workspaces") return [{
+        id: "workspace-1",
+        created_at: "2026-08-18T00:00:00Z",
+        updated_at: "2026-08-18T00:00:00Z",
+        repo_id: "repo-1",
+        name: "steady-river",
+        branch: "steady-river",
+        path: "/tmp/steady-river",
+        state: "ready",
+      }];
+      if (path === "/api/workspaces/workspace-1/sessions") return [];
+      throw new Error(`Unexpected GET ${path}`);
+    });
+    mockPost.mockReturnValue(new Promise(() => {}));
+
+    renderSidebar();
+
+    const workspaceButton = (await screen.findByText("steady-river")).closest("button");
+    if (!workspaceButton) throw new Error("Workspace button was not found");
+    fireEvent.click(workspaceButton);
+    fireEvent.click(workspaceButton);
+
+    await waitFor(() => expect(mockPost).toHaveBeenCalledTimes(1));
+  });
+
   it("creates a new worktree session with the user's latest remembered model", async () => {
     mockPost.mockImplementation(async (path: string) => {
       if (path === "/api/repos/repo-1/workspaces") {

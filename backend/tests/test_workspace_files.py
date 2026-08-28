@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import shutil
 import subprocess
 import threading
 from contextlib import contextmanager
@@ -499,6 +500,33 @@ def test_workspace_file_preview_rejects_tenant_path_outside_storage(
     assert response.status_code == 403
 
 
+def test_secret_guardrails_upgrade_legacy_hook_before_early_exit(tmp_path: Path) -> None:
+    """Guardrail upgrades should replace legacy guards before user early exits."""
+    from yinshi.services import workspace_files
+
+    repo_root = tmp_path / "repo"
+    (repo_root / ".git" / "hooks").mkdir(parents=True)
+    hook_path = repo_root / ".git" / "hooks" / "pre-commit"
+    legacy_marker = "# Yinshi secret commit guard"
+    legacy_guard = workspace_files._PRE_COMMIT_GUARD.replace(
+        workspace_files._PRE_COMMIT_MARKER,
+        legacy_marker,
+    )
+    user_hook = "#!/bin/sh\necho user hook\nexit 0\n"
+    hook_path.write_text(user_hook + legacy_guard, encoding="utf-8")
+
+    workspace_files.ensure_secret_guardrails(str(repo_root))
+
+    hook_text = hook_path.read_text(encoding="utf-8")
+    assert hook_text.startswith("#!/bin/sh\n" + workspace_files._PRE_COMMIT_GUARD)
+    assert hook_text.count(workspace_files._PRE_COMMIT_MARKER) == 1
+    assert hook_text.splitlines().count(legacy_marker) == 0
+    assert "echo user hook\nexit 0\n" in hook_text
+
+    workspace_files.ensure_secret_guardrails(str(repo_root))
+    assert hook_path.read_text(encoding="utf-8") == hook_text
+
+
 def test_workspace_creation_installs_env_git_guardrails(
     noauth_client: TestClient,
     git_repo: str,
@@ -530,3 +558,46 @@ def test_workspace_creation_installs_env_git_guardrails(
 
     assert commit.returncode != 0
     assert "Yinshi blocks committing .env files" in commit.stderr
+
+
+def test_workspace_file_endpoint_maps_missing_repo_to_not_found(
+    auth_client: TestClient,
+    git_repo: str,
+) -> None:
+    """File APIs return a stable response when a repository checkout is gone."""
+    tenant = auth_client.yinshi_tenant
+    source_path = Path(tenant.data_dir) / "missing-file-api-repo"
+    shutil.copytree(git_repo, source_path)
+    repo_response = auth_client.post(
+        "/api/repos",
+        json={"name": "missing-file-api-repo", "local_path": str(source_path)},
+    )
+    assert repo_response.status_code == 201
+    repo = repo_response.json()
+    workspace_response = auth_client.post(
+        f"/api/repos/{repo['id']}/workspaces",
+        json={},
+    )
+    assert workspace_response.status_code == 201
+    workspace = workspace_response.json()
+    from yinshi.tenant import get_user_db
+
+    preserved_workspace = Path(tenant.data_dir) / "preserved-workspace"
+    shutil.copytree(workspace["path"], preserved_workspace)
+    shutil.rmtree(repo["root_path"])
+    missing_root = Path(Path(tenant.data_dir).anchor) / f"yinshi-missing-{repo['id']}"
+    with get_user_db(tenant) as database:
+        database.execute(
+            "UPDATE repos SET root_path = ? WHERE id = ?",
+            (str(missing_root), repo["id"]),
+        )
+        database.execute(
+            "UPDATE workspaces SET path = ? WHERE id = ?",
+            (str(preserved_workspace), workspace["id"]),
+        )
+        database.commit()
+
+    response = auth_client.get(f"/api/workspaces/{workspace['id']}/files/tree")
+
+    assert response.status_code == 404, response.text
+    assert response.json() == {"detail": "Repo not found"}

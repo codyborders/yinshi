@@ -701,8 +701,48 @@ function extensionToCommands(extension) {
 // Cache the list_resources payload per agentDir keyed by the most-recent
 // mtime across the agent tree. Without this, every session mount re-evaluates
 // every extension module via jiti (moduleCache:false in the pi SDK), which
-// DoS-exposes the shared Node event loop.
-const _listResourcesCache = new Map();
+// DoS-exposes the shared Node event loop. The cache keeps a small bound with
+// deterministic least-recently-used eviction, so long-lived processes that see
+// many unique agent directories evict old payloads instead of growing memory
+// forever. Eviction only drops map entries; an in-flight request keeps its own
+// reference, so active requests never lose data they still need.
+export const LIST_RESOURCES_CACHE_MAX = 16;
+
+// Minimal Map-recency bounded cache shared with the resource-list path.
+export function createBoundedCache(maxEntries) {
+  if (!Number.isSafeInteger(maxEntries) || maxEntries < 1) {
+    throw new TypeError("maxEntries must be a positive safe integer");
+  }
+  const entries = new Map();
+  return {
+    get(key) {
+      if (!entries.has(key)) {
+        return undefined;
+      }
+      const entry = entries.get(key);
+      entries.delete(key);
+      entries.set(key, entry);
+      return entry;
+    },
+    set(key, entry) {
+      if (entries.has(key)) {
+        entries.delete(key);
+      }
+      entries.set(key, entry);
+      while (entries.size > maxEntries) {
+        const oldestKey = entries.keys().next().value;
+        entries.delete(oldestKey);
+      }
+    },
+    size() {
+      return entries.size;
+    },
+  };
+}
+
+// The production instance stays private to this module so callers and tests
+// cannot mutate shared cache state. Tests instantiate their own bounded cache.
+const _resourceListCache = createBoundedCache(LIST_RESOURCES_CACHE_MAX);
 
 async function _collectAgentDirMtime(agentDir) {
   // Find the max mtime across the agent tree. A skill file edit, a new
@@ -742,7 +782,7 @@ function _capCommands(commands) {
     : commands;
 }
 
-async function listResources(agentDir) {
+export async function listResources(agentDir) {
   // Without an imported agentDir we intentionally return nothing: the SDK would
   // otherwise fall back to the host's ~/.pi/agent and leak host-local resources.
   if (!agentDir || typeof agentDir !== "string") {
@@ -750,7 +790,7 @@ async function listResources(agentDir) {
   }
 
   const mtimeMs = await _collectAgentDirMtime(agentDir);
-  const cached = _listResourcesCache.get(agentDir);
+  const cached = _resourceListCache.get(agentDir);
   if (cached && cached.mtimeMs === mtimeMs) {
     return cached.payload;
   }
@@ -778,7 +818,7 @@ async function listResources(agentDir) {
   const payload = {
     commands: [...skillCommands, ...promptCommands, ...extensionCommands],
   };
-  _listResourcesCache.set(agentDir, { mtimeMs, payload });
+  _resourceListCache.set(agentDir, { mtimeMs, payload });
   return payload;
 }
 
@@ -1061,6 +1101,12 @@ export class YinshiSidecar {
 
   terminalEntry(id, options, restart = false) {
     if (restart) {
+      const previous = this.activeTerminals.get(id);
+      if (previous) {
+        // Detach subscribers from the dying PTY first so its late output and
+        // suppressed exit event can never reach clients moving to the restart.
+        previous.sockets.clear();
+      }
       this.killTerminal(id, { suppressExitEvent: true });
     }
     const existing = this.activeTerminals.get(id);
@@ -1071,7 +1117,24 @@ export class YinshiSidecar {
   }
 
   attachTerminal(id, socket, options, restart = false) {
+    const previousEntry = restart ? this.activeTerminals.get(id) : null;
+    const otherSockets = previousEntry
+      ? [...previousEntry.sockets].filter(
+          (candidate) => candidate !== socket && !candidate.destroyed,
+        )
+      : [];
     const entry = this.terminalEntry(id, options, restart);
+    for (const otherSocket of otherSockets) {
+      entry.sockets.add(otherSocket);
+      sendToSocket(otherSocket, {
+        id,
+        type: "terminal_ready",
+        cwd: entry.cwd,
+        pid: entry.terminal.pid,
+        replay: entry.scrollback,
+        restarted: true,
+      });
+    }
     entry.sockets.add(socket);
     sendToSocket(socket, {
       id,

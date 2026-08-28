@@ -23,6 +23,7 @@ from typing import BinaryIO
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 from yinshi.services.managed_backup_crypto import open_managed_backup_job
+from yinshi.services.managed_backup_protocol import parse_managed_restore_result
 from yinshi.services.runner_noise import load_or_create_runner_noise_keypair
 from yinshi.services.sprite_task_lease import SpriteTaskLease
 
@@ -633,12 +634,33 @@ def _job_context(value: object) -> ManagedArchiveContext:
     return context
 
 
-def _read_existing_job_result(
+def _read_existing_restore_result(path: Path, *, job_id: str) -> bool | None:
+    """Accept one committed restore result and report pending journal cleanup."""
+    if not path.exists() and not path.is_symlink():
+        return None
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("managed backup result path is unsafe")
+    return parse_managed_restore_result(path.read_text(encoding="utf-8"), job_id=job_id)
+
+
+def _retry_pending_restore_cleanup(state_root: Path, result_path: Path, *, job_id: str) -> None:
+    """Retry rollback-journal removal after one committed restore left it pending."""
+    try:
+        _remove_restore_cleanup(state_root)
+    except (OSError, ValueError):
+        return
+    _write_job_result(
+        result_path,
+        {"cleanup_pending": False, "job_id": job_id, "status": "restored"},
+        replace=True,
+    )
+
+
+def _read_existing_create_result(
     path: Path,
     *,
     archive_path: Path,
     job_id: str,
-    operation: str,
 ) -> bool:
     """Accept only complete same-job output from an interrupted control transfer."""
     if not path.exists() and not path.is_symlink():
@@ -649,14 +671,6 @@ def _read_existing_job_result(
         result = json.loads(path.read_text(encoding="utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError):
         raise ValueError("managed backup result is invalid") from None
-    if operation == "restore":
-        if result != {
-            "cleanup_pending": False,
-            "job_id": job_id,
-            "status": "restored",
-        }:
-            raise ValueError("managed backup result is invalid")
-        return True
     if (
         not isinstance(result, dict)
         or set(result) != {"job_id", "sha256", "size_bytes", "status"}
@@ -681,9 +695,9 @@ def _read_existing_job_result(
     return True
 
 
-def _write_job_result(path: Path, payload: dict[str, object]) -> None:
+def _write_job_result(path: Path, payload: dict[str, object], *, replace: bool = False) -> None:
     """Atomically write one private fixed-shape maintenance result."""
-    if path.exists() or path.is_symlink():
+    if not replace and (path.exists() or path.is_symlink()):
         raise FileExistsError(path)
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(prefix=".result-", dir=path.parent)
@@ -738,11 +752,20 @@ def run_managed_backup_job(
         raise ValueError("managed backup job is invalid")
     context = _job_context(payload["archive_context"])
     archive_path = maintenance_root / f"{expected_job_id}.archive.enc"
-    if _read_existing_job_result(
+    if operation == "restore":
+        cleanup_pending = _read_existing_restore_result(result_path, job_id=expected_job_id)
+        if cleanup_pending is not None:
+            if cleanup_pending:
+                _retry_pending_restore_cleanup(
+                    sqlite_root.parent,
+                    result_path,
+                    job_id=expected_job_id,
+                )
+            return
+    elif _read_existing_create_result(
         result_path,
         archive_path=archive_path,
         job_id=expected_job_id,
-        operation=operation,
     ):
         return
     archive_key = _decode_archive_key(payload["archive_key"])

@@ -466,6 +466,177 @@ async def test_s3_store_rejects_reconciled_metadata_mismatch() -> None:
 
 
 @pytest.mark.asyncio
+async def test_reconcile_upload_deletes_rejected_completed_version() -> None:
+    """Reconciliation should remove the exact invalid completed version for retry."""
+    from yinshi.services.managed_backup_store import S3ManagedBackupStore
+
+    payload = b"encrypted managed archive"
+    expected_digest = hashlib.sha256(payload).hexdigest()
+
+    class Client(FakeS3Client):
+        def __init__(self) -> None:
+            super().__init__()
+            self.deleted_versions: list[str] = []
+
+        def list_object_versions(self, **request):
+            return {
+                "DeleteMarkers": [],
+                "IsTruncated": False,
+                "Versions": [
+                    {
+                        "IsLatest": True,
+                        "Key": "managed/v1/owner/archive.enc",
+                        "VersionId": "version-1",
+                    }
+                ],
+            }
+
+        def delete_object(self, **request):
+            self.deleted_versions.append(request["VersionId"])
+            return {}
+
+    client = Client()
+    client.object = payload + b"wrong"
+    client.metadata = {
+        "archive-id": "archive-1",
+        "format": "yinshi-managed-backup-v1",
+        "sha256": hashlib.sha256(client.object).hexdigest(),
+    }
+    store = S3ManagedBackupStore(
+        client=client,
+        bucket="backup-bucket",
+        server_side_encryption="AES256",
+        part_bytes=5 * 1024 * 1024,
+    )
+
+    with pytest.raises(RuntimeError, match="reconciliation validation failed"):
+        await store.reconcile_upload(
+            object_key="managed/v1/owner/archive.enc",
+            archive_id="archive-1",
+            expected_size=len(payload),
+            expected_sha256=expected_digest,
+        )
+
+    assert client.deleted_versions == ["version-1"]
+
+
+@pytest.mark.asyncio
+async def test_reconcile_upload_preserves_version_from_another_operation() -> None:
+    """A listed version another operation created must never be deleted."""
+    from yinshi.services.managed_backup_store import S3ManagedBackupStore
+
+    payload = b"encrypted managed archive"
+    digest = hashlib.sha256(payload).hexdigest()
+
+    class Client(FakeS3Client):
+        def __init__(self) -> None:
+            super().__init__()
+            self.deleted_versions: list[str] = []
+
+        def list_object_versions(self, **request):
+            return {
+                "DeleteMarkers": [],
+                "IsTruncated": False,
+                "Versions": [
+                    {
+                        "IsLatest": True,
+                        "Key": "managed/v1/owner/archive.enc",
+                        "VersionId": "version-1",
+                    }
+                ],
+            }
+
+        def delete_object(self, **request):
+            self.deleted_versions.append(request["VersionId"])
+            return {}
+
+    client = Client()
+    client.object = payload
+    client.metadata = {
+        "archive-id": "another-archive",
+        "format": "yinshi-managed-backup-v1",
+        "sha256": digest,
+    }
+    store = S3ManagedBackupStore(
+        client=client,
+        bucket="backup-bucket",
+        server_side_encryption="AES256",
+        part_bytes=5 * 1024 * 1024,
+    )
+
+    with pytest.raises(RuntimeError, match="reconciliation validation failed"):
+        await store.reconcile_upload(
+            object_key="managed/v1/owner/archive.enc",
+            archive_id="archive-1",
+            expected_size=len(payload),
+            expected_sha256=digest,
+        )
+
+    assert client.deleted_versions == []
+
+
+@pytest.mark.asyncio
+async def test_spaces_reconcile_deletes_corrupt_remote_ciphertext() -> None:
+    """Spaces reconciliation should delete the exact corrupt remote version."""
+    from yinshi.services.managed_backup_store import S3ManagedBackupStore
+
+    payload = b"encrypted managed archive"
+    digest = hashlib.sha256(payload).hexdigest()
+
+    class SpacesClient(FakeS3Client):
+        def __init__(self) -> None:
+            super().__init__()
+            self.deleted_versions: list[str] = []
+
+        def list_object_versions(self, **request):
+            return {
+                "DeleteMarkers": [],
+                "IsTruncated": False,
+                "Versions": [
+                    {
+                        "IsLatest": True,
+                        "Key": "managed/v1/owner/archive.enc",
+                        "VersionId": "version-1",
+                    }
+                ],
+            }
+
+        def head_object(self, **request):
+            response = super().head_object(**request)
+            response.pop("ServerSideEncryption")
+            return response
+
+        def delete_object(self, **request):
+            self.deleted_versions.append(request["VersionId"])
+            return {}
+
+    client = SpacesClient()
+    client.object = b"x" + payload[1:]
+    client.metadata = {
+        "archive-id": "archive-1",
+        "format": "yinshi-managed-backup-v1",
+        "sha256": digest,
+    }
+    store = S3ManagedBackupStore(
+        client=client,
+        bucket="backup-bucket",
+        server_side_encryption="AES256",
+        require_object_encryption_confirmation=False,
+        part_bytes=5 * 1024 * 1024,
+    )
+
+    with pytest.raises(RuntimeError, match="checksum"):
+        await store.reconcile_upload(
+            object_key="managed/v1/owner/archive.enc",
+            archive_id="archive-1",
+            expected_size=len(payload),
+            expected_sha256=digest,
+        )
+
+    assert client.deleted_versions == ["version-1"]
+
+
+@pytest.mark.asyncio
 async def test_s3_store_reports_confirmed_absence_for_upload_retry() -> None:
     """Reconciliation should distinguish no published version from ambiguity."""
     from yinshi.services.managed_backup_store import S3ManagedBackupStore

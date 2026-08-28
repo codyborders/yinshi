@@ -58,7 +58,7 @@ from yinshi.services.repository_lifecycle import (
     repository_lifecycle,
     repository_lifecycle_root,
 )
-from yinshi.services.run_coordinator import get_run_coordinator
+from yinshi.services.run_coordinator import CancelOutcome, get_run_coordinator
 from yinshi.services.sidecar import SidecarClient, create_sidecar_connection
 from yinshi.services.sidecar_runtime import (
     local_pi_session_file,
@@ -633,7 +633,13 @@ def _message_count_for_session(db: sqlite3.Connection, session_id: str) -> int:
 
 
 def _ensure_promptable_pi_context(db: sqlite3.Connection, session: sqlite3.Row) -> None:
-    """Reject legacy transcript-only sessions that cannot resume exact Pi context."""
+    """Reject legacy transcript-only sessions that cannot resume exact Pi context.
+
+    The session row must come from the caller's current transaction snapshot so
+    the context version and the transcript count cannot disagree after a
+    concurrent reservation commits between the two reads. The caller owns the
+    surrounding transaction and performs the commit.
+    """
     session_id = session["id"]
     assert isinstance(session_id, str), "session id must be a string"
     if _session_pi_context_version(session) >= 1:
@@ -655,7 +661,6 @@ def _ensure_promptable_pi_context(db: sqlite3.Connection, session: sqlite3.Row) 
         "UPDATE sessions SET pi_context_version = 1 WHERE id = ?",
         (session_id,),
     )
-    db.commit()
 
 
 def _lookup_session(
@@ -1016,11 +1021,6 @@ async def prompt_session(
     if session["status"] == "running":
         raise HTTPException(status_code=409, detail="Session already has an active stream")
 
-    await _prompt_database_operation(
-        request,
-        lambda database: _ensure_promptable_pi_context(database, session),
-    )
-
     workspace_path = session["workspace_path"]
     remote_url = session["remote_url"] if "remote_url" in session.keys() else None
     installation_id = session["installation_id"] if "installation_id" in session.keys() else None
@@ -1032,13 +1032,17 @@ async def prompt_session(
 
     # Atomically claim the session and persist one deterministic user turn.
     def reserve_prompt(database: sqlite3.Connection) -> None:
+        # One immediate write transaction serializes the reservation. A
+        # competing reservation blocks on the write lock instead of entering
+        # the context-count decision against a snapshot it can change.
+        database.execute("BEGIN IMMEDIATE")
         existing = database.execute(
             """SELECT content FROM messages
                WHERE session_id = ? AND role = 'user' AND turn_id = ?""",
             (session_id, turn_id),
         ).fetchone()
         status_row = database.execute(
-            "SELECT status FROM sessions WHERE id = ?",
+            "SELECT id, status, pi_context_version FROM sessions WHERE id = ?",
             (session_id,),
         ).fetchone()
         if status_row is None:
@@ -1046,7 +1050,14 @@ async def prompt_session(
         if existing is not None:
             if existing["content"] != prompt or status_row["status"] != "running":
                 raise RuntimeError("prompt reservation identity conflict")
+            # Close the idempotent existing-turn check without leaving the
+            # immediate transaction open; there is nothing to write.
+            database.commit()
             return
+        # One current snapshot decides the Pi context gate and the session
+        # claim, so a concurrent first prompt can never pair a stale context
+        # version with a fresh transcript count.
+        _ensure_promptable_pi_context(database, status_row)
         result = database.execute(
             "UPDATE sessions SET status = 'running' WHERE id = ? AND status = 'idle'",
             (session_id,),
@@ -1405,9 +1416,12 @@ async def cancel_session(session_id: str, request: Request) -> dict[str, str]:
         check_owner(session["owner_email"], get_user_email(request))
 
     coordinator = get_run_coordinator()
-    found = await coordinator.request_cancel(session_id)
-    if not found:
+    outcome = await coordinator.request_cancel(session_id)
+    if outcome is CancelOutcome.ABSENT:
         raise HTTPException(status_code=409, detail="No active stream for this session")
+    if outcome is CancelOutcome.FINISHED:
+        logger.info("Prompt run finished before cancellation completed")
+        return {"status": "stopped"}
 
     logger.info("Prompt cancellation requested")
     return {"status": "stopping"}

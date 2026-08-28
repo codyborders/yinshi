@@ -69,6 +69,56 @@ describe("CloudRunnerSection pairing", () => {
     mockGet.mockResolvedValue(runner(false));
   });
 
+  it("disables replacement while revocation is pending", async () => {
+    mockDelete.mockReturnValue(new Promise(() => {}));
+    render(<CloudRunnerSection />);
+
+    const replaceButton = await screen.findByRole("button", {
+      name: "Replace Runner",
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Revoke Runner" }));
+
+    expect(replaceButton).toBeDisabled();
+  });
+
+  it("keeps replacement token when an older revocation completes later", async () => {
+    let resolveDelete: () => void = () => {};
+    let resolveCreate: (value: unknown) => void = () => {};
+    mockDelete.mockReturnValue(
+      new Promise<void>((resolve) => {
+        resolveDelete = resolve;
+      }),
+    );
+    mockPost.mockReturnValue(
+      new Promise<unknown>((resolve) => {
+        resolveCreate = resolve;
+      }),
+    );
+    render(<CloudRunnerSection />);
+
+    const replaceButton = await screen.findByRole("button", {
+      name: "Replace Runner",
+    });
+    const revokeButton = screen.getByRole("button", { name: "Revoke Runner" });
+    fireEvent.click(replaceButton);
+    revokeButton.removeAttribute("disabled");
+    fireEvent.click(revokeButton);
+
+    resolveCreate({
+      runner: runner(false),
+      registration_token: "replacement-token",
+      registration_token_expires_at: "2026-07-11T00:00:00Z",
+      control_url: "https://example.com",
+      environment: { YINSHI_RUNNER_TOKEN: "replacement-token" },
+    });
+    expect(await screen.findByDisplayValue("YINSHI_RUNNER_TOKEN=replacement-token")).toBeInTheDocument();
+
+    resolveDelete();
+    await waitFor(() => {
+      expect(screen.getByDisplayValue("YINSHI_RUNNER_TOKEN=replacement-token")).toBeInTheDocument();
+    });
+  });
+
   it("requires explicit confirmation of the displayed runner fingerprint", async () => {
     mockPost.mockResolvedValue(runner(true));
     render(<CloudRunnerSection />);

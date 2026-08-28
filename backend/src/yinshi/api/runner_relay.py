@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import logging
 
@@ -208,10 +207,37 @@ async def client_relay_socket(websocket: WebSocket, transfer_id: str) -> None:
     except WebSocketDisconnect:
         pass
     finally:
-        if attached:
-            await runner_relay_broker.detach_client(transfer_id, websocket)
-        if sender_task is not None:
-            sender_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await sender_task
-        _CLIENT_CONNECTION_LIMIT.release()
+        # The connection permit is owned by this block and must release even
+        # when broker detach or sender-task cleanup raises or is cancelled.
+        pending_cancellation: BaseException | None = None
+        cleanup_error: Exception | None = None
+        try:
+            if attached:
+                try:
+                    await runner_relay_broker.detach_client(transfer_id, websocket)
+                except asyncio.CancelledError as error:
+                    if pending_cancellation is None:
+                        pending_cancellation = error
+                except Exception as error:
+                    if cleanup_error is None:
+                        cleanup_error = error
+            if sender_task is not None:
+                sender_task.cancel()
+                try:
+                    await sender_task
+                except asyncio.CancelledError as error:
+                    if not sender_task.cancelled() and pending_cancellation is None:
+                        pending_cancellation = error
+                except Exception as error:
+                    if cleanup_error is None:
+                        cleanup_error = error
+        finally:
+            _CLIENT_CONNECTION_LIMIT.release()
+        if cleanup_error is not None:
+            logger.warning(
+                "Runner relay client cleanup failed transfer_id=%s error=%r",
+                transfer_id,
+                cleanup_error,
+            )
+        if pending_cancellation is not None:
+            raise pending_cancellation

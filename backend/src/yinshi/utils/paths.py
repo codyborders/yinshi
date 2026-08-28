@@ -12,4 +12,8 @@ def is_path_inside(path: str, base: str) -> bool:
     """
     resolved = os.path.realpath(path)
     resolved_base = os.path.realpath(base)
-    return resolved == resolved_base or resolved.startswith(resolved_base + os.sep)
+    if resolved == resolved_base:
+        return True
+    if resolved_base == os.sep:
+        return resolved.startswith(resolved_base)
+    return resolved.startswith(resolved_base + os.sep)

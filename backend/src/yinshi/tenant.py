@@ -842,11 +842,12 @@ def _migrate_plaintext_user_database(db_path: str, sqlcipher_key: bytes) -> None
         _create_private_rollback_copy(db_path, rollback_path)
         _fsync_file(rollback_path)
         _fsync_parent_directory(db_path)
+        # Durable commit point: this replace installs the already-validated
+        # encrypted database as the primary and the following directory sync
+        # makes that rename durable. Failures before this point restore the
+        # plaintext rollback. Failures after it must never reinstall the
+        # plaintext database over the committed encrypted primary.
         os.replace(temp_path, db_path)
-        _fsync_parent_directory(db_path)
-        _validate_encrypted_user_database(db_path, sqlcipher_key)
-        os.chmod(db_path, 0o600)
-        _fsync_file(db_path)
         _fsync_parent_directory(db_path)
     except Exception:
         if os.path.exists(rollback_path):
@@ -858,9 +859,25 @@ def _migrate_plaintext_user_database(db_path: str, sqlcipher_key: bytes) -> None
             if os.path.exists(temporary_path):
                 os.unlink(temporary_path)
         raise
-    else:
+    try:
+        _validate_encrypted_user_database(db_path, sqlcipher_key)
+        os.chmod(db_path, 0o600)
+        _fsync_file(db_path)
+        _fsync_parent_directory(db_path)
         os.unlink(rollback_path)
         _fsync_parent_directory(db_path)
+    except Exception:
+        # Past the durable commit point: a later validation, chmod, fsync, or
+        # cleanup failure must not restore the plaintext rollback. Keep the
+        # committed encrypted primary; the next validated open removes the
+        # retained rollback instead.
+        for temporary_path in temporary_paths:
+            try:
+                if os.path.exists(temporary_path):
+                    os.unlink(temporary_path)
+            except OSError:
+                logger.warning("Post-commit tenant migration cleanup failed for %s", temporary_path)
+        raise
     _remove_sqlite_sidecars(db_path)
     logger.info("Migrated plaintext tenant database to encrypted storage")
 

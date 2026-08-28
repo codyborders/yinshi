@@ -38,6 +38,7 @@ export default function PiConfigSection({
     importing,
     syncing,
     updatingCategories,
+    busy,
     importFromGithub,
     importFromUpload,
     syncConfig,
@@ -112,7 +113,7 @@ export default function PiConfigSection({
               <button
                 type="button"
                 onClick={handleRetry}
-                disabled={syncing}
+                disabled={busy}
                 className="rounded border border-gray-600 px-3 py-2 text-sm text-gray-200 disabled:opacity-50"
               >
                 {syncing ? "Retrying..." : "Retry"}
@@ -123,7 +124,8 @@ export default function PiConfigSection({
               onClick={() => {
                 void removeConfig();
               }}
-              className="text-sm text-red-400 hover:text-red-300"
+              disabled={busy}
+              className="text-sm text-red-400 hover:text-red-300 disabled:opacity-50"
             >
               Remove
             </button>
@@ -151,7 +153,7 @@ export default function PiConfigSection({
                   onClick={() => {
                     void syncConfig();
                   }}
-                  disabled={syncing}
+                  disabled={busy}
                   className="rounded border border-gray-600 px-3 py-2 text-sm text-gray-200 disabled:opacity-50"
                 >
                   {syncing ? "Syncing..." : "Sync"}
@@ -162,7 +164,8 @@ export default function PiConfigSection({
                 onClick={() => {
                   void removeConfig();
                 }}
-                className="text-sm text-red-400 hover:text-red-300"
+                disabled={busy}
+                className="text-sm text-red-400 hover:text-red-300 disabled:opacity-50"
               >
                 Remove
               </button>
@@ -181,7 +184,7 @@ export default function PiConfigSection({
                 <input
                   type="checkbox"
                   checked={config.enabled_categories.includes(category)}
-                  disabled={updatingCategories}
+                  disabled={busy}
                   onChange={(event) => {
                     void toggleCategory(category, event.target.checked);
                   }}

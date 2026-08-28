@@ -23,6 +23,7 @@ from yinshi.services.managed_backup_crypto import (
     unwrap_managed_archive_key,
     wrap_managed_archive_key,
 )
+from yinshi.services.managed_backup_protocol import parse_managed_restore_result
 from yinshi.services.managed_backup_store import (
     PendingManagedBackupUploads,
     StoredManagedBackup,
@@ -289,7 +290,7 @@ class ManagedBackupManager:
         if (
             runtime is None
             or runtime.lifecycle_status != "ready"
-            or archive.status != "ready"
+            or archive.status not in ("ready", "deleting")
             or archive.object_version is None
             or self._start_restore is None
         ):
@@ -356,7 +357,7 @@ class ManagedBackupManager:
         if archive is None:
             raise LookupError("managed backup archive was not found")
         if (
-            archive.status != "ready"
+            archive.status not in ("ready", "deleting")
             or archive.object_version is None
             or self._start_deletion is None
         ):
@@ -775,18 +776,9 @@ class ManagedBackupManager:
                 )
 
     @staticmethod
-    def _parse_restore_result(payload: bytes, job_id: str) -> None:
-        try:
-            result = json.loads(payload.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            raise ValueError("managed restore guest result is invalid") from None
-        current_result = {
-            "cleanup_pending": False,
-            "job_id": job_id,
-            "status": "restored",
-        }
-        if result != current_result:
-            raise ValueError("managed restore guest result is invalid")
+    def _parse_restore_result(payload: bytes, job_id: str) -> bool:
+        """Accept one committed restore result and report pending cleanup."""
+        return parse_managed_restore_result(payload, job_id=job_id)
 
     async def _coordinate_delete(
         self,

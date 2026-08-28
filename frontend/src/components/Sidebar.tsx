@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import {
   ApiError,
@@ -861,6 +861,7 @@ function WorkspaceItem({
   const navigate = useNavigate();
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [loadedSessions, setLoadedSessions] = useState(false);
+  const sessionCreationRef = useRef<Promise<SessionInfo> | null>(null);
   const [sessionError, setSessionError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -889,11 +890,17 @@ function WorkspaceItem({
       return;
     }
 
+    if (sessionCreationRef.current) {
+      return;
+    }
+
+    const creation = transport.post<SessionInfo>(
+      `/api/workspaces/${workspace.id}/sessions`,
+      { model: preferredSessionModel(userId) },
+    );
+    sessionCreationRef.current = creation;
     try {
-      const session = await transport.post<SessionInfo>(
-        `/api/workspaces/${workspace.id}/sessions`,
-        { model: preferredSessionModel(userId) },
-      );
+      const session = await creation;
       setSessions([session]);
       navigate(
         `/app/session/${runtimeResourceId(runtime, session.id, {
@@ -903,6 +910,10 @@ function WorkspaceItem({
       onNavigate?.();
     } catch {
       setSessionError("Failed to create a session.");
+    } finally {
+      if (sessionCreationRef.current === creation) {
+        sessionCreationRef.current = null;
+      }
     }
   }
 

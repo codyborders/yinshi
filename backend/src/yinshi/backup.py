@@ -373,7 +373,8 @@ def _inspect_archive_members(tar_path: Path) -> _RestoreArchive:
         for index, member in enumerate(archive, start=1):
             if index > _MAX_ARCHIVE_MEMBERS:
                 raise ValueError("backup archive contains too many members")
-            name = member.name
+            raw_name = member.name
+            name = raw_name.rstrip("/") if member.isdir() else raw_name
             parts = name.split("/")
             if (
                 not name
@@ -381,7 +382,7 @@ def _inspect_archive_members(tar_path: Path) -> _RestoreArchive:
                 or "\\" in name
                 or any(part in {"", ".", ".."} for part in parts)
             ):
-                raise ValueError(f"backup archive contains an unsafe path: {name}")
+                raise ValueError(f"backup archive contains an unsafe path: {raw_name}")
             if name in members:
                 raise ValueError(f"backup archive contains a duplicate path: {name}")
             if not member.isfile() and not member.isdir():
@@ -508,12 +509,18 @@ def _staged_tenant_database_key(control_path: Path, user_id: str) -> bytes:
             current_kek = settings.key_encryption_key_bytes
             if current_kek:
                 keyring[settings.key_encryption_key_id] = current_kek
+            if not keyring:
+                raise RuntimeError(
+                    "KEY_ENCRYPTION_KEY must be configured to restore encrypted tenant databases"
+                )
             user_dek = unwrap_dek_with_keks(wrapped_dek, user_id, keyring)
         else:
             pepper = settings.encryption_pepper_bytes
             if not pepper:
                 raise ValueError("legacy encryption pepper is unavailable")
             user_dek = unwrap_dek(wrapped_dek, user_id, pepper)
+    except RuntimeError as exc:
+        raise ValueError(str(exc)) from None
     except Exception:
         raise ValueError("staged tenant encryption key could not be unwrapped") from None
     return derive_subkey(

@@ -372,6 +372,36 @@ async def test_sidecar_client_submit_oauth_flow_input() -> None:
     assert msg["authorizationInput"] == "http://localhost:1455/auth/callback?code=abc"
 
 
+@pytest.mark.asyncio
+async def test_sidecar_connect_eof_fails_handshake_and_clears_state(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Immediate sidecar EOF must leave every connection field disconnected."""
+    from yinshi.exceptions import SidecarError, SidecarNotConnectedError
+    from yinshi.services.sidecar import SidecarClient
+
+    reader = AsyncMock()
+    reader.readline = AsyncMock(return_value=b"")
+    writer = MagicMock()
+    writer.wait_closed = AsyncMock(return_value=None)
+
+    async def fake_open_unix_connection(path: str, **kwargs: object):
+        return reader, writer
+
+    monkeypatch.setattr("asyncio.open_unix_connection", fake_open_unix_connection)
+
+    client = SidecarClient()
+    with pytest.raises(SidecarError, match="init"):
+        await client.connect("/tmp/test-sidecar.sock")
+
+    assert client.connected is False
+    assert client._reader is None
+    assert client._writer is None
+    writer.close.assert_called_once()
+    with pytest.raises(SidecarNotConnectedError):
+        await client._send({"type": "ping"})
+
+
 def test_sidecar_dockerfile_installs_ssh_client() -> None:
     """The sidecar image must include SSH for git remote operations.
 
@@ -384,3 +414,32 @@ def test_sidecar_dockerfile_installs_ssh_client() -> None:
 
     assert "apt-get install -y --no-install-recommends" in dockerfile_content
     assert "git openssh-client" in dockerfile_content
+
+
+@pytest.mark.asyncio
+async def test_sidecar_catalog_timeout_is_normalized(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Catalog socket timeout should become a stable SidecarError."""
+    from yinshi.exceptions import SidecarError
+    from yinshi.services import sidecar as sidecar_module
+    from yinshi.services.sidecar import SidecarClient
+
+    socket_path = Path("/tmp/yinshi-catalog-test.sock")
+    socket_path.unlink(missing_ok=True)
+
+    async def handler(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        writer.write(b'{"type":"init_status","success":true}\n')
+        await writer.drain()
+        await reader.readline()
+        await asyncio.sleep(1)
+
+    server = await asyncio.start_unix_server(handler, path=str(socket_path))
+    monkeypatch.setattr(sidecar_module, "_SIDECAR_CATALOG_TIMEOUT_SECONDS", 0.01)
+    client = SidecarClient()
+    try:
+        await client.connect(str(socket_path))
+        with pytest.raises(SidecarError, match="Catalog response unavailable"):
+            await client.get_catalog()
+    finally:
+        await client.disconnect()
+        server.close()
+        await server.wait_closed()

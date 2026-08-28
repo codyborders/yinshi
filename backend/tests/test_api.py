@@ -3504,6 +3504,98 @@ def test_cancel_no_active_stream(client: TestClient, session_id: str) -> None:
     assert resp.status_code == 409
 
 
+@pytest.mark.asyncio
+async def test_cancel_after_run_release_returns_terminal_response(
+    client: TestClient,
+    session_id: str,
+) -> None:
+    """A cancel that loses the race with run release is terminal, not an error."""
+    from yinshi.exceptions import SidecarNotConnectedError
+    from yinshi.services.run_coordinator import RunCoordinator
+
+    coordinator = RunCoordinator()
+
+    class ReleasedDuringCancelSidecar:
+        """Release and disconnect the run while one cancellation is in flight."""
+
+        async def cancel(self, target_session_id: str) -> None:
+            await coordinator.release(target_session_id)
+            raise SidecarNotConnectedError("Not connected to sidecar")
+
+    await coordinator.register(session_id, ReleasedDuringCancelSidecar())
+
+    transport = httpx.ASGITransport(app=client.app, raise_app_exceptions=False)
+    with patch("yinshi.api.stream.get_run_coordinator", return_value=coordinator):
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+        ) as async_client:
+            response = await async_client.post(f"/api/sessions/{session_id}/cancel")
+            repeat = await async_client.post(f"/api/sessions/{session_id}/cancel")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "stopped"}
+    assert repeat.status_code == 409
+    assert repeat.json() == {"detail": "No active stream for this session"}
+
+
+@pytest.mark.asyncio
+async def test_cancel_failure_on_registered_run_stays_an_error(
+    client: TestClient,
+    session_id: str,
+) -> None:
+    """A cancellation failure on a still-registered run must remain an error."""
+    from yinshi.exceptions import SidecarError
+    from yinshi.services.run_coordinator import RunCoordinator
+
+    coordinator = RunCoordinator()
+
+    class FailingCancelSidecar:
+        """Fail cancellation while the run stays registered."""
+
+        async def cancel(self, target_session_id: str) -> None:
+            del target_session_id
+            raise SidecarError("Sidecar cancellation failed")
+
+    await coordinator.register(session_id, FailingCancelSidecar())
+    try:
+        transport = httpx.ASGITransport(app=client.app, raise_app_exceptions=False)
+        with patch("yinshi.api.stream.get_run_coordinator", return_value=coordinator):
+            async with httpx.AsyncClient(
+                transport=transport,
+                base_url="http://testserver",
+            ) as async_client:
+                response = await async_client.post(f"/api/sessions/{session_id}/cancel")
+    finally:
+        await coordinator.release(session_id)
+
+    assert response.status_code == 500
+
+
+def test_workspace_creation_accepts_empty_repository(client: TestClient, tmp_path) -> None:
+    """Workspace creation must handle a repository whose default branch is unborn."""
+    empty_repo = tmp_path / "empty-repo"
+    empty_repo.mkdir()
+    subprocess.run(["git", "init", str(empty_repo)], check=True, capture_output=True)
+
+    repo = client.post(
+        "/api/repos",
+        json={"name": "empty-repo", "local_path": str(empty_repo)},
+    ).json()
+    response = client.post(f"/api/repos/{repo['id']}/workspaces", json={})
+
+    assert response.status_code == 201, response.text
+    worktree_path = response.json()["path"]
+    assert Path(worktree_path).is_dir()
+    head_check = subprocess.run(
+        ["git", "rev-parse", "--verify", "HEAD"],
+        cwd=worktree_path,
+        capture_output=True,
+        text=True,
+    )
+    assert head_check.returncode == 0, head_check.stderr
+
+
 def test_first_prompt_updates_workspace_name(client: TestClient, git_repo: str) -> None:
     """The first prompt should update the workspace name to a summary of the prompt."""
     repo = client.post("/api/repos", json={"name": "test-repo", "local_path": git_repo}).json()

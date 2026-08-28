@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -9,6 +10,7 @@ import { afterEach, expect, it } from "vitest";
 import {
   cloneRepositoryIntoProfile,
   DirtyRepositoryError,
+  registerLocalRepository,
 } from "./localRepositoryImport.js";
 
 const executeFile = promisify(execFile);
@@ -20,6 +22,85 @@ afterEach(async () => {
       rm(directoryPath, { recursive: true, force: true }),
     ),
   );
+});
+
+it("preserves the clone when a committed 201 registration cannot be parsed", async () => {
+  const directoryPath = await mkdtemp(path.join(os.tmpdir(), "yinshi-register-"));
+  temporaryDirectories.push(directoryPath);
+  const clonePath = path.join(directoryPath, "clone");
+  await mkdir(clonePath, { mode: 0o700 });
+  const repository = { name: "clone", dirty: false, path: clonePath };
+  const removedPaths: string[] = [];
+  const removeClone = async (repositoryPath: string) => {
+    removedPaths.push(repositoryPath);
+    await rm(repositoryPath, { recursive: true, force: true });
+  };
+
+  await expect(
+    registerLocalRepository({
+      repository,
+      fetchRegistration: async () => new Response("truncated", { status: 201 }),
+      removeClone,
+    }),
+  ).rejects.toThrow("local repository registration response is invalid");
+  await expect(access(clonePath, constants.F_OK)).resolves.toBeUndefined();
+  expect(removedPaths).toEqual([]);
+
+  await expect(
+    registerLocalRepository({
+      repository,
+      fetchRegistration: async () => {
+        throw new Error("network unreachable");
+      },
+      removeClone,
+    }),
+  ).rejects.toThrow("local repository registration outcome is unknown");
+  await expect(access(clonePath, constants.F_OK)).resolves.toBeUndefined();
+  expect(removedPaths).toEqual([]);
+
+  await expect(
+    registerLocalRepository({
+      repository,
+      fetchRegistration: async () => new Response("forbidden", { status: 403 }),
+      removeClone,
+    }),
+  ).rejects.toThrow("local repository registration failed");
+  await expect(access(clonePath, constants.F_OK)).rejects.toThrow("ENOENT");
+  expect(removedPaths).toEqual([clonePath]);
+});
+
+it("does not execute repository-local Git integrations during import inspection", async () => {
+  const directoryPath = await mkdtemp(path.join(os.tmpdir(), "yinshi-import-"));
+  temporaryDirectories.push(directoryPath);
+  const sourcePath = path.join(directoryPath, "selected");
+  const managedBasePath = path.join(directoryPath, "managed");
+  const destinationPath = path.join(managedBasePath, "clone");
+  const fsmonitorMarkerPath = path.join(directoryPath, "FSMONITOR_MARKER_RAN");
+  const fsmonitorHookPath = path.join(directoryPath, "fsmonitor-hook.sh");
+  await executeFile("/usr/bin/git", ["init", sourcePath]);
+  await executeFile("/usr/bin/git", ["-C", sourcePath, "config", "user.name", "Test"]);
+  await executeFile("/usr/bin/git", ["-C", sourcePath, "config", "user.email", "test@example.com"]);
+  await writeFile(path.join(sourcePath, "tracked.txt"), "committed\n", "utf8");
+  await executeFile("/usr/bin/git", ["-C", sourcePath, "add", "tracked.txt"]);
+  await executeFile("/usr/bin/git", ["-C", sourcePath, "commit", "-m", "Initial"]);
+  await writeFile(
+    fsmonitorHookPath,
+    `#!/bin/sh\ntouch ${JSON.stringify(fsmonitorMarkerPath)}\nprintf '2\\n0\\n'\nexit 0\n`,
+    { mode: 0o755 },
+  );
+  await executeFile("/usr/bin/git", ["-C", sourcePath, "config", "core.fsmonitor", fsmonitorHookPath]);
+
+  const result = await cloneRepositoryIntoProfile({
+    gitCommand: "/usr/bin/git",
+    sourcePath,
+    managedBasePath,
+    destinationPath,
+    allowDirty: false,
+  });
+
+  expect(result.dirty).toBe(false);
+  await expect(access(fsmonitorMarkerPath, constants.F_OK)).rejects.toThrow("ENOENT");
+  expect(await readFile(path.join(destinationPath, "tracked.txt"), "utf8")).toBe("committed\n");
 });
 
 it("requires dirty confirmation and clones committed state without editing the selection", async () => {

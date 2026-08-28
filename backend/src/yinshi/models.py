@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Any, Literal
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
 from yinshi.model_catalog import DEFAULT_SESSION_MODEL, get_provider_metadata, normalize_model_ref
 
@@ -177,6 +177,14 @@ class WorkspaceUpdate(BaseModel):
     """Request to update a workspace."""
 
     state: str | None = Field(None, pattern=r"^(ready|archived)$")
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_explicit_null_state(cls, value: object) -> object:
+        """Reject null state while preserving omitted-field semantics."""
+        if isinstance(value, dict) and "state" in value and value["state"] is None:
+            raise ValueError("state must not be null")
+        return value
 
 
 class SessionCreate(BaseModel):

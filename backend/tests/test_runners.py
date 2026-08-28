@@ -534,6 +534,56 @@ def test_cloud_runner_revoke_invalidates_bearer_token(auth_client: TestClient) -
     assert heartbeat_response.status_code == 401
 
 
+def test_registration_does_not_revive_a_concurrently_revoked_runner(
+    auth_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A revoke that commits mid-registration must win over the stale write."""
+    from yinshi.exceptions import RunnerRegistrationError
+    from yinshi.services import runners as runners_service
+    from yinshi.services.runners import (
+        create_runner_registration,
+        get_runner_for_user,
+        register_runner,
+        revoke_runner_for_user,
+    )
+
+    tenant = getattr(auth_client, "yinshi_tenant")
+    registration = create_runner_registration(
+        tenant.user_id,
+        name="Racing runner",
+        cloud_provider="aws",
+        region="us-west-2",
+        storage_profile="aws_ebs_s3_files",
+        control_url="http://testserver",
+    )
+    real_profile_match = runners_service._requested_profile_matches
+
+    def revoke_then_match(**kwargs):
+        revoke_runner_for_user(tenant.user_id)
+        return real_profile_match(**kwargs)
+
+    monkeypatch.setattr(runners_service, "_requested_profile_matches", revoke_then_match)
+
+    with pytest.raises(RunnerRegistrationError):
+        register_runner(
+            registration["registration_token"],
+            runner_version="0.1.0",
+            capabilities={},
+            data_dir="/var/lib/yinshi",
+            sqlite_dir="/var/lib/yinshi/sqlite",
+            shared_files_dir="/mnt/yinshi-s3-files",
+            storage_profile="aws_ebs_s3_files",
+            noise_public_key=_RUNNER_NOISE_PUBLIC_KEY,
+        )
+
+    runner = get_runner_for_user(tenant.user_id)
+    assert runner is not None
+    assert runner["status"] == "revoked"
+    assert runner["registered_at"] is None
+    assert runner["last_heartbeat_at"] is None
+
+
 def test_runner_heartbeat_requires_bearer_token(auth_client: TestClient) -> None:
     """The open heartbeat endpoint is still protected by runner bearer auth."""
     response = auth_client.post(

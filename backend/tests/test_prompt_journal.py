@@ -24,6 +24,7 @@ from fastapi.responses import StreamingResponse
 from yinshi.api.deps import get_db_for_request
 from yinshi.services import prompt_journal
 from yinshi.services.prompt_journal import PromptJournal
+from yinshi.services.run_coordinator import CancelOutcome
 
 
 def _request() -> Request:
@@ -879,6 +880,97 @@ async def test_prompt_journal_start_cannot_outlive_close(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("terminal_event", "expected_status"),
+    (
+        ({"type": "result", "usage": {}}, "completed"),
+        ({"type": "error", "error": "An internal error occurred"}, "failed"),
+        ({"type": "cancelled", "reason": "user_stop"}, "cancelled"),
+    ),
+)
+async def test_prompt_journal_recovery_derives_status_from_persisted_terminal_event(
+    db: sqlite3.Connection,
+    terminal_event: dict[str, Any],
+    expected_status: str,
+) -> None:
+    """A fresh process honors one persisted terminal event before interruption."""
+    session_id = _seed_session(db)
+    run_id = uuid.uuid4().hex
+    with db:
+        db.execute("UPDATE sessions SET status = 'running' WHERE id = ?", (session_id,))
+        db.execute(
+            """INSERT INTO prompt_runs (id, session_id, idempotency_key, status)
+               VALUES (?, ?, ?, 'running')""",
+            (run_id, session_id, str(uuid.uuid4())),
+        )
+        db.execute(
+            "INSERT INTO prompt_events (run_id, sequence, event_json) VALUES (?, 0, ?)",
+            (run_id, '{"type":"status"}'),
+        )
+        db.execute(
+            "INSERT INTO prompt_events (run_id, sequence, event_json) VALUES (?, 1, ?)",
+            (run_id, json.dumps(terminal_event)),
+        )
+        db.execute(
+            "INSERT INTO messages (session_id, role, content, turn_id) VALUES (?, 'user', ?, ?)",
+            (session_id, "finished prompt", run_id),
+        )
+
+    journal_request = _request()
+    journal = PromptJournal()
+    batch = await journal.events(
+        request=journal_request,
+        session_id=session_id,
+        run_id=run_id,
+        next_sequence=0,
+    )
+
+    assert batch.status == expected_status
+    assert batch.events == (
+        {"type": "status"},
+        terminal_event,
+    )
+    assert (
+        db.execute("SELECT status FROM sessions WHERE id = ?", (session_id,)).fetchone()[0]
+        == "idle"
+    )
+    await journal.close()
+
+
+@pytest.mark.asyncio
+async def test_prompt_journal_recovery_maps_stopping_run_with_terminal_event_to_cancelled(
+    db: sqlite3.Connection,
+) -> None:
+    """Recovery resolves one stopping run as cancelled like terminal transitions."""
+    session_id = _seed_session(db)
+    run_id = uuid.uuid4().hex
+    with db:
+        db.execute("UPDATE sessions SET status = 'running' WHERE id = ?", (session_id,))
+        db.execute(
+            """INSERT INTO prompt_runs (id, session_id, idempotency_key, status)
+               VALUES (?, ?, ?, 'stopping')""",
+            (run_id, session_id, str(uuid.uuid4())),
+        )
+        db.execute(
+            "INSERT INTO prompt_events (run_id, sequence, event_json) VALUES (?, 0, ?)",
+            (run_id, json.dumps({"type": "result", "usage": {}})),
+        )
+
+    journal_request = _request()
+    journal = PromptJournal()
+    batch = await journal.events(
+        request=journal_request,
+        session_id=session_id,
+        run_id=run_id,
+        next_sequence=0,
+    )
+
+    assert batch.status == "cancelled"
+    assert batch.events == ({"type": "result", "usage": {}},)
+    await journal.close()
+
+
+@pytest.mark.asyncio
 async def test_prompt_journal_recovers_orphaned_run_on_first_tenant_request(
     db: sqlite3.Connection,
 ) -> None:
@@ -1477,7 +1569,7 @@ async def test_prompt_journal_concurrent_cancellation_is_idempotent_for_active_t
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Concurrent active-task cancellation stores one terminal event."""
-    coordinator = SimpleNamespace(request_cancel=AsyncMock(return_value=False))
+    coordinator = SimpleNamespace(request_cancel=AsyncMock(return_value=CancelOutcome.ABSENT))
     monkeypatch.setattr(prompt_journal, "get_run_coordinator", lambda: coordinator)
     session_id = _seed_session(db)
     executor_started = asyncio.Event()
@@ -1540,7 +1632,7 @@ async def test_prompt_journal_concurrent_cancellation_is_idempotent_while_starti
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Concurrent pre-executor cancellation stores one terminal event."""
-    coordinator = SimpleNamespace(request_cancel=AsyncMock(return_value=False))
+    coordinator = SimpleNamespace(request_cancel=AsyncMock(return_value=CancelOutcome.ABSENT))
     monkeypatch.setattr(prompt_journal, "get_run_coordinator", lambda: coordinator)
     session_id = _seed_session(db)
     run_id = uuid.uuid4().hex

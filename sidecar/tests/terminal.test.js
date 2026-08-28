@@ -269,3 +269,142 @@ test("terminal attach rejects invalid workspace ids", async () => {
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
 });
+
+// node-pty cannot spawn in every host runtime (the test above skips there),
+// so restart-migration coverage replaces only PTY creation with a fake that
+// implements the same pid/onData/onExit/write/kill/resize contract.
+function fakeTerminalSocket() {
+  const messages = [];
+  return {
+    messages,
+    socket: {
+      destroyed: false,
+      write(chunk) {
+        messages.push(JSON.parse(String(chunk).trim()));
+        return true;
+      },
+    },
+  };
+}
+
+function makeFakeTerminal(pid) {
+  let dataHandler = null;
+  let exitHandler = null;
+  return {
+    pid,
+    onData(handler) {
+      dataHandler = handler;
+    },
+    onExit(handler) {
+      exitHandler = handler;
+    },
+    write(data) {
+      if (dataHandler) {
+        dataHandler(data);
+      }
+    },
+    kill() {
+      if (exitHandler) {
+        exitHandler({ exitCode: 0, signal: undefined });
+      }
+    },
+    resize() {},
+  };
+}
+
+function plantFakePtyFactory(sidecar) {
+  let nextPid = 1000;
+  sidecar.createTerminalEntry = (id, options) => {
+    const terminal = makeFakeTerminal((nextPid += 1));
+    const entry = {
+      id,
+      cwd: options.cwd,
+      terminal,
+      sockets: new Set(),
+      scrollback: "",
+      scrollbackLimitBytes: 10_000,
+      suppressExitEvent: false,
+    };
+    terminal.onData((data) => {
+      entry.scrollback += data;
+      for (const subscriber of entry.sockets) {
+        if (subscriber.destroyed) {
+          continue;
+        }
+        subscriber.write(`${JSON.stringify({ id, type: "terminal_data", data })}\n`);
+      }
+    });
+    terminal.onExit(({ exitCode, signal }) => {
+      if (!entry.suppressExitEvent) {
+        for (const subscriber of entry.sockets) {
+          if (subscriber.destroyed) {
+            continue;
+          }
+          subscriber.write(
+            `${JSON.stringify({ id, type: "terminal_exit", exit_code: exitCode, signal })}\n`,
+          );
+        }
+      }
+      if (sidecar.activeTerminals.get(id) === entry) {
+        sidecar.activeTerminals.delete(id);
+      }
+    });
+    sidecar.activeTerminals.set(id, entry);
+    return entry;
+  };
+}
+
+test("terminal restart reattaches every live attached client to the replacement PTY", () => {
+  const sidecar = new YinshiSidecar();
+  plantFakePtyFactory(sidecar);
+  const terminalId = "b".repeat(32);
+  const options = {
+    workspaceId: terminalId,
+    cwd: os.tmpdir(),
+    cols: 80,
+    rows: 24,
+    scrollbackLines: 100,
+  };
+  const restarting = fakeTerminalSocket();
+  const observer = fakeTerminalSocket();
+
+  sidecar.handleRequest({ type: "terminal_attach", id: terminalId, options }, restarting.socket);
+  sidecar.handleRequest({ type: "terminal_attach", id: terminalId, options }, observer.socket);
+  assert.equal(
+    restarting.messages.filter((message) => message.type === "terminal_ready").length,
+    1,
+  );
+  assert.equal(
+    observer.messages.filter((message) => message.type === "terminal_ready").length,
+    1,
+  );
+  restarting.messages.length = 0;
+  observer.messages.length = 0;
+
+  sidecar.handleRequest({ type: "terminal_restart", id: terminalId, options }, restarting.socket);
+
+  const restartingReady = restarting.messages.filter(
+    (message) => message.type === "terminal_ready",
+  );
+  assert.equal(restartingReady.length, 1);
+  assert.notEqual(restartingReady[0].restarted, true);
+
+  const observerReady = observer.messages.filter((message) => message.type === "terminal_ready");
+  assert.equal(observerReady.length, 1);
+  assert.equal(observerReady[0].restarted, true);
+  assert.match(String(observerReady[0].pid), /^\d+$/);
+
+  sidecar.handleRequest(
+    { type: "terminal_input", id: terminalId, data: "fresh-new-terminal-output" },
+    restarting.socket,
+  );
+  assert.ok(
+    observer.messages.some(
+      (message) => message.type === "terminal_data"
+        && message.data.includes("fresh-new-terminal-output"),
+    ),
+  );
+  for (const message of [...observer.messages, ...restarting.messages]) {
+    assert.notEqual(message.type, "terminal_exit");
+  }
+});

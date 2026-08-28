@@ -51,11 +51,12 @@ def encrypt_control_text(field_name: str, user_id: str, plaintext: str | None) -
         return None
     if not isinstance(plaintext, str):
         raise TypeError("plaintext must be a string or None")
-    if is_encrypted_text(plaintext):
-        return plaintext
     settings = get_settings()
     if not control_field_encryption_enabled(settings):
         return plaintext
+    # The input is always new plaintext. A string that merely carries the
+    # envelope prefix is not trusted as an existing envelope, so it is
+    # encrypted like any other value and cannot bypass envelope creation.
     return encrypt_text(plaintext, _control_field_key(), aad=_aad(field_name, user_id))
 
 
@@ -73,4 +74,35 @@ def decrypt_control_text(field_name: str, user_id: str, stored_value: str | None
             return decrypt_text(stored_value, key, aad=associated_data)
         except InvalidTag:
             continue
+        except ValueError:
+            # The payload does not parse as an envelope this code could have
+            # written, so treat it as legacy plaintext rather than failing the
+            # read. Genuine envelopes are always parseable.
+            return stored_value
     raise InvalidTag("No configured control-field key could decrypt the value")
+
+
+def control_field_is_stored_envelope(
+    field_name: str,
+    user_id: str,
+    stored_value: str | None,
+) -> bool:
+    """Return whether a stored value decrypts as a trusted control-field envelope.
+
+    A string prefix alone is not trust. Only a payload that decrypts under a
+    configured key counts, so legacy plaintext that happens to carry the
+    envelope prefix is treated as plaintext and remains eligible for
+    encryption.
+    """
+    if not isinstance(stored_value, str) or not is_encrypted_text(stored_value):
+        return False
+    associated_data = _aad(field_name, user_id)
+    for key in _control_field_keys():
+        try:
+            decrypt_text(stored_value, key, aad=associated_data)
+            return True
+        except InvalidTag:
+            continue
+        except ValueError:
+            return False
+    return False

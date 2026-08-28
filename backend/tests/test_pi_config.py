@@ -828,6 +828,51 @@ def test_delete_pi_config_removes_files_and_settings(auth_client: TestClient) ->
     assert _get_user_settings_row(tenant.user_id) is None
 
 
+def test_remove_pi_config_succeeds_when_stored_metadata_cannot_decrypt(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """Deletion must stay possible when stored metadata is undecryptable."""
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "legacy.db"))
+    monkeypatch.setenv("CONTROL_DB_PATH", str(tmp_path / "control.db"))
+    monkeypatch.setenv("USER_DATA_DIR", str(tmp_path / "users"))
+    monkeypatch.setenv("ENCRYPTION_PEPPER", "a" * 64)
+    monkeypatch.setenv("DISABLE_AUTH", "true")
+    monkeypatch.setenv("CONTAINER_ENABLED", "false")
+    monkeypatch.setenv("CONTROL_FIELD_ENCRYPTION", "enabled")
+
+    from yinshi.config import get_settings
+
+    get_settings.cache_clear()
+    try:
+        from yinshi.db import get_control_db, init_control_db
+        from yinshi.services.crypto import encrypt_text
+        from yinshi.services.pi_config import remove_pi_config
+
+        foreign_envelope = encrypt_text(
+            "other-label", b"f" * 32, aad="pi_configs.source_label:user-1"
+        )
+        init_control_db()
+        with get_control_db() as db:
+            db.execute("INSERT INTO users (id, email) VALUES ('user-1', 'user-1@example.com')")
+            db.execute(
+                "INSERT INTO pi_configs (user_id, source_type, source_label, status) "
+                "VALUES ('user-1', 'upload', ?, 'ready')",
+                (foreign_envelope,),
+            )
+            db.commit()
+
+        asyncio.run(remove_pi_config("user-1", str(tmp_path / "data")))
+
+        with get_control_db() as db:
+            remaining = db.execute(
+                "SELECT count(*) FROM pi_configs WHERE user_id = 'user-1'"
+            ).fetchone()[0]
+        assert remaining == 0
+    finally:
+        get_settings.cache_clear()
+
+
 def test_prompt_forwards_pi_settings_to_host_local_sidecar(
     auth_client: TestClient,
     git_repo: str,
@@ -975,6 +1020,41 @@ def test_github_import_failure_message_is_sanitized(auth_client: TestClient) -> 
     assert payload is not None
     assert payload["status"] == "error"
     assert payload["error_message"] == "Import failed. Check server logs for details."
+
+
+def test_sync_retries_pi_config_from_error_state(auth_client: TestClient) -> None:
+    """Sync should atomically claim an errored Pi config for retry."""
+    from yinshi.services.pi_config import _insert_pi_config_row, get_pi_config
+
+    tenant = getattr(auth_client, "yinshi_tenant")
+    _insert_pi_config_row(
+        tenant.user_id,
+        source_type="github",
+        source_label="example",
+        repo_url="https://github.com/example/pi-config.git",
+        status="error",
+        available_categories=[],
+        enabled_categories=[],
+    )
+
+    async def fake_clone_repo(url: str, dest: str, access_token: str | None = None) -> str:
+        del url, access_token
+        dest_path = Path(dest)
+        (dest_path / "agent").mkdir(parents=True, exist_ok=True)
+        (dest_path / ".git").mkdir(exist_ok=True)
+        (dest_path / "agent" / "settings.json").write_text("{}", encoding="utf-8")
+        return dest
+
+    with (
+        patch("yinshi.services.pi_config.clone_repo", side_effect=fake_clone_repo),
+        patch("yinshi.services.pi_config._run_git", new=AsyncMock(return_value="")),
+    ):
+        response = auth_client.post("/api/settings/pi-config/sync")
+
+    assert response.status_code == 200
+    payload = get_pi_config(tenant.user_id)
+    assert payload is not None
+    assert payload["status"] == "ready"
 
 
 def test_sync_failure_message_is_sanitized(auth_client: TestClient) -> None:

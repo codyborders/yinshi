@@ -135,6 +135,66 @@ class ChunkStream(httpx.AsyncByteStream):
             yield chunk
 
 
+async def test_fetch_pinned_artifact_accepts_gzip_encoded_response() -> None:
+    """Length validation must compare the encoded representation, not decoded bytes."""
+    import gzip
+
+    from yinshi.services.managed_artifacts import fetch_pinned_artifact
+
+    content = b"managed guest artifact" * 64
+    encoded = gzip.compress(content)
+    expected_sha256 = hashlib.sha256(content).hexdigest()
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={
+                "Content-Length": str(len(encoded)),
+                "Content-Encoding": "gzip",
+            },
+            stream=ChunkStream([encoded]),
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await fetch_pinned_artifact(
+            client,
+            "https://artifacts.example/guest.tar.gz",
+            expected_sha256,
+        )
+
+    assert result == content
+
+
+async def test_fetch_pinned_artifact_rejects_encoded_truncation() -> None:
+    """Received encoded bytes must match a declared encoded Content-Length."""
+    import gzip
+
+    import yinshi.services.managed_artifacts as managed_artifacts
+
+    content = b"managed guest artifact"
+    encoded = gzip.compress(content)
+    truncated = encoded[:-8]
+    response = httpx.Response(
+        200,
+        headers={
+            "Content-Length": str(len(encoded)),
+            "Content-Encoding": "gzip",
+        },
+        stream=ChunkStream([truncated]),
+    )
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return response
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(managed_artifacts.ManagedArtifactSizeError):
+            await managed_artifacts.fetch_pinned_artifact(
+                client,
+                "https://artifacts.example/guest.tar.gz",
+                hashlib.sha256(content).hexdigest(),
+            )
+
+
 async def test_fetch_pinned_artifact_rejects_truncation() -> None:
     """Received bytes must match a declared Content-Length."""
     import yinshi.services.managed_artifacts as managed_artifacts
@@ -150,6 +210,36 @@ async def test_fetch_pinned_artifact_rejects_truncation() -> None:
                 client,
                 "https://artifacts.example/guest",
                 hashlib.sha256(b"abc").hexdigest(),
+            )
+
+
+async def test_fetch_pinned_artifact_rejects_decoded_oversize_with_encoding() -> None:
+    """Decoded content must stay bounded even when encoded transport is small."""
+    import gzip
+
+    import yinshi.services.managed_artifacts as managed_artifacts
+
+    decoded_oversize = b"0" * (managed_artifacts.MAX_ARTIFACT_BYTES + 1)
+    encoded = gzip.compress(decoded_oversize)
+    assert len(encoded) < managed_artifacts.MAX_ARTIFACT_BYTES
+    response = httpx.Response(
+        200,
+        headers={
+            "Content-Length": str(len(encoded)),
+            "Content-Encoding": "gzip",
+        },
+        stream=ChunkStream([encoded]),
+    )
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return response
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(managed_artifacts.ManagedArtifactSizeError):
+            await managed_artifacts.fetch_pinned_artifact(
+                client,
+                "https://artifacts.example/guest.tar.gz",
+                hashlib.sha256(decoded_oversize).hexdigest(),
             )
 
 

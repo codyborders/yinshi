@@ -30,6 +30,7 @@ import { detectFileVaultStatus } from "./diskEncryption.js";
 import { DESKTOP_IPC_CHANNELS, type HostedApiRequest } from "./desktopApi.js";
 import { bootstrapHelperSession } from "./helperBootstrap.js";
 import { startManagedHelper, type ManagedHelper } from "./helperSupervisor.js";
+import { applicationAppUrl } from "./mainRouting.js";
 import { HostedAccessSession } from "./hostedAccessSession.js";
 import { HostedApiGateway } from "./hostedApiGateway.js";
 import { startHostedSignIn, type HostedSignInStage } from "./hostedAuth.js";
@@ -37,6 +38,7 @@ import { startLocalRuntime } from "./localRuntime.js";
 import {
   cloneRepositoryIntoProfile,
   DirtyRepositoryError,
+  registerLocalRepository,
 } from "./localRepositoryImport.js";
 import {
   buildRuntimeLaunchConfig,
@@ -387,7 +389,7 @@ async function configureApplication(): Promise<DesktopAppController> {
     loadApplication: async (origin) => {
       applicationOrigin = origin;
       const window = requireWindow();
-      await window.loadURL(`${origin}/app`);
+      await window.loadURL(applicationAppUrl(origin));
       if (!window.isVisible()) {
         window.show();
       }
@@ -559,39 +561,30 @@ async function configureApplication(): Promise<DesktopAppController> {
     }
 
     try {
-      const response = await electronSessionFetch(`${origin}/api/repos`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Requested-With": "XMLHttpRequest",
-        },
-        body: JSON.stringify({
-          name: clonedRepository.name,
-          local_path: clonedRepository.path,
-        }),
-        redirect: "error",
-        signal: AbortSignal.timeout(30_000),
+      const registeredRepository = await registerLocalRepository({
+        repository: clonedRepository,
+        fetchRegistration: () =>
+          electronSessionFetch(`${origin}/api/repos`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-Requested-With": "XMLHttpRequest",
+            },
+            body: JSON.stringify({
+              name: clonedRepository.name,
+              local_path: clonedRepository.path,
+            }),
+            redirect: "error",
+            signal: AbortSignal.timeout(30_000),
+          }),
+        removeClone: (repositoryPath) =>
+          rm(repositoryPath, { recursive: true, force: true }),
       });
-      if (response.status !== 201) {
-        throw new Error("Local repository registration failed");
-      }
-      const value: unknown = await response.json();
-      if (typeof value !== "object" || value === null || Array.isArray(value)) {
-        throw new Error("Local repository registration response is invalid");
-      }
-      const repository = value as Record<string, unknown>;
-      if (
-        typeof repository.id !== "string" ||
-        typeof repository.name !== "string"
-      ) {
-        throw new Error("Local repository registration response is invalid");
-      }
       return {
         status: "imported",
-        repository: { id: repository.id, name: repository.name },
+        repository: registeredRepository,
       } as const;
     } catch {
-      await rm(clonedRepository.path, { recursive: true, force: true });
       throw new Error("Local repository import failed");
     }
   });
@@ -665,7 +658,7 @@ if (!app.requestSingleInstanceLock()) {
       if (applicationOrigin === undefined) {
         void mainWindow.loadFile(signInFilePath());
       } else {
-        void mainWindow.loadURL(`${applicationOrigin}/`);
+        void mainWindow.loadURL(applicationAppUrl(applicationOrigin));
       }
     }
   });

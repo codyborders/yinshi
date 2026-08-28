@@ -71,6 +71,24 @@ def _validate_expected_sha256(expected_sha256: str) -> None:
         raise ManagedArtifactValidationError("Invalid artifact digest")
 
 
+def _decode_content_payload(response: httpx.Response, encoded: bytes) -> bytes:
+    """Decode one bounded payload using its declared encoded representation."""
+    content_encoding = response.headers.get("content-encoding", "").strip().lower()
+    if content_encoding in ("", "identity"):
+        return encoded
+    decoded_response = httpx.Response(
+        200,
+        headers={"Content-Encoding": content_encoding},
+        content=encoded,
+    )
+    decoded: bytearray = bytearray()
+    for chunk in decoded_response.iter_bytes():
+        decoded.extend(chunk)
+        if len(decoded) > MAX_ARTIFACT_BYTES:
+            raise ManagedArtifactSizeError("Invalid artifact size")
+    return bytes(decoded)
+
+
 async def fetch_pinned_artifact(
     http_client: httpx.AsyncClient,
     artifact_url: str,
@@ -106,16 +124,22 @@ async def fetch_pinned_artifact(
                     declared_length = int(declared_value)
                     if declared_length > MAX_ARTIFACT_BYTES:
                         raise ManagedArtifactSizeError("Invalid artifact size")
-                content_buffer = bytearray()
-                async for chunk in response.aiter_bytes():
-                    content_buffer.extend(chunk)
-                    if len(content_buffer) > MAX_ARTIFACT_BYTES:
+                if response.is_stream_consumed:
+                    encoded_content = response.content
+                    if len(encoded_content) > MAX_ARTIFACT_BYTES:
                         raise ManagedArtifactSizeError("Invalid artifact size")
-                content = bytes(content_buffer)
-                if not content:
+                else:
+                    content_buffer = bytearray()
+                    async for chunk in response.aiter_raw():
+                        content_buffer.extend(chunk)
+                        if len(content_buffer) > MAX_ARTIFACT_BYTES:
+                            raise ManagedArtifactSizeError("Invalid artifact size")
+                    encoded_content = bytes(content_buffer)
+                if declared_length is not None and len(encoded_content) != declared_length:
                     raise ManagedArtifactSizeError("Invalid artifact size")
-                if declared_length is not None and len(content) != declared_length:
-                    raise ManagedArtifactSizeError("Invalid artifact size")
+            content = _decode_content_payload(response, encoded_content)
+            if not content or len(content) > MAX_ARTIFACT_BYTES:
+                raise ManagedArtifactSizeError("Invalid artifact size")
     except httpx.HTTPStatusError:
         raise ManagedArtifactHTTPError("Artifact HTTP failure") from None
     except httpx.TimeoutException:

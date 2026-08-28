@@ -490,18 +490,7 @@ def start_managed_backup_creation(
     with get_control_db() as database:
         try:
             database.execute("BEGIN IMMEDIATE")
-            active = database.execute(
-                """SELECT status FROM managed_backup_operations
-                   WHERE user_id = ?""",
-                (normalized_user_id,),
-            ).fetchone()
-            if active is not None and active["status"] == "running":
-                raise ManagedBackupConflictError("Managed backup operation is already active")
-            if active is not None:
-                database.execute(
-                    "DELETE FROM managed_backup_operations WHERE user_id = ?",
-                    (normalized_user_id,),
-                )
+            _retire_failed_managed_operation(database, normalized_user_id)
             runtime = database.execute(
                 """SELECT generation, lifecycle_status, runner_id, sprite_external_id
                    FROM managed_runtimes WHERE user_id = ?""",
@@ -568,6 +557,39 @@ def start_managed_backup_creation(
     )
 
 
+def _retire_failed_managed_operation(
+    database: sqlite3.Connection,
+    user_id: str,
+) -> None:
+    """Release one durably failed account fence before an exact new claim.
+
+    A running row keeps its exclusive fence. A failed row is deleted inside the
+    caller's claim transaction, and a failed deletion returns its archive from
+    ``deleting`` to the explicit retryable ``ready`` state while exact object
+    metadata and wrapped key material stay intact.
+    """
+    row = database.execute(
+        """SELECT status, operation, archive_id FROM managed_backup_operations
+           WHERE user_id = ?""",
+        (user_id,),
+    ).fetchone()
+    if row is None:
+        return
+    if row["status"] == "running":
+        raise ManagedBackupConflictError("Managed backup operation is already active")
+    database.execute(
+        "DELETE FROM managed_backup_operations WHERE user_id = ?",
+        (user_id,),
+    )
+    if row["operation"] == "delete":
+        database.execute(
+            """UPDATE managed_backup_archives
+               SET status = 'ready'
+               WHERE id = ? AND user_id = ? AND status = 'deleting'""",
+            (row["archive_id"], user_id),
+        )
+
+
 def _start_managed_backup_restore(
     user_id: str,
     *,
@@ -589,6 +611,7 @@ def _start_managed_backup_restore(
     with get_control_db() as database:
         try:
             database.execute("BEGIN IMMEDIATE")
+            _retire_failed_managed_operation(database, normalized_user_id)
             runtime = database.execute(
                 """SELECT generation, runner_id, sprite_external_id
                    FROM managed_runtimes
@@ -707,6 +730,7 @@ def start_managed_backup_deletion(
     with get_control_db() as database:
         try:
             database.execute("BEGIN IMMEDIATE")
+            _retire_failed_managed_operation(database, normalized_user_id)
             result = database.execute(
                 """UPDATE managed_backup_archives SET status = 'deleting'
                    WHERE id = ? AND user_id = ? AND status = 'ready'

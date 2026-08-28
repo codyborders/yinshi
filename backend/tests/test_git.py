@@ -315,6 +315,43 @@ async def test_clone_repo_rejects_incomplete_existing_clone_when_refresh_fails(
 
 
 @pytest.mark.asyncio
+async def test_clone_repo_accepts_existing_clone_of_empty_remote(
+    tmp_path,
+    monkeypatch,
+):
+    """A fetched clone whose matching origin has no refs is a valid empty remote."""
+    from yinshi.services import git as git_service
+
+    dest_path = tmp_path / "empty-clone"
+    dest_path.mkdir()
+
+    async def fake_validate_local_repo(path: str) -> bool:
+        assert path == str(dest_path)
+        return True
+
+    async def fake_run_git(args, cwd=None, env=None):
+        del env
+        assert cwd == str(dest_path)
+        if args == ["remote", "get-url", "origin"]:
+            return "https://github.com/acme/yinshi.git"
+        if args == ["for-each-ref", "--format=%(refname)", "refs/remotes/origin"]:
+            return ""
+        if args == ["fetch", "--all"]:
+            return ""
+        raise AssertionError(f"Unexpected git args: {args}")
+
+    monkeypatch.setattr(git_service, "validate_local_repo", fake_validate_local_repo)
+    monkeypatch.setattr(git_service, "_run_git", fake_run_git)
+
+    result = await git_service.clone_repo(
+        "https://github.com/acme/yinshi",
+        str(dest_path),
+    )
+
+    assert result == str(dest_path)
+
+
+@pytest.mark.asyncio
 async def test_create_and_delete_worktree(git_repo, tmp_path):
     """Should create and delete a worktree."""
     from yinshi.services.git import create_worktree, delete_worktree

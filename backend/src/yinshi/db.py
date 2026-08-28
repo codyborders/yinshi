@@ -406,6 +406,7 @@ def _migrate_plaintext_application_database(
         source.close()
 
     _remove_sqlite_sidecars(db_path)
+    temporary_paths = (temporary_path, f"{temporary_path}-wal", f"{temporary_path}-shm")
     try:
         _validate_encrypted_database(
             temporary_path,
@@ -417,8 +418,25 @@ def _migrate_plaintext_application_database(
         _create_private_rollback_copy(db_path, rollback_path)
         _fsync_file(rollback_path)
         _fsync_parent_directory(db_path)
+        # Durable commit point: this replace installs the already-validated
+        # encrypted database as the primary and the following directory sync
+        # makes that rename durable. Failures before this point restore the
+        # plaintext rollback. Failures after it must never reinstall the
+        # plaintext database over the committed encrypted primary.
         os.replace(temporary_path, db_path)
         _fsync_parent_directory(db_path)
+    except (DatabaseEncryptionError, OSError):
+        if os.path.exists(rollback_path):
+            os.replace(rollback_path, db_path)
+            os.chmod(db_path, 0o600)
+            _fsync_file(db_path)
+            _fsync_parent_directory(db_path)
+        for path in temporary_paths:
+            if os.path.exists(path):
+                os.unlink(path)
+                _fsync_parent_directory(db_path)
+        raise
+    try:
         _validate_encrypted_database(
             db_path,
             sqlcipher_module=sqlcipher_module,
@@ -427,19 +445,20 @@ def _migrate_plaintext_application_database(
         os.chmod(db_path, 0o600)
         _fsync_file(db_path)
         _fsync_parent_directory(db_path)
-    except (DatabaseEncryptionError, OSError):
-        if os.path.exists(rollback_path):
-            os.replace(rollback_path, db_path)
-            os.chmod(db_path, 0o600)
-            _fsync_file(db_path)
-            _fsync_parent_directory(db_path)
-        if os.path.exists(temporary_path):
-            os.unlink(temporary_path)
-            _fsync_parent_directory(db_path)
-        raise
-    else:
         os.unlink(rollback_path)
         _fsync_parent_directory(db_path)
+    except (DatabaseEncryptionError, OSError):
+        # Past the durable commit point: a later validation, chmod, fsync, or
+        # cleanup failure must not restore the plaintext rollback. Keep the
+        # committed encrypted primary; the next validated open removes the
+        # retained rollback instead.
+        for path in temporary_paths:
+            try:
+                if os.path.exists(path):
+                    os.unlink(path)
+            except OSError:
+                logger.warning("Post-commit application migration cleanup failed for %s", path)
+        raise
     _remove_sqlite_sidecars(db_path)
     logger.info("Migrated an application database to SQLCipher")
 
@@ -1603,15 +1622,21 @@ def _migrate_encrypted_control_fields(conn: sqlite3.Connection) -> None:
     if not control_field_encryption_enabled(settings):
         return
 
-    from yinshi.services.control_encryption import encrypt_control_text
-    from yinshi.services.crypto import is_encrypted_text
+    from yinshi.services.control_encryption import (
+        control_field_is_stored_envelope,
+        encrypt_control_text,
+    )
 
     user_settings_rows = conn.execute(
         "SELECT user_id, pi_settings_json FROM user_settings"
     ).fetchall()
     for row in user_settings_rows:
         stored_value = row["pi_settings_json"]
-        if isinstance(stored_value, str) and not is_encrypted_text(stored_value):
+        if isinstance(stored_value, str) and not control_field_is_stored_envelope(
+            "user_settings.pi_settings_json",
+            row["user_id"],
+            stored_value,
+        ):
             conn.execute(
                 "UPDATE user_settings SET pi_settings_json = ? WHERE user_id = ?",
                 (
@@ -1634,7 +1659,11 @@ def _migrate_encrypted_control_fields(conn: sqlite3.Connection) -> None:
             stored_value = row[field_name]
             if stored_value is None:
                 continue
-            if isinstance(stored_value, str) and not is_encrypted_text(stored_value):
+            if isinstance(stored_value, str) and not control_field_is_stored_envelope(
+                f"pi_configs.{field_name}",
+                row["user_id"],
+                stored_value,
+            ):
                 updates.append(f"{field_name} = ?")
                 values.append(
                     encrypt_control_text(

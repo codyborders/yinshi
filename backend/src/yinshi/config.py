@@ -568,6 +568,17 @@ def _validate_settings(settings: Settings) -> None:
                     "authentication is enabled outside debug mode"
                 )
 
+    required_key_material_modes: list[str] = []
+    if tenant_db_encryption_required(settings):
+        required_key_material_modes.append("TENANT_DB_ENCRYPTION")
+    if settings.control_field_encryption_mode == "required":
+        required_key_material_modes.append("CONTROL_FIELD_ENCRYPTION")
+    if required_key_material_modes and not settings.active_key_encryption_key_bytes:
+        raise RuntimeError(
+            "KEY_ENCRYPTION_KEY or ENCRYPTION_PEPPER must be set when "
+            f"{' or '.join(required_key_material_modes)} is required"
+        )
+
     settings.tenant_db_encryption_mode
     settings.control_field_encryption_mode
     settings.user_data_encryption_mode
