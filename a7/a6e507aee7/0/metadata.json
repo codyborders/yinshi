@@ -1,0 +1,39 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "a7a6e507aee7",
+  "session_id": "01a031f0-0c04-7719-b6d7-0459cb498b7c",
+  "strategy": "manual-commit",
+  "created_at": "2026-08-28T23:05:35.249747Z",
+  "branch": "main",
+  "checkpoints_count": 3,
+  "save_step_count": 1,
+  "files_touched": [
+    "backend/src/yinshi/api/auth_routes.py"
+  ],
+  "agent": "Pi",
+  "model": "gpt-5.6-sol",
+  "turn_id": "68f1e8dd93c2",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 8117728,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 241956992,
+    "output_tokens": 566978,
+    "api_call_count": 1450
+  },
+  "session_metrics": {
+    "turn_count": 3
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-08-28T23:05:33.778616Z",
+    "agent_lines": 0,
+    "agent_removed": 0,
+    "human_added": 4035,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 4035,
+    "total_lines_changed": 4365,
+    "agent_percentage": 0,
+    "metric_version": 2
+  }
+}
