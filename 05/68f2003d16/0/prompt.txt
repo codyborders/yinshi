@@ -1,0 +1,1 @@
+Write up a plan to fix the issues that need fixing then implement the fixes

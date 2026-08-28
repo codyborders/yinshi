@@ -1,0 +1,45 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "0568f2003d16",
+  "session_id": "01a0392a-e224-7b42-9419-556811115327",
+  "strategy": "manual-commit",
+  "created_at": "2026-08-28T23:24:00.042289Z",
+  "branch": "main",
+  "checkpoints_count": 2,
+  "files_touched": [
+    "backend/src/yinshi/services/pi_config.py",
+    "backend/src/yinshi/services/workspace_files.py",
+    "backend/src/yinshi/utils/paths.py",
+    "backend/tests/test_container.py",
+    "backend/tests/test_pi_config.py",
+    "backend/tests/test_workspace_files.py"
+  ],
+  "agent": "Pi",
+  "model": "gpt-5.6-sol",
+  "turn_id": "4729e8d444b4",
+  "checkpoint_transcript_start": 1443,
+  "transcript_lines_at_start": 1443,
+  "compact_transcript_start": 561,
+  "token_usage": {
+    "input_tokens": 395228,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 10972160,
+    "output_tokens": 10044,
+    "api_call_count": 31
+  },
+  "session_metrics": {
+    "turn_count": 2
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-08-28T23:23:59.581697Z",
+    "agent_lines": 105,
+    "agent_removed": 9,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 105,
+    "total_lines_changed": 114,
+    "agent_percentage": 100,
+    "metric_version": 2
+  }
+}
