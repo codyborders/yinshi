@@ -1,0 +1,53 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "6476975b9ec7",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 4,
+  "files_touched": [
+    "backend/src/yinshi/api/sessions.py",
+    "backend/src/yinshi/api/threads.py",
+    "backend/src/yinshi/api/workspaces.py",
+    "backend/src/yinshi/config.py",
+    "backend/src/yinshi/db.py",
+    "backend/src/yinshi/exceptions.py",
+    "backend/src/yinshi/main.py",
+    "backend/src/yinshi/models.py",
+    "backend/src/yinshi/services/thread_queries.py",
+    "backend/src/yinshi/services/workspace.py",
+    "backend/src/yinshi/tenant.py",
+    "backend/tests/test_log_privacy.py",
+    "backend/tests/test_tenant.py",
+    "backend/tests/test_thread_api.py",
+    "backend/tests/test_thread_api_tree.py",
+    "backend/tests/test_thread_children_security.py",
+    "backend/tests/test_thread_model_projection.py",
+    "backend/tests/test_thread_queries.py",
+    "backend/tests/test_thread_query_bounds.py",
+    "backend/tests/test_thread_result_security.py",
+    "backend/tests/test_thread_schema.py",
+    "backend/tests/test_thread_security.py",
+    "backend/tests/test_thread_setting_capacity.py",
+    "backend/tests/test_thread_settings.py",
+    "backend/tests/test_workspace_delegation_guard.py",
+    "docs/thread-orchestration.md",
+    "frontend/src/runtime/runtimeTransport.test.ts",
+    "frontend/src/runtime/runtimeTransport.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/64/76975b9ec7/0/metadata.json",
+      "transcript": "/64/76975b9ec7/0/full.jsonl",
+      "compact_transcript": "/64/76975b9ec7/0/transcript.jsonl",
+      "content_hash": "/64/76975b9ec7/0/content_hash.txt",
+      "prompt": "/64/76975b9ec7/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 473979,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 12897280,
+    "output_tokens": 41219,
+    "api_call_count": 131
+  }
+}

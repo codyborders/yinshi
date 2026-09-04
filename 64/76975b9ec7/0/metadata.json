@@ -1,0 +1,156 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "6476975b9ec7",
+  "session_id": "01a06abb-dfc5-7c65-82bb-7c5f2081ee64",
+  "strategy": "manual-commit",
+  "created_at": "2026-09-04T14:26:00.633892Z",
+  "branch": "main",
+  "checkpoints_count": 4,
+  "save_step_count": 4,
+  "files_touched": [
+    "backend/src/yinshi/api/sessions.py",
+    "backend/src/yinshi/api/threads.py",
+    "backend/src/yinshi/api/workspaces.py",
+    "backend/src/yinshi/config.py",
+    "backend/src/yinshi/db.py",
+    "backend/src/yinshi/exceptions.py",
+    "backend/src/yinshi/main.py",
+    "backend/src/yinshi/models.py",
+    "backend/src/yinshi/services/thread_queries.py",
+    "backend/src/yinshi/services/workspace.py",
+    "backend/src/yinshi/tenant.py",
+    "backend/tests/test_log_privacy.py",
+    "backend/tests/test_tenant.py",
+    "backend/tests/test_thread_api.py",
+    "backend/tests/test_thread_api_tree.py",
+    "backend/tests/test_thread_children_security.py",
+    "backend/tests/test_thread_model_projection.py",
+    "backend/tests/test_thread_queries.py",
+    "backend/tests/test_thread_query_bounds.py",
+    "backend/tests/test_thread_result_security.py",
+    "backend/tests/test_thread_schema.py",
+    "backend/tests/test_thread_security.py",
+    "backend/tests/test_thread_setting_capacity.py",
+    "backend/tests/test_thread_settings.py",
+    "backend/tests/test_workspace_delegation_guard.py",
+    "docs/thread-orchestration.md",
+    "frontend/src/runtime/runtimeTransport.test.ts",
+    "frontend/src/runtime/runtimeTransport.ts"
+  ],
+  "agent": "Pi",
+  "model": "gpt-5.6-sol",
+  "turn_id": "c9f26bd34b63",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 473979,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 12897280,
+    "output_tokens": 41219,
+    "api_call_count": 131
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "pi-skill-software-design-2026-09-04T13:44:19.339Z-0",
+      "event_type": "prompt_invocation",
+      "skill": {
+        "name": "software-design"
+      },
+      "source": {
+        "agent": "pi",
+        "signal": "input_slash_command",
+        "confidence": "explicit"
+      },
+      "turn_id": "28246a873b37",
+      "timestamp": "2026-09-04T13:44:19.339Z",
+      "native": {
+        "command": "/skill:software-design"
+      },
+      "collapse": {
+        "target": "user_message",
+        "label": "/skill:software-design",
+        "default_collapsed": true
+      }
+    },
+    {
+      "id": "pi-skill-software-design-2026-09-04T13:45:04.538Z-0",
+      "event_type": "prompt_invocation",
+      "skill": {
+        "name": "software-design"
+      },
+      "source": {
+        "agent": "pi",
+        "signal": "input_slash_command",
+        "confidence": "explicit"
+      },
+      "turn_id": "fb1eea463d6f",
+      "timestamp": "2026-09-04T13:45:04.538Z",
+      "native": {
+        "command": "/skill:software-design"
+      },
+      "collapse": {
+        "target": "user_message",
+        "label": "/skill:software-design",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "session_metrics": {
+    "turn_count": 4
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-09-04T14:26:00.524114Z",
+    "agent_lines": 2751,
+    "agent_removed": 18,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 2751,
+    "total_lines_changed": 2769,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 1173,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/2819a569_scout_0_input.md": 9,
+        ".pi-subagents/artifacts/2819a569_scout_0_meta.json": 99,
+        ".pi-subagents/artifacts/2819a569_scout_0_output.md": 851,
+        ".pi-subagents/artifacts/2819a569_scout_0_transcript.jsonl": 214
+      }
+    },
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 3,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 7041,
+      "agent_lines_removed": 17
+    },
+    {
+      "checkpoint_number": 4,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 7041,
+      "agent_lines_removed": 17
+    },
+    {
+      "checkpoint_number": 5,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 7962,
+      "agent_lines_removed": 18
+    }
+  ]
+}
