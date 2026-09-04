@@ -1,0 +1,245 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "6476975b9ec7",
+  "session_id": "session",
+  "strategy": "manual-commit",
+  "created_at": "2026-09-04T14:26:01.642456Z",
+  "branch": "main",
+  "checkpoints_count": 16,
+  "save_step_count": 13,
+  "files_touched": [
+    "backend/src/yinshi/api/sessions.py",
+    "backend/src/yinshi/api/threads.py",
+    "backend/src/yinshi/api/workspaces.py",
+    "backend/src/yinshi/config.py",
+    "backend/src/yinshi/db.py",
+    "backend/src/yinshi/exceptions.py",
+    "backend/src/yinshi/main.py",
+    "backend/src/yinshi/models.py",
+    "backend/src/yinshi/services/thread_queries.py",
+    "backend/src/yinshi/services/workspace.py",
+    "backend/src/yinshi/tenant.py",
+    "backend/tests/test_log_privacy.py",
+    "backend/tests/test_tenant.py",
+    "backend/tests/test_thread_api.py",
+    "backend/tests/test_thread_api_tree.py",
+    "backend/tests/test_thread_queries.py",
+    "backend/tests/test_thread_schema.py",
+    "backend/tests/test_thread_security.py",
+    "backend/tests/test_thread_settings.py",
+    "docs/thread-orchestration.md"
+  ],
+  "agent": "Pi",
+  "model": "glm-5.3-flash",
+  "turn_id": "24d3c9ca7f2c",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 203779,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 3718976,
+    "output_tokens": 54944,
+    "api_call_count": 64
+  },
+  "session_metrics": {
+    "turn_count": 120
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-09-04T14:26:01.188749Z",
+    "agent_lines": 4,
+    "agent_removed": 0,
+    "human_added": 2217,
+    "human_modified": 265,
+    "human_removed": 0,
+    "total_committed": 2486,
+    "total_lines_changed": 2486,
+    "agent_percentage": 0.16090104585679807,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 600,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/90078f5e_worker-advanced_0_input.md": 65,
+        ".pi-subagents/artifacts/90078f5e_worker-advanced_0_meta.json": 114,
+        ".pi-subagents/artifacts/90078f5e_worker-advanced_0_output.md": 3,
+        ".pi-subagents/artifacts/90078f5e_worker-advanced_0_transcript.jsonl": 122,
+        ".pi-subagents/artifacts/96431167_worker-advanced_input.md": 76,
+        ".pi-subagents/artifacts/96431167_worker-advanced_meta.json": 135,
+        ".pi-subagents/artifacts/96431167_worker-advanced_output.md": 1,
+        ".pi-subagents/artifacts/96431167_worker-advanced_transcript.jsonl": 84
+      }
+    },
+    {
+      "checkpoint_number": 3,
+      "user_lines_added": 318,
+      "user_lines_removed": 0,
+      "agent_lines_added": 950,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/2819a569_scout_0_input.md": 9,
+        ".pi-subagents/artifacts/2819a569_scout_0_transcript.jsonl": 214,
+        ".pi-subagents/artifacts/82278de5_scout_0_input.md": 60,
+        ".pi-subagents/artifacts/82278de5_scout_0_transcript.jsonl": 2,
+        ".pi-subagents/missions/8cbd31f2-1808-4661-8296-0137b619db29.json": 33
+      }
+    },
+    {
+      "checkpoint_number": 4,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 5,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 6,
+      "user_lines_added": 199,
+      "user_lines_removed": 0,
+      "agent_lines_added": 1273,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/4799f3d5_scout_input.md": 63,
+        ".pi-subagents/artifacts/4799f3d5_scout_transcript.jsonl": 2,
+        ".pi-subagents/artifacts/82278de5_scout_0_meta.json": 109,
+        ".pi-subagents/artifacts/82278de5_scout_0_output.md": 25
+      }
+    },
+    {
+      "checkpoint_number": 7,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 8,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 9,
+      "user_lines_added": 3676,
+      "user_lines_removed": 16,
+      "agent_lines_added": 1483,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/2b8043a5_reviewer_0_input.md": 60,
+        ".pi-subagents/artifacts/2b8043a5_reviewer_0_transcript.jsonl": 2,
+        ".pi-subagents/artifacts/4799f3d5_scout_meta.json": 100,
+        ".pi-subagents/artifacts/4799f3d5_scout_output.md": 25,
+        ".pi-subagents/artifacts/c7649b91_worker-advanced_input.md": 63,
+        ".pi-subagents/artifacts/c7649b91_worker-advanced_meta.json": 98,
+        ".pi-subagents/artifacts/c7649b91_worker-advanced_output.md": 1,
+        ".pi-subagents/artifacts/c7649b91_worker-advanced_transcript.jsonl": 527,
+        ".pi-subagents/artifacts/e598747d_worker-advanced_0_input.md": 84,
+        ".pi-subagents/artifacts/e598747d_worker-advanced_0_meta.json": 146,
+        ".pi-subagents/artifacts/e598747d_worker-advanced_0_output.md": 4,
+        ".pi-subagents/artifacts/e598747d_worker-advanced_0_transcript.jsonl": 507,
+        ".pi-subagents/artifacts/outputs/e598747d/artifacts/thread-phase01-worker.md": 78,
+        ".pi-subagents/missions/455bac75-c29c-49de-810f-0e01ab245671.json": 39,
+        ".pi-subagents/missions/8ea2c101-4fd5-4492-9a9f-e5b7b6f50d18.json": 33,
+        "backend/src/yinshi/api/sessions.py": 4,
+        "backend/src/yinshi/api/threads.py": 89,
+        "backend/src/yinshi/api/workspaces.py": 14,
+        "backend/src/yinshi/config.py": 10,
+        "backend/src/yinshi/db.py": 158,
+        "backend/src/yinshi/exceptions.py": 4,
+        "backend/src/yinshi/main.py": 2,
+        "backend/src/yinshi/models.py": 3,
+        "backend/src/yinshi/services/thread_queries.py": 340,
+        "backend/src/yinshi/services/workspace.py": 12,
+        "backend/src/yinshi/tenant.py": 168,
+        "backend/tests/test_tenant.py": 5,
+        "backend/tests/test_thread_api.py": 131,
+        "backend/tests/test_thread_api_tree.py": 44,
+        "backend/tests/test_thread_queries.py": 150,
+        "backend/tests/test_thread_schema.py": 423,
+        "backend/tests/test_thread_security.py": 78,
+        "docs/thread-orchestration.md": 274
+      },
+      "user_removed_per_file": {
+        "backend/src/yinshi/api/sessions.py": 4,
+        "backend/src/yinshi/api/workspaces.py": 1,
+        "backend/src/yinshi/db.py": 3,
+        "backend/src/yinshi/tenant.py": 6,
+        "backend/tests/test_tenant.py": 2
+      }
+    },
+    {
+      "checkpoint_number": 10,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 11,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 12,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 13,
+      "user_lines_added": 218,
+      "user_lines_removed": 5,
+      "agent_lines_added": 5164,
+      "agent_lines_removed": 16,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/2b8043a5_reviewer_0_meta.json": 109,
+        ".pi-subagents/artifacts/2b8043a5_reviewer_0_output.md": 25,
+        ".pi-subagents/artifacts/cb3ecd97_worker-advanced_input.md": 71,
+        ".pi-subagents/artifacts/cb3ecd97_worker-advanced_transcript.jsonl": 2,
+        ".pi-subagents/missions/8ea2c101-4fd5-4492-9a9f-e5b7b6f50d18.json": 11
+      },
+      "user_removed_per_file": {
+        ".pi-subagents/missions/8ea2c101-4fd5-4492-9a9f-e5b7b6f50d18.json": 5
+      }
+    },
+    {
+      "checkpoint_number": 14,
+      "user_lines_added": 1064,
+      "user_lines_removed": 249,
+      "agent_lines_added": 7041,
+      "agent_lines_removed": 17,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/3a70c565_worker-advanced_input.md": 63,
+        ".pi-subagents/artifacts/3a70c565_worker-advanced_transcript.jsonl": 2,
+        ".pi-subagents/artifacts/a8fc68d3_worker-advanced_0_input.md": 70,
+        ".pi-subagents/artifacts/a8fc68d3_worker-advanced_0_meta.json": 118,
+        ".pi-subagents/artifacts/a8fc68d3_worker-advanced_0_output.md": 8,
+        ".pi-subagents/artifacts/a8fc68d3_worker-advanced_0_transcript.jsonl": 288,
+        ".pi-subagents/artifacts/outputs/a8fc68d3/artifacts/thread-design-refactor.md": 101,
+        ".pi-subagents/missions/4fe0d105-11ac-409f-b276-de48f637e176.json": 39,
+        "backend/src/yinshi/api/workspaces.py": 9,
+        "backend/src/yinshi/services/thread_queries.py": 314,
+        "backend/src/yinshi/services/workspace.py": 18,
+        "backend/tests/test_workspace_delegation_guard.py": 34
+      },
+      "user_removed_per_file": {
+        "backend/src/yinshi/api/workspaces.py": 11,
+        "backend/src/yinshi/services/thread_queries.py": 228,
+        "backend/src/yinshi/services/workspace.py": 10
+      }
+    }
+  ]
+}
