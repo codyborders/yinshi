@@ -1,0 +1,58 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "c78ab6f246bb",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 7,
+  "files_touched": [
+    "backend/src/yinshi/config.py",
+    "backend/src/yinshi/services/git.py",
+    "backend/src/yinshi/services/thread_workspaces.py",
+    "backend/tests/test_config.py",
+    "backend/tests/test_git_bytes_runner.py",
+    "backend/tests/test_thread_workspaces.py",
+    "backend/tests/test_thread_workspaces_cancellation.py",
+    "backend/tests/test_thread_workspaces_cleanup.py",
+    "backend/tests/test_thread_workspaces_cleanup_semantics.py",
+    "backend/tests/test_thread_workspaces_collision.py",
+    "backend/tests/test_thread_workspaces_collision_preservation.py",
+    "backend/tests/test_thread_workspaces_concurrency.py",
+    "backend/tests/test_thread_workspaces_discard_absent.py",
+    "backend/tests/test_thread_workspaces_empty_repo.py",
+    "backend/tests/test_thread_workspaces_finalize.py",
+    "backend/tests/test_thread_workspaces_finalize_bounds.py",
+    "backend/tests/test_thread_workspaces_git_faults.py",
+    "backend/tests/test_thread_workspaces_guardrail_effect.py",
+    "backend/tests/test_thread_workspaces_guardrails.py",
+    "backend/tests/test_thread_workspaces_id_validation.py",
+    "backend/tests/test_thread_workspaces_kind_safety.py",
+    "backend/tests/test_thread_workspaces_limits.py",
+    "backend/tests/test_thread_workspaces_linked_directory.py",
+    "backend/tests/test_thread_workspaces_parent_state.py",
+    "backend/tests/test_thread_workspaces_raw_paths.py",
+    "backend/tests/test_thread_workspaces_ref_ownership.py",
+    "backend/tests/test_thread_workspaces_snapshot_content.py",
+    "backend/tests/test_thread_workspaces_snapshot_ref_exists.py",
+    "backend/tests/test_thread_workspaces_submodules.py",
+    "backend/tests/test_thread_workspaces_symlink_root.py",
+    "backend/tests/test_thread_workspaces_symlinks.py",
+    "backend/tests/test_thread_workspaces_tenant.py",
+    "docs/thread-orchestration.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/c7/8ab6f246bb/0/metadata.json",
+      "transcript": "/c7/8ab6f246bb/0/full.jsonl",
+      "compact_transcript": "/c7/8ab6f246bb/0/transcript.jsonl",
+      "content_hash": "/c7/8ab6f246bb/0/content_hash.txt",
+      "prompt": "/c7/8ab6f246bb/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 707375,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 90376512,
+    "output_tokens": 234024,
+    "api_call_count": 485
+  }
+}
