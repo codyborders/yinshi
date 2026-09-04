@@ -1,0 +1,383 @@
+/Users/user/Downloads/yinshi-thread-orchestration-plan.md
+
+---
+
+<skill name="software-design" location="/Users/user/.pi/agent/skills/software-design/SKILL.md">
+References are relative to /Users/user/.pi/agent/skills/software-design.
+
+# Software Design
+
+Apply these principles when architecture or abstraction quality is a material part of the task.
+
+## Two Modes
+
+### Writing New Code
+
+Apply these principles in order of impact.
+
+#### Think strategically
+
+Invest in design instead of stopping when the code first works. Produce a clean design that works, and spend 10–20% of the effort on design improvements.
+
+#### Create deep modules
+
+Each module should provide powerful functionality behind a simple interface. A few deep methods beat many shallow ones. Ask whether the interface is simpler than the implementation.
+
+#### Hide information
+
+Each module should encapsulate design decisions that remain invisible through its interface. If one decision appears in several modules, reorganize the code until that decision has one home.
+
+#### Make interfaces general-purpose
+
+Design an interface broad enough to support current uses while keeping its functionality focused. Ask for the simplest interface that covers every current need.
+
+#### Give each layer a different abstraction
+
+Adjacent layers should operate at different abstraction levels. Remove pass-through methods that delegate with the same signature.
+
+#### Pull complexity downwards
+
+Handle complexity inside the module instead of pushing it to callers. A simple interface matters more than a simple implementation.
+
+#### Define errors out of existence
+
+Redefine APIs so avoidable error conditions cannot arise. Mask low-level exceptions and consolidate their handling. Reserve crashes for unrecoverable failures.
+
+#### Design it twice
+
+Consider at least two radically different approaches before committing. Compare their strengths and costs. Apply this comparison to interfaces and implementations, then consider the broader system decomposition.
+
+#### Name precisely
+
+Names should create a clear mental image of an entity's purpose. Avoid vague choices such as `data`, `result`, `info`, or `tmp`. Name booleans with predicates such as `isConnected` instead of a state label such as `status`.
+
+#### Be consistent
+
+Use the same name for the same purpose everywhere. Reuse established coding patterns and conventions. Consistency reduces the reader's cognitive work.
+
+#### Make code obvious
+
+Code is obvious when a reader's first guess about its behaviour is correct. Choose precise names and follow established patterns. Use whitespace to expose structure, and comment only where the code cannot explain itself.
+
+#### Write comments first
+
+Write interface comments before implementation. A method that needs a long descriptive comment has a complex interface and should be redesigned. Comments should preserve information that code cannot represent.
+
+### Reviewing Existing Code
+
+Scan for these red flags in the listed order.
+
+#### Shallow modules
+
+Look for interfaces as complex as their implementations, many trivial methods, or classes with little functionality.
+
+#### Information leakage
+
+Find design decisions repeated across modules. A change to one detail should not require coordinated edits across several classes.
+
+#### Temporal decomposition
+
+Check for code organized around operation order instead of information hiding, such as separate read and write classes for one format.
+
+#### Pass-through methods
+
+Flag methods that only call another method with the same signature, especially when delegation accounts for half or more of a class's methods.
+
+#### Overexposure
+
+A common operation should not force callers to understand rare features. Default information that callers should not have to provide.
+
+#### Conjoined methods
+
+Flag a method when understanding it requires reading another method's implementation.
+
+#### Repetition
+
+Find non-trivial code patterns duplicated in several places.
+
+#### Vague or hard-to-pick names
+
+Flag names broad enough to describe many entities. Difficulty finding a precise name often means the entity has too many responsibilities.
+
+#### Comment problems
+
+Find comments that restate the code or expose implementation details in interface documentation. Long, complicated descriptions may reveal a poor abstraction.
+
+#### Special-general mixture
+
+Keep specialized use-case code out of a general-purpose mechanism.
+
+#### Nonobvious code
+
+Flag behaviour that a quick reading cannot reveal, including surprising side effects.
+
+#### Too many exceptions
+
+Look for exceptions the caller cannot handle and error paths longer than the normal path. Redefine operations when doing so can eliminate error conditions.
+
+For the full checklist, read `references/red-flags.md`.
+
+## References
+
+`references/principles.md` covers all 15 design principles. It includes examples and techniques, along with the reasoning behind each principle. Read it when applying a specific principle or when deeper context is needed.
+
+`references/red-flags.md` organizes every red flag by category. Read it during code review to check systematically for design problems.
+</skill>
+
+on the implemented phases
+
+---
+
+<skill name="software-design" location="/Users/user/.pi/agent/skills/software-design/SKILL.md">
+References are relative to /Users/user/.pi/agent/skills/software-design.
+
+# Software Design
+
+Apply these principles when architecture or abstraction quality is a material part of the task.
+
+## Two Modes
+
+### Writing New Code
+
+Apply these principles in order of impact.
+
+#### Think strategically
+
+Invest in design instead of stopping when the code first works. Produce a clean design that works, and spend 10–20% of the effort on design improvements.
+
+#### Create deep modules
+
+Each module should provide powerful functionality behind a simple interface. A few deep methods beat many shallow ones. Ask whether the interface is simpler than the implementation.
+
+#### Hide information
+
+Each module should encapsulate design decisions that remain invisible through its interface. If one decision appears in several modules, reorganize the code until that decision has one home.
+
+#### Make interfaces general-purpose
+
+Design an interface broad enough to support current uses while keeping its functionality focused. Ask for the simplest interface that covers every current need.
+
+#### Give each layer a different abstraction
+
+Adjacent layers should operate at different abstraction levels. Remove pass-through methods that delegate with the same signature.
+
+#### Pull complexity downwards
+
+Handle complexity inside the module instead of pushing it to callers. A simple interface matters more than a simple implementation.
+
+#### Define errors out of existence
+
+Redefine APIs so avoidable error conditions cannot arise. Mask low-level exceptions and consolidate their handling. Reserve crashes for unrecoverable failures.
+
+#### Design it twice
+
+Consider at least two radically different approaches before committing. Compare their strengths and costs. Apply this comparison to interfaces and implementations, then consider the broader system decomposition.
+
+#### Name precisely
+
+Names should create a clear mental image of an entity's purpose. Avoid vague choices such as `data`, `result`, `info`, or `tmp`. Name booleans with predicates such as `isConnected` instead of a state label such as `status`.
+
+#### Be consistent
+
+Use the same name for the same purpose everywhere. Reuse established coding patterns and conventions. Consistency reduces the reader's cognitive work.
+
+#### Make code obvious
+
+Code is obvious when a reader's first guess about its behaviour is correct. Choose precise names and follow established patterns. Use whitespace to expose structure, and comment only where the code cannot explain itself.
+
+#### Write comments first
+
+Write interface comments before implementation. A method that needs a long descriptive comment has a complex interface and should be redesigned. Comments should preserve information that code cannot represent.
+
+### Reviewing Existing Code
+
+Scan for these red flags in the listed order.
+
+#### Shallow modules
+
+Look for interfaces as complex as their implementations, many trivial methods, or classes with little functionality.
+
+#### Information leakage
+
+Find design decisions repeated across modules. A change to one detail should not require coordinated edits across several classes.
+
+#### Temporal decomposition
+
+Check for code organized around operation order instead of information hiding, such as separate read and write classes for one format.
+
+#### Pass-through methods
+
+Flag methods that only call another method with the same signature, especially when delegation accounts for half or more of a class's methods.
+
+#### Overexposure
+
+A common operation should not force callers to understand rare features. Default information that callers should not have to provide.
+
+#### Conjoined methods
+
+Flag a method when understanding it requires reading another method's implementation.
+
+#### Repetition
+
+Find non-trivial code patterns duplicated in several places.
+
+#### Vague or hard-to-pick names
+
+Flag names broad enough to describe many entities. Difficulty finding a precise name often means the entity has too many responsibilities.
+
+#### Comment problems
+
+Find comments that restate the code or expose implementation details in interface documentation. Long, complicated descriptions may reveal a poor abstraction.
+
+#### Special-general mixture
+
+Keep specialized use-case code out of a general-purpose mechanism.
+
+#### Nonobvious code
+
+Flag behaviour that a quick reading cannot reveal, including surprising side effects.
+
+#### Too many exceptions
+
+Look for exceptions the caller cannot handle and error paths longer than the normal path. Redefine operations when doing so can eliminate error conditions.
+
+For the full checklist, read `references/red-flags.md`.
+
+## References
+
+`references/principles.md` covers all 15 design principles. It includes examples and techniques, along with the reasoning behind each principle. Read it when applying a specific principle or when deeper context is needed.
+
+`references/red-flags.md` organizes every red flag by category. Read it during code review to check systematically for design problems.
+</skill>
+
+on the implemented phases, then commit changes
+
+---
+
+Continue
+
+---
+
+<skill name="software-design" location="/Users/user/.pi/agent/skills/software-design/SKILL.md">
+References are relative to /Users/user/.pi/agent/skills/software-design.
+
+# Software Design
+
+Apply these principles when architecture or abstraction quality is a material part of the task.
+
+## Two Modes
+
+### Writing New Code
+
+Apply these principles in order of impact.
+
+#### Think strategically
+
+Invest in design instead of stopping when the code first works. Produce a clean design that works, and spend 10–20% of the effort on design improvements.
+
+#### Create deep modules
+
+Each module should provide powerful functionality behind a simple interface. A few deep methods beat many shallow ones. Ask whether the interface is simpler than the implementation.
+
+#### Hide information
+
+Each module should encapsulate design decisions that remain invisible through its interface. If one decision appears in several modules, reorganize the code until that decision has one home.
+
+#### Make interfaces general-purpose
+
+Design an interface broad enough to support current uses while keeping its functionality focused. Ask for the simplest interface that covers every current need.
+
+#### Give each layer a different abstraction
+
+Adjacent layers should operate at different abstraction levels. Remove pass-through methods that delegate with the same signature.
+
+#### Pull complexity downwards
+
+Handle complexity inside the module instead of pushing it to callers. A simple interface matters more than a simple implementation.
+
+#### Define errors out of existence
+
+Redefine APIs so avoidable error conditions cannot arise. Mask low-level exceptions and consolidate their handling. Reserve crashes for unrecoverable failures.
+
+#### Design it twice
+
+Consider at least two radically different approaches before committing. Compare their strengths and costs. Apply this comparison to interfaces and implementations, then consider the broader system decomposition.
+
+#### Name precisely
+
+Names should create a clear mental image of an entity's purpose. Avoid vague choices such as `data`, `result`, `info`, or `tmp`. Name booleans with predicates such as `isConnected` instead of a state label such as `status`.
+
+#### Be consistent
+
+Use the same name for the same purpose everywhere. Reuse established coding patterns and conventions. Consistency reduces the reader's cognitive work.
+
+#### Make code obvious
+
+Code is obvious when a reader's first guess about its behaviour is correct. Choose precise names and follow established patterns. Use whitespace to expose structure, and comment only where the code cannot explain itself.
+
+#### Write comments first
+
+Write interface comments before implementation. A method that needs a long descriptive comment has a complex interface and should be redesigned. Comments should preserve information that code cannot represent.
+
+### Reviewing Existing Code
+
+Scan for these red flags in the listed order.
+
+#### Shallow modules
+
+Look for interfaces as complex as their implementations, many trivial methods, or classes with little functionality.
+
+#### Information leakage
+
+Find design decisions repeated across modules. A change to one detail should not require coordinated edits across several classes.
+
+#### Temporal decomposition
+
+Check for code organized around operation order instead of information hiding, such as separate read and write classes for one format.
+
+#### Pass-through methods
+
+Flag methods that only call another method with the same signature, especially when delegation accounts for half or more of a class's methods.
+
+#### Overexposure
+
+A common operation should not force callers to understand rare features. Default information that callers should not have to provide.
+
+#### Conjoined methods
+
+Flag a method when understanding it requires reading another method's implementation.
+
+#### Repetition
+
+Find non-trivial code patterns duplicated in several places.
+
+#### Vague or hard-to-pick names
+
+Flag names broad enough to describe many entities. Difficulty finding a precise name often means the entity has too many responsibilities.
+
+#### Comment problems
+
+Find comments that restate the code or expose implementation details in interface documentation. Long, complicated descriptions may reveal a poor abstraction.
+
+#### Special-general mixture
+
+Keep specialized use-case code out of a general-purpose mechanism.
+
+#### Nonobvious code
+
+Flag behaviour that a quick reading cannot reveal, including surprising side effects.
+
+#### Too many exceptions
+
+Look for exceptions the caller cannot handle and error paths longer than the normal path. Redefine operations when doing so can eliminate error conditions.
+
+For the full checklist, read `references/red-flags.md`.
+
+## References
+
+`references/principles.md` covers all 15 design principles. It includes examples and techniques, along with the reasoning behind each principle. Read it when applying a specific principle or when deeper context is needed.
+
+`references/red-flags.md` organizes every red flag by category. Read it during code review to check systematically for design problems.
+</skill>
+
+on phase 2, then commit changes
