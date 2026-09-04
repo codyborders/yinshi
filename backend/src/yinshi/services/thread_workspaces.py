@@ -57,7 +57,7 @@ _COMMIT_IDENTITY_ARGS = (
     "-c",
     "user.email=noreply@yinshi.local",
 )
-_ZERO_OID = "0" * 40
+_MISSING_REF_OID = ""
 
 
 class ThreadProtectedPathError(YinshiError):
@@ -756,7 +756,7 @@ class ThreadWorkspaceService:
         if existing_commit is None:
             try:
                 await _run_git(
-                    ["update-ref", result_ref, result_commit, _ZERO_OID],
+                    ["update-ref", result_ref, result_commit, _MISSING_REF_OID],
                     cwd=repo_path,
                 )
             except GitError as exc:
@@ -865,7 +865,12 @@ class ThreadWorkspaceService:
         snapshot_commit = await _run_git(commit_args, cwd=location.repo_path)
         try:
             await _run_git(
-                ["update-ref", _snapshot_ref(delegation_id), snapshot_commit, _ZERO_OID],
+                [
+                    "update-ref",
+                    _snapshot_ref(delegation_id),
+                    snapshot_commit,
+                    _MISSING_REF_OID,
+                ],
                 cwd=location.repo_path,
             )
         except GitError as exc:
