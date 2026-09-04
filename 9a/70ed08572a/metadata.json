@@ -3,8 +3,17 @@
   "checkpoint_id": "9a70ed08572a",
   "strategy": "manual-commit",
   "branch": "main",
-  "checkpoints_count": 3,
-  "files_touched": null,
+  "checkpoints_count": 8,
+  "files_touched": [
+    "backend/src/yinshi/services/thread_workspaces.py",
+    "backend/src/yinshi/services/workspace_files.py",
+    "backend/tests/test_thread_workspaces_finalize.py",
+    "backend/tests/test_thread_workspaces_git_faults.py",
+    "backend/tests/test_thread_workspaces_publication_race.py",
+    "backend/tests/test_thread_workspaces_snapshot_race.py",
+    "backend/tests/test_thread_workspaces_submodules.py",
+    "docs/thread-orchestration.md"
+  ],
   "sessions": [
     {
       "metadata": "/9a/70ed08572a/0/metadata.json",
@@ -12,6 +21,13 @@
       "compact_transcript": "/9a/70ed08572a/0/transcript.jsonl",
       "content_hash": "/9a/70ed08572a/0/content_hash.txt",
       "prompt": "/9a/70ed08572a/0/prompt.txt"
+    },
+    {
+      "metadata": "/9a/70ed08572a/1/metadata.json",
+      "transcript": "/9a/70ed08572a/1/full.jsonl",
+      "compact_transcript": "/9a/70ed08572a/1/transcript.jsonl",
+      "content_hash": "/9a/70ed08572a/1/content_hash.txt",
+      "prompt": "/9a/70ed08572a/1/prompt.txt"
     }
   ],
   "token_usage": {
@@ -19,6 +35,6 @@
     "cache_creation_tokens": 0,
     "cache_read_tokens": 27271552,
     "output_tokens": 84200,
-    "api_call_count": 230
+    "api_call_count": 234
   }
 }

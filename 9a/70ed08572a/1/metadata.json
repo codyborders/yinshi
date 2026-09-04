@@ -1,0 +1,124 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "9a70ed08572a",
+  "session_id": "session",
+  "strategy": "manual-commit",
+  "created_at": "2026-09-04T19:01:03.129848Z",
+  "branch": "main",
+  "checkpoints_count": 5,
+  "save_step_count": 6,
+  "files_touched": [
+    "backend/src/yinshi/services/thread_workspaces.py",
+    "backend/src/yinshi/services/workspace_files.py",
+    "backend/tests/test_thread_workspaces_finalize.py",
+    "backend/tests/test_thread_workspaces_git_faults.py",
+    "backend/tests/test_thread_workspaces_publication_race.py",
+    "backend/tests/test_thread_workspaces_snapshot_race.py",
+    "backend/tests/test_thread_workspaces_submodules.py",
+    "docs/thread-orchestration.md"
+  ],
+  "agent": "Pi",
+  "model": "qwen36-35b-a3b-iq4xs-mtp3-turbo3",
+  "turn_id": "fd2ebfafba68",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 0,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 0,
+    "output_tokens": 0,
+    "api_call_count": 4
+  },
+  "session_metrics": {
+    "turn_count": 132
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-09-04T19:01:02.719033Z",
+    "agent_lines": 168,
+    "agent_removed": 0,
+    "human_added": 230,
+    "human_modified": 119,
+    "human_removed": 0,
+    "total_committed": 511,
+    "total_lines_changed": 517,
+    "agent_percentage": 32.495164410058024,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 1314,
+      "user_lines_removed": 87,
+      "agent_lines_added": 8337,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/742f6455_worker-advanced_input.md": 63,
+        ".pi-subagents/artifacts/742f6455_worker-advanced_transcript.jsonl": 2,
+        ".pi-subagents/artifacts/e219ec5b_worker-advanced_0_input.md": 60,
+        ".pi-subagents/artifacts/e219ec5b_worker-advanced_0_meta.json": 123,
+        ".pi-subagents/artifacts/e219ec5b_worker-advanced_0_output.md": 159,
+        ".pi-subagents/artifacts/e219ec5b_worker-advanced_0_transcript.jsonl": 342,
+        ".pi-subagents/artifacts/outputs/e219ec5b/artifacts/thread-phase2-design-fixes.md": 159,
+        ".pi-subagents/missions/160682a6-15bb-42fd-8d77-e3858ea82092.json": 24,
+        ".pi-subagents/missions/71364126-6802-46fe-a62d-e56b25f7c0e2.json": 103,
+        "backend/src/yinshi/services/thread_workspaces.py": 116,
+        "backend/src/yinshi/services/workspace_files.py": 7,
+        "backend/tests/test_thread_workspaces_finalize.py": 37,
+        "backend/tests/test_thread_workspaces_git_faults.py": 65,
+        "backend/tests/test_thread_workspaces_submodules.py": 54
+      },
+      "user_removed_per_file": {
+        "backend/src/yinshi/services/thread_workspaces.py": 83,
+        "backend/src/yinshi/services/workspace_files.py": 3,
+        "backend/tests/test_thread_workspaces_finalize.py": 1
+      }
+    },
+    {
+      "checkpoint_number": 3,
+      "user_lines_added": 1280,
+      "user_lines_removed": 26,
+      "agent_lines_added": 9260,
+      "agent_lines_removed": 103,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/742f6455_worker-advanced_input.md": 63,
+        ".pi-subagents/artifacts/742f6455_worker-advanced_transcript.jsonl": 229,
+        ".pi-subagents/artifacts/afb0688d_reviewer_0_input.md": 60,
+        ".pi-subagents/artifacts/afb0688d_reviewer_0_transcript.jsonl": 2,
+        ".pi-subagents/artifacts/e219ec5b_worker-advanced_0_input.md": 60,
+        ".pi-subagents/artifacts/e219ec5b_worker-advanced_0_meta.json": 123,
+        ".pi-subagents/artifacts/e219ec5b_worker-advanced_0_output.md": 159,
+        ".pi-subagents/artifacts/e219ec5b_worker-advanced_0_transcript.jsonl": 342,
+        ".pi-subagents/missions/160682a6-15bb-42fd-8d77-e3858ea82092.json": 24,
+        ".pi-subagents/missions/188017e6-877e-4b68-a7a5-7a3c554bebb3.json": 35,
+        ".pi-subagents/missions/71364126-6802-46fe-a62d-e56b25f7c0e2.json": 103,
+        ".pi-subagents/missions/82281638-34aa-4b23-8e23-5f940a1e5cbd.json": 15,
+        "backend/src/yinshi/services/thread_workspaces.py": 20,
+        "backend/tests/test_thread_workspaces_finalize.py": 41,
+        "docs/thread-orchestration.md": 4
+      },
+      "user_removed_per_file": {
+        "backend/src/yinshi/services/thread_workspaces.py": 26
+      }
+    },
+    {
+      "checkpoint_number": 4,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 5,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 6,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
+}
