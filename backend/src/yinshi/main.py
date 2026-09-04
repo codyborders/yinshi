@@ -40,6 +40,7 @@ from yinshi.api import (
     stream,
     terminal_channels,
     terminals,
+    threads,
     workspace_files,
     workspaces,
 )
@@ -657,6 +658,7 @@ def _include_routes(
         terminals.router,
         terminal_channels.router,
         sessions.router,
+        threads.router,
         prompt_runs.router,
         runtime_uploads.router,
         stream.router,

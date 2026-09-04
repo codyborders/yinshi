@@ -73,6 +73,9 @@ const SESSION_MEMBER_PATH = new RegExp(`^/api/sessions/${RESOURCE_ID}$`);
 const SESSION_READ_PATH = new RegExp(
   `^/api/sessions/${RESOURCE_ID}/(?:messages|tree)$`,
 );
+const THREAD_READ_PATH = new RegExp(
+  `^/api/threads/${RESOURCE_ID}(?:/(?:tree|children|result|limits))?$`,
+);
 const SESSION_HISTORY_PAGE_PATH = new RegExp(
   `^/api/sessions/${RESOURCE_ID}/messages/page$`,
 );
@@ -197,6 +200,7 @@ function requiredScope(method: RuntimeMethod, path: string): string {
   const sessionCollection = SESSION_COLLECTION_PATH.test(path);
   const sessionMember = SESSION_MEMBER_PATH.test(path);
   const sessionRead = SESSION_READ_PATH.test(path);
+  const threadRead = THREAD_READ_PATH.test(path);
   const sessionHistoryPage = SESSION_HISTORY_PAGE_PATH.test(path);
   const sessionHistoryBundle = SESSION_HISTORY_BUNDLE_PATH.test(path);
   const sessionHistoryField = SESSION_HISTORY_FIELD_PATH.test(path);
@@ -205,6 +209,7 @@ function requiredScope(method: RuntimeMethod, path: string): string {
     (sessionCollection ||
       sessionMember ||
       sessionRead ||
+      threadRead ||
       sessionHistoryPage ||
       sessionHistoryBundle ||
       sessionHistoryField)

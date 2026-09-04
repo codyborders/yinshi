@@ -53,6 +53,40 @@ describe("runtime transport", () => {
     expect(client.get).not.toHaveBeenCalled();
   });
 
+  it("allows exact read-only thread routes with session read authority", async () => {
+    const encryptedRequest = vi.fn().mockResolvedValue({});
+    const transport = createRuntimeTransport(
+      { location: "byoc", runnerId: "runner-1", runnerPublicKey },
+      { apiClient: apiClient(), encryptedRequest },
+    );
+    const sessionId = "a".repeat(32);
+    const paths = [
+      `/api/threads/${sessionId}`,
+      `/api/threads/${sessionId}/tree`,
+      `/api/threads/${sessionId}/children`,
+      `/api/threads/${sessionId}/result`,
+      `/api/threads/${sessionId}/limits`,
+    ];
+
+    for (const path of paths) await transport.get(path);
+
+    expect(encryptedRequest).toHaveBeenCalledTimes(paths.length);
+    paths.forEach((path, index) => {
+      expect(encryptedRequest).toHaveBeenNthCalledWith(index + 1, {
+        expectedRunnerPublicKey: runnerPublicKey,
+        scopes: ["session.read"],
+        method: "GET",
+        path,
+        query: {},
+        body: null,
+        maxSessionBytes: 16_777_216,
+      });
+    });
+    await expect(
+      transport.post(`/api/threads/${sessionId}`, {}),
+    ).rejects.toThrow("not allowed");
+  });
+
   it("uses session stream authority for exact active-run discovery", async () => {
     const encryptedRequest = vi.fn().mockResolvedValue(null);
     const transport = createRuntimeTransport(

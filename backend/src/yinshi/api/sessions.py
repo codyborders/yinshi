@@ -32,7 +32,7 @@ from yinshi.models import (
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["sessions"])
 
-_UPDATABLE_COLUMNS = {"model"}
+_UPDATABLE_COLUMNS = {"model", "title"}
 _EXCLUDED_DIRS = frozenset(
     {
         ".git",
@@ -129,9 +129,9 @@ def create_session(
         check_workspace_owner(db, workspace_id, request)
 
         cursor = db.execute(
-            """INSERT INTO sessions (workspace_id, status, model, pi_context_version)
-               VALUES (?, 'idle', ?, 1)""",
-            (workspace_id, body.model),
+            """INSERT INTO sessions (workspace_id, status, model, pi_context_version, title)
+               VALUES (?, 'idle', ?, 1, ?)""",
+            (workspace_id, body.model, body.title),
         )
         db.commit()
         row = db.execute("SELECT * FROM sessions WHERE rowid = ?", (cursor.lastrowid,)).fetchone()

@@ -191,6 +191,7 @@ class SessionCreate(BaseModel):
     """Request to create an agent session."""
 
     model: str = Field(DEFAULT_SESSION_MODEL, max_length=100)
+    title: str | None = Field(None, max_length=500)
 
     @field_validator("model")
     @classmethod
@@ -203,6 +204,7 @@ class SessionUpdate(BaseModel):
     """Request to update a session."""
 
     model: str | None = Field(None, max_length=100)
+    title: str | None = Field(None, max_length=500)
 
     @field_validator("model")
     @classmethod
@@ -227,6 +229,82 @@ class SessionOut(BaseModel):
     status: str = "idle"
     model: str = DEFAULT_SESSION_MODEL
     pi_context_version: int = 0
+    title: str | None = None
+
+
+class ThreadOut(BaseModel):
+    """One thread projection over an existing session."""
+
+    id: str
+    delegation_id: str | None = None
+    parent_id: str | None = None
+    root_id: str
+    depth: int
+    title: str | None = None
+    role: str
+    origin: str
+    state: str
+    workspace_id: str
+    model: str
+    child_count: int
+    active_child_count: int
+    can_spawn_child: bool
+    created_at: datetime
+
+
+class ThreadPlaceholderOut(BaseModel):
+    """A reserved child whose session does not exist yet."""
+
+    delegation_id: str
+    parent_id: str
+    title: str
+    role: str
+    status: str
+    created_at: datetime
+
+
+class ThreadTreeOut(BaseModel):
+    """The bounded thread tree containing the requested session."""
+
+    root: ThreadOut
+    nodes: list[ThreadOut]
+    placeholders: list[ThreadPlaceholderOut]
+    thread_count: int
+    active_descendant_count: int
+    tree_depth: int
+
+
+class ThreadLimitsOut(BaseModel):
+    """Configured thread limits plus root-wide usage and allowances."""
+
+    max_depth: int
+    max_direct_children: int
+    max_active_descendants: int
+    max_total_threads: int
+    tree_depth: int
+    direct_children: int
+    active_descendants: int
+    total_threads: int
+    can_spawn_child: bool
+
+
+class ThreadResultOut(BaseModel):
+    """The sealed stored result of a delegated child thread."""
+
+    delegation_id: str
+    version: int
+    source: str
+    sealed: bool
+    summary: str | None = None
+    tests: list[Any] = Field(default_factory=list)
+    warnings: list[Any] = Field(default_factory=list)
+    base_commit: str | None = None
+    result_commit: str | None = None
+    result_ref: str | None = None
+    changed_files: list[Any] = Field(default_factory=list)
+    created_at: datetime
+    updated_at: datetime
+    sealed_at: datetime | None = None
 
 
 class MessageOut(BaseModel):

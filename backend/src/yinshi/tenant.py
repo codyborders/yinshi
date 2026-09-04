@@ -24,7 +24,7 @@ from yinshi.config import (
     tenant_db_encryption_required,
     user_data_encryption_required,
 )
-from yinshi.db import _open_connection
+from yinshi.db import THREAD_SCHEMA_SQL, _open_connection
 from yinshi.model_catalog import DEFAULT_SESSION_MODEL
 from yinshi.services.crypto import derive_subkey
 
@@ -41,7 +41,7 @@ _STORAGE_ENCRYPTION_MARKER: Final[str] = ".yinshi-encrypted-storage"
 _SCHEMA_OBJECT_TYPES: Final[tuple[str, ...]] = ("index", "table", "trigger", "view")
 _MIGRATION_LOCK_SUFFIX: Final[str] = ".migration.lock"
 _PLAINTEXT_ROLLBACK_SUFFIX: Final[str] = ".plaintext.rollback"
-_USER_SCHEMA_VERSION: Final[int] = 1
+_USER_SCHEMA_VERSION: Final[int] = 2
 _LEGACY_USER_SCHEMA_COLUMNS: Final[dict[str, frozenset[str]]] = {
     "messages": frozenset(
         {"content", "created_at", "full_message", "id", "role", "session_id", "turn_id"}
@@ -63,10 +63,78 @@ _CURRENT_USER_SCHEMA_COLUMNS: Final[dict[str, frozenset[str]]] = {
     ),
     "repos": _LEGACY_USER_SCHEMA_COLUMNS["repos"] | {"agents_md", "installation_id"},
     "sessions": frozenset(
-        {"created_at", "id", "model", "pi_context_version", "status", "updated_at", "workspace_id"}
+        {
+            "created_at",
+            "id",
+            "model",
+            "pi_context_version",
+            "status",
+            "title",
+            "updated_at",
+            "workspace_id",
+        }
     ),
     "workspaces": frozenset(
-        {"branch", "created_at", "id", "name", "path", "repo_id", "state", "updated_at"}
+        {
+            "branch",
+            "created_at",
+            "id",
+            "kind",
+            "name",
+            "parent_workspace_id",
+            "path",
+            "repo_id",
+            "state",
+            "updated_at",
+        }
+    ),
+    "thread_delegations": frozenset(
+        {
+            "base_commit",
+            "base_kind",
+            "child_session_id",
+            "child_workspace_id",
+            "completed_at",
+            "context",
+            "created_at",
+            "delegated_by_run_id",
+            "delegated_by_tool_call_id",
+            "delegated_by_turn_id",
+            "error_code",
+            "error_detail_safe",
+            "id",
+            "idempotency_key",
+            "initiator",
+            "parent_session_id",
+            "requested_model",
+            "requested_thinking",
+            "retry_of_delegation_id",
+            "role",
+            "snapshot_ref",
+            "started_at",
+            "status",
+            "task",
+            "title",
+            "updated_at",
+        }
+    ),
+    "thread_results": frozenset(
+        {
+            "base_commit",
+            "changed_files_json",
+            "created_at",
+            "delegation_id",
+            "result_commit",
+            "result_ref",
+            "sealed",
+            "sealed_at",
+            "source",
+            "summary",
+            "tests_json",
+            "updated_at",
+            "version",
+            "warnings_json",
+        }
     ),
 }
 _CURRENT_USER_SCHEMA_PRIMARY_KEYS: Final[dict[str, tuple[str, ...]]] = {
@@ -137,7 +205,66 @@ CREATE TABLE IF NOT EXISTS workspaces (
     name TEXT NOT NULL,
     branch TEXT NOT NULL,
     path TEXT NOT NULL,
-    state TEXT DEFAULT 'ready' NOT NULL
+    state TEXT DEFAULT 'ready' NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'user',
+    parent_workspace_id TEXT
+);
+
+CREATE TABLE IF NOT EXISTS thread_delegations (
+    id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    parent_session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE RESTRICT,
+    child_session_id TEXT UNIQUE REFERENCES sessions(id) ON DELETE CASCADE,
+    child_workspace_id TEXT REFERENCES workspaces(id) ON DELETE RESTRICT,
+    idempotency_key TEXT NOT NULL,
+    initiator TEXT NOT NULL CHECK (initiator IN ('user', 'agent')),
+    delegated_by_turn_id TEXT,
+    delegated_by_run_id TEXT,
+    delegated_by_tool_call_id TEXT,
+    title TEXT NOT NULL,
+    task TEXT NOT NULL,
+    context TEXT,
+    role TEXT NOT NULL DEFAULT 'general' CHECK (
+        role IN ('general', 'research', 'implementation', 'test', 'review', 'debug')
+    ),
+    requested_model TEXT NOT NULL,
+    requested_thinking TEXT,
+    status TEXT NOT NULL CHECK (
+        status IN (
+            'provisioning', 'queued', 'running', 'cancelling',
+            'completed', 'failed', 'cancelled', 'interrupted'
+        )
+    ),
+    base_kind TEXT CHECK (base_kind IN ('head', 'snapshot')),
+    base_commit TEXT,
+    snapshot_ref TEXT,
+    error_code TEXT,
+    error_detail_safe TEXT,
+    started_at TIMESTAMP,
+    completed_at TIMESTAMP,
+    retry_of_delegation_id TEXT REFERENCES thread_delegations(id),
+    UNIQUE (parent_session_id, idempotency_key),
+    CHECK (
+        child_session_id IS NULL OR child_session_id <> parent_session_id
+    )
+);
+
+CREATE TABLE IF NOT EXISTS thread_results (
+    delegation_id TEXT PRIMARY KEY REFERENCES thread_delegations(id) ON DELETE CASCADE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    version INTEGER NOT NULL DEFAULT 1,
+    source TEXT NOT NULL CHECK (source IN ('reported', 'derived')),
+    sealed INTEGER NOT NULL DEFAULT 0 CHECK (sealed IN (0, 1)),
+    summary TEXT,
+    tests_json TEXT NOT NULL DEFAULT '[]',
+    warnings_json TEXT NOT NULL DEFAULT '[]',
+    base_commit TEXT,
+    result_commit TEXT,
+    result_ref TEXT,
+    changed_files_json TEXT NOT NULL DEFAULT '[]',
+    sealed_at TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS sessions (
@@ -147,7 +274,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
     status TEXT DEFAULT 'idle' NOT NULL,
     model TEXT DEFAULT '{DEFAULT_SESSION_MODEL}',
-    pi_context_version INTEGER DEFAULT 1 NOT NULL
+    pi_context_version INTEGER DEFAULT 1 NOT NULL,
+    title TEXT
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -190,6 +318,12 @@ CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, created_
 CREATE INDEX IF NOT EXISTS idx_messages_turn_id ON messages(turn_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_workspace ON sessions(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_workspaces_repo ON workspaces(repo_id);
+CREATE INDEX IF NOT EXISTS idx_thread_delegations_parent
+    ON thread_delegations(parent_session_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_thread_delegations_child
+    ON thread_delegations(child_session_id);
+CREATE INDEX IF NOT EXISTS idx_thread_delegations_status
+    ON thread_delegations(status, updated_at);
 
 CREATE TRIGGER IF NOT EXISTS update_repos_updated_at AFTER UPDATE ON repos
 BEGIN UPDATE repos SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id; END;
@@ -222,6 +356,34 @@ def _migrate_user_db(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE sessions ADD COLUMN pi_context_version INTEGER DEFAULT 0 NOT NULL"
         )
+
+    _migrate_thread_schema(conn)
+
+
+def _migrate_thread_schema(conn: sqlite3.Connection) -> None:
+    """Add session titles, workspace provenance, and thread tables additively."""
+    session_columns = {row[1] for row in conn.execute("PRAGMA table_info(sessions)").fetchall()}
+    if "title" not in session_columns:
+        logger.info("Tenant migration: adding title column to sessions")
+        conn.execute("ALTER TABLE sessions ADD COLUMN title TEXT")
+
+    workspace_columns = {row[1] for row in conn.execute("PRAGMA table_info(workspaces)").fetchall()}
+    if "kind" not in workspace_columns:
+        logger.info("Tenant migration: adding kind column to workspaces")
+        conn.execute("ALTER TABLE workspaces ADD COLUMN kind TEXT NOT NULL DEFAULT 'user'")
+    if "parent_workspace_id" not in workspace_columns:
+        logger.info("Tenant migration: adding parent_workspace_id column to workspaces")
+        conn.execute("ALTER TABLE workspaces ADD COLUMN parent_workspace_id TEXT")
+
+    statement = ""
+    for line in THREAD_SCHEMA_SQL.splitlines(keepends=True):
+        statement += line
+        if sqlite3.complete_statement(statement):
+            if statement.strip():
+                conn.execute(statement)
+            statement = ""
+    if statement.strip():
+        raise RuntimeError("Tenant thread schema script is incomplete")
 
 
 def _execute_user_schema_script(conn: sqlite3.Connection) -> None:

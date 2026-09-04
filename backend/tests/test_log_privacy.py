@@ -187,6 +187,8 @@ async def test_workspace_session_cleanup_log_excludes_session_id(
     first_workspace_result.fetchone.return_value = workspace_row
     second_workspace_result = Mock()
     second_workspace_result.fetchone.return_value = workspace_row
+    delegation_result = Mock()
+    delegation_result.fetchone.return_value = {"child_count": 0}
     sessions_result = Mock()
     sessions_result.fetchall.return_value = [{"id": session_id}]
     repository_result = Mock()
@@ -199,6 +201,7 @@ async def test_workspace_session_cleanup_log_excludes_session_id(
     database.execute.side_effect = [
         first_workspace_result,
         second_workspace_result,
+        delegation_result,
         sessions_result,
         repository_result,
         delete_result,

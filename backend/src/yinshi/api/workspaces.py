@@ -14,17 +14,48 @@ from yinshi.api.deps import (
     get_user_email,
 )
 from yinshi.config import get_settings
-from yinshi.exceptions import GitError, RepoNotFoundError, WorkspaceNotFoundError
+from yinshi.exceptions import (
+    GitError,
+    RepoNotFoundError,
+    WorkspaceHasDelegatedThreads,
+    WorkspaceNotFoundError,
+)
 from yinshi.models import WorkspaceCreate, WorkspaceOut, WorkspaceUpdate
 from yinshi.services.run_coordinator import get_run_coordinator
 from yinshi.services.sidecar import release_sessions
-from yinshi.services.workspace import create_workspace_for_repo, delete_workspace
+from yinshi.services.workspace import (
+    create_workspace_for_repo,
+    ensure_workspace_has_no_delegated_children,
+    delete_workspace,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["workspaces"])
 
 _UPDATABLE_COLUMNS = {"state"}
 _RUNTIME_BUSY_DETAIL = "Workspace is still stopping; deletion can be retried"
+
+
+def _thread_children_present_error() -> HTTPException:
+    """Return the public conflict for a workspace with delegated children."""
+    return HTTPException(
+        status_code=409,
+        detail={
+            "code": "thread_children_present",
+            "message": "Workspace sessions parent delegated child threads",
+        },
+    )
+
+
+def _reject_delegated_parent_workspace(
+    db: sqlite3.Connection,
+    workspace_id: str,
+) -> None:
+    """Refuse deletion before any teardown when sessions parent children."""
+    try:
+        ensure_workspace_has_no_delegated_children(db, workspace_id)
+    except WorkspaceHasDelegatedThreads as exc:
+        raise _thread_children_present_error() from exc
 
 
 def _check_repo_owner(
@@ -116,6 +147,7 @@ async def remove_workspace(workspace_id: str, request: Request) -> None:
     tenant = get_tenant(request)
     with get_db_for_request(request) as db:
         check_workspace_owner(db, workspace_id, request)
+        _reject_delegated_parent_workspace(db, workspace_id)
         session_rows = db.execute(
             "SELECT id FROM sessions WHERE workspace_id = ?",
             (workspace_id,),
@@ -146,6 +178,8 @@ async def remove_workspace(workspace_id: str, request: Request) -> None:
             await delete_workspace(db, workspace_id, tenant=tenant)
         except (WorkspaceNotFoundError, RepoNotFoundError):
             raise HTTPException(status_code=404, detail="Workspace not found")
+        except WorkspaceHasDelegatedThreads as exc:
+            raise _thread_children_present_error() from exc
         except HTTPException:
             raise
         except Exception:

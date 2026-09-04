@@ -10,7 +10,7 @@ from functools import lru_cache
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from pydantic import SecretStr
+from pydantic import SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings
 
 _SECURITY_MODE_VALUES = {"auto", "disabled", "enabled", "required"}
@@ -208,6 +208,49 @@ class Settings(BaseSettings):
     # Browser terminal runtime controls
     terminal_keepalive_s: int = 7200
     terminal_scrollback_lines: int = 1000
+
+    # Thread hierarchy limits (docs/thread-orchestration.md)
+    thread_hierarchy_enabled: bool = True
+    agent_delegation_enabled: bool = False
+    thread_max_depth: int = 1
+    thread_max_direct_children: int = 4
+    thread_max_active_descendants: int = 4
+    thread_max_total: int = 20
+    thread_max_spawns_per_turn: int = 4
+    thread_wait_timeout_seconds_max: int = 60
+
+    @field_validator(
+        "thread_max_depth",
+        "thread_max_direct_children",
+        "thread_max_active_descendants",
+        "thread_max_total",
+        "thread_max_spawns_per_turn",
+        "thread_wait_timeout_seconds_max",
+    )
+    @classmethod
+    def _validate_thread_limit_positive(cls, value: int, info: object) -> int:
+        """Reject nonpositive thread limits before any tree math runs."""
+        field_name = getattr(info, "field_name", "thread limit")
+        if value < 1:
+            raise ValueError(f"thread {field_name} must be a positive integer")
+        return value
+
+    @model_validator(mode="after")
+    def _validate_thread_limit_coherence(self) -> "Settings":
+        """Keep thread limits inside coherent hard bounds."""
+        hard_depth_limit = 32
+        if self.thread_max_depth > hard_depth_limit:
+            raise ValueError(f"thread thread_max_depth must not exceed {hard_depth_limit}")
+        minimum_total = max(
+            self.thread_max_direct_children,
+            self.thread_max_active_descendants,
+        )
+        if self.thread_max_total <= minimum_total:
+            raise ValueError(
+                "thread thread_max_total must allow the direct children and "
+                "active descendants limits"
+            )
+        return self
 
     # Managed Fly Sprites runtime
     managed_runtime_provider: str = "disabled"

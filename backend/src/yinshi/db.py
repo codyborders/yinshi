@@ -21,7 +21,7 @@ from yinshi.model_catalog import DEFAULT_SESSION_MODEL
 
 logger = logging.getLogger(__name__)
 
-_SCHEMA_VERSION = 5
+_SCHEMA_VERSION = 6
 _SQLCIPHER_MODULE_NAMES = ("sqlcipher3.dbapi2", "pysqlcipher3.dbapi2")
 _PLAINTEXT_ROLLBACK_SUFFIX = ".plaintext.rollback"
 
@@ -54,7 +54,66 @@ CREATE TABLE IF NOT EXISTS workspaces (
     name TEXT NOT NULL,
     branch TEXT NOT NULL,
     path TEXT NOT NULL,
-    state TEXT DEFAULT 'ready' NOT NULL
+    state TEXT DEFAULT 'ready' NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'user',
+    parent_workspace_id TEXT
+);
+
+CREATE TABLE IF NOT EXISTS thread_delegations (
+    id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    parent_session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE RESTRICT,
+    child_session_id TEXT UNIQUE REFERENCES sessions(id) ON DELETE CASCADE,
+    child_workspace_id TEXT REFERENCES workspaces(id) ON DELETE RESTRICT,
+    idempotency_key TEXT NOT NULL,
+    initiator TEXT NOT NULL CHECK (initiator IN ('user', 'agent')),
+    delegated_by_turn_id TEXT,
+    delegated_by_run_id TEXT,
+    delegated_by_tool_call_id TEXT,
+    title TEXT NOT NULL,
+    task TEXT NOT NULL,
+    context TEXT,
+    role TEXT NOT NULL DEFAULT 'general' CHECK (
+        role IN ('general', 'research', 'implementation', 'test', 'review', 'debug')
+    ),
+    requested_model TEXT NOT NULL,
+    requested_thinking TEXT,
+    status TEXT NOT NULL CHECK (
+        status IN (
+            'provisioning', 'queued', 'running', 'cancelling',
+            'completed', 'failed', 'cancelled', 'interrupted'
+        )
+    ),
+    base_kind TEXT CHECK (base_kind IN ('head', 'snapshot')),
+    base_commit TEXT,
+    snapshot_ref TEXT,
+    error_code TEXT,
+    error_detail_safe TEXT,
+    started_at TIMESTAMP,
+    completed_at TIMESTAMP,
+    retry_of_delegation_id TEXT REFERENCES thread_delegations(id),
+    UNIQUE (parent_session_id, idempotency_key),
+    CHECK (
+        child_session_id IS NULL OR child_session_id <> parent_session_id
+    )
+);
+
+CREATE TABLE IF NOT EXISTS thread_results (
+    delegation_id TEXT PRIMARY KEY REFERENCES thread_delegations(id) ON DELETE CASCADE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    version INTEGER NOT NULL DEFAULT 1,
+    source TEXT NOT NULL CHECK (source IN ('reported', 'derived')),
+    sealed INTEGER NOT NULL DEFAULT 0 CHECK (sealed IN (0, 1)),
+    summary TEXT,
+    tests_json TEXT NOT NULL DEFAULT '[]',
+    warnings_json TEXT NOT NULL DEFAULT '[]',
+    base_commit TEXT,
+    result_commit TEXT,
+    result_ref TEXT,
+    changed_files_json TEXT NOT NULL DEFAULT '[]',
+    sealed_at TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS sessions (
@@ -64,7 +123,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
     status TEXT DEFAULT 'idle' NOT NULL,
     model TEXT DEFAULT '{DEFAULT_SESSION_MODEL}',
-    pi_context_version INTEGER DEFAULT 1 NOT NULL
+    pi_context_version INTEGER DEFAULT 1 NOT NULL,
+    title TEXT
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -107,6 +167,12 @@ CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, created_
 CREATE INDEX IF NOT EXISTS idx_messages_turn_id ON messages(turn_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_workspace ON sessions(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_workspaces_repo ON workspaces(repo_id);
+CREATE INDEX IF NOT EXISTS idx_thread_delegations_parent
+    ON thread_delegations(parent_session_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_thread_delegations_child
+    ON thread_delegations(child_session_id);
+CREATE INDEX IF NOT EXISTS idx_thread_delegations_status
+    ON thread_delegations(status, updated_at);
 
 CREATE TRIGGER IF NOT EXISTS update_repos_updated_at AFTER UPDATE ON repos
 BEGIN UPDATE repos SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id; END;
@@ -116,6 +182,73 @@ BEGIN UPDATE workspaces SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id; EN
 
 CREATE TRIGGER IF NOT EXISTS update_sessions_updated_at AFTER UPDATE ON sessions
 BEGIN UPDATE sessions SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id; END;
+"""
+
+THREAD_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS thread_delegations (
+    id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    parent_session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE RESTRICT,
+    child_session_id TEXT UNIQUE REFERENCES sessions(id) ON DELETE CASCADE,
+    child_workspace_id TEXT REFERENCES workspaces(id) ON DELETE RESTRICT,
+    idempotency_key TEXT NOT NULL,
+    initiator TEXT NOT NULL CHECK (initiator IN ('user', 'agent')),
+    delegated_by_turn_id TEXT,
+    delegated_by_run_id TEXT,
+    delegated_by_tool_call_id TEXT,
+    title TEXT NOT NULL,
+    task TEXT NOT NULL,
+    context TEXT,
+    role TEXT NOT NULL DEFAULT 'general' CHECK (
+        role IN ('general', 'research', 'implementation', 'test', 'review', 'debug')
+    ),
+    requested_model TEXT NOT NULL,
+    requested_thinking TEXT,
+    status TEXT NOT NULL CHECK (
+        status IN (
+            'provisioning', 'queued', 'running', 'cancelling',
+            'completed', 'failed', 'cancelled', 'interrupted'
+        )
+    ),
+    base_kind TEXT CHECK (base_kind IN ('head', 'snapshot')),
+    base_commit TEXT,
+    snapshot_ref TEXT,
+    error_code TEXT,
+    error_detail_safe TEXT,
+    started_at TIMESTAMP,
+    completed_at TIMESTAMP,
+    retry_of_delegation_id TEXT REFERENCES thread_delegations(id),
+    UNIQUE (parent_session_id, idempotency_key),
+    CHECK (
+        child_session_id IS NULL OR child_session_id <> parent_session_id
+    )
+);
+
+CREATE TABLE IF NOT EXISTS thread_results (
+    delegation_id TEXT PRIMARY KEY REFERENCES thread_delegations(id) ON DELETE CASCADE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    version INTEGER NOT NULL DEFAULT 1,
+    source TEXT NOT NULL CHECK (source IN ('reported', 'derived')),
+    sealed INTEGER NOT NULL DEFAULT 0 CHECK (sealed IN (0, 1)),
+    summary TEXT,
+    tests_json TEXT NOT NULL DEFAULT '[]',
+    warnings_json TEXT NOT NULL DEFAULT '[]',
+    base_commit TEXT,
+    result_commit TEXT,
+    result_ref TEXT,
+    changed_files_json TEXT NOT NULL DEFAULT '[]',
+    sealed_at TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_thread_delegations_parent
+    ON thread_delegations(parent_session_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_thread_delegations_child
+    ON thread_delegations(child_session_id);
+CREATE INDEX IF NOT EXISTS idx_thread_delegations_status
+    ON thread_delegations(status, updated_at);
+CREATE INDEX IF NOT EXISTS idx_workspaces_kind ON workspaces(kind, repo_id);
 """
 
 
@@ -552,10 +685,32 @@ def _migrate(conn: sqlite3.Connection) -> None:
                 "ALTER TABLE sessions ADD COLUMN pi_context_version INTEGER DEFAULT 0 NOT NULL"
             )
 
+    if current < 6:
+        _migrate_thread_schema(conn)
+
     if current != _SCHEMA_VERSION:
         conn.execute("DELETE FROM schema_version")
         conn.execute("INSERT INTO schema_version (version) VALUES (?)", (_SCHEMA_VERSION,))
         conn.commit()
+
+
+def _migrate_thread_schema(conn: sqlite3.Connection) -> None:
+    """Add session titles, workspace provenance, and thread tables additively."""
+    session_columns = {r[1] for r in conn.execute("PRAGMA table_info(sessions)").fetchall()}
+    if "title" not in session_columns:
+        logger.info("Migration v6: adding title column to sessions")
+        conn.execute("ALTER TABLE sessions ADD COLUMN title TEXT")
+
+    workspace_columns = {r[1] for r in conn.execute("PRAGMA table_info(workspaces)").fetchall()}
+    if "kind" not in workspace_columns:
+        logger.info("Migration v6: adding kind column to workspaces")
+        conn.execute("ALTER TABLE workspaces ADD COLUMN kind TEXT NOT NULL DEFAULT 'user'")
+    if "parent_workspace_id" not in workspace_columns:
+        logger.info("Migration v6: adding parent_workspace_id column to workspaces")
+        conn.execute("ALTER TABLE workspaces ADD COLUMN parent_workspace_id TEXT")
+
+    conn.executescript(THREAD_SCHEMA_SQL)
+    conn.commit()
 
 
 def init_db() -> None:

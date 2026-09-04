@@ -13,6 +13,10 @@ class WorkspaceNotFoundError(YinshiError):
     """Raised when a workspace is not found."""
 
 
+class WorkspaceHasDelegatedThreads(YinshiError):
+    """Raised when deleting a workspace that parents delegated child threads."""
+
+
 class SessionNotFoundError(YinshiError):
     """Raised when a session is not found."""
 

@@ -12,6 +12,7 @@ from yinshi.exceptions import (
     GitHubAccessError,
     GitHubAppError,
     RepoNotFoundError,
+    WorkspaceHasDelegatedThreads,
     WorkspaceNotFoundError,
 )
 from yinshi.services.git import (
@@ -229,6 +230,23 @@ async def _trusted_repo_needs_refresh(
     if current_remote_url is None:
         return True
     return current_remote_url.rstrip("/") != normalized_remote.clone_url.rstrip("/")
+
+
+def ensure_workspace_has_no_delegated_children(
+    db: sqlite3.Connection,
+    workspace_id: str,
+) -> None:
+    """Apply the deletion policy: workspace sessions must not parent children."""
+    delegation_row = db.execute(
+        """SELECT count(*) AS child_count
+           FROM thread_delegations d
+           JOIN sessions s ON s.id = d.parent_session_id
+           WHERE s.workspace_id = ?""",
+        (workspace_id,),
+    ).fetchone()
+    assert delegation_row is not None
+    if int(delegation_row["child_count"]) > 0:
+        raise WorkspaceHasDelegatedThreads("Workspace sessions parent delegated child threads")
 
 
 def load_workspace_checkout_state(
@@ -586,6 +604,8 @@ async def _delete_workspace_unlocked(
 ) -> None:
     """Delete one workspace after repository lifecycle serialization."""
     workspace = _fetch_workspace(db, workspace_id)
+    ensure_workspace_has_no_delegated_children(db, workspace_id)
+
     session_rows = []
     if tenant is None:
         session_rows = db.execute(
