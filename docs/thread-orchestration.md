@@ -119,6 +119,8 @@ Tracked symlinks remain Git symlink blobs. Snapshot creation never follows their
 
 Snapshot commits use `refs/yinshi/snapshots/<delegation-id>`. Result commits use `refs/yinshi/results/<delegation-id>`.
 
+Hidden refs use atomic create-only publication. A competing writer keeps ownership of its ref.
+
 Child branches use `yinshi/thread-<short-delegation-id>`. Worktrees start from the exact base commit and receive `kind = delegated` with their parent workspace ID.
 
 Provisioning holds the repository lifecycle lock. It preserves parent `HEAD`, branch, index, staged state, working files, and untracked files.
@@ -126,6 +128,8 @@ Provisioning holds the repository lifecycle lock. It preserves parent `HEAD`, br
 Cleanup removes only artifacts owned by its delegation. It preserves pre-existing branches, worktrees, and result refs after failed provisioning.
 
 Finalization captures committed and uncommitted child state in one synthetic result commit. Its parent is the recorded base commit.
+
+Result refs are immutable. A retry reuses a result only when its tree and parent match.
 
 Changed-file output supports additions, modifications, deletions, copies, and renames. It stops above 5,000 entries.
 

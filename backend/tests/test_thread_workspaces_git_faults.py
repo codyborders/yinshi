@@ -14,6 +14,7 @@ from yinshi.services import thread_workspaces
 
 DELEGATION_ID = "d4e5f6a7b8c9d0e1f2a3b4c5d6e7f801"
 SNAPSHOT_REF = f"refs/yinshi/snapshots/{DELEGATION_ID}"
+RESULT_REF = f"refs/yinshi/results/{DELEGATION_ID}"
 CHILD_BRANCH = "yinshi/thread-d4e5f6a7"
 
 
@@ -124,3 +125,67 @@ def test_worktree_creation_failure_cleans_owned_branch(db, git_repo, monkeypatch
         ).fetchone()[0]
         == 0
     )
+
+
+def test_finalize_result_ref_resolution_failure_propagates(db, git_repo, monkeypatch):
+    """A Git fault resolving an existing result ref fails finalization closed."""
+    run_git("config", "user.name", "T", cwd=git_repo)
+    run_git("config", "user.email", "t@t", cwd=git_repo)
+    parent_path = str(Path(git_repo) / ".worktrees" / "parent-branch")
+    run_git("worktree", "add", "-b", "parent-branch", parent_path, cwd=git_repo)
+    db.execute(
+        "INSERT INTO repos (id, name, root_path) VALUES ('repo1', 'repo', ?)",
+        (git_repo,),
+    )
+    db.execute(
+        """INSERT INTO workspaces (id, repo_id, name, branch, path, state)
+           VALUES ('parent-ws', 'repo1', 'parent', 'parent-branch', ?, 'ready')""",
+        (parent_path,),
+    )
+    db.execute(
+        "INSERT INTO sessions (id, workspace_id) VALUES ('parent-session', 'parent-ws')",
+    )
+    db.commit()
+    base_commit = run_git("rev-parse", "HEAD", cwd=parent_path)
+    provisioned = asyncio.run(
+        thread_workspaces.ThreadWorkspaceService().provision_child(
+            db,
+            None,
+            parent_workspace_id="parent-ws",
+            delegation_id=DELEGATION_ID,
+        )
+    )
+    (Path(provisioned.path) / "done.txt").write_text("done\n", encoding="utf-8")
+    service = thread_workspaces.ThreadWorkspaceService()
+    first = asyncio.run(
+        service.finalize_child(
+            db,
+            None,
+            delegation_id=DELEGATION_ID,
+            workspace_id=provisioned.workspace_id,
+            base_commit=base_commit,
+        )
+    )
+    real_run_git = thread_workspaces._run_git
+
+    async def failing_result_ref_resolve(args, **kwargs):
+        if args[:1] == ["rev-parse"] and RESULT_REF in args:
+            raise GitError("injected result ref resolution failure")
+        return await real_run_git(args, **kwargs)
+
+    monkeypatch.setattr(thread_workspaces, "_run_git", failing_result_ref_resolve)
+
+    with pytest.raises(GitError, match="injected result ref resolution failure"):
+        asyncio.run(
+            service.finalize_child(
+                db,
+                None,
+                delegation_id=DELEGATION_ID,
+                workspace_id=provisioned.workspace_id,
+                base_commit=base_commit,
+            )
+        )
+
+    monkeypatch.undo()
+    # The published result ref must be untouched by the failed resolution.
+    assert run_git("rev-parse", "--verify", RESULT_REF, cwd=git_repo) == first.result_commit

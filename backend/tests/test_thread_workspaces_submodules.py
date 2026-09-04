@@ -93,3 +93,57 @@ def test_snapshot_rejects_dirty_submodule(db, git_repo):
                 delegation_id="d4e5f6a7b8c9d0e1f2a3b4c5d6e7f801",
             )
         )
+
+
+def test_snapshot_rejects_dirty_submodule_with_whitespace_path(db, git_repo):
+    """Whitespace-bearing submodule paths must not dodge dirty detection."""
+    seed_parent(db, git_repo)
+
+    sub_source = Path(git_repo).parent / "sub-source"
+    sub_source.mkdir()
+    run_git("init", str(sub_source), cwd=str(sub_source.parent))
+    (sub_source / "lib.txt").write_text("v1\n", encoding="utf-8")
+    run_git("add", ".", cwd=str(sub_source))
+    run_git(
+        "-c",
+        "user.name=T",
+        "-c",
+        "user.email=t@t",
+        "commit",
+        "-m",
+        "c",
+        cwd=str(sub_source),
+    )
+    sub_path = "vendor/my sub"
+    run_git(
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        "../sub-source",
+        sub_path,
+        cwd=git_repo,
+    )
+    run_git(
+        "-c",
+        "user.name=T",
+        "-c",
+        "user.email=t@t",
+        "commit",
+        "-m",
+        "sub",
+        cwd=git_repo,
+    )
+    # Make the checked-out submodule dirty without committing inside it.
+    sub_checkout = Path(git_repo) / "vendor" / "my sub"
+    (sub_checkout / "lib.txt").write_text("v2\n", encoding="utf-8")
+
+    with pytest.raises(YinshiError, match="dirty submodule"):
+        asyncio.run(
+            ThreadWorkspaceService().provision_child(
+                db,
+                None,
+                parent_workspace_id="parent-ws",
+                delegation_id="d4e5f6a7b8c9d0e1f2a3b4c5d6e7f801",
+            )
+        )

@@ -120,8 +120,12 @@ def _repo_root(repo_root_path: str) -> Path | None:
     return root
 
 
-def _is_secret_path(relative_path: str) -> bool:
-    """Return whether a relative path points at a protected .env-style file."""
+def is_secret_path(relative_path: str) -> bool:
+    """Return whether a relative path points at a protected .env-style file.
+
+    This is the shared secret-path policy for every service that inspects
+    workspace paths, including thread snapshot and result filtering.
+    """
     parts = Path(relative_path).parts
     if not parts:
         return False
@@ -143,7 +147,7 @@ def _is_visible_relative_path(relative_path: str) -> bool:
     """Return whether a relative path is safe to show in workspace UI."""
     if not relative_path or relative_path == ".":
         return True
-    if _is_secret_path(relative_path):
+    if is_secret_path(relative_path):
         return False
     return not _has_excluded_segment(relative_path)
 

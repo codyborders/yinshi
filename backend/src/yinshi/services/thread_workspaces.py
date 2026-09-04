@@ -27,7 +27,11 @@ from yinshi.exceptions import (
     WorkspaceNotFoundError,
     YinshiError,
 )
-from yinshi.services.git import _run_git, create_worktree, run_git_bytes
+from yinshi.services.git import (
+    _run_git,
+    create_worktree,
+    run_git_bytes as _run_git_bytes,
+)
 from yinshi.services.repository_lifecycle import (
     repository_lifecycle,
     repository_lifecycle_root,
@@ -35,8 +39,8 @@ from yinshi.services.repository_lifecycle import (
 from yinshi.services.workspace_files import (
     ChangedFile,
     ChangeKind,
-    _is_secret_path,
     ensure_secret_guardrails,
+    is_secret_path,
 )
 from yinshi.tenant import TenantContext
 
@@ -53,6 +57,7 @@ _COMMIT_IDENTITY_ARGS = (
     "-c",
     "user.email=noreply@yinshi.local",
 )
+_ZERO_OID = "0" * 40
 
 
 class ThreadProtectedPathError(YinshiError):
@@ -77,6 +82,10 @@ class ThreadSnapshotRefExistsError(YinshiError):
 
 class ThreadResultBoundsError(YinshiError):
     """Raised when one result violates the configured result bounds."""
+
+
+class ThreadResultRefConflictError(YinshiError):
+    """Raised when publication would replace an existing result ref."""
 
 
 class ThreadUnsafePathError(YinshiError):
@@ -194,7 +203,7 @@ def _parse_changed_files(output: bytes) -> tuple[ChangedFile, ...]:
             break
         path = records[index].decode("utf-8", errors="surrogateescape")
         index += 1
-        if _is_secret_path(path):
+        if is_secret_path(path):
             continue
         changes.append(
             ChangedFile(
@@ -235,43 +244,101 @@ def _load_parent_location(
 
 
 async def _assert_submodules_clean(workspace_path: str) -> None:
-    """Reject parents whose submodules carry uncommitted or moved state."""
-    listing = await _run_git(
+    """Reject parents whose submodules carry uncommitted or moved state.
+
+    Every listing is parsed as raw Git bytes. Text stripping and whitespace
+    splitting corrupt submodule paths that contain leading, trailing, or
+    embedded whitespace, which would silently drop the dirty-state rejection.
+    """
+    listing = await _run_git_bytes(
         ["submodule", "status", "--recursive"],
         cwd=workspace_path,
     )
-    submodule_paths: set[str] = set()
-    for line in listing.splitlines():
-        if not line:
+    for record in listing.split(b"\n"):
+        if not record:
             continue
-        fields = line.split()
-        if len(fields) < 2:
-            continue
-        if fields[0][0] in {"-", "+", "U"}:
+        # The leading status byte is position-stable: ``-`` uninitialized,
+        # ``+`` checked-out mismatch, ``U`` merge conflict.
+        if record[:1] in {b"-", b"+", b"U"}:
             raise ThreadDirtySubmoduleError("thread parent has dirty submodules")
-        submodule_paths.add(fields[1])
-    if not submodule_paths:
-        return
     # Uncommitted content inside a checkout keeps a space prefix in
     # ``submodule status``, so scan porcelain with submodule checks forced on.
-    status = await _run_git(
+    # Gitlink index entries carry the exact raw submodule paths that porcelain
+    # records use, so match those bytes without any whitespace repair.
+    index_listing = await _run_git_bytes(["ls-files", "-z", "-s"], cwd=workspace_path)
+    submodule_paths: set[bytes] = set()
+    for record in index_listing.split(b"\0"):
+        if not record:
+            continue
+        meta, separator, entry_path = record.partition(b"\t")
+        fields = meta.split(b" ")
+        if separator and len(fields) == 3 and fields[0] == b"160000":
+            submodule_paths.add(entry_path)
+    if not submodule_paths:
+        return
+    status = await _run_git_bytes(
         ["status", "--porcelain=v1", "-z", "--ignore-submodules=none"],
         cwd=workspace_path,
     )
-    for record in status.split("\0"):
-        normalized_record = record.strip()
-        if not normalized_record:
+    records = status.split(b"\0")
+    index_position = 0
+    while index_position < len(records):
+        record = records[index_position]
+        index_position += 1
+        if len(record) < 4:
             continue
-        # The shared git runner strips outer whitespace, so recover the path
-        # after the two status columns without trusting the leading column.
-        entry_path = normalized_record[2:].strip()
+        entry_path = record[3:]
         if entry_path in submodule_paths:
             raise ThreadDirtySubmoduleError("thread parent has dirty submodules")
+        if b"R" in record[:2] or b"C" in record[:2]:
+            # Rename and copy records repeat the original path next.
+            index_position += 1
 
 
-# Shared raw runner from services.git keeps one executable, one sanitized
-# environment, one timeout, and one kill-and-drain cancellation path.
-_run_git_bytes = run_git_bytes
+_ALTERNATE_INDEX_PREFIX = "yinshi-thread-alt-index-"
+
+
+async def _write_tree_through_alternate_index(
+    workspace_path: str,
+    *,
+    base_treeish: str | None,
+) -> str:
+    """Write one tree from the workspace through a private temporary index.
+
+    The real Git index stays untouched: every index-touching subprocess runs
+    with ``GIT_INDEX_FILE`` pointing at one temporary alternate index file.
+    ``base_treeish`` seeds the index when given; read-tree accepts any
+    tree-ish there. Without it the index starts empty and captures only
+    workspace content. The temporary file is always removed.
+    """
+    index_descriptor, index_path = tempfile.mkstemp(
+        prefix=_ALTERNATE_INDEX_PREFIX,
+    )
+    os.close(index_descriptor)
+    # Git refuses to read a zero-byte index file, so let it create the
+    # alternate index at this unique path instead.
+    os.unlink(index_path)
+    try:
+        index_env = {"GIT_INDEX_FILE": index_path}
+        if base_treeish is not None:
+            await _run_git(
+                ["read-tree", base_treeish],
+                cwd=workspace_path,
+                env=index_env,
+            )
+        await _run_git(
+            ["add", "-A", "--", "."],
+            cwd=workspace_path,
+            env=index_env,
+        )
+        return await _run_git(
+            ["write-tree"],
+            cwd=workspace_path,
+            env=index_env,
+        )
+    finally:
+        with suppress(OSError):
+            os.unlink(index_path)
 
 
 async def _assert_no_protected_candidates(workspace_path: str) -> None:
@@ -285,7 +352,7 @@ async def _assert_no_protected_candidates(workspace_path: str) -> None:
         if not record:
             continue
         candidate = record.decode("utf-8", errors="surrogateescape")
-        if _is_secret_path(candidate):
+        if is_secret_path(candidate):
             raise ThreadProtectedPathError("thread snapshot contains a protected secret path")
 
 
@@ -334,6 +401,10 @@ class ThreadWorkspaceService:
         base_kind = "head"
         base_commit: str | None = None
         snapshot_ref: str | None = None
+        # Cleanup may delete a snapshot ref only after this attempt
+        # definitely published it. Cancellation during publication leaves
+        # ownership uncertain, and an uncertain ref is preserved.
+        snapshot_published = False
 
         async with repository_lifecycle(location.repo_id, lock_root):
             created_workspace_id: str | None = None
@@ -367,6 +438,7 @@ class ThreadWorkspaceService:
                         normalized_delegation_id,
                         head,
                     )
+                    snapshot_published = True
                 else:
                     base_kind = "head"
                     base_commit = head
@@ -402,6 +474,7 @@ class ThreadWorkspaceService:
                         branch,
                         workspace_path=None,
                         workspace_id=created_workspace_id,
+                        delete_snapshot_ref=snapshot_published,
                         delete_result_ref=False,
                     )
                     if failures:
@@ -472,6 +545,7 @@ class ThreadWorkspaceService:
                 branch,
                 workspace_path=stored_path,
                 workspace_id=workspace_id,
+                delete_snapshot_ref=True,
                 delete_result_ref=True,
             )
         if failures:
@@ -489,14 +563,17 @@ class ThreadWorkspaceService:
         *,
         workspace_path: str | None,
         workspace_id: str | None,
+        delete_snapshot_ref: bool,
         delete_result_ref: bool,
     ) -> list[GitError]:
         """Remove one attempt's Git artifacts, then its row.
 
         Missing artifacts are tolerated. The workspace row is deleted only
         when every Git cleanup step succeeds. Provisioning-failure cleanup
-        never touches result refs. Only explicit discard deletes both refs.
-        Callers must already hold the repository lifecycle lock.
+        never touches result refs, and deletes the snapshot ref only when the
+        caller confirms this attempt definitely published it. Uncertain or
+        competing refs stay for reconciliation. Only explicit discard deletes
+        both refs. Callers must already hold the repository lifecycle lock.
         """
         failures: list[GitError] = []
         if repo_path:
@@ -520,9 +597,9 @@ class ThreadWorkspaceService:
                 worktree_target,
                 failures,
             )
-            ref_deletions = [
-                ["update-ref", "-d", _snapshot_ref(delegation_id)],
-            ]
+            ref_deletions: list[list[str]] = []
+            if delete_snapshot_ref:
+                ref_deletions.append(["update-ref", "-d", _snapshot_ref(delegation_id)])
             if delete_result_ref:
                 ref_deletions.append(["update-ref", "-d", _result_ref(delegation_id)])
             for args in (
@@ -640,38 +717,18 @@ class ThreadWorkspaceService:
         )
         await _assert_submodules_clean(workspace_path)
         await _assert_no_protected_candidates(workspace_path)
-        index_descriptor, index_path = tempfile.mkstemp(
-            prefix="yinshi-thread-result-",
+        tree_id = await _write_tree_through_alternate_index(
+            workspace_path,
+            base_treeish=base_commit,
         )
-        os.close(index_descriptor)
-        os.unlink(index_path)
-        try:
-            index_env = {"GIT_INDEX_FILE": index_path}
-            await _run_git(
-                ["read-tree", base_commit],
-                cwd=workspace_path,
-                env=index_env,
-            )
-            await _run_git(
-                ["add", "-A", "--", "."],
-                cwd=workspace_path,
-                env=index_env,
-            )
-            tree_id = await _run_git(
-                ["write-tree"],
-                cwd=workspace_path,
-                env=index_env,
-            )
-        finally:
-            with suppress(OSError):
-                os.unlink(index_path)
         await self._assert_snapshot_within_limits(workspace_path, tree_id)
 
         result_ref = _result_ref(delegation_id)
-        existing_commit = await self._existing_result_commit(
+        existing_commit = await self._resolve_existing_result_commit(
             repo_path,
             result_ref,
             tree_id,
+            base_commit,
         )
         if existing_commit is not None:
             result_commit = existing_commit
@@ -697,10 +754,20 @@ class ThreadWorkspaceService:
             result_commit,
         )
         if existing_commit is None:
-            await _run_git(
-                ["update-ref", result_ref, result_commit],
-                cwd=repo_path,
-            )
+            try:
+                await _run_git(
+                    ["update-ref", result_ref, result_commit, _ZERO_OID],
+                    cwd=repo_path,
+                )
+            except GitError as exc:
+                # A lost publication race means another writer now owns the
+                # ref; a missing ref means a real Git fault. Both fail closed
+                # and leave every published ref untouched.
+                if await _ref_exists(repo_path, result_ref):
+                    raise ThreadResultRefConflictError(
+                        "thread result ref was published concurrently",
+                    ) from exc
+                raise
             logger.info("Created thread result commit for one delegation")
         return FinalizedThreadGitResult(
             base_commit=base_commit,
@@ -709,27 +776,34 @@ class ThreadWorkspaceService:
             changed_files=changed_files,
         )
 
-    async def _existing_result_commit(
+    async def _resolve_existing_result_commit(
         self,
         repo_path: str,
         result_ref: str,
         tree_id: str,
+        base_commit: str,
     ) -> str | None:
-        """Return the existing result commit when its tree already matches."""
-        try:
-            existing_commit = await _run_git(
-                ["rev-parse", "--verify", "--quiet", result_ref],
-                cwd=repo_path,
-            )
-        except GitError:
+        """Return an existing result only when its tree and parent match."""
+        if not await _ref_exists(repo_path, result_ref):
             return None
+        existing_commit = await _run_git(
+            ["rev-parse", "--verify", result_ref],
+            cwd=repo_path,
+        )
         existing_tree = await _run_git(
             ["rev-parse", f"{existing_commit}^{{tree}}"],
             cwd=repo_path,
         )
-        if existing_tree == tree_id:
-            return existing_commit
-        return None
+        commit_line = await _run_git(
+            ["rev-list", "--parents", "-n", "1", existing_commit],
+            cwd=repo_path,
+        )
+        existing_parents = commit_line.split()[1:]
+        if existing_tree != tree_id or existing_parents != [base_commit]:
+            raise ThreadResultRefConflictError(
+                "existing thread result ref has different commit content",
+            )
+        return existing_commit
 
     async def _changed_files_since_base(
         self,
@@ -766,41 +840,16 @@ class ThreadWorkspaceService:
         delegation_id: str,
         head: str | None,
     ) -> str:
-        """Capture one immutable snapshot commit through a private index.
+        """Capture and publish one immutable snapshot commit.
 
-        The real index, parent branch, HEAD, and working files stay untouched:
-        every index-touching subprocess runs with ``GIT_INDEX_FILE`` pointing
-        at one temporary alternate index file.
+        A private index preserves parent Git state. Atomic publication rejects
+        a competing snapshot ref without replacing it.
         """
         await _assert_no_protected_candidates(location.workspace_path)
-        index_descriptor, index_path = tempfile.mkstemp(
-            prefix="yinshi-thread-snapshot-",
+        tree_id = await _write_tree_through_alternate_index(
+            location.workspace_path,
+            base_treeish=head,
         )
-        os.close(index_descriptor)
-        # Git refuses to read a zero-byte index file, so let it create the
-        # alternate index at this unique path instead.
-        os.unlink(index_path)
-        try:
-            index_env = {"GIT_INDEX_FILE": index_path}
-            if head is not None:
-                await _run_git(
-                    ["read-tree", head],
-                    cwd=location.workspace_path,
-                    env=index_env,
-                )
-            await _run_git(
-                ["add", "-A", "--", "."],
-                cwd=location.workspace_path,
-                env=index_env,
-            )
-            tree_id = await _run_git(
-                ["write-tree"],
-                cwd=location.workspace_path,
-                env=index_env,
-            )
-        finally:
-            with suppress(OSError):
-                os.unlink(index_path)
         await self._assert_snapshot_within_limits(location.workspace_path, tree_id)
 
         commit_args = [
@@ -814,10 +863,19 @@ class ThreadWorkspaceService:
             commit_args.append("-p")
             commit_args.append(head)
         snapshot_commit = await _run_git(commit_args, cwd=location.repo_path)
-        await _run_git(
-            ["update-ref", _snapshot_ref(delegation_id), snapshot_commit],
-            cwd=location.repo_path,
-        )
+        try:
+            await _run_git(
+                ["update-ref", _snapshot_ref(delegation_id), snapshot_commit, _ZERO_OID],
+                cwd=location.repo_path,
+            )
+        except GitError as exc:
+            # A lost publication race means another writer now owns the ref;
+            # a missing ref means a real Git fault. Both fail closed.
+            if await _ref_exists(location.repo_path, _snapshot_ref(delegation_id)):
+                raise ThreadSnapshotRefExistsError(
+                    "snapshot ref already exists for this delegation",
+                ) from exc
+            raise
         logger.info("Captured thread snapshot ref for one delegation")
         return snapshot_commit
 
