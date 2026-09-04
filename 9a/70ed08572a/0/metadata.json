@@ -1,0 +1,117 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "9a70ed08572a",
+  "session_id": "01a06abb-dfc5-7c65-82bb-7c5f2081ee64",
+  "strategy": "manual-commit",
+  "created_at": "2026-09-04T19:01:02.420751Z",
+  "branch": "main",
+  "checkpoints_count": 3,
+  "save_step_count": 3,
+  "files_touched": [],
+  "agent": "Pi",
+  "model": "gpt-5.6-sol",
+  "turn_id": "09e9a4a366de",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 1244326,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 27271552,
+    "output_tokens": 84200,
+    "api_call_count": 230
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "pi-skill-software-design-2026-09-04T13:44:19.339Z-0",
+      "event_type": "prompt_invocation",
+      "skill": {
+        "name": "software-design"
+      },
+      "source": {
+        "agent": "pi",
+        "signal": "input_slash_command",
+        "confidence": "explicit"
+      },
+      "turn_id": "28246a873b37",
+      "timestamp": "2026-09-04T13:44:19.339Z",
+      "native": {
+        "command": "/skill:software-design"
+      },
+      "collapse": {
+        "target": "user_message",
+        "label": "/skill:software-design",
+        "default_collapsed": true
+      }
+    },
+    {
+      "id": "pi-skill-software-design-2026-09-04T13:45:04.538Z-0",
+      "event_type": "prompt_invocation",
+      "skill": {
+        "name": "software-design"
+      },
+      "source": {
+        "agent": "pi",
+        "signal": "input_slash_command",
+        "confidence": "explicit"
+      },
+      "turn_id": "fb1eea463d6f",
+      "timestamp": "2026-09-04T13:45:04.538Z",
+      "native": {
+        "command": "/skill:software-design"
+      },
+      "collapse": {
+        "target": "user_message",
+        "label": "/skill:software-design",
+        "default_collapsed": true
+      }
+    },
+    {
+      "id": "pi-skill-software-design-2026-09-04T17:56:37.198Z-0",
+      "event_type": "prompt_invocation",
+      "skill": {
+        "name": "software-design"
+      },
+      "source": {
+        "agent": "pi",
+        "signal": "input_slash_command",
+        "confidence": "explicit"
+      },
+      "turn_id": "09e9a4a366de",
+      "timestamp": "2026-09-04T17:56:37.198Z",
+      "native": {
+        "command": "/skill:software-design"
+      },
+      "collapse": {
+        "target": "user_message",
+        "label": "/skill:software-design",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "session_metrics": {
+    "turn_count": 7
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 3,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 4,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 8337,
+      "agent_lines_removed": 0
+    }
+  ]
+}
