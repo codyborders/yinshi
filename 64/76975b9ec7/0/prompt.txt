@@ -251,3 +251,7 @@ For the full checklist, read `references/red-flags.md`.
 </skill>
 
 on the implemented phases, then commit changes
+
+---
+
+Continue
