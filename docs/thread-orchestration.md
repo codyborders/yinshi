@@ -1,10 +1,10 @@
 # Thread Orchestration Contract
 
-Status: Frozen for Phases 0 and 1.
+Status: Frozen through Phase 2.
 
 Source: `yinshi-thread-orchestration-plan.md`, based on commit `e18c86948f533ffb002bd6ca46118b8ee3fcaafb`.
 
-This release adds database records and read APIs. It does not create child worktrees or run delegated agents.
+This release adds database records, read APIs, and isolated child workspace services. It does not run delegated agents.
 
 ## Terms and ownership
 
@@ -30,6 +30,8 @@ A workspace cannot be deleted while one of its sessions owns a child delegation.
 | `THREAD_MAX_TOTAL` | 20 |
 | `THREAD_MAX_SPAWNS_PER_TURN` | 4 |
 | `THREAD_WAIT_TIMEOUT_SECONDS_MAX` | 60 |
+| `THREAD_SNAPSHOT_MAX_FILES` | 20,000 |
+| `THREAD_SNAPSHOT_MAX_BYTES` | 1 GiB |
 
 `THREAD_HIERARCHY_ENABLED` defaults to `true`. Disabled hierarchy routes return 404. `AGENT_DELEGATION_ENABLED` defaults to `false`.
 
@@ -105,8 +107,32 @@ Errors do not include raw database, filesystem, or credential details. Cycles an
 
 The deletion guard runs before cancellation, sidecar release, container removal, worktree deletion, or session-file deletion. A second service check protects direct callers. Foreign keys provide the final storage check.
 
+## Isolated workspace service
+
+`ThreadWorkspaceService` provides child provisioning, Git finalization, and idempotent cleanup. Phase 3 will call these operations after reserving a delegation.
+
+Clean parents use their exact `HEAD`. Dirty parents use a synthetic commit built through a private alternate Git index.
+
+Dirty snapshots include tracked changes and permitted untracked files. Ignored files remain excluded. Protected `.env` paths cause rejection.
+
+Tracked symlinks remain Git symlink blobs. Snapshot creation never follows their targets. Dirty submodules cause rejection.
+
+Snapshot commits use `refs/yinshi/snapshots/<delegation-id>`. Result commits use `refs/yinshi/results/<delegation-id>`.
+
+Child branches use `yinshi/thread-<short-delegation-id>`. Worktrees start from the exact base commit and receive `kind = delegated` with their parent workspace ID.
+
+Provisioning holds the repository lifecycle lock. It preserves parent `HEAD`, branch, index, staged state, working files, and untracked files.
+
+Cleanup removes only artifacts owned by its delegation. It preserves pre-existing branches, worktrees, and result refs after failed provisioning.
+
+Finalization captures committed and uncommitted child state in one synthetic result commit. Its parent is the recorded base commit.
+
+Changed-file output supports additions, modifications, deletions, copies, and renames. It stops above 5,000 entries.
+
+Child-only cleanup and finalization reject ordinary user workspaces. Repository and workspace roots cannot use symlink indirection.
+
 ## Deferred work
 
-Phase 2 adds child worktree provisioning. Phase 3 adds manual spawn and orchestration writes. Phases 4 and 5 add sidecar protocol support and agent tools.
+Phase 3 adds manual spawn, child sessions, orchestration writes, and prompt execution. Phases 4 and 5 add sidecar protocol support and agent tools.
 
 Later work adds cancellation, retry, reporting, recursive deletion, managed runtime integration, nested delegation, budgets, waiting, and automated result sealing.

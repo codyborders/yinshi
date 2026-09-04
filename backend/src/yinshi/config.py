@@ -219,6 +219,10 @@ class Settings(BaseSettings):
     thread_max_spawns_per_turn: int = 4
     thread_wait_timeout_seconds_max: int = 60
 
+    # Thread workspace snapshot bounds (docs/thread-orchestration.md)
+    thread_snapshot_max_files: int = 20000
+    thread_snapshot_max_bytes: int = 1024 * 1024 * 1024
+
     @field_validator(
         "thread_max_depth",
         "thread_max_direct_children",
@@ -226,6 +230,8 @@ class Settings(BaseSettings):
         "thread_max_total",
         "thread_max_spawns_per_turn",
         "thread_wait_timeout_seconds_max",
+        "thread_snapshot_max_files",
+        "thread_snapshot_max_bytes",
     )
     @classmethod
     def _validate_thread_limit_positive(cls, value: int, info: object) -> int:

@@ -175,6 +175,23 @@ async def _run_git(
     env: dict[str, str] | None = None,
 ) -> str:
     """Run a git command asynchronously and return stdout."""
+    stdout = await run_git_bytes(args, cwd=cwd, env=env)
+    return stdout.decode().strip()
+
+
+async def run_git_bytes(
+    args: list[str],
+    cwd: str | None = None,
+    env: dict[str, str] | None = None,
+) -> bytes:
+    """Run a git command and return raw stdout bytes without decoding.
+
+    Text and bytes runners share one executable, one sanitized environment,
+    one timeout, one kill-and-drain cancellation path, and one error path.
+    NUL-delimited stream output such as ``-z`` listings must stay raw:
+    decoding or stripping here would corrupt filenames that contain leading
+    whitespace or non-UTF-8 bytes.
+    """
     if not args:
         raise ValueError("args must not be empty")
     cmd = [_GIT_EXECUTABLE_PATH, *args]
@@ -212,7 +229,7 @@ async def _run_git(
     if proc.returncode != 0:
         logger.error("Git operation %s failed", args[0])
         raise GitError(f"git {args[0]} failed")
-    return stdout.decode().strip()
+    return stdout
 
 
 def _normalize_remote_url_for_compare(url: str) -> str:

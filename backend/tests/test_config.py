@@ -664,3 +664,24 @@ def test_required_encryption_modes_reject_missing_key_material_without_auth(
     with pytest.raises(RuntimeError, match="KEY_ENCRYPTION_KEY or ENCRYPTION_PEPPER"):
         get_settings()
     get_settings.cache_clear()
+
+
+def test_thread_snapshot_limits_default_positive():
+    """Snapshot limits should default to positive bounds."""
+    from yinshi.config import Settings
+
+    settings = Settings(_env_file=None)
+    assert settings.thread_snapshot_max_files > 0
+    assert settings.thread_snapshot_max_bytes > 0
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["thread_snapshot_max_files", "thread_snapshot_max_bytes"],
+)
+def test_thread_snapshot_limits_reject_nonpositive(field):
+    """Snapshot limits must stay positive so bounded snapshots stay bounded."""
+    from yinshi.config import Settings
+
+    with pytest.raises(ValueError, match="must be a positive integer"):
+        Settings(_env_file=None, **{field: 0})
