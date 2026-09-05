@@ -501,21 +501,6 @@ async def relink_github_repos_for_tenant(
     return refreshed_repo_count
 
 
-async def ensure_workspace_checkout_for_tenant(
-    db: sqlite3.Connection,
-    tenant: TenantContext,
-    workspace_id: str,
-) -> dict[str, Any]:
-    """Repair the repo backing a workspace and return the updated workspace row."""
-    workspace = _fetch_workspace(db, workspace_id)
-    repo_id = workspace["repo_id"]
-    assert repo_id, "workspace repo_id must not be empty"
-
-    await ensure_repo_checkout_for_tenant(db, tenant, repo_id)
-    updated_workspace = _fetch_workspace(db, workspace_id)
-    return dict(updated_workspace)
-
-
 async def create_workspace_for_repo(
     db: sqlite3.Connection,
     repo_id: str,
