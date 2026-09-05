@@ -1,0 +1,183 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "386baa199313",
+  "session_id": "01a06abb-dfc5-7c65-82bb-7c5f2081ee64",
+  "strategy": "manual-commit",
+  "created_at": "2026-09-05T07:46:21.005093Z",
+  "branch": "main",
+  "checkpoints_count": 1,
+  "save_step_count": 2,
+  "files_touched": [],
+  "agent": "Pi",
+  "model": "gpt-5.6-sol",
+  "turn_id": "815f8a2ebbff",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 2893825,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 63196800,
+    "output_tokens": 141993,
+    "api_call_count": 522
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "pi-skill-software-design-2026-09-04T13:44:19.339Z-0",
+      "event_type": "prompt_invocation",
+      "skill": {
+        "name": "software-design"
+      },
+      "source": {
+        "agent": "pi",
+        "signal": "input_slash_command",
+        "confidence": "explicit"
+      },
+      "turn_id": "28246a873b37",
+      "timestamp": "2026-09-04T13:44:19.339Z",
+      "native": {
+        "command": "/skill:software-design"
+      },
+      "collapse": {
+        "target": "user_message",
+        "label": "/skill:software-design",
+        "default_collapsed": true
+      }
+    },
+    {
+      "id": "pi-skill-software-design-2026-09-04T13:45:04.538Z-0",
+      "event_type": "prompt_invocation",
+      "skill": {
+        "name": "software-design"
+      },
+      "source": {
+        "agent": "pi",
+        "signal": "input_slash_command",
+        "confidence": "explicit"
+      },
+      "turn_id": "fb1eea463d6f",
+      "timestamp": "2026-09-04T13:45:04.538Z",
+      "native": {
+        "command": "/skill:software-design"
+      },
+      "collapse": {
+        "target": "user_message",
+        "label": "/skill:software-design",
+        "default_collapsed": true
+      }
+    },
+    {
+      "id": "pi-skill-software-design-2026-09-04T17:56:37.198Z-0",
+      "event_type": "prompt_invocation",
+      "skill": {
+        "name": "software-design"
+      },
+      "source": {
+        "agent": "pi",
+        "signal": "input_slash_command",
+        "confidence": "explicit"
+      },
+      "turn_id": "09e9a4a366de",
+      "timestamp": "2026-09-04T17:56:37.198Z",
+      "native": {
+        "command": "/skill:software-design"
+      },
+      "collapse": {
+        "target": "user_message",
+        "label": "/skill:software-design",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "session_metrics": {
+    "turn_count": 8
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 3,
+      "user_lines_added": 9442,
+      "user_lines_removed": 85,
+      "agent_lines_added": 19273,
+      "agent_lines_removed": 60,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/05bb63fe_worker-advanced_0_input.md": 68,
+        ".pi-subagents/artifacts/05bb63fe_worker-advanced_0_meta.json": 117,
+        ".pi-subagents/artifacts/05bb63fe_worker-advanced_0_output.md": 4,
+        ".pi-subagents/artifacts/05bb63fe_worker-advanced_0_transcript.jsonl": 532,
+        ".pi-subagents/artifacts/0e3bca32_worker-advanced_0_input.md": 60,
+        ".pi-subagents/artifacts/0e3bca32_worker-advanced_0_meta.json": 118,
+        ".pi-subagents/artifacts/0e3bca32_worker-advanced_0_output.md": 4,
+        ".pi-subagents/artifacts/0e3bca32_worker-advanced_0_transcript.jsonl": 305,
+        ".pi-subagents/artifacts/1704da49_worker-advanced_0_input.md": 60,
+        ".pi-subagents/artifacts/1704da49_worker-advanced_0_transcript.jsonl": 424,
+        ".pi-subagents/artifacts/521ef43d_worker-advanced_input.md": 71,
+        ".pi-subagents/artifacts/521ef43d_worker-advanced_meta.json": 135,
+        ".pi-subagents/artifacts/521ef43d_worker-advanced_output.md": 1,
+        ".pi-subagents/artifacts/521ef43d_worker-advanced_transcript.jsonl": 239,
+        ".pi-subagents/artifacts/60ceaab8_worker-advanced_input.md": 71,
+        ".pi-subagents/artifacts/60ceaab8_worker-advanced_transcript.jsonl": 340,
+        ".pi-subagents/artifacts/62719fd2_worker-advanced_input.md": 71,
+        ".pi-subagents/artifacts/62719fd2_worker-advanced_meta.json": 135,
+        ".pi-subagents/artifacts/62719fd2_worker-advanced_output.md": 1,
+        ".pi-subagents/artifacts/62719fd2_worker-advanced_transcript.jsonl": 338,
+        ".pi-subagents/artifacts/aecf49ef_worker-advanced_input.md": 71,
+        ".pi-subagents/artifacts/aecf49ef_worker-advanced_meta.json": 135,
+        ".pi-subagents/artifacts/aecf49ef_worker-advanced_output.md": 1,
+        ".pi-subagents/artifacts/aecf49ef_worker-advanced_transcript.jsonl": 282,
+        ".pi-subagents/artifacts/c4d2ffd8_worker-advanced_0_input.md": 60,
+        ".pi-subagents/artifacts/c4d2ffd8_worker-advanced_0_transcript.jsonl": 359,
+        ".pi-subagents/artifacts/c9359e70_worker-advanced_input.md": 71,
+        ".pi-subagents/artifacts/c9359e70_worker-advanced_meta.json": 135,
+        ".pi-subagents/artifacts/c9359e70_worker-advanced_output.md": 1,
+        ".pi-subagents/artifacts/c9359e70_worker-advanced_transcript.jsonl": 368,
+        ".pi-subagents/artifacts/d46f2b5b_worker-advanced_0_meta.json": 118,
+        ".pi-subagents/artifacts/d46f2b5b_worker-advanced_0_output.md": 3,
+        ".pi-subagents/artifacts/d46f2b5b_worker-advanced_0_transcript.jsonl": 64,
+        ".pi-subagents/artifacts/f2ef98d0_worker-advanced_0_input.md": 60,
+        ".pi-subagents/artifacts/f2ef98d0_worker-advanced_0_transcript.jsonl": 331,
+        ".pi-subagents/artifacts/outputs/05bb63fe/artifacts/thread-phase3-results.md": 101,
+        ".pi-subagents/artifacts/outputs/0e3bca32/artifacts/thread-phase3-cancel-retry-reconcile.md": 127,
+        ".pi-subagents/artifacts/outputs/1704da49/artifacts/thread-phase3-retry-reconcile.md": 63,
+        ".pi-subagents/missions/09fa1de2-485b-4ed0-9177-18e710a9d638.json": 208,
+        ".pi-subagents/missions/1eaf4003-c4e6-4399-80fe-181fd1356dd6.json": 24,
+        ".pi-subagents/missions/308cdf93-b832-41c6-99e8-6646140d32f1.json": 194,
+        ".pi-subagents/missions/34754468-2205-4ca5-8f38-e2bb285ea2cb.json": 24,
+        ".pi-subagents/missions/663b09be-9d69-423d-bcb5-98a06d92a583.json": 24,
+        ".pi-subagents/missions/6f4942b0-d706-4e1d-95f7-36c696d4a480.json": 24,
+        ".pi-subagents/missions/8e174c75-9ebc-4284-b668-3bd6ff3b188e.json": 24,
+        ".pi-subagents/missions/9513cdf7-ac1a-4181-9683-eb4bbfcda28b.json": 24,
+        ".pi-subagents/missions/b522c5a7-2def-4302-900c-e7c691e675fa.json": 200,
+        ".pi-subagents/missions/c8ea6bba-acb8-4472-977b-8c7dc7050fb7.json": 92,
+        ".pi-subagents/missions/e34e0d03-b5d4-4173-89ef-7da4e190b6b5.json": 13,
+        ".pi-subagents/missions/e3e8e256-807a-4027-a233-935748852874.json": 24,
+        "backend/src/yinshi/api/threads.py": 81,
+        "backend/src/yinshi/models.py": 75,
+        "backend/src/yinshi/services/thread_orchestration.py": 962,
+        "backend/src/yinshi/services/thread_workspaces.py": 72,
+        "backend/tests/test_thread_cancel_api.py": 168,
+        "backend/tests/test_thread_orchestration.py": 255,
+        "backend/tests/test_thread_provisioning_cancel.py": 132,
+        "backend/tests/test_thread_reconcile_wiring.py": 109,
+        "backend/tests/test_thread_result_report.py": 123,
+        "backend/tests/test_thread_result_report_api.py": 80,
+        "backend/tests/test_thread_result_report_service.py": 326,
+        "backend/tests/test_thread_result_seal.py": 293,
+        "backend/tests/test_thread_retry.py": 317,
+        "backend/tests/test_thread_retry_api.py": 130
+      },
+      "user_removed_per_file": {
+        ".pi-subagents/artifacts/outputs/1704da49/artifacts/thread-phase3-retry-reconcile.md": 61,
+        ".pi-subagents/missions/e34e0d03-b5d4-4173-89ef-7da4e190b6b5.json": 4,
+        "backend/src/yinshi/models.py": 2,
+        "backend/src/yinshi/services/thread_orchestration.py": 10,
+        "backend/src/yinshi/services/thread_workspaces.py": 8
+      }
+    }
+  ]
+}
