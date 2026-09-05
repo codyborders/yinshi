@@ -3,7 +3,7 @@
   "checkpoint_id": "80a066e2d20d",
   "strategy": "manual-commit",
   "branch": "main",
-  "checkpoints_count": 3,
+  "checkpoints_count": 17,
   "files_touched": [
     "backend/src/yinshi/api/stream.py",
     "backend/src/yinshi/services/orchestration_bridge.py",
@@ -17,6 +17,7 @@
     "backend/tests/test_sidecar_orchestration_errors.py",
     "backend/tests/test_sidecar_orchestration_frames.py",
     "backend/tests/test_sidecar_orchestration_integration.py",
+    "backend/tests/test_sidecar_orchestration_lifecycle.py",
     "backend/tests/test_sidecar_orchestration_query.py",
     "backend/tests/test_sidecar_orchestration_responsiveness.py",
     "backend/tests/test_stream_orchestration_capability.py",
@@ -37,6 +38,13 @@
       "compact_transcript": "/80/a066e2d20d/0/transcript.jsonl",
       "content_hash": "/80/a066e2d20d/0/content_hash.txt",
       "prompt": "/80/a066e2d20d/0/prompt.txt"
+    },
+    {
+      "metadata": "/80/a066e2d20d/1/metadata.json",
+      "transcript": "/80/a066e2d20d/1/full.jsonl",
+      "compact_transcript": "/80/a066e2d20d/1/transcript.jsonl",
+      "content_hash": "/80/a066e2d20d/1/content_hash.txt",
+      "prompt": "/80/a066e2d20d/1/prompt.txt"
     }
   ],
   "token_usage": {
@@ -44,6 +52,6 @@
     "cache_creation_tokens": 0,
     "cache_read_tokens": 90879744,
     "output_tokens": 182016,
-    "api_call_count": 802
+    "api_call_count": 806
   }
 }
