@@ -151,8 +151,6 @@ export function createOrchestrationRpc({
         entry.timer = null;
         settle(entry, orchestrationError("orchestration_timeout"));
       }, timeoutMs);
-      // Keep Node from hanging on this timer after tests/process end.
-      entry.timer.unref?.();
 
       try {
         send(frame);
