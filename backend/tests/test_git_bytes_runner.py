@@ -16,7 +16,13 @@ def init_repo(tmp_path):
     repo.mkdir()
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
     subprocess.run(
-        ["git", "-C", str(repo), "commit", "--allow-empty", "-qm", "init"],
+        [
+            "git",
+            "-C", str(repo),
+            "-c", "user.email=test@example.com",
+            "-c", "user.name=Test",
+            "commit", "--allow-empty", "-qm", "init",
+        ],
         check=True,
     )
     return repo
