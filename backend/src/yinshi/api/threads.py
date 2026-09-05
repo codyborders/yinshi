@@ -7,7 +7,7 @@ check as the existing session APIs before returning data.
 
 import logging
 from collections.abc import Callable
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
 from fastapi import APIRouter, HTTPException, Request
 
@@ -18,11 +18,28 @@ from yinshi.api.deps import (
     get_user_email,
 )
 from yinshi.config import get_settings
+from yinshi.exceptions import YinshiError
 from yinshi.models import (
+    ThreadChildCreate,
+    ThreadDelegationStatus,
     ThreadLimitsOut,
     ThreadOut,
     ThreadResultOut,
+    ThreadResultReportCreate,
+    ThreadRetryCreate,
+    ThreadSpawnOut,
     ThreadTreeOut,
+)
+from yinshi.services.thread_orchestration import (
+    ThreadHierarchyDisabledError,
+    ThreadOrchestrationError,
+    ThreadOrchestrationService,
+    ThreadParentNotAuthorizedError,
+    ThreadPromptStartError,
+    ThreadResultSealedError,
+    ThreadResultVersionConflictError,
+    ThreadRetryNotAllowedError,
+    ThreadSpawnOutcome,
 )
 from yinshi.services.thread_queries import (
     ThreadNotFoundError,
@@ -126,6 +143,37 @@ def get_thread_result_route(session_id: str, request: Request) -> dict[str, Any]
     return result
 
 
+@router.post(
+    "/api/threads/{child_session_id}/report",
+    response_model=ThreadResultOut,
+)
+async def report_thread_result(
+    child_session_id: str,
+    body: ThreadResultReportCreate,
+    request: Request,
+) -> dict[str, Any]:
+    """Store one reported result draft for a delegated child thread."""
+    if not _hierarchy_enabled():
+        raise HTTPException(status_code=404, detail="Thread hierarchy is disabled")
+    try:
+        return await ThreadOrchestrationService().report_result(
+            request,
+            child_session_id=child_session_id,
+            body=body,
+        )
+    except ThreadNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Session not found") from exc
+    except ThreadParentNotAuthorizedError as exc:
+        raise HTTPException(status_code=404, detail="Session not found") from exc
+    except ThreadHierarchyDisabledError as exc:
+        raise HTTPException(status_code=404, detail="Thread hierarchy is disabled") from exc
+    except (ThreadResultVersionConflictError, ThreadResultSealedError) as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
+
+
 @router.get("/api/threads/{session_id}/tree", response_model=ThreadTreeOut)
 def get_thread_tree_route(session_id: str, request: Request) -> dict[str, Any]:
     """Return the bounded root thread tree containing a session."""
@@ -136,3 +184,128 @@ def get_thread_tree_route(session_id: str, request: Request) -> dict[str, Any]:
         return _run_visible_query(
             lambda: get_tree(db, session_id, owner_email=_legacy_owner_email(request))
         )
+
+
+_PROVISION_FAILED_MESSAGE = "child workspace provisioning failed"
+
+
+def _spawn_out(outcome: ThreadSpawnOutcome) -> ThreadSpawnOut:
+    """Project one stored spawn outcome as the public response model."""
+    return ThreadSpawnOut(
+        delegation_id=outcome.delegation_id,
+        status=cast(ThreadDelegationStatus, outcome.status),
+        child_session_id=outcome.child_session_id,
+        error_code=outcome.error_code,
+    )
+
+
+@router.post(
+    "/api/threads/{thread_id}/cancel",
+    response_model=ThreadSpawnOut,
+)
+async def cancel_thread_child(thread_id: str, request: Request) -> ThreadSpawnOut:
+    """Cancel one child thread by attached session ID or delegation ID."""
+    if not _hierarchy_enabled():
+        raise HTTPException(status_code=404, detail="Thread hierarchy is disabled")
+    try:
+        outcome = await ThreadOrchestrationService().cancel_child(
+            request,
+            thread_id=thread_id,
+        )
+    except ThreadNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Session not found") from exc
+    except ThreadParentNotAuthorizedError as exc:
+        raise HTTPException(status_code=404, detail="Session not found") from exc
+    except ThreadHierarchyDisabledError as exc:
+        raise HTTPException(status_code=404, detail="Thread hierarchy is disabled") from exc
+    except ThreadOrchestrationError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
+    return _spawn_out(outcome)
+
+
+@router.post(
+    "/api/threads/{child_session_id}/retry",
+    response_model=ThreadSpawnOut,
+    status_code=201,
+)
+async def retry_thread_child(
+    child_session_id: str,
+    body: ThreadRetryCreate,
+    request: Request,
+) -> ThreadSpawnOut:
+    """Retry one failed, cancelled, or interrupted child as a new child."""
+    if not _hierarchy_enabled():
+        raise HTTPException(status_code=404, detail="Thread hierarchy is disabled")
+    try:
+        outcome = await ThreadOrchestrationService().retry_child(
+            request,
+            child_session_id=child_session_id,
+            body=body,
+        )
+    except ThreadNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Session not found") from exc
+    except ThreadParentNotAuthorizedError as exc:
+        raise HTTPException(status_code=404, detail="Session not found") from exc
+    except ThreadHierarchyDisabledError as exc:
+        raise HTTPException(status_code=404, detail="Thread hierarchy is disabled") from exc
+    except ThreadRetryNotAllowedError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
+    except ThreadOrchestrationError as exc:
+        status_code = 500 if isinstance(exc, ThreadPromptStartError) else 409
+        raise HTTPException(
+            status_code=status_code,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
+    except YinshiError as exc:
+        # Git provisioning failures are already recorded under provision_failed.
+        raise HTTPException(
+            status_code=500,
+            detail={"code": "provision_failed", "message": _PROVISION_FAILED_MESSAGE},
+        ) from exc
+    return _spawn_out(outcome)
+
+
+@router.post(
+    "/api/threads/{parent_session_id}/children",
+    response_model=ThreadSpawnOut,
+    status_code=201,
+)
+async def spawn_thread_child(
+    parent_session_id: str,
+    body: ThreadChildCreate,
+    request: Request,
+) -> ThreadSpawnOut:
+    """Reserve, attach, and optionally start one manual child thread."""
+    if not _hierarchy_enabled():
+        raise HTTPException(status_code=404, detail="Thread hierarchy is disabled")
+    try:
+        outcome = await ThreadOrchestrationService().spawn_child(
+            request,
+            parent_session_id=parent_session_id,
+            body=body,
+        )
+    except ThreadNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Session not found") from exc
+    except ThreadParentNotAuthorizedError as exc:
+        raise HTTPException(status_code=404, detail="Session not found") from exc
+    except ThreadHierarchyDisabledError as exc:
+        raise HTTPException(status_code=404, detail="Thread hierarchy is disabled") from exc
+    except ThreadOrchestrationError as exc:
+        status_code = 500 if isinstance(exc, ThreadPromptStartError) else 409
+        raise HTTPException(
+            status_code=status_code,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
+    except YinshiError as exc:
+        # Git provisioning failures are already recorded under provision_failed.
+        raise HTTPException(
+            status_code=500,
+            detail={"code": "provision_failed", "message": _PROVISION_FAILED_MESSAGE},
+        ) from exc
+    return _spawn_out(outcome)

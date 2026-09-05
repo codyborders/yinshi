@@ -685,3 +685,37 @@ def test_thread_snapshot_limits_reject_nonpositive(field):
 
     with pytest.raises(ValueError, match="must be a positive integer"):
         Settings(_env_file=None, **{field: 0})
+
+
+def test_thread_provisioning_stale_seconds_default():
+    """Stale provisioning reconciliation defaults to ten minutes."""
+    from yinshi.config import Settings
+
+    settings = Settings(_env_file=None)
+    assert settings.thread_provisioning_stale_seconds == 600
+
+
+@pytest.mark.parametrize("value", [0, -1])
+def test_thread_provisioning_stale_seconds_rejects_nonpositive(value):
+    """The stale threshold must stay positive so fresh spawns stay protected."""
+    from yinshi.config import Settings
+
+    with pytest.raises(ValueError, match="must be a positive integer"):
+        Settings(_env_file=None, thread_provisioning_stale_seconds=value)
+
+
+@pytest.mark.parametrize("value", [86_401, 1_000_000])
+def test_thread_provisioning_stale_seconds_rejects_above_bound(value):
+    """The stale threshold stays bounded so reconciliation cannot sleep forever."""
+    from yinshi.config import Settings
+
+    with pytest.raises(ValueError, match="must not exceed"):
+        Settings(_env_file=None, thread_provisioning_stale_seconds=value)
+
+
+def test_thread_provisioning_stale_seconds_accepts_bound():
+    """The stale threshold accepts the documented inclusive upper bound."""
+    from yinshi.config import Settings
+
+    settings = Settings(_env_file=None, thread_provisioning_stale_seconds=86_400)
+    assert settings.thread_provisioning_stale_seconds == 86_400

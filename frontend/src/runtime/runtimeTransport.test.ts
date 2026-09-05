@@ -87,6 +87,42 @@ describe("runtime transport", () => {
     ).rejects.toThrow("not allowed");
   });
 
+  it("allows exact thread mutations with session write authority", async () => {
+    const encryptedRequest = vi.fn().mockResolvedValue({});
+    const transport = createRuntimeTransport(
+      { location: "byoc", runnerId: "runner-1", runnerPublicKey },
+      { apiClient: apiClient(), encryptedRequest },
+    );
+    const sessionId = "a".repeat(32);
+    const paths = [
+      `/api/threads/${sessionId}/children`,
+      `/api/threads/${sessionId}/cancel`,
+      `/api/threads/${sessionId}/retry`,
+      `/api/threads/${sessionId}/report`,
+    ];
+
+    for (const path of paths) await transport.post(path, {});
+
+    expect(encryptedRequest).toHaveBeenCalledTimes(paths.length);
+    paths.forEach((path, index) => {
+      expect(encryptedRequest).toHaveBeenNthCalledWith(index + 1, {
+        expectedRunnerPublicKey: runnerPublicKey,
+        scopes: ["session.write"],
+        method: "POST",
+        path,
+        query: {},
+        body: {},
+        maxSessionBytes: 16_777_216,
+      });
+    });
+    await expect(
+      transport.post(`/api/threads/${sessionId}/children/extra`, {}),
+    ).rejects.toThrow("not allowed");
+    await expect(
+      transport.post(`/api/threads/${sessionId}/cancelled`, {}),
+    ).rejects.toThrow("not allowed");
+  });
+
   it("uses session stream authority for exact active-run discovery", async () => {
     const encryptedRequest = vi.fn().mockResolvedValue(null);
     const transport = createRuntimeTransport(

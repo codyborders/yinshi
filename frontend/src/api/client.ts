@@ -194,6 +194,10 @@ export interface Workspace {
   branch: string;
   path: string;
   state: string;
+  kind: "primary" | "delegated" | string;
+  parent_workspace_id: string | null;
+  delegation_id: string | null;
+  delegation_status: ThreadDelegationStatus | null;
 }
 
 export interface SessionInfo {
@@ -205,6 +209,135 @@ export interface SessionInfo {
   model: string;
   pi_context_version: number;
 }
+
+export type ThreadLifecycleStatus =
+  | "provisioning"
+  | "queued"
+  | "running"
+  | "cancelling"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "interrupted";
+
+export type ThreadDelegationStatus = ThreadLifecycleStatus;
+
+export interface ThreadNodeOut {
+  id: string;
+  delegation_id: string | null;
+  parent_id: string | null;
+  root_id: string;
+  depth: number;
+  title: string | null;
+  role: string;
+  origin: string;
+  state: string;
+  workspace_id: string;
+  model: string;
+  child_count: number;
+  active_child_count: number;
+  can_spawn_child: boolean;
+  created_at: string;
+}
+
+export type ThreadChildrenOut = ThreadNodeOut[];
+
+export interface ThreadPlaceholderOut {
+  delegation_id: string;
+  parent_id: string;
+  title: string;
+  role: string;
+  status: string;
+  created_at: string;
+}
+
+export interface ThreadTreeOut {
+  root: ThreadNodeOut;
+  nodes: ThreadNodeOut[];
+  placeholders: ThreadPlaceholderOut[];
+  thread_count: number;
+  active_descendant_count: number;
+  tree_depth: number;
+}
+
+export interface ThreadLimitsOut {
+  max_depth: number;
+  max_direct_children: number;
+  max_active_descendants: number;
+  max_total_threads: number;
+  tree_depth: number;
+  direct_children: number;
+  active_descendants: number;
+  total_threads: number;
+  can_spawn_child: boolean;
+}
+
+export interface ThreadSpawnOut {
+  delegation_id: string;
+  status: ThreadLifecycleStatus;
+  child_session_id: string | null;
+  error_code: string | null;
+}
+
+export interface ThreadResultTest {
+  command: string;
+  status: "passed" | "failed" | "skipped";
+  summary: string | null;
+}
+
+export interface ThreadResultOut {
+  delegation_id: string;
+  version: number;
+  source: string;
+  sealed: boolean;
+  summary: string | null;
+  tests: ThreadResultTest[];
+  warnings: string[];
+  base_commit: string | null;
+  result_commit: string | null;
+  result_ref: string | null;
+  changed_files: unknown[];
+  created_at: string;
+  updated_at: string;
+  sealed_at: string | null;
+}
+
+export interface ThreadChildCreate {
+  idempotency_key: string;
+  title: string;
+  task: string;
+  context?: string | null;
+  role?: "general" | "research" | "implementation" | "test" | "review" | "debug";
+  model?: string | null;
+  thinking?: ThinkingLevel | null;
+  start_immediately?: boolean;
+}
+
+export type ThreadCreateBody = ThreadChildCreate;
+
+export interface ThreadRetryCreate {
+  idempotency_key: string;
+  model?: string | null;
+  thinking?: ThinkingLevel | null;
+}
+
+export type ThreadRetryBody = ThreadRetryCreate;
+export type ThreadCancelBody = undefined;
+
+export interface ThreadResultReportTest {
+  command: string;
+  status: "passed" | "failed" | "skipped";
+  summary?: string | null;
+}
+
+export interface ThreadResultReportCreate {
+  expected_version: number;
+  summary: string;
+  tests?: ThreadResultReportTest[];
+  warnings?: string[];
+}
+
+export type ThreadReportBody = ThreadResultReportCreate;
 
 export interface Message {
   id: string;

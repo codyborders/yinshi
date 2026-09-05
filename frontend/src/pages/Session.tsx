@@ -6,7 +6,7 @@ import {
   useState,
   type PointerEvent as ReactPointerEvent,
 } from "react";
-import { useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import {
   type Message,
   type SessionInfo,
@@ -17,10 +17,12 @@ import WorkspaceInspector, {
   WORKSPACE_TOOL_DESCRIPTORS,
   type WorkspaceTool,
 } from "../components/WorkspaceInspector";
+import ThreadPanel from "../components/thread/ThreadPanel";
 import { useAgentStream, type ChatMessage } from "../hooks/useAgentStream";
 import { useAuth } from "../hooks/useAuth";
 import { useCatalog } from "../hooks/useCatalog";
 import { usePiCommands } from "../hooks/usePiCommands";
+import { useThreadTree } from "../hooks/useThreadTree";
 import {
   DEFAULT_SESSION_MODEL,
   availableSessionModelsMarkdown,
@@ -42,6 +44,7 @@ import {
   isSessionHistoryCacheAvailable,
 } from "../runtime/sessionHistoryCacheClient";
 import { useRuntimeResource } from "../runtime/useRuntimeResource";
+import { runtimeResourceId } from "../runtime/runtimeRef";
 import { parseStoredTurnBlocks } from "../utils/turnEvents";
 
 let cmdIdCounter = 0;
@@ -149,6 +152,7 @@ function storedInspectorWidth(): number {
 
 export default function Session() {
   const { id: encodedSessionId } = useParams<{ id: string }>();
+  const navigate = useNavigate();
   const { status: authStatus, userId } = useAuth();
   const runtimeState = useRuntimeResource(encodedSessionId);
   const runtimeResource = runtimeState.resource;
@@ -156,6 +160,7 @@ export default function Session() {
   const currentSessionIdRef = useRef<string | undefined>(id);
   currentSessionIdRef.current = id;
   const transport = runtimeResource?.transport;
+  const threadState = useThreadTree(id, transport);
   const {
     messages,
     sendPrompt,
@@ -182,6 +187,7 @@ export default function Session() {
   const [activeMobileWorkspaceView, setActiveMobileWorkspaceView] = useState<
     WorkspaceTool | null
   >(null);
+  const [threadPanelOpen, setThreadPanelOpen] = useState(false);
   const [inspectorWidth, setInspectorWidth] = useState(storedInspectorWidth);
   const [fileRefreshKey, setFileRefreshKey] = useState(0);
   const isDesktopInspectorVisible = useMediaQuery(DESKTOP_INSPECTOR_QUERY);
@@ -208,6 +214,8 @@ export default function Session() {
     setMetadataError(null);
     setUpdatingModel(false);
     setPendingModelSelection(null);
+    setThreadPanelOpen(false);
+    setActiveMobileWorkspaceView(null);
   }, [encodedSessionId]);
 
   useEffect(() => {
@@ -392,6 +400,7 @@ export default function Session() {
   useEffect(() => {
     if (wasStreamingRef.current && !streaming) {
       setFileRefreshKey((value) => value + 1);
+      void threadState.refresh();
       if (
         id &&
         transport?.runtime.location === "managed" &&
@@ -426,7 +435,7 @@ export default function Session() {
       }
     }
     wasStreamingRef.current = streaming;
-  }, [historyCacheEligible, id, streaming, transport, userId]);
+  }, [historyCacheEligible, id, streaming, threadState.refresh, transport, userId]);
 
   const addSystemMessage = useCallback(
     (content: string) => {
@@ -738,6 +747,45 @@ export default function Session() {
     ],
   );
 
+  const handleThreadNavigate = useCallback(
+    (threadId: string) => {
+      const isCurrentThread = threadState.tree?.root.id === threadId;
+      const node = isCurrentThread
+        ? threadState.tree?.root
+        : threadState.tree?.nodes.find((candidate) => candidate.id === threadId);
+      if (!node || !runtimeResource) return;
+      try {
+        navigate(
+          `/app/session/${runtimeResourceId(runtimeResource.runtime, node.id, {
+            desktop: window.yinshiDesktop !== undefined,
+          })}`,
+        );
+      } catch {
+        return;
+      }
+    },
+    [navigate, runtimeResource, threadState.tree],
+  );
+  const handleThreadCancel = useCallback(
+    (threadId: string) => {
+      void threadState.cancelChild(threadId);
+    },
+    [threadState.cancelChild],
+  );
+  const handleThreadRetry = useCallback(
+    (threadId: string) => {
+      void threadState.retryChild(threadId, {
+        idempotency_key: crypto.randomUUID(),
+      });
+    },
+    [threadState.retryChild],
+  );
+  const handleThreadCreate = useCallback(
+    async (payload: Parameters<typeof threadState.createChild>[0]) =>
+      threadState.createChild(payload),
+    [threadState.createChild],
+  );
+
   const beginInspectorResize = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>) => {
       event.currentTarget.setPointerCapture(event.pointerId);
@@ -773,13 +821,28 @@ export default function Session() {
             Session {id?.slice(0, 8)}
           </div>
         </div>
+        <button
+          type="button"
+          aria-expanded={threadPanelOpen}
+          aria-controls="session-thread-panel"
+          onClick={() => {
+            setActiveMobileWorkspaceView(null);
+            setThreadPanelOpen((open) => !open);
+          }}
+          className="min-h-11 rounded-lg border border-gray-800 px-3 text-xs text-gray-300 hover:border-gray-700 hover:bg-gray-900"
+        >
+          Threads
+        </button>
         {workspaceId && (
           <div className="order-3 flex w-full items-center gap-1 lg:hidden md:order-none md:w-auto">
             {WORKSPACE_TOOL_DESCRIPTORS.map((tool) => (
               <button
                 key={tool.key}
                 type="button"
-                onClick={() => setActiveMobileWorkspaceView(tool.key)}
+                onClick={() => {
+                  setThreadPanelOpen(false);
+                  setActiveMobileWorkspaceView(tool.key);
+                }}
                 className="min-h-11 flex-1 rounded-lg border border-gray-800 px-3 text-xs text-gray-300 hover:border-gray-700 hover:bg-gray-900 md:flex-none"
               >
                 {tool.label}
@@ -916,7 +979,67 @@ export default function Session() {
             />
           </>
         )}
+        {threadPanelOpen && isDesktopInspectorVisible && (
+          <aside
+            id="session-thread-panel"
+            className="flex h-full min-h-0 w-[360px] min-w-0 flex-col overflow-hidden border-l border-gray-800"
+          >
+            <ThreadPanel
+              tree={threadState.tree}
+              loading={threadState.loading}
+              error={threadState.error}
+              limits={threadState.limits}
+              result={threadState.result}
+              currentThreadId={id}
+              onNavigate={handleThreadNavigate}
+              onCancel={handleThreadCancel}
+              onRetry={handleThreadRetry}
+              onCreateChild={handleThreadCreate}
+            />
+          </aside>
+        )}
       </div>
+      {threadPanelOpen && !isDesktopInspectorVisible && (
+        <div
+          id="session-thread-panel"
+          data-testid="thread-overlay"
+          className={[
+            "fixed inset-0 z-50 bg-gray-950 lg:hidden",
+            "pt-[env(safe-area-inset-top)]",
+            "pr-[env(safe-area-inset-right)]",
+            "pb-[env(safe-area-inset-bottom)]",
+            "pl-[env(safe-area-inset-left)]",
+          ].join(" ")}
+        >
+          <div className="flex h-full min-h-0 flex-col">
+            <div className="flex items-center border-b border-gray-800 px-4 py-3">
+              <h2 className="text-sm font-semibold text-gray-100">Threads</h2>
+              <button
+                type="button"
+                aria-label="Close threads"
+                onClick={() => setThreadPanelOpen(false)}
+                className="ml-auto min-h-11 rounded-lg border border-gray-800 px-3 text-xs text-gray-300"
+              >
+                Close
+              </button>
+            </div>
+            <div className="min-h-0 flex-1 overflow-hidden">
+              <ThreadPanel
+                tree={threadState.tree}
+                loading={threadState.loading}
+                error={threadState.error}
+                limits={threadState.limits}
+                result={threadState.result}
+                currentThreadId={id}
+                onNavigate={handleThreadNavigate}
+                onCancel={handleThreadCancel}
+                onRetry={handleThreadRetry}
+                onCreateChild={handleThreadCreate}
+              />
+            </div>
+          </div>
+        </div>
+      )}
       {workspaceId &&
         transport &&
         activeMobileWorkspaceView !== null &&

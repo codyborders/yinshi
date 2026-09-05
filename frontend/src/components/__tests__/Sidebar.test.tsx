@@ -120,6 +120,65 @@ describe("Sidebar repo settings", () => {
     });
   });
 
+  it("groups delegated workspaces separately from primary workspaces", async () => {
+    mockGet.mockImplementation(async (path: string) => {
+      if (path === "/api/repos") {
+        return [{
+          id: "repo-1",
+          created_at: "2026-04-12T00:00:00Z",
+          updated_at: "2026-04-12T00:00:00Z",
+          name: "demo-repo",
+          remote_url: null,
+          root_path: "/tmp/demo-repo",
+          custom_prompt: null,
+          agents_md: null,
+        }];
+      }
+      if (path === "/api/github/installations") return [];
+      if (path === "/api/repos/repo-1/workspaces") {
+        return [
+          {
+            id: "workspace-primary",
+            created_at: "2026-04-12T00:00:00Z",
+            updated_at: "2026-04-12T00:00:00Z",
+            repo_id: "repo-1",
+            name: "main work",
+            branch: "main-work",
+            path: "/tmp/primary",
+            state: "ready",
+            kind: "primary",
+            parent_workspace_id: null,
+            delegation_id: null,
+            delegation_status: null,
+          },
+          {
+            id: "workspace-child",
+            created_at: "2026-04-12T00:01:00Z",
+            updated_at: "2026-04-12T00:01:00Z",
+            repo_id: "repo-1",
+            name: "parser check",
+            branch: "yinshi/thread/parser-check",
+            path: "/tmp/child",
+            state: "ready",
+            kind: "delegated",
+            parent_workspace_id: "workspace-primary",
+            delegation_id: "delegation-1",
+            delegation_status: "running",
+          },
+        ];
+      }
+      if (path.startsWith("/api/workspaces/")) return [];
+      throw new Error(`Unexpected GET ${path}`);
+    });
+
+    renderSidebar();
+
+    expect(await screen.findByText("main work")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Delegated/ })).toBeInTheDocument();
+    expect(screen.getByText("parser check")).toBeInTheDocument();
+    expect(screen.getByText("Running")).toBeInTheDocument();
+  });
+
   it("resolves the browser primary runtime before loading repositories through its transport", async () => {
     let finishResolution:
       | ((runtime: { location: "managed"; runnerPublicKey: string }) => void)

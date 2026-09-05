@@ -48,6 +48,10 @@ _WORKSPACE_MEMBER_PATH = re.compile(rf"^/api/workspaces/{_RESOURCE_ID}$")
 _SESSION_COLLECTION_PATH = re.compile(rf"^/api/workspaces/{_RESOURCE_ID}/sessions$")
 _SESSION_MEMBER_PATH = re.compile(rf"^/api/sessions/{_RESOURCE_ID}$")
 _SESSION_READ_PATH = re.compile(rf"^/api/sessions/{_RESOURCE_ID}/(?:messages|tree)$")
+_THREAD_READ_PATH = re.compile(
+    rf"^/api/threads/{_RESOURCE_ID}(?:/(?:tree|children|limits|result))?$"
+)
+_THREAD_WRITE_PATH = re.compile(rf"^/api/threads/{_RESOURCE_ID}/(?:children|cancel|retry|report)$")
 _SESSION_HISTORY_PAGE_PATH = re.compile(rf"^/api/sessions/{_RESOURCE_ID}/messages/page$")
 _SESSION_HISTORY_BUNDLE_PATH = re.compile(rf"^/api/sessions/{_RESOURCE_ID}/messages/bundle$")
 _SESSION_HISTORY_FIELD_PATH = re.compile(
@@ -214,6 +218,8 @@ def _required_scope(request: RunnerRpcRequest) -> str:
     is_session_collection = _SESSION_COLLECTION_PATH.fullmatch(request.path) is not None
     is_session_member = _SESSION_MEMBER_PATH.fullmatch(request.path) is not None
     is_session_read = _SESSION_READ_PATH.fullmatch(request.path) is not None
+    is_thread_read = _THREAD_READ_PATH.fullmatch(request.path) is not None
+    is_thread_write = _THREAD_WRITE_PATH.fullmatch(request.path) is not None
     is_session_history_page = _SESSION_HISTORY_PAGE_PATH.fullmatch(request.path) is not None
     is_session_history_bundle = _SESSION_HISTORY_BUNDLE_PATH.fullmatch(request.path) is not None
     is_session_history_field = _SESSION_HISTORY_FIELD_PATH.fullmatch(request.path) is not None
@@ -221,12 +227,13 @@ def _required_scope(request: RunnerRpcRequest) -> str:
         is_session_collection
         or is_session_member
         or is_session_read
+        or is_thread_read
         or is_session_history_page
         or is_session_history_bundle
         or is_session_history_field
     ):
         return "session.read"
-    if request.method == "POST" and is_session_collection:
+    if request.method == "POST" and (is_session_collection or is_thread_write):
         return "session.write"
     if request.method == "PATCH" and is_session_member:
         return "session.write"

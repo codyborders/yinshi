@@ -76,6 +76,9 @@ const SESSION_READ_PATH = new RegExp(
 const THREAD_READ_PATH = new RegExp(
   `^/api/threads/${RESOURCE_ID}(?:/(?:tree|children|result|limits))?$`,
 );
+const THREAD_WRITE_PATH = new RegExp(
+  `^/api/threads/${RESOURCE_ID}/(?:children|cancel|retry|report)$`,
+);
 const SESSION_HISTORY_PAGE_PATH = new RegExp(
   `^/api/sessions/${RESOURCE_ID}/messages/page$`,
 );
@@ -216,7 +219,7 @@ function requiredScope(method: RuntimeMethod, path: string): string {
   ) {
     return "session.read";
   }
-  if (method === "POST" && sessionCollection) {
+  if (method === "POST" && (sessionCollection || THREAD_WRITE_PATH.test(path))) {
     return "session.write";
   }
   if (method === "PATCH" && sessionMember) {

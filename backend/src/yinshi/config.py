@@ -223,6 +223,11 @@ class Settings(BaseSettings):
     thread_snapshot_max_files: int = 20000
     thread_snapshot_max_bytes: int = 1024 * 1024 * 1024
 
+    # Stale provisioning reconciliation threshold (Phase 3). A provisioning
+    # reservation untouched for longer than this is interrupted and its
+    # staged artifacts are cleaned before the next Phase 3 write.
+    thread_provisioning_stale_seconds: int = 600
+
     @field_validator(
         "thread_max_depth",
         "thread_max_direct_children",
@@ -232,6 +237,7 @@ class Settings(BaseSettings):
         "thread_wait_timeout_seconds_max",
         "thread_snapshot_max_files",
         "thread_snapshot_max_bytes",
+        "thread_provisioning_stale_seconds",
     )
     @classmethod
     def _validate_thread_limit_positive(cls, value: int, info: object) -> int:
@@ -255,6 +261,11 @@ class Settings(BaseSettings):
             raise ValueError(
                 "thread thread_max_total must allow the direct children and "
                 "active descendants limits"
+            )
+        stale_seconds_limit = 86_400
+        if self.thread_provisioning_stale_seconds > stale_seconds_limit:
+            raise ValueError(
+                "thread thread_provisioning_stale_seconds must not exceed " f"{stale_seconds_limit}"
             )
         return self
 

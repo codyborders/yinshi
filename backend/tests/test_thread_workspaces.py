@@ -185,3 +185,33 @@ def test_provision_clean_parent_uses_exact_head(db, git_repo, provisioned):
     assert os.path.isdir(provisioned.path)
     child_head = run_git("rev-parse", "HEAD", cwd=provisioned.path)
     assert child_head == expected_head
+
+
+def test_two_stage_provision_creates_git_artifacts_without_database(
+    db,
+    git_repo,
+    service,
+):
+    """The staged Git step creates worktree artifacts and no workspace row."""
+    seed_parent_stack(db, git_repo)
+    seed_delegation(db)
+    expected_head = head_commit(git_repo)
+    context = service.load_parent_context(
+        db,
+        None,
+        parent_workspace_id="parent-ws",
+        delegation_id=DELEGATION_ID,
+    )
+    assert context.delegation_id == DELEGATION_ID
+    assert context.repo_id == "repo1"
+    assert context.parent_workspace_id == "parent-ws"
+    assert context.branch == CHILD_BRANCH
+
+    staged = asyncio.run(service.create_child_git_artifacts(context))
+
+    assert staged.base_kind == "head"
+    assert staged.base_commit == expected_head
+    assert staged.snapshot_ref is None
+    assert staged.snapshot_published is False
+    assert os.path.isdir(context.worktree_path)
+    assert db.execute("SELECT count(*) FROM workspaces WHERE kind = 'delegated'").fetchone()[0] == 0

@@ -30,8 +30,8 @@ from yinshi.exceptions import (
 from yinshi.services.git import (
     _run_git,
     create_worktree,
-    run_git_bytes as _run_git_bytes,
 )
+from yinshi.services.git import run_git_bytes as _run_git_bytes
 from yinshi.services.repository_lifecycle import (
     repository_lifecycle,
     repository_lifecycle_root,
@@ -114,6 +114,35 @@ class ProvisionedChildWorkspace:
 
 
 @dataclass(frozen=True, slots=True)
+class ThreadParentGitContext:
+    """Immutable parent Git context for one delegation attempt.
+
+    Everything here is resolved through one short database read so callers can
+    close the connection before any Git subprocess runs. ``lock_root`` is the
+    repository lifecycle lock root derived from the same database view.
+    """
+
+    delegation_id: str
+    repo_id: str
+    repo_path: str
+    parent_workspace_id: str
+    parent_workspace_path: str
+    branch: str
+    worktree_path: str
+    lock_root: Path
+
+
+@dataclass(frozen=True, slots=True)
+class ThreadStagedChildGit:
+    """Git artifacts created for one delegation but not yet attached."""
+
+    base_kind: str
+    base_commit: str
+    snapshot_ref: str | None
+    snapshot_published: bool
+
+
+@dataclass(frozen=True, slots=True)
 class _ParentLocation:
     """Database-resolved parent workspace and repository locations."""
 
@@ -154,6 +183,24 @@ def _child_branch_name(delegation_id: str) -> str:
 def _result_ref(delegation_id: str) -> str:
     """Return the hidden result ref for one delegation."""
     return f"{_RESULT_REF_PREFIX}{delegation_id}"
+
+
+@dataclass(frozen=True, slots=True)
+class ThreadChildFinalizationContext:
+    """Immutable Git finalization context for one delegated child.
+
+    Everything here is captured through one short database read so callers
+    can close the connection before any Git subprocess runs. ``lock_root``
+    is the repository lifecycle lock root derived from the same view.
+    """
+
+    delegation_id: str
+    repo_id: str
+    repo_path: str
+    workspace_id: str
+    workspace_path: str
+    base_commit: str
+    lock_root: Path
 
 
 @dataclass(frozen=True, slots=True)
@@ -376,27 +423,48 @@ async def _ref_exists(repo_path: str, ref: str) -> bool:
 class ThreadWorkspaceService:
     """Provision and finalize isolated Git workspaces for child threads."""
 
-    async def provision_child(
+    def load_parent_context(
         self,
         db: sqlite3.Connection,
         tenant: TenantContext | None,
         *,
         parent_workspace_id: str,
         delegation_id: str,
-    ) -> ProvisionedChildWorkspace:
-        """Provision one delegated child workspace from an exact parent base."""
+    ) -> ThreadParentGitContext:
+        """Resolve the immutable parent Git context in one short database read."""
         normalized_delegation_id = _require_delegation_id(delegation_id)
         location = _load_parent_location(db, parent_workspace_id)
+        branch = _child_branch_name(normalized_delegation_id)
+        return ThreadParentGitContext(
+            delegation_id=normalized_delegation_id,
+            repo_id=location.repo_id,
+            repo_path=location.repo_path,
+            parent_workspace_id=location.workspace_id,
+            parent_workspace_path=location.workspace_path,
+            branch=branch,
+            worktree_path=os.path.join(location.repo_path, _WORKTREE_DIRECTORY, branch),
+            lock_root=repository_lifecycle_root(db, tenant),
+        )
+
+    async def create_child_git_artifacts(
+        self,
+        context: ThreadParentGitContext,
+    ) -> ThreadStagedChildGit:
+        """Create one delegated worktree without touching any database.
+
+        Symlink roots are rejected, targets are claimed before any mutation,
+        and a dirty parent is snapshotted behind the hidden snapshot ref. Any
+        failure removes only the artifacts claimed by this attempt. Callers
+        attach the staged result in one short database transaction later.
+        """
         # A symlinked root would let child paths escape the repository.
-        if os.path.islink(location.repo_path):
+        if os.path.islink(context.repo_path):
             raise ThreadUnsafePathError("repository root must not be a symlink")
-        if os.path.islink(location.workspace_path):
+        if os.path.islink(context.parent_workspace_path):
             raise ThreadUnsafePathError("parent workspace path must not be a symlink")
-        worktree_root = os.path.join(location.repo_path, _WORKTREE_DIRECTORY)
+        worktree_root = os.path.join(context.repo_path, _WORKTREE_DIRECTORY)
         if os.path.islink(worktree_root):
             raise ThreadUnsafePathError("repository worktree directory must not be a symlink")
-        branch = _child_branch_name(normalized_delegation_id)
-        lock_root = repository_lifecycle_root(db, tenant)
 
         base_kind = "head"
         base_commit: str | None = None
@@ -406,36 +474,28 @@ class ThreadWorkspaceService:
         # ownership uncertain, and an uncertain ref is preserved.
         snapshot_published = False
 
-        async with repository_lifecycle(location.repo_id, lock_root):
-            created_workspace_id: str | None = None
+        async with repository_lifecycle(context.repo_id, context.lock_root):
             claimed = False
-            worktree_path = os.path.join(
-                location.repo_path,
-                _WORKTREE_DIRECTORY,
-                branch,
-            )
             try:
                 # Claim the target before any mutation so a collision can
                 # never delete a pre-existing branch or worktree. A snapshot
                 # ref owned by another attempt is likewise never overwritten.
-                await self._assert_child_target_available(location.repo_path, branch)
-                if await _ref_exists(
-                    location.repo_path,
-                    _snapshot_ref(delegation_id),
-                ):
+                await self._assert_child_target_available(context.repo_path, context.branch)
+                if await _ref_exists(context.repo_path, _snapshot_ref(context.delegation_id)):
                     raise ThreadSnapshotRefExistsError(
                         "snapshot ref already exists for this delegation",
                     )
                 claimed = True
-                await _assert_submodules_clean(location.workspace_path)
-                status_before = await _worktree_status_output(location.workspace_path)
-                head = await _resolve_head_commit(location.workspace_path)
+                await _assert_submodules_clean(context.parent_workspace_path)
+                status_before = await _worktree_status_output(context.parent_workspace_path)
+                head = await _resolve_head_commit(context.parent_workspace_path)
                 if status_before:
                     base_kind = "snapshot"
-                    snapshot_ref = _snapshot_ref(normalized_delegation_id)
+                    snapshot_ref = _snapshot_ref(context.delegation_id)
                     base_commit = await self._create_snapshot(
-                        location,
-                        normalized_delegation_id,
+                        context.repo_path,
+                        context.parent_workspace_path,
+                        context.delegation_id,
                         head,
                     )
                     snapshot_published = True
@@ -443,24 +503,18 @@ class ThreadWorkspaceService:
                     base_kind = "head"
                     base_commit = head
                 await create_worktree(
-                    location.repo_path,
-                    worktree_path,
-                    branch,
+                    context.repo_path,
+                    context.worktree_path,
+                    context.branch,
                     base_ref=base_commit,
                 )
-                ensure_secret_guardrails(location.repo_path)
-                created_workspace_id = self._insert_workspace_row(
-                    db,
-                    location,
-                    branch,
-                    worktree_path,
-                )
+                ensure_secret_guardrails(context.repo_path)
                 if base_commit is None:
                     # Unborn clean parent: create_worktree materialized the
                     # existing empty-root behavior; report its commit.
                     base_commit = await _run_git(
-                        ["rev-parse", f"refs/heads/{branch}"],
-                        cwd=location.repo_path,
+                        ["rev-parse", f"refs/heads/{context.branch}"],
+                        cwd=context.repo_path,
                     )
             except BaseException as original_error:
                 # Only artifacts claimed by this attempt may be removed. A
@@ -468,12 +522,12 @@ class ThreadWorkspaceService:
                 # branches and worktrees must survive untouched.
                 if claimed:
                     failures = await self._cleanup_artifacts_unlocked(
-                        db,
-                        location.repo_path,
-                        normalized_delegation_id,
-                        branch,
+                        None,
+                        context.repo_path,
+                        context.delegation_id,
+                        context.branch,
                         workspace_path=None,
-                        workspace_id=created_workspace_id,
+                        workspace_id=None,
                         delete_snapshot_ref=snapshot_published,
                         delete_result_ref=False,
                     )
@@ -485,14 +539,100 @@ class ThreadWorkspaceService:
                         )
                 raise original_error
 
-        return ProvisionedChildWorkspace(
-            workspace_id=created_workspace_id,
-            repo_id=location.repo_id,
-            path=worktree_path,
-            branch=branch,
+        return ThreadStagedChildGit(
             base_kind=base_kind,
             base_commit=base_commit or "",
             snapshot_ref=snapshot_ref,
+            snapshot_published=snapshot_published,
+        )
+
+    async def discard_staged_child_git_artifacts(
+        self,
+        context: ThreadParentGitContext,
+        staged: ThreadStagedChildGit,
+    ) -> None:
+        """Remove one attempt's staged Git artifacts without any database.
+
+        Attach-time failures must leave no worktree, branch, or snapshot ref
+        behind for a delegation that never attached a child. This API takes
+        no connection so callers honor the no-database-during-Git invariant.
+        Only artifacts claimed by the staging attempt are removed, and the
+        snapshot ref is deleted only when the attempt definitely published
+        it. Artifact cleanup failures are logged for reconciliation and
+        never raised, matching the staging failure policy.
+        """
+        async with repository_lifecycle(context.repo_id, context.lock_root):
+            failures = await self._cleanup_artifacts_unlocked(
+                None,
+                context.repo_path,
+                context.delegation_id,
+                context.branch,
+                workspace_path=context.worktree_path,
+                workspace_id=None,
+                delete_snapshot_ref=staged.snapshot_published,
+                delete_result_ref=False,
+            )
+        if failures:
+            logger.warning(
+                "Thread workspace cleanup left %d artifact(s) for " "delegation reconciliation",
+                len(failures),
+            )
+
+    async def provision_child(
+        self,
+        db: sqlite3.Connection,
+        tenant: TenantContext | None,
+        *,
+        parent_workspace_id: str,
+        delegation_id: str,
+    ) -> ProvisionedChildWorkspace:
+        """Provision one delegated child workspace from an exact parent base.
+
+        Phase 2 wrapper: the caller's single connection spans the context
+        load, the Git work, and the delegated workspace row commit, so the
+        historical provision-then-row contract is preserved.
+        """
+        context = self.load_parent_context(
+            db,
+            tenant,
+            parent_workspace_id=parent_workspace_id,
+            delegation_id=delegation_id,
+        )
+        staged = await self.create_child_git_artifacts(context)
+        try:
+            workspace_id = self._insert_workspace_row(
+                db,
+                context.repo_id,
+                context.parent_workspace_id,
+                context.branch,
+                context.worktree_path,
+            )
+        except BaseException:
+            async with repository_lifecycle(context.repo_id, context.lock_root):
+                failures = await self._cleanup_artifacts_unlocked(
+                    None,
+                    context.repo_path,
+                    context.delegation_id,
+                    context.branch,
+                    workspace_path=context.worktree_path,
+                    workspace_id=None,
+                    delete_snapshot_ref=staged.snapshot_published,
+                    delete_result_ref=False,
+                )
+            if failures:
+                logger.warning(
+                    "Thread workspace cleanup left %d artifact(s) for " "delegation reconciliation",
+                    len(failures),
+                )
+            raise
+        return ProvisionedChildWorkspace(
+            workspace_id=workspace_id,
+            repo_id=context.repo_id,
+            path=context.worktree_path,
+            branch=context.branch,
+            base_kind=staged.base_kind,
+            base_commit=staged.base_commit,
+            snapshot_ref=staged.snapshot_ref,
         )
 
     async def discard_partial_child(
@@ -556,7 +696,7 @@ class ThreadWorkspaceService:
 
     async def _cleanup_artifacts_unlocked(
         self,
-        db: sqlite3.Connection,
+        db: sqlite3.Connection | None,
         repo_path: str,
         delegation_id: str,
         branch: str,
@@ -614,7 +754,7 @@ class ThreadWorkspaceService:
                     ref = args[2] if args[0] == "update-ref" else f"refs/heads/{branch}"
                     if await _ref_exists(repo_path, ref):
                         failures.append(exc)
-        if not failures and workspace_id is not None:
+        if not failures and workspace_id is not None and db is not None:
             self._delete_delegated_workspace_row(db, workspace_id)
         return failures
 
@@ -663,7 +803,7 @@ class ThreadWorkspaceService:
         )
         db.commit()
 
-    async def finalize_child(
+    def load_finalization_context(
         self,
         db: sqlite3.Connection,
         tenant: TenantContext | None,
@@ -671,8 +811,8 @@ class ThreadWorkspaceService:
         delegation_id: str,
         workspace_id: str,
         base_commit: str,
-    ) -> FinalizedThreadGitResult:
-        """Seal the child's final filesystem into one synthetic result commit."""
+    ) -> ThreadChildFinalizationContext:
+        """Resolve the immutable child finalization context in one short read."""
         normalized_delegation_id = _require_delegation_id(delegation_id)
         normalized_workspace_id = _require_identifier(workspace_id, "workspace_id")
         normalized_base_commit = _require_identifier(base_commit, "base_commit")
@@ -692,16 +832,62 @@ class ThreadWorkspaceService:
         ).fetchone()
         if repo_row is None:
             raise RepoNotFoundError(f"Repo {repo_id} not found")
-        repo_path = str(repo_row["root_path"])
-        lock_root = repository_lifecycle_root(db, tenant)
+        return ThreadChildFinalizationContext(
+            delegation_id=normalized_delegation_id,
+            repo_id=repo_id,
+            repo_path=str(repo_row["root_path"]),
+            workspace_id=normalized_workspace_id,
+            workspace_path=workspace_path,
+            base_commit=normalized_base_commit,
+            lock_root=repository_lifecycle_root(db, tenant),
+        )
 
-        async with repository_lifecycle(repo_id, lock_root):
+    async def finalize_child_context(
+        self,
+        context: ThreadChildFinalizationContext,
+    ) -> FinalizedThreadGitResult:
+        """Finalize one child from its captured context with no open database.
+
+        This is the connection-free entry point. Orchestration callers must
+        use it after closing the database; the historical ``finalize_child``
+        wrapper exists only for Phase 2 compatibility.
+        """
+        normalized_delegation_id = _require_delegation_id(context.delegation_id)
+        normalized_base_commit = _require_identifier(context.base_commit, "base_commit")
+        async with repository_lifecycle(context.repo_id, context.lock_root):
             return await self._finalize_locked(
-                repo_path,
-                workspace_path,
+                context.repo_path,
+                context.workspace_path,
                 normalized_delegation_id,
                 normalized_base_commit,
             )
+
+    async def finalize_child(
+        self,
+        db: sqlite3.Connection,
+        tenant: TenantContext | None,
+        *,
+        delegation_id: str,
+        workspace_id: str,
+        base_commit: str,
+    ) -> FinalizedThreadGitResult:
+        """Seal the child's final filesystem into one synthetic result commit.
+
+        Phase 2 compatibility wrapper: the caller's connection spans the
+        context load, the Git work, and the lock, so the historical behavior
+        is preserved. Orchestration code must instead capture the immutable
+        context with ``load_finalization_context``, close the database, and
+        call ``finalize_child_context`` so no database connection stays open
+        during Git.
+        """
+        context = self.load_finalization_context(
+            db,
+            tenant,
+            delegation_id=delegation_id,
+            workspace_id=workspace_id,
+            base_commit=base_commit,
+        )
+        return await self.finalize_child_context(context)
 
     async def _finalize_locked(
         self,
@@ -836,7 +1022,8 @@ class ThreadWorkspaceService:
 
     async def _create_snapshot(
         self,
-        location: _ParentLocation,
+        repo_path: str,
+        workspace_path: str,
         delegation_id: str,
         head: str | None,
     ) -> str:
@@ -845,12 +1032,12 @@ class ThreadWorkspaceService:
         A private index preserves parent Git state. Atomic publication rejects
         a competing snapshot ref without replacing it.
         """
-        await _assert_no_protected_candidates(location.workspace_path)
+        await _assert_no_protected_candidates(workspace_path)
         tree_id = await _write_tree_through_alternate_index(
-            location.workspace_path,
+            workspace_path,
             base_treeish=head,
         )
-        await self._assert_snapshot_within_limits(location.workspace_path, tree_id)
+        await self._assert_snapshot_within_limits(workspace_path, tree_id)
 
         commit_args = [
             *_COMMIT_IDENTITY_ARGS,
@@ -862,7 +1049,7 @@ class ThreadWorkspaceService:
         if head is not None:
             commit_args.append("-p")
             commit_args.append(head)
-        snapshot_commit = await _run_git(commit_args, cwd=location.repo_path)
+        snapshot_commit = await _run_git(commit_args, cwd=repo_path)
         try:
             await _run_git(
                 [
@@ -871,12 +1058,12 @@ class ThreadWorkspaceService:
                     snapshot_commit,
                     _MISSING_REF_OID,
                 ],
-                cwd=location.repo_path,
+                cwd=repo_path,
             )
         except GitError as exc:
             # A lost publication race means another writer now owns the ref;
             # a missing ref means a real Git fault. Both fail closed.
-            if await _ref_exists(location.repo_path, _snapshot_ref(delegation_id)):
+            if await _ref_exists(repo_path, _snapshot_ref(delegation_id)):
                 raise ThreadSnapshotRefExistsError(
                     "snapshot ref already exists for this delegation",
                 ) from exc
@@ -919,7 +1106,8 @@ class ThreadWorkspaceService:
     def _insert_workspace_row(
         self,
         db: sqlite3.Connection,
-        location: _ParentLocation,
+        repo_id: str,
+        parent_workspace_id: str,
         branch: str,
         worktree_path: str,
     ) -> str:
@@ -928,7 +1116,7 @@ class ThreadWorkspaceService:
             """INSERT INTO workspaces (repo_id, name, branch, path, state, kind,
                                        parent_workspace_id)
                VALUES (?, ?, ?, ?, 'ready', 'delegated', ?)""",
-            (location.repo_id, branch, branch, worktree_path, location.workspace_id),
+            (repo_id, branch, branch, worktree_path, parent_workspace_id),
         )
         db.commit()
         row = db.execute(

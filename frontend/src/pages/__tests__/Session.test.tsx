@@ -7,7 +7,13 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
-import { MemoryRouter, Route, Routes, useNavigate } from "react-router-dom";
+import {
+  MemoryRouter,
+  Route,
+  Routes,
+  useLocation,
+  useNavigate,
+} from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const apiGetMock = vi.fn();
@@ -18,6 +24,8 @@ const setMessagesMock = vi.fn();
 const bootstrapSessionMock = vi.fn();
 const useCatalogMock = vi.fn();
 const useAgentStreamMock = vi.fn();
+const useThreadTreeMock = vi.fn();
+const refreshMock = vi.fn();
 const historyCacheClient = {
   get: vi.fn(),
   put: vi.fn(),
@@ -119,6 +127,10 @@ vi.mock("../../components/ChatView", () => ({
 
 vi.mock("../../hooks/useAgentStream", () => ({
   useAgentStream: (...args: unknown[]) => useAgentStreamMock(...args),
+}));
+
+vi.mock("../../hooks/useThreadTree", () => ({
+  useThreadTree: (...args: unknown[]) => useThreadTreeMock(...args),
 }));
 
 vi.mock("../../hooks/useAuth", () => ({
@@ -417,7 +429,246 @@ describe("Session", () => {
       setMessages: setMessagesMock,
       bootstrapSession: bootstrapSessionMock,
     });
+    useThreadTreeMock.mockReturnValue({
+      loading: false,
+      error: null,
+      tree: null,
+      children: null,
+      limits: null,
+      result: null,
+      refresh: refreshMock,
+      createChild: vi.fn().mockResolvedValue(null),
+      cancelChild: vi.fn().mockResolvedValue(false),
+      retryChild: vi.fn().mockResolvedValue(null),
+      reportResult: vi.fn().mockResolvedValue(null),
+    });
     apiPatchMock.mockResolvedValue({ model: minimaxModel.ref });
+  });
+
+  it("offers Threads control after resolving runtime resource", async () => {
+    mockCatalog();
+    mockSessionApi();
+
+    renderSession();
+
+    expect(await screen.findByRole("button", { name: "Threads" })).toBeInTheDocument();
+    await waitFor(() => {
+      expect(useThreadTreeMock).toHaveBeenLastCalledWith(
+        TEST_SESSION_ID,
+        expect.objectContaining({ runtime: expect.any(Object) }),
+      );
+    });
+  });
+
+  it("opens mobile Threads overlay", async () => {
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn(() => ({
+        matches: false,
+        media: "(min-width: 1024px)",
+        onchange: null,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      })),
+    );
+    mockCatalog();
+    mockSessionApi();
+    renderSession();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Threads" }));
+    expect(screen.getByRole("button", { name: "Close threads" })).toBeInTheDocument();
+  });
+
+  it("opens desktop Threads panel beside workspace inspector", async () => {
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn(() => ({
+        matches: true,
+        media: "(min-width: 1024px)",
+        onchange: null,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      })),
+    );
+    mockCatalog();
+    mockSessionApi();
+    renderSession();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Threads" }));
+    expect(document.getElementById("session-thread-panel")).toHaveClass("w-[360px]");
+  });
+
+  it("navigates attached children to canonical runtime-qualified session routes", async () => {
+    mockCatalog();
+    const transportGet = vi.fn((path: string) => {
+      if (path === `/api/sessions/${TEST_SESSION_ID}`) {
+        return Promise.resolve(sessionMetadata());
+      }
+      if (path === `/api/sessions/${TEST_SESSION_ID}/messages/page`) {
+        return Promise.resolve({ messages: [], next_cursor: null });
+      }
+      if (path === `/api/sessions/${TEST_SESSION_ID}/runs/active`) {
+        return Promise.resolve(null);
+      }
+      return Promise.reject(new Error(`Unexpected GET ${path}`));
+    });
+    const runtime = { location: "local" as const };
+    runtimeResourceOverride = {
+      resource: {
+        resourceId: TEST_SESSION_ID,
+        runtime,
+        transport: {
+          runtime,
+          get: transportGet,
+          post: vi.fn(),
+          patch: vi.fn(),
+          put: vi.fn(),
+          delete: vi.fn(),
+          upload: vi.fn(),
+          close: vi.fn(),
+        },
+      },
+      loading: false,
+      error: null,
+    };
+    const childId = SECOND_SESSION_ID;
+    useThreadTreeMock.mockReturnValue({
+      loading: false,
+      error: null,
+      tree: {
+        root: {
+          id: TEST_SESSION_ID,
+          delegation_id: null,
+          parent_id: null,
+          root_id: TEST_SESSION_ID,
+          depth: 0,
+          title: "Root",
+          role: "general",
+          origin: "root",
+          state: "running",
+          workspace_id: "workspace-123",
+          model: minimaxModel.ref,
+          child_count: 1,
+          active_child_count: 1,
+          can_spawn_child: true,
+          created_at: "2026-01-01T00:00:00Z",
+        },
+        nodes: [
+          {
+            id: childId,
+            delegation_id: "d".repeat(32),
+            parent_id: TEST_SESSION_ID,
+            root_id: TEST_SESSION_ID,
+            depth: 1,
+            title: "Child",
+            role: "implementation",
+            origin: "delegated",
+            state: "running",
+            workspace_id: "workspace-123",
+            model: minimaxModel.ref,
+            child_count: 0,
+            active_child_count: 0,
+            can_spawn_child: false,
+            created_at: "2026-01-01T00:00:00Z",
+          },
+        ],
+        placeholders: [],
+        thread_count: 2,
+        active_descendant_count: 1,
+        tree_depth: 1,
+      },
+      children: null,
+      limits: null,
+      result: null,
+      refresh: vi.fn().mockResolvedValue(undefined),
+      createChild: vi.fn().mockResolvedValue(null),
+      cancelChild: vi.fn().mockResolvedValue(false),
+      retryChild: vi.fn().mockResolvedValue(null),
+      reportResult: vi.fn().mockResolvedValue(null),
+    });
+    const Location = () => <output data-testid="route">{useLocation().pathname}</output>;
+
+    render(
+      <MemoryRouter initialEntries={[`/app/session/${TEST_SESSION_ID}`]}>
+        <Routes>
+          <Route
+            path="/app/session/:id"
+            element={
+              <>
+                <Location />
+                <Session />
+              </>
+            }
+          />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Threads" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open Child" }));
+    expect(screen.getByTestId("route")).toHaveTextContent(`/app/session/local.${childId}`);
+  });
+
+  it("closes Threads panel when route changes", async () => {
+    mockCatalog();
+    mockSessionApi();
+    const Navigation = () => {
+      const navigate = useNavigate();
+      return (
+        <>
+          <button
+            type="button"
+            onClick={() => navigate(`/app/session/${SECOND_SESSION_ID}`)}
+          >
+            Next Session
+          </button>
+          <Session />
+        </>
+      );
+    };
+
+    render(
+      <MemoryRouter initialEntries={[`/app/session/${TEST_SESSION_ID}`]}>
+        <Routes>
+          <Route path="/app/session/:id" element={<Navigation />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Threads" }));
+    expect(screen.getByRole("button", { name: "Close threads" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Next Session" }));
+    expect(screen.queryByRole("button", { name: "Close threads" })).toBeNull();
+  });
+
+  it("closes Threads when mobile workspace opens", async () => {
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn(() => ({
+        matches: false,
+        media: "(min-width: 1024px)",
+        onchange: null,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      })),
+    );
+    mockCatalog();
+    mockSessionApi();
+    renderSession();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Threads" }));
+    expect(screen.getByRole("button", { name: "Close threads" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Files" }));
+    expect(screen.queryByRole("button", { name: "Close threads" })).toBeNull();
   });
 
   it("opens mobile workspace files and terminal overlays from explicit controls", async () => {
@@ -1115,6 +1366,37 @@ describe("Session", () => {
     );
     view.unmount();
     expect(cacheAvailable).toBe(false);
+  });
+
+  it("refreshes thread state after streaming ends", async () => {
+    mockCatalog();
+    mockSessionApi();
+    let streaming = false;
+    useAgentStreamMock.mockImplementation(() => ({
+      messages: [],
+      sendPrompt: sendPromptMock,
+      cancel: cancelMock,
+      streaming,
+      setMessages: setMessagesMock,
+      bootstrapSession: bootstrapSessionMock,
+    }));
+    const tree = () => (
+      <MemoryRouter initialEntries={[`/app/sessions/${TEST_SESSION_ID}`]}>
+        <Routes>
+          <Route path="/app/sessions/:id" element={<Session />} />
+        </Routes>
+      </MemoryRouter>
+    );
+    const view = render(tree());
+    await screen.findByRole("button", { name: "Threads" });
+    refreshMock.mockClear();
+
+    streaming = true;
+    view.rerender(tree());
+    streaming = false;
+    view.rerender(tree());
+
+    await waitFor(() => expect(refreshMock).toHaveBeenCalledOnce());
   });
 
   it("refreshes the managed history cache once after streaming ends", async () => {

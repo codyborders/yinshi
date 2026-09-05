@@ -1,10 +1,10 @@
 # Thread Orchestration Contract
 
-Status: Frozen through Phase 2.
+Status: Frozen through Phase 3.
 
 Source: `yinshi-thread-orchestration-plan.md`, based on commit `e18c86948f533ffb002bd6ca46118b8ee3fcaafb`.
 
-This release adds database records, read APIs, and isolated child workspace services. It does not run delegated agents.
+This release adds database records, read and write APIs, isolated child workspaces, manual delegation, prompt execution, cancellation, retry, and results.
 
 ## Terms and ownership
 
@@ -32,6 +32,7 @@ A workspace cannot be deleted while one of its sessions owns a child delegation.
 | `THREAD_WAIT_TIMEOUT_SECONDS_MAX` | 60 |
 | `THREAD_SNAPSHOT_MAX_FILES` | 20,000 |
 | `THREAD_SNAPSHOT_MAX_BYTES` | 1 GiB |
+| `THREAD_PROVISIONING_STALE_SECONDS` | 600 |
 
 `THREAD_HIERARCHY_ENABLED` defaults to `true`. Disabled hierarchy routes return 404. `AGENT_DELEGATION_ENABLED` defaults to `false`.
 
@@ -135,8 +136,43 @@ Changed-file output supports additions, modifications, deletions, copies, and re
 
 Child-only cleanup and finalization reject ordinary user workspaces. Repository and workspace roots cannot use symlink indirection.
 
+## Manual orchestration writes
+
+| Method | Route | Behavior |
+| --- | --- | --- |
+| `POST` | `/api/threads/{session_id}/children` | Reserve, provision, attach, and optionally start one child |
+| `POST` | `/api/threads/{thread_id}/cancel` | Cancel an attached child or provisioning placeholder |
+| `POST` | `/api/threads/{session_id}/retry` | Create a distinct sibling retry with lineage |
+| `POST` | `/api/threads/{session_id}/report` | Insert or update one bounded result draft |
+
+Creation uses a canonical UUID idempotency key. The same parent, key, and normalized request return stable state. Changed input conflicts.
+
+Reservation uses `BEGIN IMMEDIATE`. Depth, direct-child, active-descendant, and total-tree capacity are checked in the reservation transaction.
+
+Git provisioning and prompt-journal operations run without an open orchestration database connection. Attachment uses a short compare-and-set transaction.
+
+Cancellation supports queued, running, and provisioning work. Provisioning cancellation claims the state before cleanup. Cleanup removes only artifacts owned by that delegation.
+
+Retry accepts failed, cancelled, or interrupted children. It creates new delegation, workspace, session, prompt run, and retry lineage records.
+
+Stale provisioning records become interrupted before cleanup. Reconciliation runs before Phase 3 writes and uses `THREAD_PROVISIONING_STALE_SECONDS`.
+
+Result reports use optimistic versions. Version zero inserts version one. Matching updates increment the version. Exact stale replay returns the current draft.
+
+A terminal child can seal an existing draft. Git finalization runs after database closure. The result ref is immutable, and database sealing uses compare-and-set.
+
+## Frontend contract
+
+The session page keeps `/app/session/{id}` as its canonical route. Runtime-qualified IDs remain attached to their source runtime.
+
+The Threads panel shows the bounded tree, placeholders, lifecycle states, child actions, capacity, and sealed results. Desktop uses a side panel. Narrow screens use an overlay.
+
+The child dialog supports bounded task context, role, model, thinking, and start behavior. It blocks duplicate submission and reports capacity or server errors.
+
+The Sidebar groups delegated workspaces under their owning repository. It shows delegation status and omits destructive workspace actions for delegated entries.
+
 ## Deferred work
 
-Phase 3 adds manual spawn, child sessions, orchestration writes, and prompt execution. Phases 4 and 5 add sidecar protocol support and agent tools.
+Phase 4 adds the duplex sidecar protocol. Phase 5 adds model-facing thread tools.
 
-Later work adds cancellation, retry, reporting, recursive deletion, managed runtime integration, nested delegation, budgets, waiting, and automated result sealing.
+Automatic terminal observers, fallback result derivation, agent-origin spawning, recursive deletion, budgets, and waiting remain deferred.

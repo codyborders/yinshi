@@ -1,10 +1,18 @@
 """Pydantic models for API request/response schemas."""
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 
 from yinshi.model_catalog import DEFAULT_SESSION_MODEL, get_provider_metadata, normalize_model_ref
 
@@ -171,6 +179,10 @@ class WorkspaceOut(BaseModel):
     branch: str
     path: str
     state: str = "ready"
+    kind: str = "primary"
+    parent_workspace_id: str | None = None
+    delegation_id: str | None = None
+    delegation_status: str | None = None
 
 
 class WorkspaceUpdate(BaseModel):
@@ -232,6 +244,115 @@ class SessionOut(BaseModel):
     title: str | None = None
 
 
+_THREAD_THINKING_LEVELS = ("off", "minimal", "low", "medium", "high", "xhigh")
+
+
+class ThreadChildCreate(BaseModel):
+    """Manual child-thread creation request.
+
+    Tenant, repository, runtime location, branch, ref, path, parent
+    workspace, provider credentials, and orchestration capabilities are
+    derived by the backend and never accepted from clients.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    idempotency_key: str = Field(..., max_length=36)
+    title: str = Field(..., min_length=1, max_length=200)
+    task: str = Field(..., min_length=1, max_length=20_000)
+    context: str | None = Field(None, max_length=20_000)
+    role: Literal["general", "research", "implementation", "test", "review", "debug"] = "general"
+    model: str | None = Field(None, max_length=200)
+    thinking: str | None = Field(None, max_length=20)
+    start_immediately: bool = True
+
+    @field_validator("idempotency_key")
+    @classmethod
+    def validate_idempotency_key(cls, value: str) -> str:
+        """Require one canonical UUID so retries cannot alias."""
+        import uuid as uuid_module
+
+        try:
+            normalized = str(uuid_module.UUID(value))
+        except ValueError as exc:
+            raise ValueError("idempotency_key must be a UUID") from exc
+        if normalized != value:
+            raise ValueError("idempotency_key must be canonical")
+        return normalized
+
+    @field_validator("thinking")
+    @classmethod
+    def validate_thinking(cls, value: str | None) -> str | None:
+        """Normalize optional thinking values into canonical levels."""
+        if value is None:
+            return None
+        normalized = value.strip().lower()
+        if normalized not in _THREAD_THINKING_LEVELS:
+            raise ValueError("thinking must be one of " + ", ".join(_THREAD_THINKING_LEVELS))
+        return normalized
+
+
+class ThreadRetryCreate(BaseModel):
+    """Retry request for one delegated child thread.
+
+    The retried child keeps its original title, task, context, role, and
+    model choices. Only the idempotency key is mandatory; the optional model
+    and thinking fields override the stored delegation choices.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    idempotency_key: str = Field(..., max_length=36)
+    model: str | None = Field(None, max_length=200)
+    thinking: str | None = Field(None, max_length=20)
+
+    @field_validator("idempotency_key")
+    @classmethod
+    def validate_idempotency_key(cls, value: str) -> str:
+        """Require one canonical UUID so retries cannot alias."""
+        import uuid as uuid_module
+
+        try:
+            normalized = str(uuid_module.UUID(value))
+        except ValueError as exc:
+            raise ValueError("idempotency_key must be a UUID") from exc
+        if normalized != value:
+            raise ValueError("idempotency_key must be canonical")
+        return normalized
+
+    @field_validator("thinking")
+    @classmethod
+    def validate_thinking(cls, value: str | None) -> str | None:
+        """Normalize optional thinking values into canonical levels."""
+        if value is None:
+            return None
+        normalized = value.strip().lower()
+        if normalized not in _THREAD_THINKING_LEVELS:
+            raise ValueError("thinking must be one of " + ", ".join(_THREAD_THINKING_LEVELS))
+        return normalized
+
+
+ThreadDelegationStatus = Literal[
+    "provisioning",
+    "queued",
+    "running",
+    "cancelling",
+    "completed",
+    "failed",
+    "cancelled",
+    "interrupted",
+]
+
+
+class ThreadSpawnOut(BaseModel):
+    """Stable spawn response for one manual child-thread reservation."""
+
+    delegation_id: str
+    status: ThreadDelegationStatus
+    child_session_id: str | None = None
+    error_code: str | None = None
+
+
 class ThreadOut(BaseModel):
     """One thread projection over an existing session."""
 
@@ -286,6 +407,35 @@ class ThreadLimitsOut(BaseModel):
     active_descendants: int
     total_threads: int
     can_spawn_child: bool
+
+
+class ThreadResultReportTest(BaseModel):
+    """One strict bounded test entry inside a reported thread result."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    command: str = Field(..., max_length=2_000)
+    status: Literal["passed", "failed", "skipped"]
+    summary: str | None = Field(None, max_length=5_000)
+
+
+class ThreadResultReportCreate(BaseModel):
+    """Strict bounded result report for one delegated child thread."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    expected_version: int = Field(..., ge=0)
+    summary: str = Field(..., max_length=20_000)
+    tests: list[ThreadResultReportTest] = Field(default_factory=list, max_length=50)
+    warnings: list[Annotated[str, StringConstraints(max_length=2_000)]] = Field(
+        default_factory=list, max_length=50
+    )
+
+    @field_validator("summary")
+    @classmethod
+    def validate_summary(cls, value: str) -> str:
+        """Require one nonblank summary and store it trimmed."""
+        return _strip_required_text(value, "summary must not be blank")
 
 
 class ThreadResultOut(BaseModel):

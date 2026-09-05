@@ -86,6 +86,55 @@ def test_active_run_discovery_requires_session_stream_scope() -> None:
         _required_scope(near_match)
 
 
+def test_thread_routes_require_exact_session_scopes() -> None:
+    """Thread reads and mutations use separate session capabilities."""
+    session_id = "a" * 32
+    for path in (
+        f"/api/threads/{session_id}",
+        f"/api/threads/{session_id}/tree",
+        f"/api/threads/{session_id}/children",
+        f"/api/threads/{session_id}/limits",
+        f"/api/threads/{session_id}/result",
+    ):
+        request = RunnerRpcRequest(
+            version=1,
+            sequence=0,
+            request_id=str(uuid.uuid4()),
+            method="GET",
+            path=path,
+            body=None,
+            query={},
+        )
+        assert _required_scope(request) == "session.read"
+    for suffix in ("children", "cancel", "retry", "report"):
+        request = RunnerRpcRequest(
+            version=1,
+            sequence=0,
+            request_id=str(uuid.uuid4()),
+            method="POST",
+            path=f"/api/threads/{session_id}/{suffix}",
+            body={},
+            query={},
+        )
+        assert _required_scope(request) == "session.write"
+
+    for method, path in (
+        ("GET", f"/api/threads/{session_id}/tree/extra"),
+        ("POST", f"/api/threads/{session_id}/cancelled"),
+    ):
+        request = RunnerRpcRequest(
+            version=1,
+            sequence=0,
+            request_id=str(uuid.uuid4()),
+            method=method,
+            path=path,
+            body={},
+            query={},
+        )
+        with pytest.raises(ValueError, match="not allowed"):
+            _required_scope(request)
+
+
 def test_bounded_history_routes_require_session_read_scope() -> None:
     """Only exact bounded history paths should receive session read authority."""
     session_id = "a" * 32

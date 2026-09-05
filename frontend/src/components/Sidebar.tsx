@@ -11,6 +11,7 @@ import {
 } from "../api/client";
 import { useAuth } from "../hooks/useAuth";
 import { useTheme } from "../hooks/useTheme";
+import ThreadStatusBadge from "./thread/ThreadStatusBadge";
 import { preferredSessionModel } from "../models/sessionModelPreference";
 import { listRunnerRepositories } from "../runner/repositories";
 import { resolveRuntimeRef } from "../runtime/resolveRuntime";
@@ -549,6 +550,7 @@ function RepoSection({
   const [loaded, setLoaded] = useState(false);
   const [creating, setCreating] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
+  const [showDelegated, setShowDelegated] = useState(true);
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [agentsMdDraft, setAgentsMdDraft] = useState(repo.agents_md ?? "");
@@ -656,8 +658,10 @@ function RepoSection({
     }
   }
 
-  const activeWorkspaces = workspaces.filter((ws) => ws.state !== "archived");
-  const archivedWorkspaces = workspaces.filter((ws) => ws.state === "archived");
+  const primaryWorkspaces = workspaces.filter((ws) => ws.kind !== "delegated");
+  const delegatedWorkspaces = workspaces.filter((ws) => ws.kind === "delegated");
+  const activeWorkspaces = primaryWorkspaces.filter((ws) => ws.state !== "archived");
+  const archivedWorkspaces = primaryWorkspaces.filter((ws) => ws.state === "archived");
   const initial = repo.name.charAt(0).toUpperCase();
 
   return (
@@ -796,6 +800,45 @@ function RepoSection({
               onArchive={() => handleStateChange(ws.id, "archived")}
             />
           ))}
+
+          {delegatedWorkspaces.length > 0 && (
+            <div className="border-y border-gray-800/70 py-1">
+              <button
+                type="button"
+                onClick={() => setShowDelegated((current) => !current)}
+                aria-expanded={showDelegated}
+                className="flex w-full items-center gap-1 px-11 py-1.5 text-xs font-medium text-gray-500 hover:text-gray-300"
+              >
+                <svg
+                  className={`h-3 w-3 transition-transform ${showDelegated ? "rotate-90" : ""}`}
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  strokeWidth={2}
+                  stroke="currentColor"
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
+                </svg>
+                Delegated ({delegatedWorkspaces.length})
+              </button>
+              {showDelegated && delegatedWorkspaces.map((ws) => (
+                <div key={ws.id} className="relative">
+                  <WorkspaceItem
+                    workspace={ws}
+                    runtime={runtime}
+                    transport={transport}
+                    activeSessionId={activeSessionId}
+                    userId={userId}
+                    onNavigate={onNavigate}
+                  />
+                  {ws.delegation_status && (
+                    <div className="pointer-events-none absolute right-4 top-1.5">
+                      <ThreadStatusBadge state={ws.delegation_status} />
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
 
           {archivedWorkspaces.length > 0 && (
             <>

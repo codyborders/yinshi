@@ -25,8 +25,8 @@ from yinshi.services.run_coordinator import get_run_coordinator
 from yinshi.services.sidecar import release_sessions
 from yinshi.services.workspace import (
     create_workspace_for_repo,
-    ensure_workspace_has_no_delegated_children,
     delete_workspace,
+    ensure_workspace_has_no_delegated_children,
 )
 
 logger = logging.getLogger(__name__)
@@ -34,6 +34,30 @@ router = APIRouter(tags=["workspaces"])
 
 _UPDATABLE_COLUMNS = {"state"}
 _RUNTIME_BUSY_DETAIL = "Workspace is still stopping; deletion can be retried"
+_WORKSPACE_PROJECTION = """
+    SELECT w.id, w.created_at, w.updated_at, w.repo_id, w.name, w.branch,
+           w.path, w.state,
+           CASE WHEN w.kind = 'delegated' THEN 'delegated' ELSE 'primary' END AS kind,
+           w.parent_workspace_id,
+           d.id AS delegation_id,
+           d.status AS delegation_status
+      FROM workspaces w
+      LEFT JOIN thread_delegations d ON d.child_workspace_id = w.id
+"""
+
+
+def _workspace_projection(
+    db: sqlite3.Connection,
+    workspace_id: str,
+) -> dict[str, Any]:
+    """Load one workspace with delegated-thread metadata."""
+    row = db.execute(
+        _WORKSPACE_PROJECTION + " WHERE w.id = ?",
+        (workspace_id,),
+    ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    return dict(row)
 
 
 def _thread_children_present_error() -> HTTPException:
@@ -79,7 +103,7 @@ def list_workspaces(repo_id: str, request: Request) -> list[dict[str, Any]]:
     with get_db_for_request(request) as db:
         _check_repo_owner(db, repo_id, request)
         rows = db.execute(
-            "SELECT * FROM workspaces WHERE repo_id = ? ORDER BY created_at DESC",
+            _WORKSPACE_PROJECTION + " WHERE w.repo_id = ? ORDER BY w.created_at DESC",
             (repo_id,),
         ).fetchall()
         return [dict(r) for r in rows]
@@ -103,13 +127,14 @@ async def create_workspace(
     with get_db_for_request(request) as db:
         _check_repo_owner(db, repo_id, request)
         try:
-            return await create_workspace_for_repo(
+            created = await create_workspace_for_repo(
                 db,
                 repo_id,
                 body.name,
                 username=username,
                 tenant=tenant,
             )
+            return _workspace_projection(db, str(created["id"]))
         except RepoNotFoundError:
             raise HTTPException(status_code=404, detail="Repo not found")
         except GitError as exc:
@@ -137,8 +162,7 @@ def update_workspace(
             vals = list(updates.values()) + [workspace_id]
             db.execute(f"UPDATE workspaces SET {sets} WHERE id = ?", vals)  # noqa: S608
             db.commit()
-        updated = db.execute("SELECT * FROM workspaces WHERE id = ?", (workspace_id,)).fetchone()
-        return dict(updated)
+        return _workspace_projection(db, workspace_id)
 
 
 @router.delete("/api/workspaces/{workspace_id}", status_code=204)
