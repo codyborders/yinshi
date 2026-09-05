@@ -6,7 +6,8 @@ import { createOrchestrationRpc } from "../src/orchestration_rpc.js";
 test(
   "timed-out requests reject and late responses are ignored",
   { timeout: 2000 },
-  async () => {
+  async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
     const sent = [];
     const rpc = createOrchestrationRpc({
       sessionId: "sess-1",
@@ -17,10 +18,13 @@ test(
 
     const pending = rpc.request("ping_thread_bridge", {});
     const requestId = sent[0].request_id;
-    await assert.rejects(pending, (err) => {
+    const rejection = assert.rejects(pending, (err) => {
       assert.equal(err.code, "orchestration_timeout");
       return true;
     });
+
+    t.mock.timers.tick(100);
+    await rejection;
     assert.equal(rpc.pendingCount, 0);
 
     // A late response after the timeout must not crash or resurrect state.
