@@ -1,0 +1,161 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "80a066e2d20d",
+  "session_id": "01a06abb-dfc5-7c65-82bb-7c5f2081ee64",
+  "strategy": "manual-commit",
+  "created_at": "2026-09-05T18:07:31.221957Z",
+  "branch": "main",
+  "checkpoints_count": 3,
+  "save_step_count": 5,
+  "files_touched": [
+    "backend/src/yinshi/api/stream.py",
+    "backend/src/yinshi/services/orchestration_bridge.py",
+    "backend/src/yinshi/services/sidecar.py",
+    "backend/tests/test_orchestration_capability.py",
+    "backend/tests/test_orchestration_handlers.py",
+    "backend/tests/test_orchestration_responses.py",
+    "backend/tests/test_sidecar_orchestration.py",
+    "backend/tests/test_sidecar_orchestration_bounds.py",
+    "backend/tests/test_sidecar_orchestration_capability_gate.py",
+    "backend/tests/test_sidecar_orchestration_errors.py",
+    "backend/tests/test_sidecar_orchestration_frames.py",
+    "backend/tests/test_sidecar_orchestration_integration.py",
+    "backend/tests/test_sidecar_orchestration_query.py",
+    "backend/tests/test_sidecar_orchestration_responsiveness.py",
+    "backend/tests/test_stream_orchestration_capability.py",
+    "docs/thread-orchestration.md",
+    "sidecar/src/orchestration_rpc.js",
+    "sidecar/src/orchestration_tools.js",
+    "sidecar/src/sidecar.js",
+    "sidecar/tests/orchestration_rpc.test.js",
+    "sidecar/tests/orchestration_rpc_timeout.test.js",
+    "sidecar/tests/orchestration_sidecar.test.js",
+    "sidecar/tests/orchestration_sidecar_e2e.test.js",
+    "sidecar/tests/orchestration_tools.test.js"
+  ],
+  "agent": "Pi",
+  "model": "gpt-6-astra",
+  "turn_id": "6c9c702f5a57",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 3705995,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 90879744,
+    "output_tokens": 182016,
+    "api_call_count": 802
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "pi-skill-software-design-2026-09-04T13:44:19.339Z-0",
+      "event_type": "prompt_invocation",
+      "skill": {
+        "name": "software-design"
+      },
+      "source": {
+        "agent": "pi",
+        "signal": "input_slash_command",
+        "confidence": "explicit"
+      },
+      "turn_id": "28246a873b37",
+      "timestamp": "2026-09-04T13:44:19.339Z",
+      "native": {
+        "command": "/skill:software-design"
+      },
+      "collapse": {
+        "target": "user_message",
+        "label": "/skill:software-design",
+        "default_collapsed": true
+      }
+    },
+    {
+      "id": "pi-skill-software-design-2026-09-04T13:45:04.538Z-0",
+      "event_type": "prompt_invocation",
+      "skill": {
+        "name": "software-design"
+      },
+      "source": {
+        "agent": "pi",
+        "signal": "input_slash_command",
+        "confidence": "explicit"
+      },
+      "turn_id": "fb1eea463d6f",
+      "timestamp": "2026-09-04T13:45:04.538Z",
+      "native": {
+        "command": "/skill:software-design"
+      },
+      "collapse": {
+        "target": "user_message",
+        "label": "/skill:software-design",
+        "default_collapsed": true
+      }
+    },
+    {
+      "id": "pi-skill-software-design-2026-09-04T17:56:37.198Z-0",
+      "event_type": "prompt_invocation",
+      "skill": {
+        "name": "software-design"
+      },
+      "source": {
+        "agent": "pi",
+        "signal": "input_slash_command",
+        "confidence": "explicit"
+      },
+      "turn_id": "09e9a4a366de",
+      "timestamp": "2026-09-04T17:56:37.198Z",
+      "native": {
+        "command": "/skill:software-design"
+      },
+      "collapse": {
+        "target": "user_message",
+        "label": "/skill:software-design",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "session_metrics": {
+    "turn_count": 11
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-09-05T18:07:30.780909Z",
+    "agent_lines": 3638,
+    "agent_removed": 19,
+    "human_added": 238,
+    "human_modified": 8,
+    "human_removed": 0,
+    "total_committed": 3884,
+    "total_lines_changed": 3905,
+    "agent_percentage": 93.64916773367477,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 3,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 4,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 28891,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 5,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
+}
