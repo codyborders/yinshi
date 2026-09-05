@@ -1,10 +1,10 @@
 # Thread Orchestration Contract
 
-Status: Frozen through Phase 3.
+Status: Frozen through Phase 3. Phase 4 duplex sidecar protocol is implemented.
 
 Source: `yinshi-thread-orchestration-plan.md`, based on commit `e18c86948f533ffb002bd6ca46118b8ee3fcaafb`.
 
-This release adds database records, read and write APIs, isolated child workspaces, manual delegation, prompt execution, cancellation, retry, and results.
+This release adds database records, read and write APIs, isolated child workspaces, manual delegation, prompt execution, cancellation, retry, and results. It also adds the Phase 4 duplex sidecar bridge with one harmless ping operation. No Phase 5 model tools are enabled.
 
 ## Terms and ownership
 
@@ -171,8 +171,80 @@ The child dialog supports bounded task context, role, model, thinking, and start
 
 The Sidebar groups delegated workspaces under their owning repository. It shows delegation status and omits destructive workspace actions for delegated entries.
 
+## Duplex sidecar orchestration protocol (Phase 4)
+
+Implemented. Pi custom tools run inside the Node sidecar. The Python backend keeps tenant authorization, durable data, limits, provisioning, and scheduling. The per-query Unix socket now also carries a private duplex channel.
+
+### Capability
+
+- The backend creates one random capability per prompt run. See `orchestration_bridge.generate_orchestration_capability`.
+- The token binds to one tenant, runtime, session, prompt run, connection, and expiry. Default expiry is 30 minutes.
+- `SidecarClient.query` claims the capability once for its connection. Teardown revokes the capability. A later query cannot reuse it.
+- The token reaches the sidecar only in memory, inside query options. It never enters prompts, files, environment variables, logs, event journals, or telemetry.
+- The sidecar opens one RPC channel per query. It clears the channel when the query ends. A reused Pi session never keeps a stale token.
+
+### Wire frames
+
+Request, sidecar to backend:
+
+```json
+{
+  "type": "orchestration_request",
+  "id": "session-id",
+  "request_id": "uuid",
+  "capability": "opaque-token",
+  "operation": "ping_thread_bridge",
+  "arguments": {"message": "bounded echo"}
+}
+```
+
+Success and error responses, backend to sidecar:
+
+```json
+{
+  "type": "orchestration_response",
+  "id": "session-id",
+  "request_id": "uuid",
+  "ok": true,
+  "result": {"status": "ok", "echo": "...", "session_bound": true}
+}
+```
+
+```json
+{
+  "type": "orchestration_response",
+  "id": "session-id",
+  "request_id": "uuid",
+  "ok": false,
+  "error": {"code": "capability_invalid", "message": "..."}
+}
+```
+
+### Protocol rules
+
+1. Request frames are limited to 64 KiB. Response frames are limited to 256 KiB. Oversized frames fail closed.
+2. Frame validation is strict. The field set is exact. Strings are bounded. Arguments must be objects. Unknown fields fail closed.
+3. Operations come from a fixed allowlist. Phase 4 ships one operation: `ping_thread_bridge`. It echoes a bounded 256-character message. It touches no database, filesystem, network, or credential.
+4. A duplicate in-flight `request_id` closes the offending query and connection. Completed IDs leave the pending map. Repeating completed IDs may repeat harmless ping.
+5. One connection permits at most 16 handler tasks. Capacity exhaustion closes the query and connection without creating rejection tasks.
+6. Handler execution stops at 60 seconds with `handler_timeout`. Handler exceptions return `handler_failed` with a generic message. Logs contain fixed messages, not request content.
+7. Error codes are fixed: `invalid_request`, `request_too_large`, `unknown_operation`, `invalid_arguments`, `capability_invalid`, `capability_expired`, `session_mismatch`, `duplicate_request`, `too_many_requests`, `handler_timeout`, `handler_failed`, `response_too_large`.
+8. One lock serializes every connection write. Handler responses never interleave with stream frames.
+9. Orchestration frames are consumed before any event yield. They never reach the model event stream, the prompt journal, or replay. Ordinary Pi `tool_use` and `tool_result` events stay visible.
+10. Query teardown and disconnects cancel and drain handler tasks. Drained handlers never answer. The Node pending map then rejects with `orchestration_disconnected`.
+11. The Node side permits 16 pending requests and times out at 60 seconds. Replies must match the request, session, and originating socket.
+12. Tool registration is conditional. Queries with a capability register `thread_bridge_ping`. Queries without one do not. Overlapping bridge queries cannot replace an active owner.
+
+Frame byte limits include the envelope and newline. Tool cancellation rejects pending calls immediately. Query cleanup removes timers and abort listeners.
+
+Phase 5 mutations will require domain-level idempotency. Phase 4 does not retain completed request IDs or replay results.
+
+### Phase 4 exit
+
+A test Pi tool can call the harmless backend operation. The path stays free of deadlock, credential leakage, and journal pollution. Phase 5 tools (`spawn_thread`, `list_children`, `get_thread`, `wait_for_threads`, `cancel_thread`, `report_thread_result`) remain absent.
+
 ## Deferred work
 
-Phase 4 adds the duplex sidecar protocol. Phase 5 adds model-facing thread tools.
+Phase 5 adds model-facing thread tools and the terminal observer.
 
-Automatic terminal observers, fallback result derivation, agent-origin spawning, recursive deletion, budgets, and waiting remain deferred.
+Recursive deletion, budgets, agent-origin spawning, and waiting remain deferred.

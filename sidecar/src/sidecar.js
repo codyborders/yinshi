@@ -24,6 +24,8 @@ import {
 
 import { HEALTH_CHECK_INTERVAL } from "./constants.js";
 import { createGitAwareBashTool } from "./git_auth.js";
+import { createOrchestrationRpc } from "./orchestration_rpc.js";
+import { createThreadBridgePingTool } from "./orchestration_tools.js";
 
 const __sidecarDir = path.dirname(fileURLToPath(import.meta.url));
 const PI_PACKAGE_NAME = "@earendil-works/pi-coding-agent";
@@ -1288,6 +1290,13 @@ export class YinshiSidecar {
           cancellationNeeded = true;
         }
       }
+      // The transport is gone: pending backend calls can never be answered.
+      // Dispose the channel immediately so tools waiting on a response
+      // settle now instead of deadlocking until the prompt unwinds.
+      const orchestration = this.activeSessions.get(sessionId)?.orchestration;
+      if (orchestration?.rpc && orchestration.socket === socket) {
+        orchestration.rpc.dispose();
+      }
       if (!cancellationNeeded || this.activeSessions.get(sessionId)?.cancelRequested) {
         continue;
       }
@@ -1403,6 +1412,23 @@ export class YinshiSidecar {
       case "ping":
         sendToSocket(socket, { type: "pong" });
         break;
+      case "orchestration_response": {
+        // Route the backend answer to the pending tool promise of the
+        // addressed session. Only the socket that started the query may
+        // deliver responses. Unknown, late, or duplicate responses are
+        // consumed silently so they can never corrupt a later query.
+        const targetEntry = typeof id === "string" ? this.activeSessions.get(id) : null;
+        const orchestration = targetEntry?.orchestration;
+        if (
+          orchestration?.rpc
+          && orchestration.socket === socket
+          && orchestration.rpc.handleFrame(request)
+        ) {
+          break;
+        }
+        console.log("[sidecar] Dropped unmatched orchestration response");
+        break;
+      }
       case "terminal_attach":
         this.handleTerminalAttach(id, socket, request.options || {});
         break;
@@ -1841,6 +1867,7 @@ export class YinshiSidecar {
     agentDir,
     importedSettings,
     normalizedPiSessionFile,
+    orchestrationTools = [],
   ) {
     const { modelRuntime, registry } = await createModelRegistry(providerAuth, agentDir);
     const model = resolveModelFromRegistry(registry, modelRef, providerConfig);
@@ -1865,7 +1892,7 @@ export class YinshiSidecar {
       // The SDK's `tools` option is an allow-list of tool names. Pass Yinshi's
       // tool implementations as `customTools` so they replace the built-ins
       // while keeping read/bash/edit/write active for the model.
-      customTools: createYinshiCodingTools(cwd, gitAuth),
+      customTools: [...createYinshiCodingTools(cwd, gitAuth), ...orchestrationTools],
       sessionManager,
       settingsManager,
       modelRuntime,
@@ -1898,6 +1925,17 @@ export class YinshiSidecar {
   }
 
   _disposePiSessionEntry(entry) {
+    // A destroyed session can never receive backend answers; settle any
+    // pending orchestration calls now instead of letting them time out.
+    try {
+      entry?.orchestration?.rpc?.dispose();
+      if (entry?.orchestration) {
+        entry.orchestration.rpc = null;
+        entry.orchestration.socket = null;
+      }
+    } catch {
+      // Disposal races must not block disposal of the pi session.
+    }
     try {
       if (typeof entry?.unsubscribe === "function") {
         entry.unsubscribe();
@@ -2018,6 +2056,11 @@ export class YinshiSidecar {
           unsubscribe: null,
           cancelRequested: false,
           lastActivityMs: Date.now(),
+          // Warmed sessions register no bridge tools. The registration flag
+          // must exist so the first orchestration query recreates exactly
+          // once, and plain queries never do.
+          orchestration: { rpc: null },
+          orchestrationRegistered: false,
         });
         console.log("[sidecar] Pi session warmed");
       });
@@ -2038,7 +2081,16 @@ export class YinshiSidecar {
   }
 
   async processQuery(sessionId, socket, prompt, options) {
+    const bridgeRequested = Boolean(options.orchestration);
+    const bridgeActive = [...this.activePromptSessionsBySocket.values()].some(
+      sessions => [...(sessions.get(sessionId) || [])].some(state => state.bridgeEnabled),
+    );
+    if (this._sessionHasActivePrompt(sessionId) && (bridgeRequested || bridgeActive)) {
+      sendToSocket(socket, { id: sessionId, type: "error", error: "The session already has an active query." });
+      return;
+    }
     const promptState = this._trackPromptSession(socket, sessionId);
+    promptState.bridgeEnabled = bridgeRequested;
     const modelRef = options.model || DEFAULT_MODEL_REF;
     const cwd = options.cwd || process.cwd();
     const providerAuth = options.providerAuth || null;
@@ -2052,6 +2104,20 @@ export class YinshiSidecar {
 
     try {
       const requestedPiSessionFile = normalizePiSessionFile(options.piSessionFile || null);
+      const orchestration = options.orchestration || null;
+      const orchestrationCapability =
+        orchestration && typeof orchestration.capability === "string"
+          ? orchestration.capability
+          : null;
+      if (orchestration && (
+        typeof orchestration !== "object" || Array.isArray(orchestration)
+        || Object.keys(orchestration).length !== 1
+        || !orchestrationCapability || orchestrationCapability.length > 256
+        || !/^[\x21-\x7e]+$/.test(orchestrationCapability)
+      )) {
+        throw new Error("Orchestration options require one bounded capability string.");
+      }
+      const wantOrchestrationTools = Boolean(orchestrationCapability);
       entry = await this._withPiSessionCreationLock(sessionId, async () => {
         const currentEntry = this.activeSessions.get(sessionId);
         const authChanged = JSON.stringify(currentEntry?.providerAuth || null)
@@ -2064,6 +2130,13 @@ export class YinshiSidecar {
           !== JSON.stringify(importedSettings);
         const piSessionFileChanged = (currentEntry?.piSessionFile || null)
           !== requestedPiSessionFile;
+        // Conditional tool registration: sessions created without bridge
+        // tools must be recreated before the first orchestration query so
+        // the model never sees a stale or missing tool set.
+        const orchestrationRegistrationChanged = Boolean(
+          currentEntry
+          && currentEntry.orchestrationRegistered !== wantOrchestrationTools,
+        );
         if (
           currentEntry
           && currentEntry.modelRef === modelRef
@@ -2072,6 +2145,7 @@ export class YinshiSidecar {
           && !gitAuthChanged
           && !settingsChanged
           && !piSessionFileChanged
+          && !orchestrationRegistrationChanged
         ) {
           return currentEntry;
         }
@@ -2080,6 +2154,10 @@ export class YinshiSidecar {
           this.activeSessions.delete(sessionId);
           this._disposePiSessionEntry(currentEntry);
         }
+        const orchestrationState = { rpc: null };
+        const orchestrationTools = wantOrchestrationTools
+          ? [createThreadBridgePingTool({ rpcForCall: () => orchestrationState.rpc })]
+          : [];
         const {
           session: piSession,
           model,
@@ -2095,6 +2173,7 @@ export class YinshiSidecar {
           agentDir,
           importedSettings,
           requestedPiSessionFile,
+          orchestrationTools,
         );
         const createdEntry = {
           piSession,
@@ -2109,6 +2188,8 @@ export class YinshiSidecar {
           unsubscribe: null,
           cancelRequested: false,
           lastActivityMs: Date.now(),
+          orchestration: orchestrationState,
+          orchestrationRegistered: wantOrchestrationTools,
         };
         this.activeSessions.set(sessionId, createdEntry);
         return createdEntry;
@@ -2116,6 +2197,23 @@ export class YinshiSidecar {
 
       if (promptState.cancelled) {
         return;
+      }
+
+      // Activate the per-query orchestration channel for this prompt only.
+      // The capability lives in memory for the duration of the query and is
+      // dropped afterwards, so a reused Pi session never keeps a stale one.
+      // The owning socket is recorded so responses from any other socket
+      // are refused.
+      if (orchestrationCapability && entry.orchestration) {
+        if (entry.orchestration.rpc) {
+          entry.orchestration.rpc.dispose();
+        }
+        entry.orchestration.rpc = createOrchestrationRpc({
+          sessionId,
+          capability: orchestrationCapability,
+          send: (frame) => sendToSocket(socket, frame),
+        });
+        entry.orchestration.socket = socket;
       }
 
       const { piSession, model } = entry;
@@ -2340,6 +2438,15 @@ export class YinshiSidecar {
         });
       }
     } finally {
+      if (entry?.orchestration?.rpc) {
+        // Dispose first so every pending request settles before the channel
+        // reference is dropped.
+        entry.orchestration.rpc.dispose();
+        entry.orchestration.rpc = null;
+      }
+      if (entry?.orchestration) {
+        entry.orchestration.socket = null;
+      }
       this._untrackPromptSession(socket, promptState);
     }
   }
@@ -2371,6 +2478,12 @@ export class YinshiSidecar {
     }
     console.log("[sidecar] Cancelling prompt");
     entry.cancelRequested = true;
+    // Pending backend calls can never be answered by an aborted prompt.
+    // Dispose the channel immediately so tools waiting on a response settle
+    // now instead of deadlocking until the abort unwinds.
+    if (entry.orchestration?.rpc) {
+      entry.orchestration.rpc.dispose();
+    }
     try {
       entry.piSession.abortCompaction();
       entry.piSession.abortRetry();

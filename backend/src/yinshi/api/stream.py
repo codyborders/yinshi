@@ -50,6 +50,9 @@ from yinshi.services.live_auth_sessions import (
     register_live_auth_session,
     register_live_desktop_device,
 )
+from yinshi.services.orchestration_bridge import (
+    generate_orchestration_capability,
+)
 from yinshi.services.provider_connections import (
     resolve_provider_connection,
     update_provider_connection_secret,
@@ -76,6 +79,8 @@ from yinshi.tenant import TenantContext
 from yinshi.utils.paths import is_path_inside
 
 logger = logging.getLogger(__name__)
+
+
 _T = TypeVar("_T")
 router = APIRouter()
 
@@ -1168,6 +1173,12 @@ async def prompt_session(
             sidecar_events = sidecar.query(
                 session_id,
                 prompt,
+                orchestration_capability=generate_orchestration_capability(
+                    session_id,
+                    run_id=turn_id,
+                    tenant_id=tenant.user_id if tenant is not None else None,
+                    runtime_id=context.runtime_id,
+                ),
                 model=context.model_ref or model,
                 cwd=context.effective_cwd,
                 provider_auth=cast(dict[str, Any] | None, context.provider_auth),

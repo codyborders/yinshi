@@ -3,12 +3,27 @@
 import asyncio
 import json
 import logging
+import uuid
 from collections.abc import AsyncGenerator, Iterable
 from typing import Any, TypedDict
 
 from yinshi.config import get_settings
 from yinshi.exceptions import SidecarError, SidecarNotConnectedError
 from yinshi.model_catalog import DEFAULT_SESSION_MODEL
+from yinshi.services.orchestration_bridge import (
+    ORCHESTRATION_OPERATION_PING,
+    ORCHESTRATION_REQUEST_TYPE,
+    ORCHESTRATION_RESPONSE_MAX_BYTES,
+    ORCHESTRATION_RESPONSE_TYPE,
+    OrchestrationCapability,
+    OrchestrationHandler,
+    OrchestrationProtocolError,
+    build_orchestration_error,
+    build_orchestration_success,
+    handle_ping_thread_bridge,
+    parse_orchestration_request,
+    verify_orchestration_request,
+)
 
 
 class PiCommandPayload(TypedDict):
@@ -37,9 +52,18 @@ class PiRuntimeVersionPayload(TypedDict):
 logger = logging.getLogger(__name__)
 
 _SIDECAR_MESSAGE_LIMIT_BYTES = 1024 * 1024 * 8
+
+#: Orchestration bridge bound: seconds before an in-flight handler is cut off.
+_ORCHESTRATION_HANDLER_TIMEOUT_SECONDS = 60.0
 _SIDECAR_WARMUP_TIMEOUT_SECONDS = 30.0
 _SIDECAR_CATALOG_TIMEOUT_SECONDS = 5.0
 _SIDECAR_CANCELLATION_TIMEOUT_SECONDS = 30.0
+
+
+#: Fixed operation allowlist. Phase 5 extends this deliberately.
+ORCHESTRATION_HANDLERS: dict[str, OrchestrationHandler] = {
+    ORCHESTRATION_OPERATION_PING: handle_ping_thread_bridge,
+}
 
 
 class SidecarClient:
@@ -54,7 +78,12 @@ class SidecarClient:
             await sidecar.warmup(...)
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        orchestration_handlers: dict[str, OrchestrationHandler] | None = None,
+        orchestration_max_pending: int = 16,
+        orchestration_handler_timeout: float = _ORCHESTRATION_HANDLER_TIMEOUT_SECONDS,
+    ) -> None:
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
         self._connected = False
@@ -62,6 +91,19 @@ class SidecarClient:
         self._pending_cancellations: dict[str, asyncio.Future[dict[str, Any] | None]] = {}
         self._pending_cancellation_waiters: dict[str, int] = {}
         self._cancelled_before_query: set[str] = set()
+        self._connection_id = uuid.uuid4().hex
+        self._orchestration_capability: OrchestrationCapability | None = None
+        self._last_frame_bytes = 0
+        self._orchestration_handler_registry = (
+            dict(orchestration_handlers)
+            if orchestration_handlers is not None
+            else ORCHESTRATION_HANDLERS
+        )
+        self._orchestration_tasks: set[asyncio.Task[None]] = set()
+        self._orchestration_handlers: dict[str, asyncio.Task[None]] = {}
+        self._orchestration_max_pending = orchestration_max_pending
+        self._orchestration_handler_timeout = orchestration_handler_timeout
+        self._write_lock = asyncio.Lock()
 
     @property
     def connected(self) -> bool:
@@ -113,7 +155,9 @@ class SidecarClient:
             raise SidecarNotConnectedError("Sidecar connection refused")
 
     async def disconnect(self) -> None:
-        """Close the connection."""
+        """Revoke query authority, drain handlers, and close the connection."""
+        self._connected = False
+        await self._teardown_orchestration()
         if self._writer:
             self._writer.close()
             try:
@@ -129,8 +173,11 @@ class SidecarClient:
         if not self._connected or not self._writer:
             raise SidecarNotConnectedError("Not connected to sidecar")
         data = json.dumps(message) + "\n"
-        self._writer.write(data.encode())
-        await self._writer.drain()
+        async with self._write_lock:
+            if not self._connected or not self._writer:
+                raise SidecarNotConnectedError("Not connected to sidecar")
+            self._writer.write(data.encode())
+            await self._writer.drain()
 
     async def _read_line(self) -> dict[str, Any] | None:
         """Read a single JSON line from the sidecar."""
@@ -147,6 +194,7 @@ class SidecarClient:
             return None
         if len(line) > _SIDECAR_MESSAGE_LIMIT_BYTES:
             raise SidecarError("Sidecar message exceeded the configured read limit")
+        self._last_frame_bytes = len(line)
         message = json.loads(line.decode())
         if not isinstance(message, dict):
             raise SidecarError("Sidecar returned a non-object response")
@@ -266,30 +314,41 @@ class SidecarClient:
         agent_dir: str | None = None,
         settings_payload: dict[str, Any] | None = None,
         pi_session_file: str | None = None,
+        orchestration_capability: OrchestrationCapability | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Send a prompt and yield streaming events from the sidecar."""
+        if self._active_query_ids:
+            raise SidecarError("The connection already has an active query")
         if session_id in self._cancelled_before_query:
             self._cancelled_before_query.discard(session_id)
             yield {"id": session_id, "type": "cancelled"}
             return
 
+        if orchestration_capability is not None:
+            orchestration_capability.claim(session_id=session_id, connection_id=self._connection_id)
+            self._orchestration_capability = orchestration_capability
         self._active_query_ids.add(session_id)
         try:
+            query_options = self._build_options(
+                model,
+                cwd,
+                provider_auth,
+                provider_config,
+                git_auth,
+                agent_dir=agent_dir,
+                settings_payload=settings_payload,
+                pi_session_file=pi_session_file,
+            )
+            if self._orchestration_capability is not None:
+                query_options["orchestration"] = {
+                    "capability": self._orchestration_capability.token,
+                }
             await self._send(
                 {
                     "type": "query",
                     "id": session_id,
                     "prompt": prompt,
-                    "options": self._build_options(
-                        model,
-                        cwd,
-                        provider_auth,
-                        provider_config,
-                        git_auth,
-                        agent_dir=agent_dir,
-                        settings_payload=settings_payload,
-                        pi_session_file=pi_session_file,
-                    ),
+                    "options": query_options,
                 }
             )
 
@@ -297,6 +356,22 @@ class SidecarClient:
                 msg = await self._read_line()
                 if msg is None:
                     raise SidecarError("Sidecar connection lost")
+
+                # Internal orchestration frames are consumed before any event
+                # yield. Each one is answered by an independent bounded task
+                # so the reader stays responsive and cancellations remain
+                # readable while a handler is still running.
+                if msg.get("type") == ORCHESTRATION_RESPONSE_TYPE:
+                    continue
+                if msg.get("type") == ORCHESTRATION_REQUEST_TYPE or (
+                    "capability" in msg and "request_id" in msg
+                ):
+                    try:
+                        self._spawn_orchestration_handler(msg)
+                    except SidecarError:
+                        await self.disconnect()
+                        raise
+                    continue
 
                 # On a dedicated connection, all messages should be for this session,
                 # but filter defensively in case of protocol quirks.
@@ -318,6 +393,116 @@ class SidecarClient:
         finally:
             self._active_query_ids.discard(session_id)
             self._fail_pending_cancellation(session_id)
+            await self._teardown_orchestration()
+
+    def _spawn_orchestration_handler(self, message: dict[str, Any]) -> None:
+        """Dispatch one inbound orchestration frame without blocking the reader.
+
+        A request id that is already in flight is rejected instead of
+        dispatched, so retries cannot replay a request into the handlers.
+        """
+        request_id = message.get("request_id")
+        bounded_request_id = request_id if isinstance(request_id, str) else ""
+        is_duplicate = bool(
+            bounded_request_id and bounded_request_id in self._orchestration_handlers
+        )
+        at_capacity = len(self._orchestration_tasks) >= self._orchestration_max_pending
+        if is_duplicate or at_capacity:
+            raise SidecarError("Orchestration request capacity or correlation conflict")
+        task = asyncio.get_running_loop().create_task(
+            self._run_orchestration_handler(message, frame_bytes=self._last_frame_bytes)
+        )
+        self._orchestration_tasks.add(task)
+
+        def completed(completed_task: asyncio.Task[None]) -> None:
+            self._orchestration_tasks.discard(completed_task)
+            if self._orchestration_handlers.get(bounded_request_id) is completed_task:
+                self._orchestration_handlers.pop(bounded_request_id)
+
+        task.add_done_callback(completed)
+        if bounded_request_id:
+            self._orchestration_handlers[bounded_request_id] = task
+
+    async def _run_orchestration_handler(
+        self, message: dict[str, Any], *, frame_bytes: int
+    ) -> None:
+        """Validate, execute, and answer one request. Never raises."""
+        raw_session_id = message.get("id")
+        raw_request_id = message.get("request_id")
+        session_id = raw_session_id if isinstance(raw_session_id, str) else "unknown"
+        request_id = raw_request_id if isinstance(raw_request_id, str) else ""
+        try:
+            request = parse_orchestration_request(message, frame_bytes=frame_bytes)
+            capability = self._orchestration_capability
+            if capability is None:
+                raise OrchestrationProtocolError(
+                    "capability_invalid",
+                    "No orchestration capability is active for this query.",
+                )
+            verify_orchestration_request(
+                capability,
+                request,
+                connection_id=self._connection_id,
+            )
+            handler = self._orchestration_handler_registry[request.operation]
+            result = await asyncio.wait_for(
+                handler(request.arguments, session_id=request.session_id),
+                timeout=self._orchestration_handler_timeout,
+            )
+            if not isinstance(result, dict):
+                raise ValueError("Orchestration results must be objects")
+            response = build_orchestration_success(
+                session_id=request.session_id,
+                request_id=request.request_id,
+                result=result,
+            )
+            if (
+                len(json.dumps(response, allow_nan=False).encode()) + 1
+                > ORCHESTRATION_RESPONSE_MAX_BYTES
+            ):
+                raise OrchestrationProtocolError(
+                    "response_too_large",
+                    "The orchestration response exceeded the 256 KiB limit.",
+                )
+        except OrchestrationProtocolError as exc:
+            response = build_orchestration_error(
+                session_id=session_id,
+                request_id=request_id,
+                code=exc.code,
+                message=exc.message,
+            )
+        except TimeoutError:
+            logger.warning("Orchestration handler timed out")
+            response = build_orchestration_error(
+                session_id=session_id,
+                request_id=request_id,
+                code="handler_timeout",
+                message="The orchestration operation did not finish in time.",
+            )
+        except Exception:
+            logger.warning("Orchestration handler failed")
+            response = build_orchestration_error(
+                session_id=session_id,
+                request_id=request_id,
+                code="handler_failed",
+                message="The orchestration operation failed.",
+            )
+        try:
+            await self._send(response)
+        except (SidecarError, OSError, RuntimeError):
+            logger.warning("Orchestration response could not be delivered")
+
+    async def _teardown_orchestration(self) -> None:
+        """Cancel and drain outstanding handler tasks and drop the binding."""
+        if self._orchestration_capability is not None:
+            self._orchestration_capability.revoke()
+        self._orchestration_capability = None
+        self._orchestration_handlers.clear()
+        pending = [task for task in self._orchestration_tasks if not task.done()]
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
 
     async def resolve_model(
         self,
