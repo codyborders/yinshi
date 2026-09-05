@@ -102,22 +102,6 @@ def clear_pi_settings(user_id: str) -> None:
     _upsert_settings_row(user_id, {}, enabled=False)
 
 
-def get_pi_settings(user_id: str) -> dict[str, object] | None:
-    """Return the stored Pi settings payload for a user, if any."""
-    normalized_user_id = _validate_user_id(user_id)
-    with get_control_db() as db:
-        row = cast(
-            sqlite3.Row | None,
-            db.execute(
-                "SELECT pi_settings_json FROM user_settings WHERE user_id = ?",
-                (normalized_user_id,),
-            ).fetchone(),
-        )
-    if row is None:
-        return None
-    return _decode_settings_json(normalized_user_id, row["pi_settings_json"])
-
-
 def set_pi_settings_enabled(user_id: str, enabled: bool) -> None:
     """Enable or disable forwarding of imported Pi settings."""
     normalized_user_id = _validate_user_id(user_id)
