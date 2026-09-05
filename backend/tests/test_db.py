@@ -2340,7 +2340,7 @@ def test_control_field_encryption_migrates_existing_pi_settings(tmp_path, monkey
     get_settings.cache_clear()
     try:
         from yinshi.db import get_control_db, init_control_db
-        from yinshi.services.user_settings import get_pi_settings
+        from yinshi.services.user_settings import get_sidecar_settings_payload
 
         init_control_db()
         with get_control_db() as db:
@@ -2381,7 +2381,7 @@ def test_control_field_encryption_migrates_existing_pi_settings(tmp_path, monkey
         assert row is not None
         assert row["pi_settings_json"].startswith("enc:v1:")
         assert "api.example.com" not in row["pi_settings_json"]
-        assert get_pi_settings("user-1") == {"provider": {"baseUrl": "https://api.example.com"}}
+        assert get_sidecar_settings_payload("user-1") == {"provider": {"baseUrl": "https://api.example.com"}}
 
         from yinshi.services.pi_config import get_pi_config
 
