@@ -18,9 +18,12 @@ def init_repo(tmp_path):
     subprocess.run(
         [
             "git",
-            "-C", str(repo),
-            "-c", "user.email=test@example.com",
-            "-c", "user.name=Test",
+            "-C",
+            str(repo),
+            "-c",
+            "user.email=test@example.com",
+            "-c",
+            "user.name=Test",
             "commit",
             "--allow-empty",
             "-qm",
