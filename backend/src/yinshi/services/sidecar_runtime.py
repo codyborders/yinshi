@@ -248,39 +248,6 @@ def delete_local_pi_session_file(session_id: str) -> None:
         os.unlink(session_file)
 
 
-def _pi_session_directory_is_safe_for_delete(
-    home_path: Path,
-    session_directory: Path,
-) -> bool:
-    """Return whether one Pi session directory can be safely removed."""
-    if not home_path.is_absolute():
-        raise ValueError("home_path must be absolute")
-    if not session_directory.is_absolute():
-        raise ValueError("session_directory must be absolute")
-
-    expected_session_directory = _workspace_pi_session_directory(home_path)
-    if session_directory != expected_session_directory:
-        raise ValueError("session_directory must belong to home_path")
-
-    yinshi_directory = home_path / ".yinshi"
-    for path in (home_path, yinshi_directory, session_directory):
-        if path.is_symlink():
-            logger.warning("Refusing to delete Pi session files through a symlink")
-            return False
-
-    try:
-        resolved_session_directory = session_directory.resolve(strict=False)
-    except OSError:
-        logger.warning("Refusing to delete Pi session files because path resolution failed")
-        return False
-
-    if resolved_session_directory != expected_session_directory:
-        logger.warning("Refusing to delete Pi session files outside workspace home")
-        return False
-
-    return True
-
-
 def delete_workspace_runtime_home(tenant: TenantContext, workspace_id: str) -> None:
     """Delete the complete persistent home for one workspace runtime."""
     if tenant is None:
@@ -312,20 +279,6 @@ def delete_workspace_runtime_home(tenant: TenantContext, workspace_id: str) -> N
         runtime_directory.rmdir()
     except OSError:
         logger.warning("Workspace runtime directory was not empty after cleanup")
-
-
-def delete_workspace_pi_sessions(tenant: TenantContext | None, workspace_id: str) -> None:
-    """Delete durable Pi session files for one workspace runtime."""
-    if tenant is None:
-        return
-    if not workspace_id:
-        raise ValueError("workspace_id must not be empty")
-    home_path = _workspace_home_expected_path(tenant, workspace_id)
-    session_directory = _workspace_pi_session_directory(home_path)
-    if not _pi_session_directory_is_safe_for_delete(home_path, session_directory):
-        return
-    if session_directory.exists():
-        shutil.rmtree(session_directory)
 
 
 def _workspace_home_expected_path(tenant: TenantContext, workspace_id: str) -> Path:
@@ -660,40 +613,6 @@ def touch_tenant_container(
         return
     _call_container_method(
         getattr(container_manager, "touch", None), user_id, runtime_id=runtime_id
-    )
-
-
-def begin_tenant_container_activity(
-    request: Request,
-    tenant: TenantContext | None,
-    *,
-    runtime_id: str | None = None,
-) -> None:
-    """Mark one tenant container as busy for the duration of a request step."""
-    container_manager, user_id = _tenant_container_manager(request, tenant)
-    if container_manager is None or user_id is None:
-        return
-    _call_container_method(
-        getattr(container_manager, "begin_activity", None),
-        user_id,
-        runtime_id=runtime_id,
-    )
-
-
-def end_tenant_container_activity(
-    request: Request,
-    tenant: TenantContext | None,
-    *,
-    runtime_id: str | None = None,
-) -> None:
-    """Release one in-flight request marker from a tenant container."""
-    container_manager, user_id = _tenant_container_manager(request, tenant)
-    if container_manager is None or user_id is None:
-        return
-    _call_container_method(
-        getattr(container_manager, "end_activity", None),
-        user_id,
-        runtime_id=runtime_id,
     )
 
 
