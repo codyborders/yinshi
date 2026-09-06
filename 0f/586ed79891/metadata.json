@@ -3,7 +3,7 @@
   "checkpoint_id": "0f586ed79891",
   "strategy": "manual-commit",
   "branch": "main",
-  "checkpoints_count": 9,
+  "checkpoints_count": 16,
   "files_touched": [
     "backend/src/yinshi/api/deps.py",
     "backend/src/yinshi/api/stream.py",
@@ -36,9 +36,15 @@
     "backend/tests/test_thread_agent_reports.py",
     "backend/tests/test_thread_agent_waiting.py",
     "backend/tests/test_thread_cascade_cancel.py",
+    "backend/tests/test_thread_finalization_ownership.py",
     "backend/tests/test_thread_git_ownership.py",
+    "backend/tests/test_thread_manual_read_recovery.py",
     "backend/tests/test_thread_manual_recovery_authorization.py",
+    "backend/tests/test_thread_manual_service_wiring.py",
+    "backend/tests/test_thread_migration_validation.py",
+    "backend/tests/test_thread_namespace_collisions.py",
     "backend/tests/test_thread_orchestration.py",
+    "backend/tests/test_thread_owned_recovery.py",
     "backend/tests/test_thread_pending_finalization.py",
     "backend/tests/test_thread_phase5_schema.py",
     "backend/tests/test_thread_prompt_admission.py",
@@ -46,11 +52,19 @@
     "backend/tests/test_thread_reconcile_wiring.py",
     "backend/tests/test_thread_reconciliation.py",
     "backend/tests/test_thread_recovery_claim_authorization.py",
+    "backend/tests/test_thread_reflog_ownership.py",
     "backend/tests/test_thread_result_seal.py",
+    "backend/tests/test_thread_result_security.py",
     "backend/tests/test_thread_runtime_wiring.py",
     "backend/tests/test_thread_schema.py",
+    "backend/tests/test_thread_selected_read_cancellation.py",
+    "backend/tests/test_thread_sidecar_e2e.py",
+    "backend/tests/test_thread_snapshot_intent.py",
+    "backend/tests/test_thread_staging_ownership.py",
+    "backend/tests/test_thread_storage_layout.py",
     "backend/tests/test_thread_terminal_observer.py",
     "backend/tests/test_thread_terminal_reconciliation.py",
+    "backend/tests/test_thread_tool_errors.py",
     "backend/tests/test_thread_tool_handlers.py",
     "backend/tests/test_thread_tool_previews.py",
     "backend/tests/test_worker_runtime.py",
@@ -60,6 +74,7 @@
     "sidecar/src/sidecar.js",
     "sidecar/tests/orchestration_rpc_v2.test.js",
     "sidecar/tests/orchestration_sidecar.test.js",
+    "sidecar/tests/thread_tool_errors.test.js",
     "sidecar/tests/thread_tools.test.js"
   ],
   "sessions": [
@@ -69,6 +84,13 @@
       "compact_transcript": "/0f/586ed79891/0/transcript.jsonl",
       "content_hash": "/0f/586ed79891/0/content_hash.txt",
       "prompt": "/0f/586ed79891/0/prompt.txt"
+    },
+    {
+      "metadata": "/0f/586ed79891/1/metadata.json",
+      "transcript": "/0f/586ed79891/1/full.jsonl",
+      "compact_transcript": "/0f/586ed79891/1/transcript.jsonl",
+      "content_hash": "/0f/586ed79891/1/content_hash.txt",
+      "prompt": "/0f/586ed79891/1/prompt.txt"
     }
   ],
   "token_usage": {
@@ -76,6 +98,6 @@
     "cache_creation_tokens": 0,
     "cache_read_tokens": 149949824,
     "output_tokens": 270545,
-    "api_call_count": 1367
+    "api_call_count": 1371
   }
 }
