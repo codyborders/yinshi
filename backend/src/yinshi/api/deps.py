@@ -1,6 +1,7 @@
 """Shared API dependency helpers (tenant extraction, DB context, legacy auth)."""
 
 import asyncio
+import os
 import sqlite3
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager, suppress
@@ -8,6 +9,7 @@ from typing import Final, TypeVar, cast
 
 from fastapi import HTTPException, Request
 
+from yinshi.config import get_settings
 from yinshi.db import get_db
 from yinshi.services.github_app import GitHubCloneAccessResolver
 from yinshi.tenant import (
@@ -50,6 +52,20 @@ def require_tenant(request: Request) -> TenantContext:
     if tenant is None:
         raise HTTPException(status_code=401, detail="Authentication required")
     return tenant
+
+
+def request_database_identity(request: Request) -> str:
+    """Normalize the selected database identity without traversing the filesystem.
+
+    Desktop mode selects the legacy database even when a tenant is present.
+    Distinct path aliases fail closed rather than probing filesystem identity.
+    """
+    tenant = get_tenant(request)
+    mode = getattr(request.app.state, "mode", None)
+    path = tenant.db_path if tenant is not None and mode != "desktop" else get_settings().db_path
+    if not isinstance(path, str) or not path:
+        raise RuntimeError("Request database is unavailable")
+    return os.path.normcase(os.path.abspath(path))
 
 
 @contextmanager

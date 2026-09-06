@@ -720,9 +720,9 @@ def test_spawn_child_keeps_database_closed_during_git_work(db, git_repo, monkeyp
     monkeypatch.setattr(deps_module, "get_db", counting_get_db)
     real_create = workspaces_module.ThreadWorkspaceService.create_child_git_artifacts
 
-    async def observing(self, context):
+    async def observing(self, context, **kwargs):
         observed["during_git"] = open_connections["count"]
-        staged = await real_create(self, context)
+        staged = await real_create(self, context, **kwargs)
         observed["after_git"] = open_connections["count"]
         return staged
 
@@ -1084,7 +1084,10 @@ def test_spawn_child_attach_failure_rolls_back_and_cleans_artifacts(db, git_repo
     assert delegation["error_code"] == "provision_failed"
     assert delegation["child_session_id"] is None
     assert delegation["child_workspace_id"] is None
-    assert delegation["snapshot_ref"] is None
+    assert delegation["snapshot_ref"] == f"refs/yinshi/snapshots/{delegation['id']}"
+    assert delegation["base_kind"] == "snapshot"
+    assert len(delegation["base_commit"]) in {40, 64}
+    assert delegation["git_artifacts_claimed"] == 0
     assert (
         db.execute("SELECT COUNT(*) AS n FROM workspaces WHERE kind = 'delegated'").fetchone()["n"]
         == 0
@@ -1127,7 +1130,7 @@ def test_spawn_child_lost_cas_keeps_winner_status_and_cleans_artifacts(
     key = str(uuid.uuid4())
     real_create = workspaces_module.ThreadWorkspaceService.create_child_git_artifacts
 
-    async def racing(self, context):
+    async def racing(self, context, **kwargs):
         # Simulate one concurrent writer claiming the reservation between the
         # staging and the attach update, like a cancellation worker would.
         conn = sqlite3_module.connect(db_path, check_same_thread=False)
@@ -1139,7 +1142,7 @@ def test_spawn_child_lost_cas_keeps_winner_status_and_cleans_artifacts(
             conn.commit()
         finally:
             conn.close()
-        return await real_create(self, context)
+        return await real_create(self, context, **kwargs)
 
     monkeypatch.setattr(
         workspaces_module.ThreadWorkspaceService,

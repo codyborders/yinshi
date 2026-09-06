@@ -4,7 +4,11 @@ export const ORCHESTRATION_REQUEST_TYPE = "orchestration_request";
 
 // The backend may only be asked operations on this allowlist. Anything else
 // is rejected locally and never put on the wire.
-export const ORCHESTRATION_OPERATIONS = new Set(["ping_thread_bridge"]);
+export const THREAD_OPERATIONS = Object.freeze([
+  "spawn_thread", "list_children", "get_thread", "wait_for_threads",
+  "cancel_thread", "report_thread_result",
+]);
+export const ORCHESTRATION_OPERATIONS = new Set(["ping_thread_bridge", ...THREAD_OPERATIONS]);
 
 // Hard bound for one serialized outbound request frame (64 KiB).
 export const ORCHESTRATION_FRAME_BYTES_MAX = 64 * 1024;
@@ -34,12 +38,32 @@ export const ORCHESTRATION_ERROR_CODES = Object.freeze({
   handlerFailed: "handler_failed",
 });
 
+const THREAD_ERROR_MESSAGES = Object.freeze({
+  depth_exceeded: "The thread depth limit has been reached.",
+  child_limit_exceeded: "The direct-child limit has been reached.",
+  active_thread_limit_exceeded: "The active-thread limit has been reached.",
+  tree_limit_exceeded: "The thread tree limit has been reached.",
+  spawn_turn_limit_exceeded: "The current turn has reached its child spawn limit.",
+  thread_not_found: "Thread not found.",
+  runtime_unavailable: "The thread runtime is unavailable.",
+  workspace_provisioning_failed: "The child workspace could not be provisioned.",
+});
+
 export function createOrchestrationRpc({
   sessionId,
   capability,
   send,
-  timeoutMs = 60_000,
+  timeoutMs = 70_000,
+  protocolVersion = 1,
+  allowedOperations = ["ping_thread_bridge"],
 }) {
+  if (![1, 2].includes(protocolVersion) || !Array.isArray(allowedOperations)
+    || allowedOperations.length === 0 || new Set(allowedOperations).size !== allowedOperations.length
+    || allowedOperations.some(operation => !ORCHESTRATION_OPERATIONS.has(operation))
+    || (protocolVersion === 1 && allowedOperations.some(operation => operation !== "ping_thread_bridge"))) {
+    throw new TypeError("Invalid orchestration query permissions.");
+  }
+  const permittedOperations = new Set(allowedOperations);
   /** Pending map: request_id -> entry. */
   const pending = new Map();
   let closed = false;
@@ -71,7 +95,7 @@ export function createOrchestrationRpc({
     }
   }
 
-  function request(operation, args, { signal } = {}) {
+  function request(operation, args, { signal, toolCallId } = {}) {
     return new Promise((resolve, reject) => {
       // A disposed channel is closed: nothing is created and nothing is sent.
       if (closed) {
@@ -91,7 +115,7 @@ export function createOrchestrationRpc({
       // before anything is created or sent.
       if (
         typeof operation !== "string"
-        || !ORCHESTRATION_OPERATIONS.has(operation)
+        || !permittedOperations.has(operation)
       ) {
         reject(orchestrationError("orchestration_operation_not_allowed"));
         return;
@@ -107,6 +131,11 @@ export function createOrchestrationRpc({
         reject(orchestrationError("orchestration_too_many_requests"));
         return;
       }
+      if (protocolVersion === 2 && (typeof toolCallId !== "string"
+        || toolCallId.length === 0 || toolCallId.length > 256 || !/^[\x21-\x7e]+$/.test(toolCallId))) {
+        reject(orchestrationError("orchestration_invalid_arguments"));
+        return;
+      }
       const requestId = randomUUID();
       const frame = {
         type: ORCHESTRATION_REQUEST_TYPE,
@@ -116,6 +145,10 @@ export function createOrchestrationRpc({
         operation,
         arguments: args ?? {},
       };
+      if (protocolVersion === 2) {
+        frame.protocol_version = 2;
+        frame.tool_call_id = toolCallId;
+      }
       // Hard frame bound with safe serialization: unserializable arguments
       // and oversized frames are refused locally, never put on the wire.
       let frameBytes;
@@ -141,6 +174,14 @@ export function createOrchestrationRpc({
       };
       if (signal) {
         entry.onAbort = () => {
+          if (protocolVersion === 2 && !entry.settled) {
+            try {
+              send({ type: "orchestration_cancel", protocol_version: 2,
+                id: sessionId, request_id: requestId, capability });
+            } catch {
+              // Local cancellation still settles when the transport is gone.
+            }
+          }
           settle(entry, orchestrationError("orchestration_cancelled"));
         };
         signal.addEventListener("abort", entry.onAbort, { once: true });
@@ -217,10 +258,19 @@ export function createOrchestrationRpc({
       }
       settle(entry, null, result ?? {});
     } else if (message.ok === false) {
-      // Remote error codes and messages are never trusted or surfaced; the
-      // caller always gets one fixed, safe error.
-      const error = new Error("The orchestration operation failed.");
-      error.code = ORCHESTRATION_ERROR_CODES.handlerFailed;
+      // Pi surfaces Error.message to the model. Use only local fixed text.
+      const remote = message.error;
+      const known = protocolVersion === 2 && isPlainObject(remote)
+        && Object.keys(remote).length === 2
+        && Object.hasOwn(remote, "code") && Object.hasOwn(remote, "message")
+        && typeof remote.code === "string" && typeof remote.message === "string"
+        && Object.hasOwn(THREAD_ERROR_MESSAGES, remote.code);
+      const code = known ? remote.code : ORCHESTRATION_ERROR_CODES.handlerFailed;
+      const text = known
+        ? JSON.stringify({ error: { code, message: THREAD_ERROR_MESSAGES[code] } })
+        : "The orchestration operation failed.";
+      const error = new Error(text);
+      error.code = code;
       settle(entry, error);
     } else {
       // ok must be a strict boolean; anything else is a protocol violation.

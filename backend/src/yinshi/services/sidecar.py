@@ -4,13 +4,14 @@ import asyncio
 import json
 import logging
 import uuid
-from collections.abc import AsyncGenerator, Iterable
-from typing import Any, TypedDict
+from collections.abc import AsyncGenerator, Iterable, Mapping
+from typing import Any, TypedDict, cast
 
 from yinshi.config import get_settings
 from yinshi.exceptions import SidecarError, SidecarNotConnectedError
 from yinshi.model_catalog import DEFAULT_SESSION_MODEL
 from yinshi.services.orchestration_bridge import (
+    ORCHESTRATION_CANCEL_TYPE,
     ORCHESTRATION_OPERATION_PING,
     ORCHESTRATION_REQUEST_TYPE,
     ORCHESTRATION_RESPONSE_MAX_BYTES,
@@ -18,10 +19,12 @@ from yinshi.services.orchestration_bridge import (
     OrchestrationCapability,
     OrchestrationHandler,
     OrchestrationProtocolError,
+    ThreadOrchestrationHandler,
     build_orchestration_error,
     build_orchestration_success,
     handle_ping_thread_bridge,
     parse_orchestration_request,
+    verify_orchestration_cancel,
     verify_orchestration_request,
 )
 
@@ -54,7 +57,7 @@ logger = logging.getLogger(__name__)
 _SIDECAR_MESSAGE_LIMIT_BYTES = 1024 * 1024 * 8
 
 #: Orchestration bridge bound: seconds before an in-flight handler is cut off.
-_ORCHESTRATION_HANDLER_TIMEOUT_SECONDS = 60.0
+_ORCHESTRATION_HANDLER_TIMEOUT_SECONDS = 65.0
 _SIDECAR_WARMUP_TIMEOUT_SECONDS = 30.0
 _SIDECAR_CATALOG_TIMEOUT_SECONDS = 5.0
 _SIDECAR_CANCELLATION_TIMEOUT_SECONDS = 30.0
@@ -80,7 +83,9 @@ class SidecarClient:
 
     def __init__(
         self,
-        orchestration_handlers: dict[str, OrchestrationHandler] | None = None,
+        orchestration_handlers: (
+            Mapping[str, OrchestrationHandler | ThreadOrchestrationHandler] | None
+        ) = None,
         orchestration_max_pending: int = 16,
         orchestration_handler_timeout: float = _ORCHESTRATION_HANDLER_TIMEOUT_SECONDS,
     ) -> None:
@@ -94,7 +99,9 @@ class SidecarClient:
         self._connection_id = uuid.uuid4().hex
         self._orchestration_capability: OrchestrationCapability | None = None
         self._last_frame_bytes = 0
-        self._orchestration_handler_registry = (
+        self._orchestration_handler_registry: Mapping[
+            str, OrchestrationHandler | ThreadOrchestrationHandler
+        ] = (
             dict(orchestration_handlers)
             if orchestration_handlers is not None
             else ORCHESTRATION_HANDLERS
@@ -315,6 +322,9 @@ class SidecarClient:
         settings_payload: dict[str, Any] | None = None,
         pi_session_file: str | None = None,
         orchestration_capability: OrchestrationCapability | None = None,
+        orchestration_handlers: (
+            Mapping[str, OrchestrationHandler | ThreadOrchestrationHandler] | None
+        ) = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Send a prompt and yield streaming events from the sidecar."""
         if self._active_query_ids:
@@ -324,11 +334,19 @@ class SidecarClient:
             yield {"id": session_id, "type": "cancelled"}
             return
 
+        previous_handlers = self._orchestration_handler_registry
+        if orchestration_handlers is not None and (
+            orchestration_capability is None
+            or not orchestration_capability.allowed_operations <= orchestration_handlers.keys()
+        ):
+            raise SidecarError("Query handlers do not match its capability")
         if orchestration_capability is not None:
             orchestration_capability.claim(session_id=session_id, connection_id=self._connection_id)
             self._orchestration_capability = orchestration_capability
         self._active_query_ids.add(session_id)
         try:
+            if orchestration_handlers is not None:
+                self._orchestration_handler_registry = dict(orchestration_handlers)
             query_options = self._build_options(
                 model,
                 cwd,
@@ -343,6 +361,14 @@ class SidecarClient:
                 query_options["orchestration"] = {
                     "capability": self._orchestration_capability.token,
                 }
+                operations = self._orchestration_capability.allowed_operations
+                if operations != frozenset({ORCHESTRATION_OPERATION_PING}):
+                    query_options["orchestration"].update(
+                        {
+                            "protocol_version": 2,
+                            "allowed_operations": sorted(operations),
+                        }
+                    )
             await self._send(
                 {
                     "type": "query",
@@ -362,6 +388,9 @@ class SidecarClient:
                 # so the reader stays responsive and cancellations remain
                 # readable while a handler is still running.
                 if msg.get("type") == ORCHESTRATION_RESPONSE_TYPE:
+                    continue
+                if msg.get("type") == ORCHESTRATION_CANCEL_TYPE:
+                    self._cancel_orchestration_handler(msg)
                     continue
                 if msg.get("type") == ORCHESTRATION_REQUEST_TYPE or (
                     "capability" in msg and "request_id" in msg
@@ -394,6 +423,26 @@ class SidecarClient:
             self._active_query_ids.discard(session_id)
             self._fail_pending_cancellation(session_id)
             await self._teardown_orchestration()
+            self._orchestration_handler_registry = previous_handlers
+
+    def _cancel_orchestration_handler(self, message: dict[str, Any]) -> None:
+        """Ignore invalid cancellation without disturbing the active query."""
+        capability = self._orchestration_capability
+        if capability is None:
+            return
+        try:
+            request_id = verify_orchestration_cancel(
+                capability,
+                message,
+                connection_id=self._connection_id,
+                frame_bytes=self._last_frame_bytes,
+            )
+        except OrchestrationProtocolError:
+            logger.debug("Invalid orchestration cancellation ignored")
+            return
+        task = self._orchestration_handlers.get(request_id)
+        if task is not None and not task.done() and task.cancelling() == 0:
+            task.cancel()
 
     def _spawn_orchestration_handler(self, message: dict[str, Any]) -> None:
         """Dispatch one inbound orchestration frame without blocking the reader.
@@ -439,16 +488,22 @@ class SidecarClient:
                     "capability_invalid",
                     "No orchestration capability is active for this query.",
                 )
-            verify_orchestration_request(
+            caller = verify_orchestration_request(
                 capability,
                 request,
                 connection_id=self._connection_id,
             )
             handler = self._orchestration_handler_registry[request.operation]
-            result = await asyncio.wait_for(
-                handler(request.arguments, session_id=request.session_id),
-                timeout=self._orchestration_handler_timeout,
-            )
+            if caller is None or request.operation == ORCHESTRATION_OPERATION_PING:
+                operation = cast(OrchestrationHandler, handler)(
+                    request.arguments,
+                    session_id=capability.session_id,
+                )
+            else:
+                operation = cast(ThreadOrchestrationHandler, handler)(
+                    request.arguments, caller=caller
+                )
+            result = await asyncio.wait_for(operation, timeout=self._orchestration_handler_timeout)
             if not isinstance(result, dict):
                 raise ValueError("Orchestration results must be objects")
             response = build_orchestration_success(

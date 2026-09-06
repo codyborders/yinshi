@@ -21,7 +21,7 @@ from yinshi.model_catalog import DEFAULT_SESSION_MODEL
 
 logger = logging.getLogger(__name__)
 
-_SCHEMA_VERSION = 6
+_SCHEMA_VERSION = 7
 _SQLCIPHER_MODULE_NAMES = ("sqlcipher3.dbapi2", "pysqlcipher3.dbapi2")
 _PLAINTEXT_ROLLBACK_SUFFIX = ".plaintext.rollback"
 
@@ -688,10 +688,52 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if current < 6:
         _migrate_thread_schema(conn)
 
+    if current < 7:
+        migrate_thread_agent_schema(conn)
+
     if current != _SCHEMA_VERSION:
         conn.execute("DELETE FROM schema_version")
         conn.execute("INSERT INTO schema_version (version) VALUES (?)", (_SCHEMA_VERSION,))
         conn.commit()
+
+
+def migrate_thread_agent_schema(conn: sqlite3.Connection) -> None:
+    """Preserve manual queues and immutable tool report receipts during upgrades."""
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS thread_report_calls ("
+        "run_id TEXT NOT NULL REFERENCES prompt_runs(id) ON DELETE CASCADE, "
+        "tool_call_id TEXT NOT NULL CHECK (length(tool_call_id) BETWEEN 1 AND 256), "
+        "delegation_id TEXT NOT NULL REFERENCES thread_delegations(id) ON DELETE CASCADE, "
+        "payload_json TEXT NOT NULL, version INTEGER NOT NULL CHECK (version > 0), "
+        "PRIMARY KEY (run_id, tool_call_id))"
+    )
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(thread_delegations)")}
+    if "git_artifacts_claimed" not in columns:
+        conn.execute(
+            "ALTER TABLE thread_delegations ADD COLUMN git_artifacts_claimed "
+            "INTEGER NOT NULL DEFAULT 0 CHECK (git_artifacts_claimed IN (0, 1))"
+        )
+    if "git_artifact_namespace" not in columns:
+        conn.execute(
+            "ALTER TABLE thread_delegations ADD COLUMN git_artifact_namespace TEXT "
+            "CHECK (git_artifacts_claimed = 0 OR git_artifact_namespace IS NOT NULL) "
+            "CHECK (git_artifact_namespace IS NULL OR "
+            "(length(git_artifact_namespace) = 64 AND git_artifact_namespace NOT GLOB '*[^0-9a-f]*'))"
+        )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS thread_delegations_git_namespace_claim "
+        "ON thread_delegations(git_artifact_namespace) WHERE git_artifacts_claimed = 1"
+    )
+    if "cancel_scope" not in columns:
+        conn.execute(
+            "ALTER TABLE thread_delegations ADD COLUMN cancel_scope "
+            "TEXT CHECK (cancel_scope IN ('self', 'subtree'))"
+        )
+    if "auto_start" not in columns:
+        conn.execute(
+            "ALTER TABLE thread_delegations ADD COLUMN auto_start "
+            "INTEGER NOT NULL DEFAULT 0 CHECK (auto_start IN (0, 1))"
+        )
 
 
 def _migrate_thread_schema(conn: sqlite3.Connection) -> None:

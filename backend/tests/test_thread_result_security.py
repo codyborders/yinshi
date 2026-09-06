@@ -7,7 +7,7 @@ from tests.conftest import DEFAULT_TEST_HEADERS
 
 def test_legacy_result_route_rejects_cross_owner_parentage(noauth_client, db, monkeypatch):
     """A child owner cannot read a result attached to another owner's parent."""
-    import yinshi.api.threads as threads_module
+    import yinshi.services.thread_orchestration as orchestration_module
 
     db.executescript("""
         INSERT INTO repos (id, name, root_path, owner_email)
@@ -32,7 +32,7 @@ def test_legacy_result_route_rejects_cross_owner_parentage(noauth_client, db, mo
     """)
     db.commit()
 
-    monkeypatch.setattr(threads_module, "get_user_email", lambda request: "b@example.com")
+    monkeypatch.setattr(orchestration_module, "get_user_email", lambda request: "b@example.com")
 
     response = noauth_client.get(
         "/api/threads/sessB/result",

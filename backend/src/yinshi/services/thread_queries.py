@@ -526,6 +526,76 @@ def get_thread_limits(
     }
 
 
+def get_tool_result(db: sqlite3.Connection, delegation_id: str) -> dict[str, Any] | None:
+    """Preview an authorized result with explicit omissions and a byte budget."""
+    row = db.execute(
+        "SELECT version, source, sealed, substr(summary, 1, 4000) AS summary, "
+        "length(summary) > 4000 AS summary_truncated, "
+        "substr(base_commit, 1, 128) AS base_commit, substr(result_commit, 1, 128) AS result_commit, "
+        "substr(result_ref, 1, 256) AS result_ref, "
+        "CASE WHEN length(tests_json) <= 4000000 THEN tests_json END AS tests_json, "
+        "CASE WHEN length(warnings_json) <= 4000000 THEN warnings_json END AS warnings_json, "
+        "CASE WHEN length(changed_files_json) <= 4000000 THEN changed_files_json END AS changed_files_json "
+        "FROM thread_results WHERE delegation_id = ?",
+        (delegation_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    result: dict[str, Any] = {
+        "version": int(row["version"]),
+        "source": str(row["source"]),
+        "sealed": bool(row["sealed"]),
+        "summary": row["summary"],
+        "summary_truncated": bool(row["summary_truncated"]),
+        "base_commit": row["base_commit"],
+        "result_commit": row["result_commit"],
+        "result_ref": row["result_ref"],
+        "truncated": bool(row["summary_truncated"]),
+    }
+    fields = {
+        "tests": (10, {"command": 256, "status": 20, "summary": 512}),
+        "warnings": (10, {}),
+        "changed_files": (20, {"path": 256, "original_path": 256, "status": 20, "kind": 20}),
+    }
+    for name, (limit, limits) in fields.items():
+        try:
+            items = json.loads(row[f"{name}_json"]) if row[f"{name}_json"] is not None else None
+        except (TypeError, ValueError):
+            items = None
+        result[f"{name}_total"] = len(items) if isinstance(items, list) else None
+        truncated = not isinstance(items, list)
+        preview: list[Any] = []
+        if isinstance(items, list):
+            truncated = len(items) > limit
+            for item in items[:limit]:
+                if name == "warnings" and isinstance(item, str):
+                    preview.append(item[:256])
+                    truncated |= len(item) > 256
+                elif limits and isinstance(item, dict):
+                    entry = {}
+                    for key, maximum in limits.items():
+                        value = item.get(key)
+                        entry[key] = value[:maximum] if isinstance(value, str) else None
+                        truncated |= isinstance(value, str) and len(value) > maximum
+                    preview.append(entry)
+                else:
+                    truncated = True
+        result[name] = preview
+        result[f"{name}_truncated"] = truncated
+        result["truncated"] |= truncated
+    # Reserve space for the thread, optional messages, envelope and JSON escaping.
+    while len(json.dumps(result, ensure_ascii=True).encode("utf-8")) > 120_000:
+        for name in ("changed_files", "tests", "warnings"):
+            if result[name]:
+                result[name].pop()
+                result[f"{name}_truncated"] = True
+                result["truncated"] = True
+                break
+        else:
+            raise ThreadTreeSizeError("thread result metadata exceeds the tool response bound")
+    return result
+
+
 def get_thread_result(
     db: sqlite3.Connection,
     session_id: str,

@@ -23,6 +23,7 @@ from yinshi.api.deps import (
     check_owner,
     get_tenant,
     get_user_email,
+    request_database_identity,
     run_db_operation_for_request,
 )
 from yinshi.auth import get_session_identity
@@ -1033,7 +1034,8 @@ async def prompt_session(
     prompt = body.prompt
     from yinshi.services.prompt_journal import get_active_prompt_run_id
 
-    turn_id = get_active_prompt_run_id() or uuid.uuid4().hex
+    durable_run_id = get_active_prompt_run_id()
+    turn_id = durable_run_id or uuid.uuid4().hex
 
     # Atomically claim the session and persist one deterministic user turn.
     def reserve_prompt(database: sqlite3.Connection) -> None:
@@ -1170,6 +1172,17 @@ async def prompt_session(
 
             logger.info("Prompt stream started")
 
+            from yinshi.services.thread_tool_handlers import build_thread_handlers
+
+            thread_service = request.app.state.thread_orchestration
+            operations = await thread_service.query_operations(
+                request,
+                session_id=session_id,
+                run_id=durable_run_id,
+            )
+            handlers = None
+            if operations != frozenset({"ping_thread_bridge"}):
+                handlers = build_thread_handlers(request, thread_service)
             sidecar_events = sidecar.query(
                 session_id,
                 prompt,
@@ -1178,7 +1191,10 @@ async def prompt_session(
                     run_id=turn_id,
                     tenant_id=tenant.user_id if tenant is not None else None,
                     runtime_id=context.runtime_id,
+                    allowed_operations=operations,
+                    database_path=request_database_identity(request),
                 ),
+                orchestration_handlers=handlers,
                 model=context.model_ref or model,
                 cwd=context.effective_cwd,
                 provider_auth=cast(dict[str, Any] | None, context.provider_auth),

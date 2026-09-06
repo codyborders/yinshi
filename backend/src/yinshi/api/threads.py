@@ -1,4 +1,4 @@
-"""Read-only thread hierarchy endpoints.
+"""Thread hierarchy and manual delegation endpoints.
 
 Threads are projections over existing sessions. Parentage comes from
 ``thread_delegations``. Every endpoint performs the same session-ownership
@@ -7,9 +7,9 @@ check as the existing session APIs before returning data.
 
 import logging
 from collections.abc import Callable
-from typing import Any, TypeVar, cast
+from typing import Annotated, Any, TypeVar, cast
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from yinshi.api.deps import (
     check_session_owner,
@@ -45,8 +45,6 @@ from yinshi.services.thread_queries import (
     ThreadNotFoundError,
     get_thread,
     get_thread_limits,
-    get_thread_result,
-    get_tree,
     list_children,
 )
 
@@ -54,6 +52,16 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["threads"])
 
 _QueryResult = TypeVar("_QueryResult")
+
+
+def get_thread_orchestration(request: Request) -> ThreadOrchestrationService:
+    """Use the application owner rather than creating isolated notification state."""
+    if not get_settings().thread_hierarchy_enabled:
+        raise HTTPException(status_code=404, detail="Thread hierarchy is disabled")
+    service = getattr(request.app.state, "thread_orchestration", None)
+    if not isinstance(service, ThreadOrchestrationService):
+        raise HTTPException(status_code=503, detail="Execution storage is temporarily unavailable")
+    return service
 
 
 def _resolve_authorized_thread(
@@ -128,16 +136,16 @@ def get_thread_limits_route(session_id: str, request: Request) -> dict[str, Any]
 
 
 @router.get("/api/threads/{session_id}/result", response_model=ThreadResultOut)
-def get_thread_result_route(session_id: str, request: Request) -> dict[str, Any]:
-    """Return the sealed stored result for a delegated child thread."""
-    if not _hierarchy_enabled():
-        raise HTTPException(status_code=404, detail="Thread hierarchy is disabled")
-    with get_db_for_request(request) as db:
-        _resolve_authorized_thread(db, session_id, request)
-        owner_email = _legacy_owner_email(request)
-        result = _run_visible_query(
-            lambda: get_thread_result(db, session_id, owner_email=owner_email)
-        )
+async def get_thread_result_route(
+    session_id: str,
+    request: Request,
+    service: Annotated[ThreadOrchestrationService, Depends(get_thread_orchestration)],
+) -> dict[str, Any]:
+    """Refresh the authorized child and return only its sealed result."""
+    try:
+        result = await service.get_manual_result(request, session_id=session_id)
+    except (ThreadNotFoundError, ThreadParentNotAuthorizedError) as exc:
+        raise HTTPException(status_code=404, detail="Session not found") from exc
     if result is None:
         raise HTTPException(status_code=404, detail="Thread result not found")
     return result
@@ -151,12 +159,13 @@ async def report_thread_result(
     child_session_id: str,
     body: ThreadResultReportCreate,
     request: Request,
+    service: Annotated[ThreadOrchestrationService, Depends(get_thread_orchestration)],
 ) -> dict[str, Any]:
     """Store one reported result draft for a delegated child thread."""
     if not _hierarchy_enabled():
         raise HTTPException(status_code=404, detail="Thread hierarchy is disabled")
     try:
-        return await ThreadOrchestrationService().report_result(
+        return await service.report_result(
             request,
             child_session_id=child_session_id,
             body=body,
@@ -175,15 +184,16 @@ async def report_thread_result(
 
 
 @router.get("/api/threads/{session_id}/tree", response_model=ThreadTreeOut)
-def get_thread_tree_route(session_id: str, request: Request) -> dict[str, Any]:
-    """Return the bounded root thread tree containing a session."""
-    if not _hierarchy_enabled():
-        raise HTTPException(status_code=404, detail="Thread hierarchy is disabled")
-    with get_db_for_request(request) as db:
-        _resolve_authorized_thread(db, session_id, request)
-        return _run_visible_query(
-            lambda: get_tree(db, session_id, owner_email=_legacy_owner_email(request))
-        )
+async def get_thread_tree_route(
+    session_id: str,
+    request: Request,
+    service: Annotated[ThreadOrchestrationService, Depends(get_thread_orchestration)],
+) -> dict[str, Any]:
+    """Refresh and return the authorized bounded root tree."""
+    try:
+        return await service.get_manual_tree(request, session_id=session_id)
+    except (ThreadNotFoundError, ThreadParentNotAuthorizedError) as exc:
+        raise HTTPException(status_code=404, detail="Session not found") from exc
 
 
 _PROVISION_FAILED_MESSAGE = "child workspace provisioning failed"
@@ -203,12 +213,16 @@ def _spawn_out(outcome: ThreadSpawnOutcome) -> ThreadSpawnOut:
     "/api/threads/{thread_id}/cancel",
     response_model=ThreadSpawnOut,
 )
-async def cancel_thread_child(thread_id: str, request: Request) -> ThreadSpawnOut:
+async def cancel_thread_child(
+    thread_id: str,
+    request: Request,
+    service: Annotated[ThreadOrchestrationService, Depends(get_thread_orchestration)],
+) -> ThreadSpawnOut:
     """Cancel one child thread by attached session ID or delegation ID."""
     if not _hierarchy_enabled():
         raise HTTPException(status_code=404, detail="Thread hierarchy is disabled")
     try:
-        outcome = await ThreadOrchestrationService().cancel_child(
+        outcome = await service.cancel_child(
             request,
             thread_id=thread_id,
         )
@@ -235,12 +249,13 @@ async def retry_thread_child(
     child_session_id: str,
     body: ThreadRetryCreate,
     request: Request,
+    service: Annotated[ThreadOrchestrationService, Depends(get_thread_orchestration)],
 ) -> ThreadSpawnOut:
     """Retry one failed, cancelled, or interrupted child as a new child."""
     if not _hierarchy_enabled():
         raise HTTPException(status_code=404, detail="Thread hierarchy is disabled")
     try:
-        outcome = await ThreadOrchestrationService().retry_child(
+        outcome = await service.retry_child(
             request,
             child_session_id=child_session_id,
             body=body,
@@ -280,12 +295,13 @@ async def spawn_thread_child(
     parent_session_id: str,
     body: ThreadChildCreate,
     request: Request,
+    service: Annotated[ThreadOrchestrationService, Depends(get_thread_orchestration)],
 ) -> ThreadSpawnOut:
     """Reserve, attach, and optionally start one manual child thread."""
     if not _hierarchy_enabled():
         raise HTTPException(status_code=404, detail="Thread hierarchy is disabled")
     try:
-        outcome = await ThreadOrchestrationService().spawn_child(
+        outcome = await service.spawn_child(
             request,
             parent_session_id=parent_session_id,
             body=body,

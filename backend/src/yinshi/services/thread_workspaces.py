@@ -15,9 +15,11 @@ import os
 import re
 import shutil
 import sqlite3
+import stat
 import tempfile
-from contextlib import suppress
-from dataclasses import dataclass
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager, suppress
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from yinshi.config import get_settings
@@ -35,6 +37,16 @@ from yinshi.services.git import run_git_bytes as _run_git_bytes
 from yinshi.services.repository_lifecycle import (
     repository_lifecycle,
     repository_lifecycle_root,
+)
+from yinshi.services.thread_git_ownership import (
+    ThreadGitClaim,
+    ThreadGitCleanup,
+    ThreadGitFinalization,
+    ThreadGitOwnershipError,
+    ThreadGitWorktree,
+    thread_git_claim_namespace,
+    thread_git_namespace,
+    verify_thread_git_workspace,
 )
 from yinshi.services.workspace_files import (
     ChangedFile,
@@ -140,6 +152,25 @@ class ThreadStagedChildGit:
     base_commit: str
     snapshot_ref: str | None
     snapshot_published: bool
+
+
+@asynccontextmanager
+async def _thread_staging_lifecycle(
+    context: ThreadParentGitContext,
+    ownership: ThreadGitClaim | None,
+) -> AsyncIterator[str | None]:
+    """Keep logical then physical repository lock ordering consistent."""
+    async with repository_lifecycle(context.repo_id, context.lock_root):
+        if ownership is None:
+            yield None
+        else:
+            async with thread_git_namespace(
+                context.repo_path,
+                context.branch,
+                ownership.database_identity,
+                create_owner=True,
+            ) as namespace:
+                yield namespace
 
 
 @dataclass(frozen=True, slots=True)
@@ -349,6 +380,7 @@ async def _write_tree_through_alternate_index(
     workspace_path: str,
     *,
     base_treeish: str | None,
+    excluded_worktrees: tuple[str, ...] = (),
 ) -> str:
     """Write one tree from the workspace through a private temporary index.
 
@@ -373,8 +405,20 @@ async def _write_tree_through_alternate_index(
                 cwd=workspace_path,
                 env=index_env,
             )
+        if excluded_worktrees and await _run_git_bytes(
+            ["ls-files", "-z", "--", *(f":(top,literal){path}" for path in excluded_worktrees)],
+            cwd=workspace_path,
+            env=index_env,
+        ):
+            raise ThreadGitOwnershipError()
         await _run_git(
-            ["add", "-A", "--", "."],
+            [
+                "add",
+                "-A",
+                "--",
+                ".",
+                *(f":(top,literal,exclude){path}" for path in excluded_worktrees),
+            ],
             cwd=workspace_path,
             env=index_env,
         )
@@ -403,10 +447,17 @@ async def _assert_no_protected_candidates(workspace_path: str) -> None:
             raise ThreadProtectedPathError("thread snapshot contains a protected secret path")
 
 
-async def _worktree_status_output(workspace_path: str) -> bytes:
-    """Return the raw null-delimited porcelain status for one workspace."""
+async def _worktree_status_output(
+    workspace_path: str, *, excluded_worktrees: tuple[str, ...] = ()
+) -> bytes:
+    """Return user status without validated backend-owned internal worktrees."""
+    pathspec = (
+        ["--", ".", *(f":(top,literal,exclude){path}" for path in excluded_worktrees)]
+        if excluded_worktrees
+        else []
+    )
     return await _run_git_bytes(
-        ["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+        ["status", "--porcelain=v1", "-z", "--untracked-files=all", *pathspec],
         cwd=workspace_path,
     )
 
@@ -423,6 +474,12 @@ async def _ref_exists(repo_path: str, ref: str) -> bool:
 class ThreadWorkspaceService:
     """Provision and finalize isolated Git workspaces for child threads."""
 
+    @staticmethod
+    def child_artifact_location(repo_path: str, delegation_id: str) -> tuple[str, str]:
+        """Derive internal names without reading storage or resolving paths."""
+        branch = _child_branch_name(_require_delegation_id(delegation_id))
+        return branch, os.path.join(repo_path, _WORKTREE_DIRECTORY, branch)
+
     def load_parent_context(
         self,
         db: sqlite3.Connection,
@@ -434,7 +491,9 @@ class ThreadWorkspaceService:
         """Resolve the immutable parent Git context in one short database read."""
         normalized_delegation_id = _require_delegation_id(delegation_id)
         location = _load_parent_location(db, parent_workspace_id)
-        branch = _child_branch_name(normalized_delegation_id)
+        branch, worktree_path = self.child_artifact_location(
+            location.repo_path, normalized_delegation_id
+        )
         return ThreadParentGitContext(
             delegation_id=normalized_delegation_id,
             repo_id=location.repo_id,
@@ -442,13 +501,15 @@ class ThreadWorkspaceService:
             parent_workspace_id=location.workspace_id,
             parent_workspace_path=location.workspace_path,
             branch=branch,
-            worktree_path=os.path.join(location.repo_path, _WORKTREE_DIRECTORY, branch),
+            worktree_path=worktree_path,
             lock_root=repository_lifecycle_root(db, tenant),
         )
 
     async def create_child_git_artifacts(
         self,
         context: ThreadParentGitContext,
+        *,
+        ownership: ThreadGitClaim | None = None,
     ) -> ThreadStagedChildGit:
         """Create one delegated worktree without touching any database.
 
@@ -474,7 +535,7 @@ class ThreadWorkspaceService:
         # ownership uncertain, and an uncertain ref is preserved.
         snapshot_published = False
 
-        async with repository_lifecycle(context.repo_id, context.lock_root):
+        async with _thread_staging_lifecycle(context, ownership) as namespace:
             claimed = False
             try:
                 # Claim the target before any mutation so a collision can
@@ -485,18 +546,56 @@ class ThreadWorkspaceService:
                     raise ThreadSnapshotRefExistsError(
                         "snapshot ref already exists for this delegation",
                     )
+                if ownership is not None:
+                    assert namespace is not None
+                    await self._exact_ref_value(context.repo_path, f"refs/heads/{context.branch}")
+                    await self._exact_ref_value(
+                        context.repo_path, _snapshot_ref(context.delegation_id)
+                    )
+                    if (
+                        await self._exact_ref_value(
+                            context.repo_path, _result_ref(context.delegation_id)
+                        )
+                        is not None
+                    ):
+                        raise ThreadResultRefConflictError(
+                            "A result ref already exists for this delegation."
+                        )
+                    await ownership.claim_namespace(namespace)
+                    await verify_thread_git_workspace(
+                        context.parent_workspace_path, context.branch, namespace
+                    )
                 claimed = True
+                excluded_worktrees: tuple[str, ...] = ()
+                if ownership is not None:
+                    if ownership.owned_worktrees is None:
+                        raise ThreadGitOwnershipError()
+                    excluded_worktrees = await self._owned_snapshot_exclusions(
+                        context, await ownership.owned_worktrees()
+                    )
                 await _assert_submodules_clean(context.parent_workspace_path)
-                status_before = await _worktree_status_output(context.parent_workspace_path)
+                status_before = await _worktree_status_output(
+                    context.parent_workspace_path, excluded_worktrees=excluded_worktrees
+                )
                 head = await _resolve_head_commit(context.parent_workspace_path)
                 if status_before:
                     base_kind = "snapshot"
                     snapshot_ref = _snapshot_ref(context.delegation_id)
+
+                    async def record_intent(ref: str, oid: str) -> None:
+                        if ownership is None:
+                            return
+                        if ownership.record_snapshot is None or namespace is None:
+                            raise ThreadGitOwnershipError()
+                        await ownership.record_snapshot(namespace, ref, oid)
+
                     base_commit = await self._create_snapshot(
                         context.repo_path,
                         context.parent_workspace_path,
                         context.delegation_id,
                         head,
+                        record_intent=record_intent,
+                        excluded_worktrees=excluded_worktrees,
                     )
                     snapshot_published = True
                 else:
@@ -520,7 +619,8 @@ class ThreadWorkspaceService:
                 # Only artifacts claimed by this attempt may be removed. A
                 # failed claim means nothing was mutated and pre-existing
                 # branches and worktrees must survive untouched.
-                if claimed:
+                if claimed and ownership is None:
+                    # Durable claims use core cleanup after the terminal decision.
                     failures = await self._cleanup_artifacts_unlocked(
                         None,
                         context.repo_path,
@@ -550,18 +650,19 @@ class ThreadWorkspaceService:
         self,
         context: ThreadParentGitContext,
         staged: ThreadStagedChildGit,
+        *,
+        ownership: ThreadGitCleanup | None = None,
     ) -> None:
-        """Remove one attempt's staged Git artifacts without any database.
+        """Remove staged artifacts without retaining a database connection.
 
-        Attach-time failures must leave no worktree, branch, or snapshot ref
-        behind for a delegation that never attached a child. This API takes
-        no connection so callers honor the no-database-during-Git invariant.
-        Only artifacts claimed by the staging attempt are removed, and the
-        snapshot ref is deleted only when the attempt definitely published
-        it. Artifact cleanup failures are logged for reconciliation and
-        never raised, matching the staging failure policy.
+        Phase 2 callers retain their existing best-effort cleanup policy.
+        Orchestration callers supply recorded ownership and receive an error
+        if cleanup cannot establish absence. Incomplete ownership stays pending.
         """
         async with repository_lifecycle(context.repo_id, context.lock_root):
+            if ownership is not None:
+                await self._discard_owned_artifacts(context, staged, ownership)
+                return
             failures = await self._cleanup_artifacts_unlocked(
                 None,
                 context.repo_path,
@@ -574,9 +675,184 @@ class ThreadWorkspaceService:
             )
         if failures:
             logger.warning(
-                "Thread workspace cleanup left %d artifact(s) for " "delegation reconciliation",
+                "Thread workspace cleanup left %d artifact(s) for delegation reconciliation",
                 len(failures),
             )
+
+    async def _discard_owned_artifacts(
+        self,
+        context: ThreadParentGitContext,
+        staged: ThreadStagedChildGit,
+        ownership: ThreadGitCleanup,
+    ) -> None:
+        """Hold the physical lock through ownership checks, deletion, and release."""
+        async with thread_git_namespace(
+            context.repo_path,
+            context.branch,
+            ownership.database_identity,
+            create_owner=False,
+        ) as namespace:
+            if namespace != ownership.namespace:
+                raise ThreadGitOwnershipError()
+            if not await ownership.validate_claim():
+                return
+            ref_storage = await _run_git(["rev-parse", "--show-ref-format"], cwd=context.repo_path)
+            if ref_storage == "--show-ref-format":
+                ref_storage = await _run_git(
+                    ["config", "--local", "--default", "files", "--get", "extensions.refStorage"],
+                    cwd=context.repo_path,
+                )
+            if ref_storage != "files":
+                raise ThreadGitOwnershipError()
+            snapshot = _snapshot_ref(context.delegation_id)
+            expected: str | None = None
+            if staged.snapshot_ref is not None:
+                if (
+                    staged.snapshot_ref != snapshot
+                    or staged.base_kind != "snapshot"
+                    or re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", staged.base_commit) is None
+                ):
+                    raise ThreadGitOwnershipError()
+                expected = staged.base_commit
+            actual = await self._exact_ref_value(context.repo_path, snapshot)
+            if actual is not None and actual != expected:
+                raise ThreadGitOwnershipError()
+            branch_ref = f"refs/heads/{context.branch}"
+            branch_oid = await self._exact_ref_value(context.repo_path, branch_ref)
+            self._verify_cleanup_path(context)
+            await self._verify_worktree_registration(context, require_absent=False)
+            if os.path.lexists(context.worktree_path):
+                await verify_thread_git_workspace(context.worktree_path, context.branch, namespace)
+            failures = await self._cleanup_artifacts_unlocked(
+                None,
+                context.repo_path,
+                context.delegation_id,
+                context.branch,
+                workspace_path=context.worktree_path,
+                workspace_id=None,
+                delete_snapshot_ref=False,
+                delete_result_ref=False,
+                prune_worktrees=False,
+                delete_branch=False,
+            )
+            if failures:
+                raise ThreadGitOwnershipError()
+            for ref, oid in ((branch_ref, branch_oid), (snapshot, expected)):
+                if oid is None:
+                    continue
+                try:
+                    await _run_git(
+                        ["update-ref", "--no-deref", "-d", ref, oid],
+                        cwd=context.repo_path,
+                    )
+                except GitError:
+                    if await self._exact_ref_value(context.repo_path, ref) is not None:
+                        raise ThreadGitOwnershipError() from None
+            if await self._exact_ref_value(context.repo_path, branch_ref) is not None:
+                raise ThreadGitOwnershipError()
+            if await self._exact_ref_value(context.repo_path, snapshot) is not None:
+                raise ThreadGitOwnershipError()
+            self._verify_cleanup_path(context)
+            try:
+                os.lstat(context.worktree_path)
+            except FileNotFoundError:
+                pass
+            else:
+                raise ThreadGitOwnershipError()
+            await self._verify_worktree_registration(context, require_absent=True)
+            await ownership.release_claim()
+
+    @staticmethod
+    def _verify_cleanup_path(context: ThreadParentGitContext) -> None:
+        """Reject redirected cleanup targets instead of following their links."""
+        root = Path(context.repo_path)
+        expected = root / _WORKTREE_DIRECTORY / _child_branch_name(context.delegation_id)
+        if context.branch != _child_branch_name(context.delegation_id):
+            raise ThreadGitOwnershipError()
+        if os.path.abspath(context.worktree_path) != os.path.abspath(expected):
+            raise ThreadGitOwnershipError()
+        for candidate in (root, root / _WORKTREE_DIRECTORY, expected.parent, expected):
+            try:
+                info = os.lstat(candidate)
+            except FileNotFoundError:
+                continue
+            if stat.S_ISLNK(info.st_mode):
+                raise ThreadGitOwnershipError()
+
+    @staticmethod
+    async def _exact_ref_value(repo_path: str, ref: str) -> str | None:
+        """Reject redirected references and require positive absence checks."""
+        common_raw = await _run_git_bytes(
+            ["rev-parse", "--path-format=absolute", "--git-common-dir"],
+            cwd=repo_path,
+        )
+        common = Path(os.fsdecode(common_raw.removesuffix(b"\n"))).resolve(strict=True)
+        path_raw = await _run_git_bytes(
+            ["rev-parse", "--path-format=absolute", "--git-path", ref],
+            cwd=repo_path,
+        )
+        loose_path = Path(os.fsdecode(path_raw.removesuffix(b"\n")))
+        storage_root = loose_path
+        for component in reversed(ref.split("/")):
+            if storage_root.name != component:
+                raise ThreadGitOwnershipError()
+            storage_root = storage_root.parent
+        if storage_root.resolve(strict=True) != common:
+            raise ThreadGitOwnershipError()
+        candidate = common
+        loose_present = False
+        for component in ref.split("/"):
+            candidate /= component
+            try:
+                info = os.lstat(candidate)
+            except FileNotFoundError:
+                continue
+            if stat.S_ISLNK(info.st_mode):
+                raise ThreadGitOwnershipError()
+            loose_present = candidate == common / ref
+        output = await _run_git(
+            ["for-each-ref", "--count=1", "--format=%(refname) %(objectname) %(symref) END", ref],
+            cwd=repo_path,
+        )
+        fields = output.split(" ")
+        if not fields or fields[0] != ref:
+            if loose_present:
+                raise ThreadGitOwnershipError()
+            return None
+        if (
+            len(fields) != 4
+            or fields[2] != ""
+            or fields[3] != "END"
+            or re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", fields[1]) is None
+        ):
+            raise ThreadGitOwnershipError()
+        return fields[1]
+
+    @staticmethod
+    async def _verify_worktree_registration(
+        context: ThreadParentGitContext,
+        *,
+        require_absent: bool,
+    ) -> None:
+        """Reject cleanup when another registration occupies the owned path."""
+        output = await _run_git_bytes(
+            ["worktree", "list", "--porcelain", "-z"], cwd=context.repo_path
+        )
+        expected_path = os.path.normcase(os.path.realpath(context.worktree_path))
+        expected_branch = f"refs/heads/{context.branch}"
+        path: str | None = None
+        branch: str | None = None
+        for field in output.split(b"\0"):
+            if field.startswith(b"worktree "):
+                path = os.path.normcase(os.path.realpath(os.fsdecode(field[9:])))
+            elif field.startswith(b"branch "):
+                branch = os.fsdecode(field[7:])
+            elif not field:
+                if path == expected_path and (require_absent or branch != expected_branch):
+                    raise ThreadGitOwnershipError()
+                if branch == expected_branch and path != expected_path:
+                    raise ThreadGitOwnershipError()
+                path, branch = None, None
 
     async def provision_child(
         self,
@@ -705,6 +981,8 @@ class ThreadWorkspaceService:
         workspace_id: str | None,
         delete_snapshot_ref: bool,
         delete_result_ref: bool,
+        prune_worktrees: bool = True,
+        delete_branch: bool = True,
     ) -> list[GitError]:
         """Remove one attempt's Git artifacts, then its row.
 
@@ -727,8 +1005,9 @@ class ThreadWorkspaceService:
                     ["worktree", "remove", "--force", worktree_target],
                     cwd=repo_path,
                 )
-            with suppress(GitError):
-                await _run_git(["worktree", "prune"], cwd=repo_path)
+            if prune_worktrees:
+                with suppress(GitError):
+                    await _run_git(["worktree", "prune"], cwd=repo_path)
             # A drifted directory makes the Git removal fail above. Removing
             # the leftover turns that into success; a persistent target is
             # the only cleanup failure worth reporting.
@@ -738,14 +1017,13 @@ class ThreadWorkspaceService:
                 failures,
             )
             ref_deletions: list[list[str]] = []
+            if delete_branch:
+                ref_deletions.append(["branch", "-D", "--", branch])
             if delete_snapshot_ref:
                 ref_deletions.append(["update-ref", "-d", _snapshot_ref(delegation_id)])
             if delete_result_ref:
                 ref_deletions.append(["update-ref", "-d", _result_ref(delegation_id)])
-            for args in (
-                ["branch", "-D", "--", branch],
-                *ref_deletions,
-            ):
+            for args in ref_deletions:
                 try:
                     await _run_git(args, cwd=repo_path)
                 except GitError as exc:
@@ -845,6 +1123,8 @@ class ThreadWorkspaceService:
     async def finalize_child_context(
         self,
         context: ThreadChildFinalizationContext,
+        *,
+        ownership: ThreadGitFinalization | None = None,
     ) -> FinalizedThreadGitResult:
         """Finalize one child from its captured context with no open database.
 
@@ -855,6 +1135,70 @@ class ThreadWorkspaceService:
         normalized_delegation_id = _require_delegation_id(context.delegation_id)
         normalized_base_commit = _require_identifier(context.base_commit, "base_commit")
         async with repository_lifecycle(context.repo_id, context.lock_root):
+            if ownership is not None:
+                async with thread_git_namespace(
+                    context.repo_path,
+                    _child_branch_name(normalized_delegation_id),
+                    ownership.database_identity,
+                    create_owner=False,
+                ) as namespace:
+                    if namespace != ownership.namespace:
+                        raise ThreadGitOwnershipError()
+                    await ownership.validate_claim()
+                    ref_storage = await _run_git(
+                        ["rev-parse", "--show-ref-format"], cwd=context.repo_path
+                    )
+                    if ref_storage == "--show-ref-format":
+                        ref_storage = await _run_git(
+                            [
+                                "config",
+                                "--local",
+                                "--default",
+                                "files",
+                                "--get",
+                                "extensions.refStorage",
+                            ],
+                            cwd=context.repo_path,
+                        )
+                    if ref_storage != "files":
+                        raise ThreadGitOwnershipError()
+                    expected = (
+                        Path(context.repo_path)
+                        / _WORKTREE_DIRECTORY
+                        / _child_branch_name(normalized_delegation_id)
+                    )
+                    if os.path.abspath(context.workspace_path) != os.path.abspath(expected):
+                        raise ThreadGitOwnershipError()
+                    for path in (
+                        Path(context.repo_path),
+                        expected.parent.parent,
+                        expected.parent,
+                        expected,
+                    ):
+                        if stat.S_ISLNK(os.lstat(path).st_mode):
+                            raise ThreadGitOwnershipError()
+                    if not stat.S_ISREG(os.lstat(expected / ".git").st_mode):
+                        raise ThreadGitOwnershipError()
+                    await verify_thread_git_workspace(
+                        context.workspace_path,
+                        _child_branch_name(normalized_delegation_id),
+                        ownership.namespace,
+                    )
+                    await self._exact_ref_value(
+                        context.repo_path, _result_ref(normalized_delegation_id)
+                    )
+                    result = await self._finalize_locked(
+                        context.repo_path,
+                        context.workspace_path,
+                        normalized_delegation_id,
+                        normalized_base_commit,
+                    )
+                    if (
+                        await self._exact_ref_value(context.repo_path, result.result_ref)
+                        != result.result_commit
+                    ):
+                        raise ThreadGitOwnershipError()
+                    return result
             return await self._finalize_locked(
                 context.repo_path,
                 context.workspace_path,
@@ -942,7 +1286,7 @@ class ThreadWorkspaceService:
         if existing_commit is None:
             try:
                 await _run_git(
-                    ["update-ref", result_ref, result_commit, _MISSING_REF_OID],
+                    ["update-ref", "--no-deref", result_ref, result_commit, _MISSING_REF_OID],
                     cwd=repo_path,
                 )
             except GitError as exc:
@@ -1020,12 +1364,76 @@ class ThreadWorkspaceService:
         if os.path.lexists(os.path.join(repo_path, _WORKTREE_DIRECTORY, branch)):
             raise ThreadBranchCollisionError(f"thread worktree path for {branch} already exists")
 
+    async def _owned_snapshot_exclusions(
+        self,
+        context: ThreadParentGitContext,
+        owned: tuple[ThreadGitWorktree, ...],
+    ) -> tuple[str, ...]:
+        """Exclude only recorded internal paths with exact physical registration."""
+        common_raw = await _run_git_bytes(
+            ["rev-parse", "--path-format=absolute", "--git-common-dir"],
+            cwd=context.repo_path,
+        )
+        common = Path(os.fsdecode(common_raw.removesuffix(b"\n"))).resolve(strict=True)
+        listing = await _run_git_bytes(
+            ["worktree", "list", "--porcelain", "-z"], cwd=context.repo_path
+        )
+        registrations: list[tuple[str | None, str | None]] = []
+        registered_path: str | None = None
+        registered_branch: str | None = None
+        for value in listing.split(b"\0"):
+            if value.startswith(b"worktree "):
+                registered_path = os.path.normcase(os.path.realpath(os.fsdecode(value[9:])))
+            elif value.startswith(b"branch "):
+                registered_branch = os.fsdecode(value[7:])
+            elif not value and registered_path is not None:
+                registrations.append((registered_path, registered_branch))
+                registered_path, registered_branch = None, None
+        excluded = []
+        parent = Path(os.path.abspath(context.parent_workspace_path))
+        for worktree in owned:
+            path = Path(os.path.abspath(worktree.path))
+            if path == parent or not path.is_relative_to(parent):
+                continue
+            branch = _child_branch_name(_require_delegation_id(worktree.delegation_id))
+            if worktree.namespace != thread_git_claim_namespace(common, branch):
+                raise ThreadGitOwnershipError()
+            target = replace(
+                context,
+                delegation_id=worktree.delegation_id,
+                branch=branch,
+                worktree_path=worktree.path,
+            )
+            self._verify_cleanup_path(target)
+            normalized = os.path.normcase(os.path.realpath(path))
+            branch_ref = f"refs/heads/{branch}"
+            matches = [
+                item for item in registrations if item[0] == normalized or item[1] == branch_ref
+            ]
+            if not matches and not os.path.lexists(path):
+                continue
+            if matches != [(normalized, branch_ref)] or not path.is_dir():
+                raise ThreadGitOwnershipError()
+            if await self._exact_ref_value(context.repo_path, branch_ref) is None:
+                raise ThreadGitOwnershipError()
+            await verify_thread_git_workspace(worktree.path, branch, worktree.namespace)
+            excluded.append(path.relative_to(parent).as_posix())
+        if excluded and await _run_git_bytes(
+            ["ls-files", "-z", "--", *(f":(top,literal){path}" for path in excluded)],
+            cwd=context.parent_workspace_path,
+        ):
+            raise ThreadGitOwnershipError()
+        return tuple(excluded)
+
     async def _create_snapshot(
         self,
         repo_path: str,
         workspace_path: str,
         delegation_id: str,
         head: str | None,
+        *,
+        record_intent: Callable[[str, str], Awaitable[None]] | None = None,
+        excluded_worktrees: tuple[str, ...] = (),
     ) -> str:
         """Capture and publish one immutable snapshot commit.
 
@@ -1036,6 +1444,7 @@ class ThreadWorkspaceService:
         tree_id = await _write_tree_through_alternate_index(
             workspace_path,
             base_treeish=head,
+            excluded_worktrees=excluded_worktrees,
         )
         await self._assert_snapshot_within_limits(workspace_path, tree_id)
 
@@ -1050,10 +1459,13 @@ class ThreadWorkspaceService:
             commit_args.append("-p")
             commit_args.append(head)
         snapshot_commit = await _run_git(commit_args, cwd=repo_path)
+        if record_intent is not None:
+            await record_intent(_snapshot_ref(delegation_id), snapshot_commit)
         try:
             await _run_git(
                 [
                     "update-ref",
+                    "--no-deref",
                     _snapshot_ref(delegation_id),
                     snapshot_commit,
                     _MISSING_REF_OID,

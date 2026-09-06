@@ -76,6 +76,7 @@ def test_cancel_provisioning_delegation_cleans_owned_artifacts(db, git_repo) -> 
     ).fetchone()
     assert delegation["status"] == "cancelled"
     assert delegation["completed_at"] is not None
+    assert delegation["git_artifacts_claimed"] == 0
     assert not Path(worktree_path).exists()
     branches = subprocess.run(
         ["git", "branch", "--list", branch],

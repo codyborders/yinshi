@@ -24,8 +24,8 @@ import {
 
 import { HEALTH_CHECK_INTERVAL } from "./constants.js";
 import { createGitAwareBashTool } from "./git_auth.js";
-import { createOrchestrationRpc } from "./orchestration_rpc.js";
-import { createThreadBridgePingTool } from "./orchestration_tools.js";
+import { createOrchestrationRpc, THREAD_OPERATIONS } from "./orchestration_rpc.js";
+import { createThreadBridgePingTool, createThreadTools } from "./orchestration_tools.js";
 
 const __sidecarDir = path.dirname(fileURLToPath(import.meta.url));
 const PI_PACKAGE_NAME = "@earendil-works/pi-coding-agent";
@@ -2109,15 +2109,26 @@ export class YinshiSidecar {
         orchestration && typeof orchestration.capability === "string"
           ? orchestration.capability
           : null;
+      const protocolVersion = orchestration?.protocol_version ?? 1;
+      const allowedOperations = protocolVersion === 2 ? orchestration?.allowed_operations : ["ping_thread_bridge"];
+      const optionFields = protocolVersion === 2
+        ? ["capability", "protocol_version", "allowed_operations"] : ["capability"];
       if (orchestration && (
         typeof orchestration !== "object" || Array.isArray(orchestration)
-        || Object.keys(orchestration).length !== 1
+        || ![1, 2].includes(protocolVersion)
+        || Object.keys(orchestration).length !== optionFields.length
+        || Object.keys(orchestration).some(key => !optionFields.includes(key))
+        || !Array.isArray(allowedOperations) || allowedOperations.length === 0
+        || new Set(allowedOperations).size !== allowedOperations.length
+        || (protocolVersion === 2 && allowedOperations.some(name => !THREAD_OPERATIONS.includes(name)))
         || !orchestrationCapability || orchestrationCapability.length > 256
         || !/^[\x21-\x7e]+$/.test(orchestrationCapability)
       )) {
         throw new Error("Orchestration options require one bounded capability string.");
       }
       const wantOrchestrationTools = Boolean(orchestrationCapability);
+      const permissions = !wantOrchestrationTools ? "none"
+        : protocolVersion === 1 ? "legacy" : JSON.stringify([...allowedOperations].sort());
       entry = await this._withPiSessionCreationLock(sessionId, async () => {
         const currentEntry = this.activeSessions.get(sessionId);
         const authChanged = JSON.stringify(currentEntry?.providerAuth || null)
@@ -2135,7 +2146,8 @@ export class YinshiSidecar {
         // the model never sees a stale or missing tool set.
         const orchestrationRegistrationChanged = Boolean(
           currentEntry
-          && currentEntry.orchestrationRegistered !== wantOrchestrationTools,
+          && (currentEntry.orchestrationPermissions
+            ?? (currentEntry.orchestrationRegistered ? "legacy" : "none")) !== permissions,
         );
         if (
           currentEntry
@@ -2155,9 +2167,11 @@ export class YinshiSidecar {
           this._disposePiSessionEntry(currentEntry);
         }
         const orchestrationState = { rpc: null };
-        const orchestrationTools = wantOrchestrationTools
-          ? [createThreadBridgePingTool({ rpcForCall: () => orchestrationState.rpc })]
-          : [];
+        const rpcForCall = () => orchestrationState.rpc;
+        const orchestrationTools = !wantOrchestrationTools ? []
+          : protocolVersion === 2
+            ? createThreadTools({ allowedOperations, rpcForCall })
+            : [createThreadBridgePingTool({ rpcForCall })];
         const {
           session: piSession,
           model,
@@ -2190,6 +2204,7 @@ export class YinshiSidecar {
           lastActivityMs: Date.now(),
           orchestration: orchestrationState,
           orchestrationRegistered: wantOrchestrationTools,
+          orchestrationPermissions: permissions,
         };
         this.activeSessions.set(sessionId, createdEntry);
         return createdEntry;
@@ -2211,6 +2226,8 @@ export class YinshiSidecar {
         entry.orchestration.rpc = createOrchestrationRpc({
           sessionId,
           capability: orchestrationCapability,
+          protocolVersion,
+          allowedOperations,
           send: (frame) => sendToSocket(socket, frame),
         });
         entry.orchestration.socket = socket;

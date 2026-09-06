@@ -1679,9 +1679,9 @@ def test_concurrent_current_encrypted_database_opens_are_serialized(
         try:
             time.sleep(0.05)
             connection = sqlite3.connect(":memory:")
-            # 2 is the current tenant schema version: an already-current
+            # 3 is the current tenant schema version: an already-current
             # database must open without rerunning any migration work.
-            connection.execute("PRAGMA user_version = 2")
+            connection.execute("PRAGMA user_version = 3")
             return connection
         finally:
             with state_lock:
@@ -1691,7 +1691,7 @@ def test_concurrent_current_encrypted_database_opens_are_serialized(
         start_barrier.wait(timeout=2)
         with get_user_db(tenant) as connection:
             observed_version = connection.execute("PRAGMA user_version").fetchone()[0]
-            assert observed_version == 2
+            assert observed_version == 3
 
     monkeypatch.setattr(tenant_module, "_tenant_migration_lock", track_migration_lock)
     monkeypatch.setattr(tenant_module, "_load_sqlcipher_module", lambda: object())

@@ -1,10 +1,10 @@
 # Thread Orchestration Contract
 
-Status: Frozen through Phase 3. Phase 4 duplex sidecar protocol is implemented.
+Status: Phase 5 implementation is under acceptance review. Manual APIs and the legacy ping bridge remain compatible.
 
 Source: `yinshi-thread-orchestration-plan.md`, based on commit `e18c86948f533ffb002bd6ca46118b8ee3fcaafb`.
 
-This release adds database records, read and write APIs, isolated child workspaces, manual delegation, prompt execution, cancellation, retry, and results. It also adds the Phase 4 duplex sidecar bridge with one harmless ping operation. No Phase 5 model tools are enabled.
+Delegations persist across restarts and execute prompts in isolated child workspaces. Parents can cancel a child, create a distinct retry, or read its result. Phase 5 exposes six optional model tools through the private duplex sidecar bridge. Agent delegation remains disabled by default.
 
 ## Terms and ownership
 
@@ -16,7 +16,7 @@ Each thread has exactly one session. Each child has at most one parent. Existing
 
 Parentage comes only from `thread_delegations.child_session_id`. The `sessions` table does not store a parent ID. Public APIs never reparent existing sessions.
 
-Parent and child must share one tenant, repository, and runtime location. Backend code enforces depth and count limits. Bounded reads reject cycles and excessive trees.
+Parent and child must belong to the same tenant and repository. Both must execute in the same runtime location. Backend code enforces depth and count limits. Bounded reads reject cycles and excessive trees.
 
 A workspace cannot be deleted while one of its sessions owns a child delegation. The API returns HTTP 409 with `thread_children_present`.
 
@@ -50,7 +50,7 @@ Later recursive deletion must remove deepest descendants first. Parent workspace
 
 ## Database contract
 
-Shared databases use schema version 6. Per-user databases use user version 2. Both migration paths support SQLite and SQLCipher.
+Shared databases use schema version 7. Per-user databases use user version 3. Both migration paths support SQLite and SQLCipher.
 
 Migrations are additive and repeatable. Existing rows remain unchanged. Older restored databases migrate when opened. Whole-file backup and relay transfer require no format conversion.
 
@@ -110,7 +110,7 @@ The deletion guard runs before cancellation, sidecar release, container removal,
 
 ## Isolated workspace service
 
-`ThreadWorkspaceService` provides child provisioning, Git finalization, and idempotent cleanup. Phase 3 will call these operations after reserving a delegation.
+`ThreadWorkspaceService` provides child provisioning, Git finalization, and idempotent cleanup. The orchestration service calls these operations after reserving a delegation.
 
 Clean parents use their exact `HEAD`. Dirty parents use a synthetic commit built through a private alternate Git index.
 
@@ -173,7 +173,7 @@ The Sidebar groups delegated workspaces under their owning repository. It shows 
 
 ## Duplex sidecar orchestration protocol (Phase 4)
 
-Implemented. Pi custom tools run inside the Node sidecar. The Python backend keeps tenant authorization, durable data, limits, provisioning, and scheduling. The per-query Unix socket now also carries a private duplex channel.
+Pi custom tools run inside the Node sidecar. The Python backend keeps tenant authorization, durable data, limits, provisioning, and scheduling. The per-query Unix socket now also carries a private duplex channel.
 
 ### Capability
 
@@ -220,31 +220,152 @@ Success and error responses, backend to sidecar:
 }
 ```
 
-### Protocol rules
+### Frame validation
 
 1. Request frames are limited to 64 KiB. Response frames are limited to 256 KiB. Oversized frames fail closed.
 2. Frame validation is strict. The field set is exact. Strings are bounded. Arguments must be objects. Unknown fields fail closed.
 3. Operations come from a fixed allowlist. Phase 4 ships one operation: `ping_thread_bridge`. It echoes a bounded 256-character message. It touches no database, filesystem, network, or credential.
-4. A duplicate in-flight `request_id` closes the offending query and connection. Completed IDs leave the pending map. Repeating completed IDs may repeat harmless ping.
-5. One connection permits at most 16 handler tasks. Capacity exhaustion closes the query and connection without creating rejection tasks.
-6. Handler execution stops at 60 seconds with `handler_timeout`. Handler exceptions return `handler_failed` with a generic message. Logs contain fixed messages, not request content.
-7. Error codes are fixed: `invalid_request`, `request_too_large`, `unknown_operation`, `invalid_arguments`, `capability_invalid`, `capability_expired`, `session_mismatch`, `duplicate_request`, `too_many_requests`, `handler_timeout`, `handler_failed`, `response_too_large`.
-8. One lock serializes every connection write. Handler responses never interleave with stream frames.
-9. Orchestration frames are consumed before any event yield. They never reach the model event stream, the prompt journal, or replay. Ordinary Pi `tool_use` and `tool_result` events stay visible.
-10. Query teardown and disconnects cancel and drain handler tasks. Drained handlers never answer. The Node pending map then rejects with `orchestration_disconnected`.
-11. The Node side permits 16 pending requests and times out at 60 seconds. Replies must match the request, session, and originating socket.
-12. Tool registration is conditional. Queries with a capability register `thread_bridge_ping`. Queries without one do not. Overlapping bridge queries cannot replace an active owner.
+### Request handling
+
+1. A duplicate in-flight `request_id` closes the offending query and connection. Completed IDs leave the pending map. Repeating completed IDs may repeat harmless ping.
+2. One connection permits at most 16 handler tasks. Capacity exhaustion closes the query and connection without creating rejection tasks.
+3. Handler execution stops at 65 seconds with `handler_timeout`. Handler exceptions return `handler_failed` with a generic message. Logs contain fixed messages, not request content.
+Error codes are fixed: `invalid_request`, `request_too_large`, `unknown_operation`, `invalid_arguments`, `capability_invalid`, `capability_expired`, `session_mismatch`, `duplicate_request`, `too_many_requests`, `handler_timeout`, `handler_failed`, `response_too_large`.
+### Streaming and teardown
+
+1. One lock serializes every connection write. Handler responses never interleave with stream frames.
+2. Orchestration frames are consumed before any event yield. They never reach the model event stream, the prompt journal, or replay. Ordinary Pi `tool_use` and `tool_result` events stay visible.
+3. Query teardown and disconnects cancel and drain handler tasks. Drained handlers never answer. The Node pending map then rejects with `orchestration_disconnected`.
+### Node channel ownership
+
+1. The Node side permits 16 pending requests and times out at 70 seconds. Replies must match the request, session, and originating socket.
+2. Tool registration is conditional. Queries with a capability register `thread_bridge_ping`. Queries without one do not. Overlapping bridge queries cannot replace an active owner.
 
 Frame byte limits include the envelope and newline. Tool cancellation rejects pending calls immediately. Query cleanup removes timers and abort listeners.
 
-Phase 5 mutations will require domain-level idempotency. Phase 4 does not retain completed request IDs or replay results.
+Phase 5 mutations use durable domain identities described below. Legacy ping does not retain completed request IDs or replay results.
 
-### Phase 4 exit
+## Agent tools (Phase 5)
 
-A test Pi tool can call the harmless backend operation. The path stays free of deadlock, credential leakage, and journal pollution. Phase 5 tools (`spawn_thread`, `list_children`, `get_thread`, `wait_for_threads`, `cancel_thread`, `report_thread_result`) remain absent.
+Enable `AGENT_DELEGATION_ENABLED` only after validating execution storage and repository ownership. `THREAD_HIERARCHY_ENABLED` must also remain enabled.
+
+Durable root prompts receive five tools. Delegated child prompts also receive `report_thread_result`. Disabled delegation and nonjournal prompts retain the harmless ping toolbox.
+
+| Tool | Contract |
+| --- | --- |
+| `spawn_thread` | Create one child from bounded task inputs. Automatic start defaults to true. |
+| `list_children` | Return at most 20 direct children or placeholders. `include_terminal` defaults to true. |
+| `get_thread` | Read an authorized descendant or placeholder. `include_result` defaults to true. |
+| `wait_for_threads` | Wait for selected descendants with `mode` equal to `all` or `any`. Return `complete`, `timed_out`, and bounded thread snapshots. |
+| `cancel_thread` | Cancel one descendant. `cascade` defaults to true and includes live descendants beneath terminal ancestors. |
+| `report_thread_result` | Submit a versioned draft from the exact child initial run. Test statuses are `passed`, `failed`, or `skipped`. |
+
+Tool inputs cannot select authority, storage paths, branch names, refs, capabilities, or mutation identities. No tool exposes transcripts.
+
+### Query authority and replay
+
+Version 2 requests add `protocol_version: 2` and the immutable SDK `tool_call_id`. Each transport delivery still receives a separate `request_id`.
+
+The backend binds the capability to the selected database, tenant, session, durable running prompt, connection, expiry, and permitted operations. Database identity never crosses the socket.
+
+The service rechecks current authority before mutations and recovered execution admission. It rejects siblings, self-targeting descendant operations, foreign repositories, invalid ancestry, and database mismatches.
+
+Spawn identity derives from the caller run and SDK call ID. Repeated delivery returns the existing delegation without another capacity charge or initial execution.
+
+Report receipts use `(run_id, tool_call_id)`. A delayed duplicate returns its original receipt without replacing a later report version.
+
+Transport cancellation authenticates the original capability and request. It cancels only that handler. Disconnects cancel and drain query-owned handlers and revoke the capability.
+
+### Durable lifecycle and recovery
+
+Initial prompt admission uses the journal writer transaction. Queued status, originating actor activity, and cancellation barriers are checked before insertion.
+
+Cancellation persists `cancel_scope` before stopping execution. Cascades stop deepest descendants first. Terminal ancestors keep their outcomes, and unresolved barriers block new descendants.
+
+Restart recovery preserves committed terminal events and interrupts true orphaned runs. It does not repeat interrupted model execution. Persisted automatic queues require fresh admission checks.
+
+The application owns one orchestration service and terminal observer. Lifespan and authenticated execution activation recover selected storage before use.
+
+Public routes, unauthenticated hosted traffic, and control-only hosted storage do not activate execution recovery. Activation failures return a fixed 503 response.
+
+A terminal observer commits the delegation outcome and unsealed result before Git finalization. Waiters can observe completion while sealing remains pending.
+
+Structured reports remain authoritative. Missing reports produce a bounded assistant-summary fallback with an explicit warning. Finalization failures preserve terminal outcomes and remain retryable.
+
+Reads authorize their complete selection before recovery. Selected recovery never claims or cleans unrelated delegations, including other children of the same parent.
+
+Manual tree and result routes use the application-owned orchestration service. Result refresh selects only the requested delegation. Tree refresh selects only the authorized returned tree.
+
+Recovery writer transactions repeat authorization. Public results remain sealed-only. Missing, unauthorized, and pending results retain their existing 404 behavior.
+
+Selected manual and agent reads do not complete pending cancellation. They preserve subtree barriers and skip blocked automatic queues. Explicit writes and runtime recovery drive cancellation.
+
+Activation success confirms recovery admission, not successful sealing of every result. Committed terminal outcomes remain available while later authorized reads retry finalization.
+
+Read refreshes stop after two seconds. Waits poll durable state and use notification hints. They cancel and drain their own reconciliation task on completion, timeout, or cancellation.
+
+Terminal readiness does not require a sealed result. Wait time is capped at 60 seconds, below the 65-second Python and 70-second Node deadlines.
+
+### Preview limits
+
+Full reports remain in durable storage. Model previews include at most 10 test entries, 10 warnings, and 20 changed files.
+
+Totals and truncation flags describe omitted entries. Malformed or oversized stored data does not bypass preview limits.
+
+Individual result previews use a 120,000-byte JSON budget. Read and wait adapters use a 150,000-byte budget, measured with ASCII escaping.
+
+## Physical Git ownership
+
+Orchestration records one selected database owner for each physical Git common directory. Duplicate repository rows and linked worktrees cannot establish independent owners.
+
+The private `.yinshi-thread-owner-v1.json` record stores owner identity as hashes. It excludes database paths and credentials. Publication is exclusive, atomic, and durable.
+
+Existing records require the expected format, effective-user ownership, regular-file type, and safe permissions. Missing, malformed, foreign, or redirected ownership fails closed.
+
+First use rejects existing thread artifacts without an ownership record. It never adopts legacy refs or worktrees based on their existence.
+
+Each delegation records `git_artifacts_claimed` and its physical `git_artifact_namespace`. A partial unique index prevents two active delegations from owning one short-name namespace.
+
+Lock order is logical repository, physical common directory, then a short database callback. Database connections close before Git commands.
+
+Dirty snapshots record their full ref, commit OID, and base kind before create-only publication. Cleanup consumes that saved intent rather than inferring ownership.
+
+Snapshot and result publication use non-dereferencing compare-and-set updates. Competing or symbolic refs are not replaced.
+
+Owned Git operations reject redirected storage directories and nonregular reflog files in thread namespaces before mutation. Existing reflog symlinks cannot redirect writes into foreign files.
+
+Sealing requires current database ownership, exact namespace, valid workspace identity, and an unchanged result version. Missing legacy ownership leaves results pending without adopting artifacts.
+
+### Internal worktree paths
+
+Dirty detection and snapshot staging exclude only recorded backend worktrees with matching physical namespaces, derived paths, direct branch refs, and exact Git registrations.
+
+Exclusions apply to individual commands. They never modify `.gitignore`, common-directory `info/exclude`, Git configuration, or the real index.
+
+Unrelated files under `.worktrees` remain snapshot inputs. User-created nested repositories and ordinary submodules retain their existing handling.
+
+Tracked internal-path content, mismatched registrations, redirected paths, or ambiguous ownership cause rejection. Ownership inspection stops above 500 records for one repository path.
+
+Parent HEAD, branch, real index, and user files remain unchanged. Generated internal worktree directories can appear as new untracked entries in raw parent status.
+
+### Cleanup and upgrade restrictions
+
+Provisioning cleanup requires terminal, unattached, currently owned rows without a result. It verifies the physical owner again under the lifecycle lock.
+
+Branch deletion uses the checked current OID. Snapshot deletion uses the recorded immutable OID. Cleanup never removes result refs or globally prunes unrelated registrations.
+
+Ownership is released only after positive absence checks for refs, worktree paths, and registrations. Partial failure retains ownership and the terminal outcome for retry.
+
+Cleanup uses bounded pages of 128 rows. Guarded attempt timestamps advance before context loading or lock waits, so persistent failures cannot pin the first page.
+
+Supported older databases migrate additively. Ownership defaults to unclaimed for pre-existing rows. Current-version databases do not receive automatic schema repair.
+
+Copying a database does not transfer its physical Git ownership. Database relocation, repository relocation, and ownership transfer require future explicit recovery support.
+
+Do not delete ownership records or refs to force adoption. Retained artifacts require operator investigation and an approved recovery procedure.
 
 ## Deferred work
 
-Phase 5 adds model-facing thread tools and the terminal observer.
+Recursive deletion, general operation queues, automatic ownership transfer, managed Git integration, and broader resource budgets remain deferred.
 
-Recursive deletion, budgets, agent-origin spawning, and waiting remain deferred.
+`THREAD_MANAGED_INTEGRATION_ENABLED` remains false by default. It does not disable managed execution or change hosted, desktop, managed, or BYOC routing.

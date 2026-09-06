@@ -23,11 +23,11 @@ def test_spawn_reconciles_stale_rows_before_reserving(db, git_repo, monkeypatch)
 
     real_reconcile = reconciliation_module.reconcile_stale_provisioning
 
-    async def recording_reconcile(request):
+    async def recording_reconcile(request, **kwargs):
         observed["rows_before_reserve"] = db.execute(
             "SELECT COUNT(*) AS n FROM thread_delegations"
         ).fetchone()["n"]
-        await real_reconcile(request)
+        await real_reconcile(request, **kwargs)
 
     monkeypatch.setattr(
         orchestration_module,
@@ -71,9 +71,9 @@ def test_cancel_reconciles_stale_rows_before_cancelling(db, git_repo, monkeypatc
 
     real_reconcile = reconciliation_module.reconcile_stale_provisioning
 
-    async def recording_reconcile(request):
+    async def recording_reconcile(request, **kwargs):
         observed["called"] = True
-        await real_reconcile(request)
+        await real_reconcile(request, **kwargs)
 
     monkeypatch.setattr(
         orchestration_module,

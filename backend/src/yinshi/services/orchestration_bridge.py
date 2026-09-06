@@ -25,15 +25,25 @@ from __future__ import annotations
 import secrets
 import time
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 ORCHESTRATION_REQUEST_TYPE = "orchestration_request"
+ORCHESTRATION_CANCEL_TYPE = "orchestration_cancel"
 ORCHESTRATION_RESPONSE_TYPE = "orchestration_response"
 
 ORCHESTRATION_OPERATION_PING = "ping_thread_bridge"
 
-#: Fixed operation allowlist. Phase 5 extends this deliberately.
-ORCHESTRATION_OPERATIONS: frozenset[str] = frozenset({ORCHESTRATION_OPERATION_PING})
+THREAD_OPERATIONS: frozenset[str] = frozenset(
+    {
+        "spawn_thread",
+        "list_children",
+        "get_thread",
+        "wait_for_threads",
+        "cancel_thread",
+        "report_thread_result",
+    }
+)
+ORCHESTRATION_OPERATIONS: frozenset[str] = THREAD_OPERATIONS | {ORCHESTRATION_OPERATION_PING}
 
 ORCHESTRATION_REQUEST_MAX_BYTES = 64 * 1024
 ORCHESTRATION_RESPONSE_MAX_BYTES = 256 * 1024
@@ -50,6 +60,17 @@ REQUEST_FRAME_FIELDS: frozenset[str] = frozenset(
     {"type", "id", "request_id", "capability", "operation", "arguments"}
 )
 
+THREAD_ERROR_MESSAGES: dict[str, str] = {
+    "depth_exceeded": "The thread depth limit has been reached.",
+    "child_limit_exceeded": "The direct-child limit has been reached.",
+    "active_thread_limit_exceeded": "The active-thread limit has been reached.",
+    "tree_limit_exceeded": "The thread tree limit has been reached.",
+    "spawn_turn_limit_exceeded": "The current turn has reached its child spawn limit.",
+    "thread_not_found": "Thread not found.",
+    "runtime_unavailable": "The thread runtime is unavailable.",
+    "workspace_provisioning_failed": "The child workspace could not be provisioned.",
+}
+
 _ALLOWED_ERROR_CODES: frozenset[str] = frozenset(
     {
         "invalid_request",
@@ -65,7 +86,7 @@ _ALLOWED_ERROR_CODES: frozenset[str] = frozenset(
         "handler_failed",
         "response_too_large",
     }
-)
+) | frozenset(THREAD_ERROR_MESSAGES)
 
 
 class OrchestrationHandler(Protocol):
@@ -94,6 +115,32 @@ class OrchestrationRequest:
     capability: str = field(repr=False)
     operation: str
     arguments: dict[str, Any]
+    protocol_version: int = 1
+    tool_call_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class VerifiedThreadCaller:
+    """Backend authority for one SDK tool call, without the capability secret."""
+
+    session_id: str
+    run_id: str
+    tenant_id: str | None
+    runtime_id: str | None
+    tool_call_id: str
+    expires_at: float
+    database_path: str | None = field(default=None, repr=False)
+
+
+class ThreadOrchestrationHandler(Protocol):
+    """A thread operation receives only a caller verified by the transport."""
+
+    async def __call__(
+        self,
+        arguments: dict[str, Any],
+        *,
+        caller: VerifiedThreadCaller,
+    ) -> dict[str, Any]: ...
 
 
 @dataclass
@@ -112,6 +159,8 @@ class OrchestrationCapability:
     runtime_id: str | None
     connection_id: str
     expires_at: float
+    allowed_operations: frozenset[str] = frozenset({ORCHESTRATION_OPERATION_PING})
+    database_path: str | None = field(default=None, repr=False)
     _claimed: bool = field(default=False, init=False, repr=False)
     _revoked: bool = field(default=False, init=False, repr=False)
 
@@ -136,33 +185,75 @@ def verify_orchestration_request(
     request: OrchestrationRequest,
     *,
     connection_id: str,
-) -> None:
+) -> VerifiedThreadCaller | None:
     """Verify an inbound request against the query-bound capability.
 
     Fails closed on token mismatch, foreign connections, expired windows,
     and session mismatches. Binds the request to the exact tenant, runtime,
     session, prompt run, connection, and expiration of the active query.
     """
+    _verify_query_identity(capability, request.session_id, request.capability, connection_id)
+    if request.operation not in capability.allowed_operations:
+        raise OrchestrationProtocolError("unknown_operation", "The operation is not allowed.")
+    if request.protocol_version == 1:
+        return None
+    if not capability.run_id or not request.tool_call_id or not capability.database_path:
+        raise OrchestrationProtocolError(
+            "capability_invalid", "A durable run and database binding are required."
+        )
+    return VerifiedThreadCaller(
+        session_id=capability.session_id,
+        run_id=capability.run_id,
+        tenant_id=capability.tenant_id,
+        runtime_id=capability.runtime_id,
+        tool_call_id=request.tool_call_id,
+        expires_at=capability.expires_at,
+        database_path=capability.database_path,
+    )
+
+
+def _verify_query_identity(
+    capability: OrchestrationCapability,
+    session_id: str,
+    token: str,
+    connection_id: str,
+) -> None:
     if capability._revoked or not connection_id or capability.connection_id != connection_id:
         raise OrchestrationProtocolError(
-            "capability_invalid",
-            "The orchestration capability does not match this connection.",
+            "capability_invalid", "The capability connection does not match."
         )
-    if not secrets.compare_digest(capability.token, request.capability):
+    if not token.isascii() or not secrets.compare_digest(capability.token, token):
         raise OrchestrationProtocolError(
-            "capability_invalid",
-            "The orchestration capability token is not valid for this query.",
+            "capability_invalid", "The capability token does not match."
         )
     if capability.expires_at <= time.monotonic():
-        raise OrchestrationProtocolError(
-            "capability_expired",
-            "The orchestration capability has expired.",
-        )
-    if capability.session_id != request.session_id:
-        raise OrchestrationProtocolError(
-            "session_mismatch",
-            "The orchestration request does not match the active session.",
-        )
+        raise OrchestrationProtocolError("capability_expired", "The capability has expired.")
+    if capability.session_id != session_id:
+        raise OrchestrationProtocolError("session_mismatch", "The active session does not match.")
+
+
+def verify_orchestration_cancel(
+    capability: OrchestrationCapability,
+    message: dict[str, Any],
+    *,
+    connection_id: str,
+    frame_bytes: int,
+) -> str:
+    """Authenticate one strict cancellation before resolving its pending request."""
+    fields = {"type", "protocol_version", "id", "request_id", "capability"}
+    if frame_bytes > ORCHESTRATION_REQUEST_MAX_BYTES or set(message) != fields:
+        raise OrchestrationProtocolError("invalid_request", "Invalid cancellation frame.")
+    if (
+        message["type"] != ORCHESTRATION_CANCEL_TYPE
+        or type(message["protocol_version"]) is not int
+        or message["protocol_version"] != 2
+    ):
+        raise OrchestrationProtocolError("invalid_request", "Invalid cancellation version.")
+    for identity_field, maximum in (("id", 128), ("request_id", 256), ("capability", 256)):
+        if not _require_bounded_string(message[identity_field], max_chars=maximum):
+            raise OrchestrationProtocolError("invalid_request", "Invalid cancellation identity.")
+    _verify_query_identity(capability, message["id"], message["capability"], connection_id)
+    return str(message["request_id"])
 
 
 def generate_orchestration_capability(
@@ -173,6 +264,8 @@ def generate_orchestration_capability(
     runtime_id: str | None = None,
     connection_id: str = "",
     ttl_seconds: float = _ORCHESTRATION_CAPABILITY_TTL_SECONDS,
+    allowed_operations: frozenset[str] = frozenset({ORCHESTRATION_OPERATION_PING}),
+    database_path: str | None = None,
 ) -> OrchestrationCapability:
     """Create a fresh random capability bound to one query's context.
 
@@ -181,6 +274,10 @@ def generate_orchestration_capability(
     """
     if not session_id:
         raise ValueError("session_id is required for an orchestration capability")
+    if not allowed_operations or not allowed_operations <= ORCHESTRATION_OPERATIONS:
+        raise ValueError("orchestration operations are invalid")
+    if allowed_operations & THREAD_OPERATIONS and not run_id:
+        raise ValueError("thread operations require a durable run")
     return OrchestrationCapability(
         token=secrets.token_urlsafe(32),
         session_id=session_id,
@@ -189,6 +286,8 @@ def generate_orchestration_capability(
         runtime_id=runtime_id,
         connection_id=connection_id,
         expires_at=time.monotonic() + ttl_seconds,
+        allowed_operations=allowed_operations,
+        database_path=database_path,
     )
 
 
@@ -291,7 +390,15 @@ def parse_orchestration_request(
         raise OrchestrationProtocolError(
             "invalid_request", "The orchestration request must be a JSON object."
         )
-    if set(message) != set(REQUEST_FRAME_FIELDS):
+    protocol_version = message.get("protocol_version", 1)
+    if type(protocol_version) is not int or protocol_version not in {1, 2}:
+        raise OrchestrationProtocolError("invalid_request", "Unknown protocol version.")
+    expected_fields = REQUEST_FRAME_FIELDS
+    if protocol_version == 2:
+        expected_fields = expected_fields | {"protocol_version", "tool_call_id"}
+        if not _require_bounded_string(message.get("tool_call_id"), max_chars=256):
+            raise OrchestrationProtocolError("invalid_request", "The tool call ID is invalid.")
+    if set(message) != set(expected_fields):
         raise OrchestrationProtocolError(
             "invalid_request",
             "The orchestration request fields do not match the strict schema.",
@@ -325,7 +432,8 @@ def parse_orchestration_request(
             "invalid_request",
             "The orchestration operation must be a bounded string.",
         )
-    if operation not in ORCHESTRATION_OPERATIONS:
+    allowed = ORCHESTRATION_OPERATIONS if protocol_version == 2 else {ORCHESTRATION_OPERATION_PING}
+    if operation not in allowed:
         raise OrchestrationProtocolError(
             "unknown_operation", "The orchestration operation is not allowed."
         )
@@ -338,6 +446,8 @@ def parse_orchestration_request(
         session_id=str(message["id"]),
         request_id=str(message["request_id"]),
         capability=str(message["capability"]),
-        operation=operation,
+        operation=cast(str, operation),
         arguments=arguments,
+        protocol_version=protocol_version,
+        tool_call_id=message.get("tool_call_id"),
     )

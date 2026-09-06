@@ -5,12 +5,15 @@ from __future__ import annotations
 import asyncio
 import json
 import subprocess
+import uuid
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 from tests.test_thread_workspaces import seed_parent_stack
-from yinshi.services.thread_workspaces import ThreadWorkspaceService
+from yinshi.models import ThreadChildCreate
+from yinshi.services.thread_orchestration import ThreadOrchestrationService
 
 DELEGATION_ID = "d4e5f6a7b8c9d0e1f2a3b4c5d6e7f801"
 RESULT_REF = f"refs/yinshi/results/{DELEGATION_ID}"
@@ -54,17 +57,30 @@ def _orchestration_request() -> object:
 
 
 def seed_seal_child(db, git_repo: str, status: str = "completed") -> str:
-    """Provision one real child worktree and seed its delegation plus draft."""
+    """Spawn recorded ownership, then seed a terminal draft for core sealing."""
     seed_parent_stack(db, git_repo)
-    provisioned = asyncio.run(
-        ThreadWorkspaceService().provision_child(
-            db,
-            None,
-            parent_workspace_id="parent-ws",
-            delegation_id=DELEGATION_ID,
+    with patch(
+        "yinshi.services.thread_orchestration.uuid.uuid4", return_value=uuid.UUID(DELEGATION_ID)
+    ):
+        spawned = asyncio.run(
+            ThreadOrchestrationService().spawn_child(
+                _orchestration_request(),
+                parent_session_id="parent-session",
+                body=ThreadChildCreate(
+                    idempotency_key=str(uuid.UUID("b" * 32)),
+                    title="Child",
+                    task="task",
+                    start_immediately=False,
+                ),
+            )
         )
-    )
-    child_path = provisioned.path
+    delegation = db.execute(
+        "SELECT * FROM thread_delegations WHERE id = ?", (spawned.delegation_id,)
+    ).fetchone()
+    workspace_id = delegation["child_workspace_id"]
+    child_path = db.execute("SELECT path FROM workspaces WHERE id = ?", (workspace_id,)).fetchone()[
+        0
+    ]
     Path(child_path, "work.txt").write_text("child work\n", encoding="utf-8")
     run_git("add", "work.txt", cwd=child_path)
     run_git(
@@ -79,19 +95,14 @@ def seed_seal_child(db, git_repo: str, status: str = "completed") -> str:
     )
     db.execute(
         """INSERT INTO sessions (id, workspace_id) VALUES ('child-session', ?)""",
-        (provisioned.workspace_id,),
+        (workspace_id,),
     )
+    # Keep historical test session identifiers without replacing ownership metadata.
     db.execute(
-        """INSERT INTO thread_delegations (
-               id, parent_session_id, child_session_id, child_workspace_id,
-               idempotency_key, initiator, title, task, requested_model, status,
-               base_commit
-           ) VALUES (
-               ?, 'parent-session', 'child-session', ?,
-               'k1', 'user', 'Child', 'task', 'm', ?, ?
-           )""",
-        (DELEGATION_ID, provisioned.workspace_id, status, provisioned.base_commit),
+        "UPDATE thread_delegations SET child_session_id = 'child-session', status = ? WHERE id = ?",
+        (status, DELEGATION_ID),
     )
+    db.execute("DELETE FROM sessions WHERE id = ?", (spawned.child_session_id,))
     db.execute(
         """INSERT INTO thread_results (
                delegation_id, version, source, summary, tests_json, warnings_json

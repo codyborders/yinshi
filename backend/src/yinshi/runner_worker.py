@@ -4,10 +4,8 @@ from __future__ import annotations
 
 import base64
 import hashlib
-import json
 import os
 import secrets
-import sqlite3
 import stat
 import uuid
 from collections.abc import Callable
@@ -123,42 +121,11 @@ def _bind_runner_account(binding_path: Path, user_id: str) -> None:
 
 
 def _recover_interrupted_prompt_runs(tenant: TenantContext) -> None:
-    """Fail orphaned journal runs closed after a runner process restart."""
-    event_json = json.dumps(
-        {"type": "error", "error": "Prompt run was interrupted"},
-        separators=(",", ":"),
-        sort_keys=True,
-    )
+    """Preserve committed outcomes before interrupting orphaned worker runs."""
+    from yinshi.services.prompt_journal import recover_prompt_database
+
     with get_user_db(tenant) as database:
-        database.execute("BEGIN IMMEDIATE")
-        try:
-            rows = database.execute("""SELECT id, session_id FROM prompt_runs
-                   WHERE status IN ('starting', 'running', 'stopping')""").fetchall()
-            for row in rows:
-                sequence_row = database.execute(
-                    """SELECT COALESCE(MAX(sequence), -1) + 1 AS next_sequence
-                       FROM prompt_events WHERE run_id = ?""",
-                    (row["id"],),
-                ).fetchone()
-                if sequence_row is None or type(sequence_row["next_sequence"]) is not int:
-                    raise RuntimeError("prompt journal recovery sequence is invalid")
-                if sequence_row["next_sequence"] < _PROMPT_EVENT_COUNT_MAX:
-                    database.execute(
-                        """INSERT INTO prompt_events (run_id, sequence, event_json)
-                           VALUES (?, ?, ?)""",
-                        (row["id"], sequence_row["next_sequence"], event_json),
-                    )
-                database.execute(
-                    "UPDATE sessions SET status = 'idle' WHERE id = ? AND status = 'running'",
-                    (row["session_id"],),
-                )
-            database.execute("""UPDATE prompt_runs
-                   SET status = 'interrupted', updated_at = CURRENT_TIMESTAMP
-                   WHERE status IN ('starting', 'running', 'stopping')""")
-            database.commit()
-        except (RuntimeError, sqlite3.Error):
-            database.rollback()
-            raise
+        recover_prompt_database(database, reset_sessions=True)
 
 
 class RunnerWorkerManager:

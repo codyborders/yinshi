@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from starlette.exceptions import HTTPException as StarletteHTTPException
-from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.responses import JSONResponse, RedirectResponse
@@ -72,6 +72,7 @@ from yinshi.services.relay_process_lock import RelayProcessLock
 from yinshi.services.runner_relay import runner_relay_broker
 from yinshi.services.sprites import SpritesClient
 from yinshi.services.terminal_journal import TerminalJournal
+from yinshi.services.thread_orchestration import ThreadOrchestrationService
 from yinshi.tenant import TenantContext, TenantDatabaseTemporarilyUnavailable
 from yinshi.worker_auth import (
     WorkerPrincipal,
@@ -170,6 +171,32 @@ _DESKTOP_CONTENT_SECURITY_POLICY = (
     "frame-ancestors 'none'; "
     "form-action 'self'"
 )
+
+
+class ThreadRecoveryMiddleware(BaseHTTPMiddleware):
+    """Activate execution storage only after the outer identity middleware passes."""
+
+    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
+        settings = get_settings()
+        control_only = (
+            request.app.state.mode == "hosted"
+            and settings.managed_runtime_provider == "fly_sprites"
+        )
+        execution_context = request.app.state.mode == "desktop" or isinstance(
+            getattr(request.state, "tenant", None),
+            TenantContext,
+        )
+        if request.url.path.startswith("/api/") and execution_context and not control_only:
+            try:
+                await request.app.state.thread_orchestration.activate(request)
+            except Exception:  # noqa: BLE001
+                # The boundary returns only a safe availability failure.
+                logger.warning("Thread runtime activation is unavailable")
+                return JSONResponse(
+                    status_code=503,
+                    content={"detail": "Execution storage is temporarily unavailable"},
+                )
+        return await call_next(request)
 
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
@@ -472,6 +499,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                     run_drill=recovery_runner.run
                 )
 
+        if not (
+            app.state.mode == "hosted" and app_settings.managed_runtime_provider == "fly_sprites"
+        ):
+            activation_request = Request(
+                {
+                    "type": "http",
+                    "app": app,
+                    "state": {"tenant": app.state.activation_tenant},
+                }
+            )
+            await app.state.thread_orchestration.activate(activation_request)
         yield
     finally:
         cleanup_error: BaseException | None = None
@@ -559,6 +597,7 @@ def _configure_middleware(
     if not isinstance(app_settings, Settings):
         raise TypeError("app_settings must be Settings")
 
+    application.add_middleware(ThreadRecoveryMiddleware)
     if mode == "worker":
         if worker_principal is None:
             raise ValueError("worker mode requires a WorkerPrincipal")
@@ -765,6 +804,9 @@ def create_app(
     )
     application.state.limiter = limiter
     application.state.mode = mode
+    application.state.activation_tenant = (
+        worker_principal.tenant if worker_principal is not None else None
+    )
     application.state.encrypted_upload_manager = EncryptedUploadManager()
     application.state.managed_backup_manager = None
     application.state.managed_backup_store = None
@@ -776,7 +818,11 @@ def create_app(
     application.state.sprites_public_launch_enabled = (
         mode == "hosted" and app_settings.sprites_public_launch_enabled
     )
-    application.state.prompt_journal = PromptJournal()
+    thread_orchestration = ThreadOrchestrationService()
+    application.state.thread_orchestration = thread_orchestration
+    application.state.prompt_journal = PromptJournal(
+        terminal_observer=thread_orchestration.observe_terminal
+    )
     application.state.terminal_journal = TerminalJournal()
     application.add_exception_handler(
         RateLimitExceeded,

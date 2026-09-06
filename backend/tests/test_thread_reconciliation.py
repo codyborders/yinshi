@@ -51,7 +51,12 @@ def test_reconcile_logs_only_error_type_for_context_failure(
     from yinshi.services.thread_workspaces import ThreadWorkspaceService
 
     seed_parent_stack(db, git_repo)
-    _seed_provisioning(db, "privacy-stale-delegation", stale=True)
+    _seed_provisioning(db, "4" * 32, stale=True)
+    db.execute(
+        "UPDATE thread_delegations SET git_artifacts_claimed = 1, git_artifact_namespace = ? WHERE id = ?",
+        ("f" * 64, "4" * 32),
+    )
+    db.commit()
     private_text = "PRIVATE_RECONCILIATION_PATH"
 
     def fail_context(*_args, **_kwargs):
@@ -124,12 +129,12 @@ def test_reconcile_cleans_stale_reservation_artifacts(db, git_repo) -> None:
     ).fetchone()
     worktree_path = str(workspace["path"])
     branch = _child_branch_name(spawned.delegation_id)
-    # Rewind to the pre-attach provisioning window and age past the threshold.
+    # Snapshot intent commits before publication, so attachment rollback retains it.
+    # Rewind only attachment metadata and age the reservation past the threshold.
     db.execute(
         """UPDATE thread_delegations
            SET status = 'provisioning', child_session_id = NULL,
-               child_workspace_id = NULL, base_kind = NULL, base_commit = NULL,
-               snapshot_ref = NULL, started_at = NULL, completed_at = NULL,
+               child_workspace_id = NULL, started_at = NULL, completed_at = NULL,
                updated_at = datetime('now', '-700 seconds')
            WHERE id = ?""",
         (spawned.delegation_id,),

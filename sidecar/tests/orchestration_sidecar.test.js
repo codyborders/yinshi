@@ -15,6 +15,23 @@ function recordingSocket() {
   return socket;
 }
 
+test("version two re-registers exact root and child permissions before model execution", async () => {
+  const sidecar = new YinshiSidecar();
+  const captured = [];
+  sidecar._createPiSession = async (...args) => { captured.push(args.at(-1).map(tool => tool.name)); return sessionResult(); };
+  const root = ["spawn_thread", "list_children", "get_thread", "wait_for_threads", "cancel_thread"];
+  try {
+    await sidecar.processQuery("same", recordingSocket(), "root", { orchestration: { capability: "root", protocol_version: 2, allowed_operations: root } });
+    assert.equal(captured.length, 1);
+    assert.deepEqual(captured[0].sort(), [...root].sort());
+    await sidecar.processQuery("same", recordingSocket(), "child", { orchestration: { capability: "child", protocol_version: 2, allowed_operations: [...root, "report_thread_result"] } });
+    assert.equal(captured.length, 2);
+    assert.equal(captured[1].length, 6);
+    await sidecar.processQuery("same", recordingSocket(), "plain", {});
+    assert.deepEqual(captured[2], []);
+  } finally { sidecar.cleanup(); }
+});
+
 test("overlapping bridge query cannot replace its active owner", async () => {
   const sidecar = new YinshiSidecar();
   let release;

@@ -7,22 +7,21 @@ import json
 import logging
 import sqlite3
 import uuid
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import suppress
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 from fastapi import Request
 
-from yinshi.api.deps import run_db_operation_for_request
-from yinshi.config import get_settings
+from yinshi.api.deps import request_database_identity, run_db_operation_for_request
 from yinshi.services.run_coordinator import CancelOutcome, get_run_coordinator
 
 logger = logging.getLogger(__name__)
 
 PromptExecutor = Callable[[Request, str, Any], AsyncIterator[dict[str, Any]]]
+TerminalObserver = Callable[[Request, str, str, str], Awaitable[None]]
 _EVENT_BYTES_MAX = 1_048_576
 _EVENT_BATCH_BYTES_MAX = 48_000
 _EVENT_COUNT_MAX = 100_000
@@ -95,6 +94,65 @@ class PromptEventBatch:
     next_sequence: int
 
 
+def recover_prompt_database(
+    database: sqlite3.Connection,
+    *,
+    reset_sessions: bool = False,
+) -> list[PromptRun]:
+    """Commit orphan recovery for the journal and a newly activated worker.
+
+    Only worker process activation may reset all recovered sessions. Lazy
+    journal recovery must preserve a session already owned by another turn.
+    No observer or external operation runs inside this transaction.
+    """
+    recovered = []
+    event_json = json.dumps(
+        {"type": "error", "error": "Prompt run was interrupted"},
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    database.execute("BEGIN IMMEDIATE")
+    try:
+        rows = database.execute(
+            "SELECT id, session_id, status FROM prompt_runs WHERE status IN ('starting', 'running', 'stopping')",
+        ).fetchall()
+        for row in rows:
+            derived = PromptJournal._derive_terminal_status_from_events(database, row["id"])
+            if derived is None:
+                sequence = database.execute(
+                    "SELECT COALESCE(MAX(sequence), -1) + 1 FROM prompt_events WHERE run_id = ?",
+                    (row["id"],),
+                ).fetchone()
+                if sequence is None or type(sequence[0]) is not int:
+                    raise RuntimeError("prompt journal recovery sequence is invalid")
+                if sequence[0] < _EVENT_COUNT_MAX:
+                    database.execute(
+                        "INSERT INTO prompt_events (run_id, sequence, event_json) VALUES (?, ?, ?)",
+                        (row["id"], sequence[0], event_json),
+                    )
+                status = "interrupted"
+            else:
+                status = "cancelled" if row["status"] == "stopping" else derived
+            database.execute(
+                "UPDATE sessions SET status = 'idle' WHERE id = ? AND status = 'running' "
+                "AND (? OR ? = (SELECT turn_id FROM messages WHERE session_id = ? AND role = 'user' ORDER BY rowid DESC LIMIT 1))",
+                (row["session_id"], reset_sessions, row["id"], row["session_id"]),
+            )
+            database.execute(
+                "UPDATE prompt_runs SET status = ?, updated_at = CURRENT_TIMESTAMP "
+                "WHERE id = ? AND status IN ('starting', 'running', 'stopping')",
+                (status, row["id"]),
+            )
+            recovered.append(
+                PromptRun(id=str(row["id"]), session_id=str(row["session_id"]), status=status)
+            )
+        database.commit()
+        return recovered
+    except BaseException:
+        database.rollback()
+        raise
+
+
 async def _default_prompt_executor(
     request: Request,
     session_id: str,
@@ -135,11 +193,19 @@ async def _default_prompt_executor(
 class PromptJournal:
     """Run prompts in background tasks while durably journaling ordered events."""
 
-    def __init__(self, *, executor: PromptExecutor | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        executor: PromptExecutor | None = None,
+        terminal_observer: TerminalObserver | None = None,
+    ) -> None:
         selected_executor = executor or _default_prompt_executor
         if not callable(selected_executor):
             raise TypeError("prompt executor must be callable")
         self._executor = selected_executor
+        if terminal_observer is not None and not callable(terminal_observer):
+            raise TypeError("terminal observer must be callable")
+        self._terminal_observer = terminal_observer
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._tasks_lock = asyncio.Lock()
         self._start_lock = asyncio.Lock()
@@ -156,8 +222,13 @@ class PromptJournal:
         session_id: str,
         idempotency_key: str,
         body: Any,
+        admission_guard: Callable[[sqlite3.Connection], None] | None = None,
     ) -> PromptRun:
-        """Create one durable run or return its idempotent predecessor."""
+        """Create one run, with an optional synchronous guard inside its write transaction.
+
+        The guard must not perform external I/O, control the transaction, or
+        retain the connection. Existing-run replay does not invoke it again.
+        """
         self._validate_resource_id(session_id, "session_id")
         self._validate_idempotency_key(idempotency_key)
         if self._closing:
@@ -175,6 +246,7 @@ class PromptJournal:
                     session_id=session_id,
                     idempotency_key=idempotency_key,
                     body=body,
+                    admission_guard=admission_guard,
                 )
             )
             try:
@@ -190,6 +262,7 @@ class PromptJournal:
         session_id: str,
         idempotency_key: str,
         body: Any,
+        admission_guard: Callable[[sqlite3.Connection], None] | None = None,
     ) -> PromptRun:
         """Commit and register one prompt task while concurrent starts are excluded."""
         run_id = uuid.uuid4().hex
@@ -210,6 +283,18 @@ class PromptJournal:
             if session is None:
                 raise PromptRunNotFoundError("session not found")
             try:
+                database.execute("BEGIN IMMEDIATE")
+                # Another writer can accept this key before this lock is held.
+                existing = database.execute(
+                    "SELECT id, session_id, status FROM prompt_runs WHERE session_id = ? AND idempotency_key = ?",
+                    (session_id, idempotency_key),
+                ).fetchone()
+                if existing is not None:
+                    database.rollback()
+                    run = self._row_to_run(existing)
+                    return run, run.id == run_id
+                if admission_guard is not None:
+                    admission_guard(database)
                 database.execute(
                     """INSERT INTO prompt_runs
                        (id, session_id, idempotency_key, status)
@@ -237,6 +322,9 @@ class PromptJournal:
                     raise PromptRunConflictError(
                         "session already has an active prompt run"
                     ) from exc
+                raise
+            except BaseException:
+                database.rollback()
                 raise
             return PromptRun(id=run_id, session_id=session_id, status="starting"), True
 
@@ -455,71 +543,22 @@ class PromptJournal:
                 return final_status
         return None
 
+    async def recover(self, request: Request) -> None:
+        """Recover the selected database before runtime or account activation."""
+        await self._recover_database(request)
+
     async def _recover_database(self, request: Request) -> None:
         """Mark active rows from a previous process as interrupted once per tenant DB."""
         database_path = self._database_path(request)
         async with self._recovery_lock:
             if database_path in self._recovered_database_paths:
                 return
-            event_json = json.dumps(
-                {"type": "error", "error": "Prompt run was interrupted"},
-                separators=(",", ":"),
-                sort_keys=True,
-            )
-
-            def recover(database: sqlite3.Connection) -> None:
-                database.execute("BEGIN IMMEDIATE")
-                rows = database.execute("""SELECT id, session_id, status FROM prompt_runs
-                       WHERE status IN ('starting', 'running', 'stopping')""").fetchall()
-                for row in rows:
-                    derived_status = self._derive_terminal_status_from_events(
-                        database,
-                        row["id"],
-                    )
-                    if derived_status is None:
-                        sequence_row = database.execute(
-                            """SELECT COALESCE(MAX(sequence), -1) + 1 AS next_sequence
-                               FROM prompt_events WHERE run_id = ?""",
-                            (row["id"],),
-                        ).fetchone()
-                        if sequence_row is None or type(sequence_row["next_sequence"]) is not int:
-                            raise RuntimeError("prompt journal recovery sequence is invalid")
-                        existing = database.execute(
-                            """SELECT event_json FROM prompt_events
-                               WHERE run_id = ? AND sequence = ?""",
-                            (row["id"], sequence_row["next_sequence"]),
-                        ).fetchone()
-                        if existing is None and sequence_row["next_sequence"] < _EVENT_COUNT_MAX:
-                            database.execute(
-                                """INSERT INTO prompt_events (run_id, sequence, event_json)
-                                   VALUES (?, ?, ?)""",
-                                (row["id"], sequence_row["next_sequence"], event_json),
-                            )
-                        final_status = "interrupted"
-                    elif row["status"] == "stopping":
-                        final_status = "cancelled"
-                    else:
-                        final_status = derived_status
-                    database.execute(
-                        """UPDATE sessions SET status = 'idle'
-                           WHERE id = ? AND status = 'running'
-                             AND ? = (
-                                 SELECT turn_id FROM messages
-                                 WHERE session_id = ? AND role = 'user'
-                                 ORDER BY rowid DESC LIMIT 1
-                             )""",
-                        (row["session_id"], row["id"], row["session_id"]),
-                    )
-                    database.execute(
-                        """UPDATE prompt_runs
-                           SET status = ?, updated_at = CURRENT_TIMESTAMP
-                           WHERE id = ? AND status IN ('starting', 'running', 'stopping')""",
-                        (final_status, row["id"]),
-                    )
-                database.commit()
-
-            await run_db_operation_for_request(request, recover)
+            recovered = await run_db_operation_for_request(request, recover_prompt_database)
             self._recovered_database_paths.add(database_path)
+        # Observers can perform Git work or re-enter the journal. No database or
+        # recovery lock remains held across these best-effort notifications.
+        for run in recovered:
+            await self._set_terminal_status(request, run.id, run.status)
 
     async def _consume(
         self,
@@ -816,7 +855,7 @@ class PromptJournal:
         if status not in _TERMINAL_STATUSES:
             raise ValueError("prompt terminal status is invalid")
 
-        def update(database: sqlite3.Connection) -> None:
+        def update(database: sqlite3.Connection) -> tuple[str, str]:
             row = database.execute(
                 "SELECT status, session_id FROM prompt_runs WHERE id = ?",
                 (run_id,),
@@ -824,7 +863,7 @@ class PromptJournal:
             if row is None:
                 raise PromptRunNotFoundError("prompt run not found")
             if row["status"] in _TERMINAL_STATUSES:
-                return
+                return str(row["session_id"]), str(row["status"])
             effective_status = "cancelled" if row["status"] == "stopping" else status
             result = database.execute(
                 """UPDATE prompt_runs SET status = ?, updated_at = CURRENT_TIMESTAMP
@@ -838,7 +877,7 @@ class PromptJournal:
                     (run_id,),
                 ).fetchone()
                 if current is not None and current["status"] in _TERMINAL_STATUSES:
-                    return
+                    return str(row["session_id"]), str(current["status"])
                 raise RuntimeError("prompt terminal status transition was rejected")
             database.execute(
                 """UPDATE sessions SET status = 'idle'
@@ -851,12 +890,20 @@ class PromptJournal:
                 (row["session_id"], run_id, row["session_id"]),
             )
             database.commit()
+            return str(row["session_id"]), effective_status
 
-        await run_db_operation_for_request(
+        session_id, effective_status = await run_db_operation_for_request(
             request,
             update,
             shared_request_budget=not background,
         )
+        if self._terminal_observer is not None:
+            try:
+                await self._terminal_observer(request, session_id, run_id, effective_status)
+            except Exception:  # noqa: BLE001
+                # Optional observers must preserve the committed run outcome.
+                # Reconciliation retries observation from the committed journal state.
+                logger.warning("Thread terminal observation failed")
 
     async def _load_run(
         self,
@@ -878,13 +925,7 @@ class PromptJournal:
 
     @staticmethod
     def _database_path(request: Request) -> str:
-        tenant = getattr(request.state, "tenant", None)
-        database_path = getattr(tenant, "db_path", None)
-        if database_path is None:
-            database_path = str(Path(get_settings().db_path).resolve())
-        if not isinstance(database_path, str) or not database_path:
-            raise RuntimeError("prompt journal request database is unavailable")
-        return database_path
+        return request_database_identity(request)
 
     @staticmethod
     def _row_to_run(row: sqlite3.Row) -> PromptRun:

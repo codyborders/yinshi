@@ -24,7 +24,7 @@ from yinshi.config import (
     tenant_db_encryption_required,
     user_data_encryption_required,
 )
-from yinshi.db import THREAD_SCHEMA_SQL, _open_connection
+from yinshi.db import THREAD_SCHEMA_SQL, _open_connection, migrate_thread_agent_schema
 from yinshi.model_catalog import DEFAULT_SESSION_MODEL
 from yinshi.services.crypto import derive_subkey
 
@@ -41,7 +41,7 @@ _STORAGE_ENCRYPTION_MARKER: Final[str] = ".yinshi-encrypted-storage"
 _SCHEMA_OBJECT_TYPES: Final[tuple[str, ...]] = ("index", "table", "trigger", "view")
 _MIGRATION_LOCK_SUFFIX: Final[str] = ".migration.lock"
 _PLAINTEXT_ROLLBACK_SUFFIX: Final[str] = ".plaintext.rollback"
-_USER_SCHEMA_VERSION: Final[int] = 2
+_USER_SCHEMA_VERSION: Final[int] = 3
 _LEGACY_USER_SCHEMA_COLUMNS: Final[dict[str, frozenset[str]]] = {
     "messages": frozenset(
         {"content", "created_at", "full_message", "id", "role", "session_id", "turn_id"}
@@ -90,8 +90,10 @@ _CURRENT_USER_SCHEMA_COLUMNS: Final[dict[str, frozenset[str]]] = {
     ),
     "thread_delegations": frozenset(
         {
+            "auto_start",
             "base_commit",
             "base_kind",
+            "cancel_scope",
             "child_session_id",
             "child_workspace_id",
             "completed_at",
@@ -102,6 +104,8 @@ _CURRENT_USER_SCHEMA_COLUMNS: Final[dict[str, frozenset[str]]] = {
             "delegated_by_turn_id",
             "error_code",
             "error_detail_safe",
+            "git_artifact_namespace",
+            "git_artifacts_claimed",
             "id",
             "idempotency_key",
             "initiator",
@@ -117,6 +121,9 @@ _CURRENT_USER_SCHEMA_COLUMNS: Final[dict[str, frozenset[str]]] = {
             "title",
             "updated_at",
         }
+    ),
+    "thread_report_calls": frozenset(
+        {"run_id", "tool_call_id", "delegation_id", "payload_json", "version"}
     ),
     "thread_results": frozenset(
         {
@@ -141,6 +148,7 @@ _CURRENT_USER_SCHEMA_PRIMARY_KEYS: Final[dict[str, tuple[str, ...]]] = {
     **_LEGACY_USER_SCHEMA_PRIMARY_KEYS,
     "prompt_events": ("run_id", "sequence"),
     "prompt_runs": ("id",),
+    "thread_report_calls": ("run_id", "tool_call_id"),
     "sessions": ("id",),
     "workspaces": ("id",),
 }
@@ -403,6 +411,7 @@ def _ensure_user_db_schema(conn: sqlite3.Connection) -> None:
     """Create missing tables and apply migrations for a per-user database."""
     _execute_user_schema_script(conn)
     _migrate_user_db(conn)
+    migrate_thread_agent_schema(conn)
 
 
 def _schema_has_required_columns(
@@ -445,11 +454,44 @@ def _validate_legacy_user_schema(conn: sqlite3.Connection) -> None:
         raise RuntimeError("Tenant database legacy schema is not recognized")
 
 
+def _schema_has_thread_claim_index(conn: sqlite3.Connection) -> bool:
+    """Require the exact unique active-ownership index, not merely its name."""
+    index_name = "thread_delegations_git_namespace_claim"
+    row = next(
+        (
+            row
+            for row in conn.execute("PRAGMA index_list(thread_delegations)")
+            if row[1] == index_name
+        ),
+        None,
+    )
+    if row is None or row[2] != 1 or row[4] != 1:
+        return False
+    columns = tuple(
+        str(row[2])
+        for row in conn.execute("PRAGMA index_info(thread_delegations_git_namespace_claim)")
+    )
+    if columns != ("git_artifact_namespace",):
+        return False
+    definition = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?", (index_name,)
+    ).fetchone()
+    if definition is None or not isinstance(definition[0], str):
+        return False
+    normalized = "".join(definition[0].split()).casefold()
+    return normalized == (
+        "createuniqueindexthread_delegations_git_namespace_claim"
+        "onthread_delegations(git_artifact_namespace)wheregit_artifacts_claimed=1"
+    )
+
+
 def _validate_current_user_schema(conn: sqlite3.Connection) -> None:
-    """Reject a migration result that lacks required version-one structure."""
-    if not _schema_has_required_columns(
-        conn, _CURRENT_USER_SCHEMA_COLUMNS
-    ) or not _schema_has_required_primary_keys(conn, _CURRENT_USER_SCHEMA_PRIMARY_KEYS):
+    """Reject a migration result that lacks required current structure."""
+    if (
+        not _schema_has_required_columns(conn, _CURRENT_USER_SCHEMA_COLUMNS)
+        or not _schema_has_required_primary_keys(conn, _CURRENT_USER_SCHEMA_PRIMARY_KEYS)
+        or not _schema_has_thread_claim_index(conn)
+    ):
         raise RuntimeError("Tenant database current schema is incomplete")
 
 

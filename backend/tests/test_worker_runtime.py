@@ -139,7 +139,10 @@ async def test_worker_shared_storage_budget_returns_before_transport_timeout(
 
     @contextmanager
     def connection(_request):
-        yield db
+        from yinshi.db import get_db
+
+        with get_db() as database:
+            yield database
 
     principal = _principal(tmp_path)
     app = create_app(mode="worker", worker_principal=principal)
@@ -168,6 +171,9 @@ async def test_worker_shared_storage_budget_returns_before_transport_timeout(
     monkeypatch.setattr(deps, "_TENANT_DB_RETRY_DELAY_SECONDS", 0.015)
     monkeypatch.setattr(deps, "_TENANT_DB_RETRY_DELAY_MAX_SECONDS", 0.015)
     dispatcher = WorkerHttpDispatcher(app=app, principal=principal)
+    # Finish execution activation before measuring the foreground retry budget.
+    activated = await dispatcher.request(method="GET", path="/api/repos", body=None)
+    assert activated.status_code == 200
     started = asyncio.get_running_loop().time()
 
     response = await dispatcher.request(method="GET", path="/api/storage-budget-test", body=None)
