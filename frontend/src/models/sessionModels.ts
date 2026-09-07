@@ -138,17 +138,6 @@ export function formatThinkingLevelLabel(level: ThinkingLevel): string {
   return level.charAt(0).toUpperCase() + level.slice(1);
 }
 
-export function getSessionModelLabel(
-  model: string,
-  models: ModelDescriptor[],
-): string {
-  const matchingModel = getSessionModelOption(model, models);
-  if (!matchingModel) {
-    return model;
-  }
-  return matchingModel.label;
-}
-
 export function describeSessionModel(
   model: string,
   models: ModelDescriptor[],

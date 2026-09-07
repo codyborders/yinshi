@@ -3,7 +3,6 @@ import { describe, expect, it } from "vitest";
 import {
   describeSessionModel,
   formatSessionModelOptionLabel,
-  getSessionModelLabel,
   resolveSessionModelKey,
 } from "../sessionModels";
 
@@ -79,9 +78,6 @@ describe("sessionModels", () => {
   });
 
   it("describes known models with both label and canonical ref", () => {
-    expect(getSessionModelLabel("minimax/MiniMax-M2.7", [...catalogModels])).toBe(
-      "MiniMax M2.7",
-    );
     expect(
       describeSessionModel("minimax/MiniMax-M2.7-highspeed", [...catalogModels]),
     ).toContain("minimax/MiniMax-M2.7-highspeed");
