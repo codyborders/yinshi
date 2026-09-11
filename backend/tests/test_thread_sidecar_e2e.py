@@ -79,6 +79,9 @@ async def test_two_child_six_tool_node_python_round_trip(db, git_repo, tmp_path,
     node = shutil.which("node")
     if node is None:
         pytest.skip("Node is required for the cross-runtime integration test")
+    sidecar_modules = Path(__file__).resolve().parents[2] / "sidecar/node_modules"
+    if not sidecar_modules.is_dir():
+        pytest.skip("sidecar/node_modules not installed")
     seed_parent_stack(db, git_repo)
     parent_id = "1" * 32
     db.execute("UPDATE sessions SET id = ? WHERE id = 'parent-session'", (parent_id,))

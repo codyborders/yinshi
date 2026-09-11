@@ -175,6 +175,9 @@ async def test_python_domain_codes_match_actual_node_tool_error_messages(tmp_pat
     executable = shutil.which("node")
     if executable is None:
         pytest.skip("Node is unavailable")
+    sidecar_modules = Path(__file__).resolve().parents[2] / "sidecar/node_modules"
+    if not sidecar_modules.is_dir():
+        pytest.skip("sidecar/node_modules not installed")
     node = str(Path(executable).resolve(strict=True))
     script = """
 import { createOrchestrationRpc } from './src/orchestration_rpc.js';
