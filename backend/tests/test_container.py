@@ -531,7 +531,7 @@ class TestContainerManager:
         assert replacement.active_request_count == 1
 
     @pytest.mark.asyncio
-    async def test_begin_activity_prevents_reaping_busy_container(self, tmp_path):
+    async def test_activity_reservation_prevents_reaping_busy_container(self, tmp_path):
         """Busy containers must stay alive even when their idle timestamp is old."""
         settings = _make_settings(
             container_socket_base=str(tmp_path),
@@ -549,7 +549,8 @@ class TestContainerManager:
             last_activity=old_time,
         )
 
-        mgr.begin_activity(user_id)
+        reservation = await mgr.acquire_activity(user_id)
+        assert reservation is not None
         count = await mgr.reap_idle()
 
         assert count == 0
@@ -629,7 +630,7 @@ class TestContainerManager:
         await inspect_started.wait()
         reap_task = asyncio.create_task(mgr.reap_idle())
         await asyncio.sleep(0)
-        mgr.begin_activity(user_id)
+        info.active_request_count += 1
         release_inspect.set()
 
         ensured_info, count = await asyncio.gather(ensure_task, reap_task)
