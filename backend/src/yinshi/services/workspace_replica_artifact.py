@@ -27,6 +27,18 @@ _ENTRY_FLAGS_KNOWN: Final[int] = 3
 _FORMAT_CODES: Final[dict[str, int]] = {"sha1": 1, "sha256": 2}
 _FORMAT_NAMES: Final[dict[int, str]] = {code: name for name, code in _FORMAT_CODES.items()}
 _FORMAT_OID_SIZES: Final[dict[str, int]] = {"sha1": 20, "sha256": 32}
+_INDEX_VERSIONS: Final[frozenset[int]] = frozenset({2, 3})
+_INDEX_ALLOWED_EXTENSIONS: Final[frozenset[bytes]] = frozenset(
+    {b"TREE", b"REUC", b"UNTR", b"FSMN", b"EOIE", b"IEOT"}
+)
+_INDEX_MODE_REGULAR: Final[frozenset[int]] = frozenset({0o100644, 0o100755, 0o120000})
+_INDEX_FLAG_ASSUME_VALID: Final[int] = 0x8000
+_INDEX_FLAG_EXTENDED: Final[int] = 0x4000
+_INDEX_FLAG_STAGE_MASK: Final[int] = 0x3000
+_INDEX_FLAG_NAME_MASK: Final[int] = 0x0FFF
+_INDEX_EXTENDED_FLAG_SKIP_WORKTREE: Final[int] = 0x4000
+_INDEX_EXTENDED_FLAG_INTENT_TO_ADD: Final[int] = 0x2000
+_INDEX_EXTENDED_FLAGS_KNOWN: Final[int] = 0x6000
 _HEAD_STATE_CODES: Final[dict[str, int]] = {"unborn": 0, "detached": 1, "symbolic": 2}
 _HEAD_STATE_NAMES: Final[dict[int, str]] = {
     code: state for state, code in _HEAD_STATE_CODES.items()
@@ -139,6 +151,19 @@ class ManifestEntry:
 
 
 @dataclass(frozen=True)
+class ArtifactIndexEntry:
+    """One fully validated Git index entry."""
+
+    raw_path: bytes
+    mode: int
+    object_id: bytes
+    stage: int
+    intent_to_add: bool
+    skip_worktree: bool
+    assume_unchanged: bool
+
+
+@dataclass(frozen=True)
 class WorktreeArtifactInput:
     """Snapshot handed to :func:`encode_worktree_artifact`."""
 
@@ -159,6 +184,7 @@ class VerifiedWorktreeArtifact:
     object_format: str
     has_index: bool
     index_bytes: bytes | None
+    index_entries: tuple[ArtifactIndexEntry, ...]
     head_state: str
     head_target: bytes
     head_oid: bytes
@@ -172,6 +198,7 @@ class VerifiedWorktreeArtifact:
 __all__ = [
     "DEFAULT_ARTIFACT_LIMITS",
     "MAGIC",
+    "ArtifactIndexEntry",
     "ArtifactLimits",
     "ManifestEntry",
     "VerifiedWorktreeArtifact",
@@ -274,6 +301,138 @@ def _validate_topology(
         ancestor = b"/".join(components[:index])
         if present.get(ancestor) is not WorktreeEntryKind.DIRECTORY:
             raise error("manifest entry lacks an explicit directory parent")
+
+
+def _parse_index(
+    index_bytes: bytes,
+    object_format: str,
+    limits: ArtifactLimits,
+    error: Callable[[str], WorktreeArtifactError],
+) -> tuple[ArtifactIndexEntry, ...]:
+    """Validate one complete Git index without interpreting extension payloads."""
+    oid_size = _FORMAT_OID_SIZES[object_format]
+    checksum_start = len(index_bytes) - oid_size
+    if checksum_start < 12:
+        raise error("Git index is truncated")
+    if index_bytes[:4] != b"DIRC":
+        raise error("Git index signature is invalid")
+    version = int.from_bytes(index_bytes[4:8], "big")
+    if version not in _INDEX_VERSIONS:
+        raise error("Git index version is unsupported")
+    if (
+        hashlib.new(object_format, index_bytes[:checksum_start]).digest()
+        != index_bytes[checksum_start:]
+    ):
+        raise error("Git index checksum is invalid for object format")
+
+    count = int.from_bytes(index_bytes[8:12], "big")
+    fixed_size = 40 + oid_size + 2
+    minimum_entry_size = (fixed_size + 2 + 7) & ~7
+    entry_region_bytes = checksum_start - 12
+    if count > entry_region_bytes // minimum_entry_size:
+        raise error("Git index entry count exceeds payload bounds")
+    if count > limits.max_exact_index_bytes // minimum_entry_size:
+        raise error("Git index entry count exceeds configured bounds")
+
+    entries: list[ArtifactIndexEntry] = []
+    position = 12
+    previous_key: tuple[bytes, int] | None = None
+    for _ in range(count):
+        entry_start = position
+        if fixed_size > checksum_start - position:
+            raise error("Git index entry fixed fields are truncated")
+        mode = int.from_bytes(index_bytes[position + 24 : position + 28], "big")
+        object_id_start = position + 40
+        object_id = index_bytes[object_id_start : object_id_start + oid_size]
+        flags_start = object_id_start + oid_size
+        flags = int.from_bytes(index_bytes[flags_start : flags_start + 2], "big")
+        position = flags_start + 2
+
+        extended_flags = 0
+        if flags & _INDEX_FLAG_EXTENDED:
+            if version != 3:
+                raise error("Git index version 2 entry has extended flags")
+            if checksum_start - position < 2:
+                raise error("Git index extended flags are truncated")
+            extended_flags = int.from_bytes(index_bytes[position : position + 2], "big")
+            position += 2
+            if extended_flags & ~_INDEX_EXTENDED_FLAGS_KNOWN:
+                raise error("Git index extended flags are unknown")
+
+        path_end = index_bytes.find(b"\x00", position, checksum_start)
+        if path_end < 0:
+            raise error("Git index entry path is not NUL terminated")
+        if path_end - position > limits.max_path_bytes:
+            raise error("Git index entry path exceeds maximum path bytes")
+        path = index_bytes[position:path_end]
+        encoded_path_length = flags & _INDEX_FLAG_NAME_MASK
+        if encoded_path_length != min(len(path), _INDEX_FLAG_NAME_MASK):
+            raise error("Git index entry path length flag is not canonical")
+        _validate_raw_path(path, limits, error)
+
+        unpadded_size = path_end + 1 - entry_start
+        padding_size = (-unpadded_size) % 8
+        next_position = path_end + 1 + padding_size
+        if next_position > checksum_start:
+            raise error("Git index entry padding is truncated")
+        if any(index_bytes[path_end + 1 : next_position]):
+            raise error("Git index entry padding is nonzero")
+        position = next_position
+
+        if mode not in _INDEX_MODE_REGULAR:
+            raise error("Git index entry mode is unsupported")
+        if not any(object_id):
+            raise error("Git index entry object ID cannot be zero")
+        stage = (flags & _INDEX_FLAG_STAGE_MASK) >> 12
+        key = (path, stage)
+        if previous_key is not None:
+            if key == previous_key:
+                raise error("Git index entry key is duplicated")
+            if key < previous_key:
+                raise error("Git index entries are not canonically ordered")
+            if path == previous_key[0] and (stage == 0 or previous_key[1] == 0):
+                raise error("Git index stage zero cannot coexist with conflict stages")
+        previous_key = key
+        entries.append(
+            ArtifactIndexEntry(
+                raw_path=path,
+                mode=mode,
+                object_id=object_id,
+                stage=stage,
+                intent_to_add=bool(extended_flags & _INDEX_EXTENDED_FLAG_INTENT_TO_ADD),
+                skip_worktree=bool(extended_flags & _INDEX_EXTENDED_FLAG_SKIP_WORKTREE),
+                assume_unchanged=bool(flags & _INDEX_FLAG_ASSUME_VALID),
+            )
+        )
+
+    seen_eoie = False
+    while position < checksum_start:
+        if seen_eoie:
+            raise error("Git index EOIE extension must be final")
+        if checksum_start - position < 8:
+            raise error("Git index extension framing is truncated")
+        signature = index_bytes[position : position + 4]
+        extension_size = int.from_bytes(index_bytes[position + 4 : position + 8], "big")
+        position += 8
+        if extension_size > checksum_start - position:
+            raise error("Git index extension payload is truncated")
+        if signature not in _INDEX_ALLOWED_EXTENSIONS:
+            raise error("Git index extension is unsupported")
+        if signature == b"EOIE":
+            seen_eoie = True
+        position += extension_size
+
+    return tuple(entries)
+
+
+def _expected_roots(
+    head_oid: bytes,
+    index_entries: tuple[ArtifactIndexEntry, ...],
+) -> tuple[bytes, ...]:
+    roots = {entry.object_id for entry in index_entries}
+    if head_oid:
+        roots.add(head_oid)
+    return tuple(sorted(roots))
 
 
 def compute_source_state_sha256(
@@ -399,6 +558,16 @@ def encode_worktree_artifact(
         raise WorktreeArtifactEncodeError("index bytes must be raw bytes")
     if len(index_payload) > limits.max_exact_index_bytes:
         raise WorktreeArtifactEncodeError("exact index exceeds maximum bytes")
+    index_entries = (
+        ()
+        if artifact.index_bytes is None
+        else _parse_index(
+            index_payload,
+            artifact.object_format,
+            limits,
+            WorktreeArtifactEncodeError,
+        )
+    )
     try:
         raw_entries = tuple(artifact.entries)
         raw_roots = tuple(artifact.root_oids)
@@ -427,11 +596,11 @@ def encode_worktree_artifact(
     for root in raw_roots:
         if type(root) is not bytes or len(root) != oid_size or not any(root):
             raise WorktreeArtifactEncodeError("root object ID is invalid")
+    roots = _expected_roots(artifact.head_oid, index_entries)
     if len(set(raw_roots)) != len(raw_roots):
         raise WorktreeArtifactEncodeError("root object ID is duplicated")
-    if artifact.head_oid and artifact.head_oid not in raw_roots:
-        raise WorktreeArtifactEncodeError("HEAD object ID is absent from roots")
-    roots = tuple(sorted(set(raw_roots)))
+    if set(raw_roots) != set(roots):
+        raise WorktreeArtifactEncodeError("roots do not exactly match HEAD and index object IDs")
     control_length = (
         4
         + 4
@@ -704,6 +873,16 @@ def decode_worktree_artifact(
     if has_index and len(index_payload) > limits.max_exact_index_bytes:
         raise WorktreeArtifactDecodeError("exact index exceeds maximum bytes")
     index_bytes = bytes(index_payload) if has_index else None
+    index_entries = (
+        _parse_index(
+            index_bytes,
+            object_format,
+            limits,
+            WorktreeArtifactDecodeError,
+        )
+        if index_bytes is not None
+        else ()
+    )
     entries, found_aggregate = _parse_manifest(payloads[2], limits)
     if any(entry.allowed_ignored for entry in entries) and policy_digest is None:
         raise WorktreeArtifactDecodeError("ignored entries lack a policy digest")
@@ -720,12 +899,15 @@ def decode_worktree_artifact(
     )
     if tuple(sorted(set(roots))) != roots or any(not any(root) for root in roots):
         raise WorktreeArtifactDecodeError("root object IDs are not valid, unique, and sorted")
-    if head_oid and head_oid not in roots:
-        raise WorktreeArtifactDecodeError("HEAD object ID is absent from roots")
+    if roots != _expected_roots(head_oid, index_entries):
+        raise WorktreeArtifactDecodeError(
+            "roots do not exactly match sorted unique HEAD and index object IDs"
+        )
     return VerifiedWorktreeArtifact(
         object_format=object_format,
         has_index=has_index,
         index_bytes=index_bytes,
+        index_entries=index_entries,
         head_state=head_state,
         head_target=head_target,
         head_oid=head_oid,

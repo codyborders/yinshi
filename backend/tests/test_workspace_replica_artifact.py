@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import hashlib
+import subprocess
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
 import yinshi.services.workspace_replica_artifact as artifact_module
 from yinshi.services.workspace_replica_artifact import (
+    ArtifactIndexEntry,
     ArtifactLimits,
     ManifestEntry,
     WorktreeArtifactDecodeError,
@@ -23,13 +26,58 @@ OID = b"a" * 20
 OTHER_OID = b"b" * 20
 
 
+def checked_index(body: bytes, object_format: str = "sha1") -> bytes:
+    digest = (
+        hashlib.sha1(body).digest() if object_format == "sha1" else hashlib.sha256(body).digest()
+    )
+    return body + digest
+
+
+def empty_index(object_format: str) -> bytes:
+    body = b"DIRC" + (2).to_bytes(4, "big") + (0).to_bytes(4, "big")
+    return checked_index(body, object_format)
+
+
+def raw_index_entry(
+    path: bytes,
+    object_id: bytes,
+    *,
+    mode: int = 0o100644,
+    stage: int = 0,
+    assume_unchanged: bool = False,
+    extended_flags: int | None = None,
+) -> bytes:
+    stat = bytearray(40)
+    stat[24:28] = mode.to_bytes(4, "big")
+    flags = min(len(path), 0xFFF) | (stage << 12)
+    if assume_unchanged:
+        flags |= 0x8000
+    if extended_flags is not None:
+        flags |= 0x4000
+    entry = bytes(stat) + object_id + flags.to_bytes(2, "big")
+    if extended_flags is not None:
+        entry += extended_flags.to_bytes(2, "big")
+    entry += path + b"\x00"
+    return entry + b"\x00" * (-len(entry) % 8)
+
+
+def synthetic_index(
+    entries: tuple[bytes, ...],
+    *,
+    version: int = 2,
+    extensions: bytes = b"",
+) -> bytes:
+    body = b"DIRC" + version.to_bytes(4, "big") + len(entries).to_bytes(4, "big")
+    return checked_index(body + b"".join(entries) + extensions)
+
+
 def artifact_input() -> WorktreeArtifactInput:
     return WorktreeArtifactInput(
         object_format="sha1",
         head_state="symbolic",
         head_target=b"refs/heads/main",
         head_oid=OID,
-        index_bytes=b"DIRC\x00exact-index\xff",
+        index_bytes=empty_index("sha1"),
         entries=(
             ManifestEntry(b"dir", WorktreeEntryKind.DIRECTORY),
             ManifestEntry(
@@ -45,7 +93,7 @@ def artifact_input() -> WorktreeArtifactInput:
                 allowed_ignored=True,
             ),
         ),
-        root_oids=(OTHER_OID, OID),
+        root_oids=(OID,),
         policy_digest=b"p" * 32,
     )
 
@@ -82,7 +130,7 @@ def test_round_trip_preserves_exact_index_manifest_and_head() -> None:
     assert decoded.entries == tuple(sorted(source.entries, key=lambda entry: entry.raw_path))
     assert decoded.head_target == source.head_target
     assert decoded.head_oid == source.head_oid
-    assert decoded.root_oids == (OID, OTHER_OID)
+    assert decoded.root_oids == (OID,)
     assert decoded.policy_digest == source.policy_digest
     assert decoded.total_bytes == len(encoded)
     assert len(decoded.source_state_sha256) == 32
@@ -94,6 +142,7 @@ def test_sha256_and_unborn_repositories_round_trip() -> None:
         artifact_input(),
         object_format="sha256",
         head_oid=sha256_oid,
+        index_bytes=empty_index("sha256"),
         root_oids=(sha256_oid,),
     )
     decoded = decode_worktree_artifact(encode_worktree_artifact(sha256_value))
@@ -272,7 +321,7 @@ def small_limits(**changes: int) -> ArtifactLimits:
         small_limits(max_depth=1),
         small_limits(max_content_bytes=1),
         small_limits(max_aggregate_content_bytes=1, max_content_bytes=1),
-        small_limits(max_roots=1),
+        small_limits(max_roots=0),
         small_limits(max_total_bytes=1),
         small_limits(max_control_bytes=1),
         small_limits(max_index_bytes=1, max_exact_index_bytes=1),
@@ -465,3 +514,262 @@ def test_source_state_digest_binds_every_section() -> None:
     expected = hashlib.sha256(b"yinshi-replica-source-v1\x00" + b"".join(digests)).digest()
     assert artifact_module.compute_source_state_sha256(*digests) == expected
     assert expected == original.source_state_sha256
+
+
+def git(path: Path, *args: str, input_bytes: bytes | None = None) -> bytes:
+    return subprocess.run(
+        ["git", "-C", str(path), *args],
+        input=input_bytes,
+        check=True,
+        capture_output=True,
+    ).stdout.strip()
+
+
+def staged_artifact(tmp_path: Path, object_format: str) -> tuple[WorktreeArtifactInput, bytes]:
+    repository = tmp_path / object_format
+    repository.mkdir()
+    git(repository, "init", "-q", "--initial-branch=main", f"--object-format={object_format}")
+    git(repository, "config", "user.name", "Test")
+    git(repository, "config", "user.email", "test@example.invalid")
+    (repository / "file.txt").write_bytes(b"staged")
+    git(repository, "add", "file.txt")
+    object_id = bytes.fromhex(git(repository, "rev-parse", ":file.txt").decode("ascii"))
+    index_bytes = (repository / ".git" / "index").read_bytes()
+    return (
+        WorktreeArtifactInput(
+            object_format=object_format,
+            head_state="unborn",
+            index_bytes=index_bytes,
+            root_oids=(object_id,),
+        ),
+        object_id,
+    )
+
+
+@pytest.mark.parametrize("object_format", ["sha1", "sha256"])
+def test_real_index_round_trip_derives_exact_entries_and_roots(
+    tmp_path: Path,
+    object_format: str,
+) -> None:
+    source, object_id = staged_artifact(tmp_path, object_format)
+    decoded = decode_worktree_artifact(encode_worktree_artifact(source))
+    assert decoded.index_bytes == source.index_bytes
+    assert decoded.index_entries == (
+        ArtifactIndexEntry(
+            raw_path=b"file.txt",
+            mode=0o100644,
+            object_id=object_id,
+            stage=0,
+            intent_to_add=False,
+            skip_worktree=False,
+            assume_unchanged=False,
+        ),
+    )
+    assert decoded.root_oids == (object_id,)
+
+
+@pytest.mark.parametrize("object_format", ["sha1", "sha256"])
+def test_real_intent_to_add_uses_nonzero_empty_blob_oid(
+    tmp_path: Path,
+    object_format: str,
+) -> None:
+    repository = tmp_path / f"intent-{object_format}"
+    repository.mkdir()
+    git(repository, "init", "-q", "--initial-branch=main", f"--object-format={object_format}")
+    (repository / "intent.txt").write_bytes(b"not-staged")
+    git(repository, "add", "--intent-to-add", "intent.txt")
+    object_id = bytes.fromhex(git(repository, "rev-parse", ":intent.txt").decode("ascii"))
+    assert object_id != bytes(len(object_id))
+    source = WorktreeArtifactInput(
+        object_format=object_format,
+        head_state="unborn",
+        index_bytes=(repository / ".git" / "index").read_bytes(),
+        root_oids=(object_id,),
+    )
+    decoded = decode_worktree_artifact(encode_worktree_artifact(source))
+    assert decoded.index_entries[0].intent_to_add is True
+    assert decoded.index_entries[0].object_id == object_id
+
+
+def test_real_conflict_index_preserves_three_stages(tmp_path: Path) -> None:
+    repository = tmp_path / "conflict"
+    repository.mkdir()
+    git(repository, "init", "-q", "--initial-branch=main")
+    object_ids = tuple(
+        bytes.fromhex(git(repository, "hash-object", "-w", "--stdin", input_bytes=value).decode())
+        for value in (b"base", b"ours", b"theirs")
+    )
+    index_info = b"".join(
+        f"100644 {object_id.hex()} {stage}\tconflict.txt\n".encode()
+        for stage, object_id in enumerate(object_ids, start=1)
+    )
+    git(repository, "update-index", "--index-info", input_bytes=index_info)
+    source = WorktreeArtifactInput(
+        object_format="sha1",
+        head_state="unborn",
+        index_bytes=(repository / ".git" / "index").read_bytes(),
+        root_oids=tuple(sorted(object_ids)),
+    )
+    decoded = decode_worktree_artifact(encode_worktree_artifact(source))
+    assert tuple(entry.stage for entry in decoded.index_entries) == (1, 2, 3)
+    assert tuple(entry.object_id for entry in decoded.index_entries) == object_ids
+
+
+@pytest.mark.parametrize("missing", [True, False])
+def test_encoder_rejects_root_mismatch(tmp_path: Path, missing: bool) -> None:
+    source, object_id = staged_artifact(tmp_path, "sha1")
+    roots = () if missing else (object_id, OTHER_OID)
+    with pytest.raises(WorktreeArtifactEncodeError, match="roots"):
+        encode_worktree_artifact(replace(source, root_oids=roots))
+
+
+def test_decoder_rejects_root_mismatch(tmp_path: Path) -> None:
+    source, _object_id = staged_artifact(tmp_path, "sha1")
+    values = sections(encode_worktree_artifact(source))
+    corrupted = reframe([*values[:3], (4, OTHER_OID)])
+    with pytest.raises(WorktreeArtifactDecodeError, match="roots"):
+        decode_worktree_artifact(corrupted)
+
+
+def test_index_checksum_and_version_are_validated(tmp_path: Path) -> None:
+    source, _object_id = staged_artifact(tmp_path, "sha1")
+    damaged = bytearray(source.index_bytes or b"")
+    damaged[-1] ^= 1
+    with pytest.raises(WorktreeArtifactEncodeError, match="index"):
+        encode_worktree_artifact(replace(source, index_bytes=bytes(damaged)))
+    version_four = bytearray(source.index_bytes or b"")
+    version_four[4:8] = (4).to_bytes(4, "big")
+    version_four[-20:] = hashlib.sha1(version_four[:-20]).digest()
+    with pytest.raises(WorktreeArtifactEncodeError, match="version"):
+        encode_worktree_artifact(replace(source, index_bytes=bytes(version_four)))
+
+
+def test_index_rejects_split_sparse_and_unknown_extensions() -> None:
+    for signature in (b"link", b"sdir", b"ABCD", b"abcd"):
+        extension = signature + (0).to_bytes(4, "big")
+        source = replace(artifact_input(), index_bytes=synthetic_index((), extensions=extension))
+        with pytest.raises(WorktreeArtifactEncodeError, match="extension"):
+            encode_worktree_artifact(source)
+
+
+def test_root_input_order_does_not_change_canonical_artifact() -> None:
+    first = b"c" * 20
+    second = b"d" * 20
+    index = synthetic_index((raw_index_entry(b"a", first), raw_index_entry(b"b", second)))
+    source = WorktreeArtifactInput(
+        object_format="sha1",
+        head_state="unborn",
+        index_bytes=index,
+        root_oids=(first, second),
+    )
+    assert encode_worktree_artifact(source) == encode_worktree_artifact(
+        replace(source, root_oids=(second, first))
+    )
+
+
+def test_index_requires_one_final_eoie_extension() -> None:
+    for extensions in (
+        b"EOIE" + (0).to_bytes(4, "big") + b"IEOT" + (0).to_bytes(4, "big"),
+        b"EOIE" + (0).to_bytes(4, "big") + b"EOIE" + (0).to_bytes(4, "big"),
+    ):
+        with pytest.raises(WorktreeArtifactEncodeError, match="EOIE"):
+            encode_worktree_artifact(
+                replace(artifact_input(), index_bytes=synthetic_index((), extensions=extensions))
+            )
+
+
+def test_version_three_flags_and_approved_extensions_are_preserved() -> None:
+    object_id = b"c" * 20
+    extensions = b"".join(
+        signature + (1).to_bytes(4, "big") + b"x"
+        for signature in (b"TREE", b"REUC", b"UNTR", b"FSMN", b"IEOT", b"EOIE")
+    )
+    index = synthetic_index(
+        (
+            raw_index_entry(
+                b"link",
+                object_id,
+                mode=0o120000,
+                assume_unchanged=True,
+                extended_flags=0x6000,
+            ),
+        ),
+        version=3,
+        extensions=extensions,
+    )
+    source = WorktreeArtifactInput(
+        object_format="sha1",
+        head_state="unborn",
+        index_bytes=index,
+        root_oids=(object_id,),
+    )
+    decoded = decode_worktree_artifact(encode_worktree_artifact(source))
+    assert decoded.index_entries == (
+        ArtifactIndexEntry(
+            raw_path=b"link",
+            mode=0o120000,
+            object_id=object_id,
+            stage=0,
+            intent_to_add=True,
+            skip_worktree=True,
+            assume_unchanged=True,
+        ),
+    )
+
+
+@pytest.mark.parametrize("mode", [0o040000, 0o100600, 0o160000])
+def test_index_rejects_sparse_gitlink_and_noncanonical_modes(mode: int) -> None:
+    index = synthetic_index((raw_index_entry(b"path", b"c" * 20, mode=mode),))
+    with pytest.raises(WorktreeArtifactEncodeError, match="mode"):
+        encode_worktree_artifact(replace(artifact_input(), index_bytes=index))
+
+
+def test_index_rejects_zero_oid_unsafe_path_bad_order_and_stage_mix() -> None:
+    malformed_entries = (
+        (raw_index_entry(b"path", b"\x00" * 20),),
+        (raw_index_entry(b"../path", b"c" * 20),),
+        (raw_index_entry(b"z", b"c" * 20), raw_index_entry(b"a", b"d" * 20)),
+        (
+            raw_index_entry(b"path", b"c" * 20),
+            raw_index_entry(b"path", b"d" * 20, stage=1),
+        ),
+    )
+    for entries in malformed_entries:
+        with pytest.raises(WorktreeArtifactEncodeError):
+            encode_worktree_artifact(
+                replace(artifact_input(), index_bytes=synthetic_index(entries))
+            )
+
+
+def test_index_rejects_malformed_padding_flags_count_and_extension_framing() -> None:
+    object_id = b"c" * 20
+    valid_entry = raw_index_entry(b"path", object_id)
+    nonzero_padding = valid_entry[:-1] + b"x"
+    bad_path_length = bytearray(valid_entry)
+    bad_path_length[60:62] = (1).to_bytes(2, "big")
+    count_body = b"DIRC" + (2).to_bytes(4, "big") + (0xFFFFFFFF).to_bytes(4, "big")
+    malformed = (
+        synthetic_index((nonzero_padding,)),
+        synthetic_index((bytes(bad_path_length),)),
+        checked_index(count_body),
+        synthetic_index((), extensions=b"TREE"),
+        synthetic_index((), extensions=b"TREE" + (1).to_bytes(4, "big")),
+        synthetic_index(
+            (raw_index_entry(b"path", object_id, extended_flags=0x0001),),
+            version=3,
+        ),
+        synthetic_index(
+            (raw_index_entry(b"path", object_id, extended_flags=0),),
+            version=2,
+        ),
+    )
+    for index in malformed:
+        with pytest.raises(WorktreeArtifactEncodeError):
+            encode_worktree_artifact(replace(artifact_input(), index_bytes=index))
+
+
+def test_no_index_has_no_entries_and_roots_equal_head_only() -> None:
+    source = replace(artifact_input(), index_bytes=None)
+    decoded = decode_worktree_artifact(encode_worktree_artifact(source))
+    assert decoded.index_entries == ()
+    assert decoded.root_oids == (OID,)
