@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import subprocess
+import sys
 
 import pytest
 
@@ -106,3 +108,153 @@ async def test_run_git_bytes_cancellation_reaps_child(monkeypatch, tmp_path):
 
     assert isinstance(result[0], asyncio.CancelledError)
     assert calls == ["communicate", "kill", "communicate", "drained"]
+
+
+@pytest.mark.asyncio
+async def test_run_git_bytes_enforces_stdout_bound(tmp_path) -> None:
+    """Bounded mode returns exact bytes and rejects one-byte overflow."""
+    from yinshi.services import git as git_service
+
+    repo = init_repo(tmp_path)
+    expected = await git_service.run_git_bytes(["rev-parse", "HEAD"], cwd=str(repo))
+    assert (
+        await git_service.run_git_bytes(
+            ["rev-parse", "HEAD"],
+            cwd=str(repo),
+            stdout_bytes_max=len(expected),
+        )
+        == expected
+    )
+    with pytest.raises(GitError, match="git rev-parse output exceeded limit"):
+        await git_service.run_git_bytes(
+            ["rev-parse", "HEAD"],
+            cwd=str(repo),
+            stdout_bytes_max=len(expected) - 1,
+        )
+
+
+@pytest.mark.asyncio
+async def test_run_git_bytes_enforces_stderr_bound(tmp_path) -> None:
+    """Bounded mode rejects diagnostic overflow before returning Git failure."""
+    from yinshi.services import git as git_service
+
+    repo = init_repo(tmp_path)
+    with pytest.raises(GitError, match="git show output exceeded limit"):
+        await git_service.run_git_bytes(
+            ["show", "missing-ref"],
+            cwd=str(repo),
+            stdout_bytes_max=1024,
+            stderr_bytes_max=0,
+        )
+
+
+async def wait_for_pid(path) -> int:
+    """Wait until a test child publishes its process ID."""
+    for _ in range(200):
+        if path.exists():
+            return int(path.read_text(encoding="ascii"))
+        await asyncio.sleep(0.005)
+    raise AssertionError("child did not publish its process ID")
+
+
+@pytest.mark.asyncio
+async def test_bounded_overflow_reaps_live_process(monkeypatch, tmp_path) -> None:
+    """Overflow stops and reaps a live process that writes beyond pipe capacity."""
+    from yinshi.services import git as git_service
+
+    pid_path = tmp_path / "overflow.pid"
+    program = (
+        "import os,sys\n"
+        "open(sys.argv[1], 'w').write(str(os.getpid()))\n"
+        "while True: os.write(1, b'x' * 65536)\n"
+    )
+    monkeypatch.setattr(git_service, "_GIT_EXECUTABLE_PATH", sys.executable)
+    with pytest.raises(GitError, match="output exceeded limit"):
+        await git_service.run_git_bytes(
+            ["-c", program, str(pid_path)],
+            stdout_bytes_max=1024,
+        )
+    pid = await wait_for_pid(pid_path)
+    with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)
+
+
+@pytest.mark.asyncio
+async def test_repeated_cancellation_reaps_bounded_live_process(monkeypatch, tmp_path) -> None:
+    """Repeated cancellation cannot interrupt bounded child cleanup."""
+    from yinshi.services import git as git_service
+
+    pid_path = tmp_path / "cancel.pid"
+    program = (
+        "import os,sys,time\n"
+        "open(sys.argv[1], 'w').write(str(os.getpid()))\n"
+        "while True: time.sleep(1)\n"
+    )
+    monkeypatch.setattr(git_service, "_GIT_EXECUTABLE_PATH", sys.executable)
+    task = asyncio.create_task(
+        git_service.run_git_bytes(
+            ["-c", program, str(pid_path)],
+            stdout_bytes_max=1024,
+        )
+    )
+    pid = await wait_for_pid(pid_path)
+    task.cancel()
+    task.cancel()
+    result = await asyncio.gather(task, return_exceptions=True)
+    assert isinstance(result[0], asyncio.CancelledError)
+    with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)
+
+
+@pytest.mark.asyncio
+async def test_explicit_stderr_bound_applies_without_stdout_bound(monkeypatch) -> None:
+    """Explicit stderr limits work while stdout remains intentionally unbounded."""
+    from yinshi.services import git as git_service
+
+    monkeypatch.setattr(git_service, "_GIT_EXECUTABLE_PATH", sys.executable)
+    with pytest.raises(GitError, match="output exceeded limit"):
+        await git_service.run_git_bytes(
+            ["-c", "import os; os.write(2, b'x' * 65536)"],
+            stderr_bytes_max=1024,
+        )
+
+
+@pytest.mark.asyncio
+async def test_run_git_bytes_accepts_declared_nonzero_status(tmp_path) -> None:
+    """Callers can inspect commands with one declared nonzero outcome."""
+    from yinshi.services import git as git_service
+
+    repo = init_repo(tmp_path)
+    git_head = (
+        (await git_service.run_git_bytes(["rev-parse", "HEAD"], cwd=str(repo)))
+        .decode("ascii")
+        .strip()
+    )
+    await git_service.run_git_bytes(
+        ["checkout", "--detach", "-q", git_head],
+        cwd=str(repo),
+    )
+    assert (
+        await git_service.run_git_bytes(
+            ["symbolic-ref", "--quiet", "HEAD"],
+            cwd=str(repo),
+            stdout_bytes_max=128,
+            accepted_returncodes=(0, 1),
+        )
+        == b""
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_git_bytes_rejects_invalid_output_bounds() -> None:
+    """Output limits require exact nonnegative integers."""
+    from yinshi.services import git as git_service
+
+    for value in (-1, True):
+        with pytest.raises(ValueError):
+            await git_service.run_git_bytes(["status"], stdout_bytes_max=value)
+        with pytest.raises(ValueError):
+            await git_service.run_git_bytes(["status"], stderr_bytes_max=value)
+    for codes in ((), (True,), (-1,), (256,)):
+        with pytest.raises(ValueError):
+            await git_service.run_git_bytes(["status"], accepted_returncodes=codes)

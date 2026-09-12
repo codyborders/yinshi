@@ -3,15 +3,19 @@
 import asyncio
 import logging
 import os
+import re
 import secrets
+import stat
 import string
+import sys
 import tempfile
-from collections.abc import Iterator
-from contextlib import contextmanager, suppress
+from collections.abc import Iterator, Sequence
+from contextlib import ExitStack, contextmanager, suppress
 from pathlib import Path
 from urllib.parse import urlparse
 
 from yinshi.exceptions import GitError
+from yinshi.services.workspace_isolation import require_isolated_execution
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +83,404 @@ _NOUNS = [
 _GIT_COMMAND_TIMEOUT_S = 300.0
 _GIT_EXECUTABLE_PATH = "/usr/bin/git"
 _GITHUB_HOST = "github.com"
+
+
+class _StableDirectory(str):
+    """A named directory retained by descriptor for one external effect sequence."""
+
+    descriptor: int
+    device: int
+    inode: int
+
+    def __new__(cls, path: str, descriptor: int) -> "_StableDirectory":  # noqa: PYI034
+        instance = super().__new__(cls, os.path.abspath(path))
+        identity = os.fstat(descriptor)
+        instance.descriptor = descriptor
+        instance.device = identity.st_dev
+        instance.inode = identity.st_ino
+        return instance
+
+    def process_path(self, *, modeled: bool) -> str:
+        """Return a child-visible stable locator or a modeled-test fallback."""
+        if sys.platform.startswith("linux"):
+            return f"/proc/self/fd/{self.descriptor}"
+        if modeled:
+            return str(self)
+        raise GitError("Stable Git directory descriptors are unavailable on this platform")
+
+
+def _directory_open_flags() -> int:
+    """Return no-follow directory flags shared by retained Git objects."""
+    return (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+
+
+def _stable_directory_name_matches(directory: _StableDirectory) -> bool:
+    """Return whether a retained directory still owns its accepted name."""
+    try:
+        named = os.lstat(directory)
+    except OSError:
+        return False
+    return bool(
+        stat.S_ISDIR(named.st_mode)
+        and not stat.S_ISLNK(named.st_mode)
+        and (named.st_dev, named.st_ino) == (directory.device, directory.inode)
+    )
+
+
+def _require_exclusive_directory(
+    descriptor: int,
+    *,
+    expected_device: int | None = None,
+) -> os.stat_result:
+    """Require one broker-owned namespace inaccessible to other identities."""
+    identity = os.fstat(descriptor)
+    exclusive = (
+        stat.S_ISDIR(identity.st_mode)
+        and identity.st_uid == os.geteuid()
+        and identity.st_mode & (stat.S_IWGRP | stat.S_IWOTH) == 0
+        and (expected_device is None or identity.st_dev == expected_device)
+    )
+    if not exclusive:
+        raise GitError("Git directory lacks exclusive ownership")
+    return identity
+
+
+@contextmanager
+def _retain_directory(path: str) -> Iterator[_StableDirectory]:
+    """Retain one exact no-follow directory object until its effects finish."""
+    absolute = os.path.abspath(path)
+    try:
+        descriptor = os.open(absolute, _directory_open_flags())
+    except OSError as exc:
+        raise GitError("Git working directory is unavailable") from exc
+    directory = _StableDirectory(absolute, descriptor)
+    try:
+        if not _stable_directory_name_matches(directory):
+            raise GitError("Git working directory changed during open")
+        yield directory
+    finally:
+        os.close(descriptor)
+
+
+@contextmanager
+def _retain_directory_argument(path: str) -> Iterator[_StableDirectory]:
+    """Reuse an already-retained argument or retain its current named object."""
+    if isinstance(path, _StableDirectory):
+        yield path
+        return
+    with _retain_directory(path) as directory:
+        yield directory
+
+
+def _require_stable_directory_name(
+    directory: _StableDirectory,
+    *,
+    object_name: str,
+) -> None:
+    """Fail when an accepted directory no longer owns its original name."""
+    if not _stable_directory_name_matches(directory):
+        raise GitError(f"Git {object_name} changed during operation")
+
+
+def _stable_directory_is_empty(directory: _StableDirectory) -> bool:
+    """Return whether a retained directory has no entries."""
+    with os.scandir(directory.descriptor) as entries:
+        return next(entries, None) is None
+
+
+@contextmanager
+def _retain_parent_directory(path: Path) -> Iterator[_StableDirectory]:
+    """Retain or create an exact parent through one exclusive descriptor chain."""
+    absolute_parent = Path(os.path.abspath(path)).parent
+    missing: list[str] = []
+    existing = absolute_parent
+    while not os.path.lexists(existing):
+        missing.append(existing.name)
+        if existing == existing.parent:
+            raise GitError("Git destination parent is unavailable")
+        existing = existing.parent
+
+    with ExitStack() as stack:
+        parent = stack.enter_context(_retain_directory(str(existing)))
+        parent_identity = _require_exclusive_directory(parent.descriptor)
+        current = existing
+        for component in reversed(missing):
+            try:
+                os.mkdir(component, mode=0o700, dir_fd=parent.descriptor)
+            except FileExistsError:
+                pass
+            descriptor = os.open(component, _directory_open_flags(), dir_fd=parent.descriptor)
+            stack.callback(os.close, descriptor)
+            child_identity = _require_exclusive_directory(
+                descriptor,
+                expected_device=parent_identity.st_dev,
+            )
+            named = os.stat(component, dir_fd=parent.descriptor, follow_symlinks=False)
+            if (named.st_dev, named.st_ino) != (child_identity.st_dev, child_identity.st_ino):
+                raise GitError("Git destination parent changed during creation")
+            current /= component
+            parent = _StableDirectory(str(current), descriptor)
+            parent_identity = child_identity
+        yield parent
+
+
+@contextmanager
+def _retain_new_directory(path: Path) -> Iterator[_StableDirectory]:
+    """Create and retain one exact destination below a retained parent."""
+    absolute = Path(os.path.abspath(path))
+    with _retain_parent_directory(absolute) as parent:
+        parent_identity = _require_exclusive_directory(parent.descriptor)
+        try:
+            os.mkdir(absolute.name, mode=0o700, dir_fd=parent.descriptor)
+        except FileExistsError as exc:
+            raise GitError("Destination already exists but is not a git repository") from exc
+        descriptor = os.open(
+            absolute.name,
+            _directory_open_flags(),
+            dir_fd=parent.descriptor,
+        )
+        directory = _StableDirectory(str(absolute), descriptor)
+        try:
+            opened = _require_exclusive_directory(
+                descriptor,
+                expected_device=parent_identity.st_dev,
+            )
+            named = os.stat(absolute.name, dir_fd=parent.descriptor, follow_symlinks=False)
+            if (named.st_dev, named.st_ino) != (opened.st_dev, opened.st_ino):
+                raise GitError("Git destination changed during creation")
+            yield directory
+        finally:
+            os.close(descriptor)
+
+
+@contextmanager
+def _retain_empty_worktree(path: str) -> Iterator[_StableDirectory]:
+    """Retain an existing empty worktree stage or create one securely."""
+    if isinstance(path, _StableDirectory):
+        _require_exclusive_directory(path.descriptor)
+        if not _stable_directory_is_empty(path):
+            raise GitError("Worktree path already exists but is not a git repository")
+        yield path
+        return
+    absolute = Path(os.path.abspath(path))
+    with _retain_parent_directory(absolute) as parent:
+        parent_identity = _require_exclusive_directory(parent.descriptor)
+        try:
+            named = os.stat(absolute.name, dir_fd=parent.descriptor, follow_symlinks=False)
+        except FileNotFoundError:
+            named = None
+        if named is None:
+            try:
+                os.mkdir(absolute.name, mode=0o700, dir_fd=parent.descriptor)
+            except FileExistsError as exc:
+                raise GitError("Worktree path changed during creation") from exc
+        descriptor = os.open(absolute.name, _directory_open_flags(), dir_fd=parent.descriptor)
+        directory = _StableDirectory(str(absolute), descriptor)
+        try:
+            opened = _require_exclusive_directory(
+                descriptor,
+                expected_device=parent_identity.st_dev,
+            )
+            current = os.stat(absolute.name, dir_fd=parent.descriptor, follow_symlinks=False)
+            if (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino):
+                raise GitError("Git worktree target changed during open")
+            if not _stable_directory_is_empty(directory):
+                raise GitError("Worktree path already exists but is not a git repository")
+            yield directory
+        finally:
+            os.close(descriptor)
+
+
+def _read_descriptor_file(parent: int, name: str) -> bytes:
+    """Read one no-follow Git metadata file through its retained parent."""
+    descriptor = os.open(
+        name,
+        os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
+        dir_fd=parent,
+    )
+    try:
+        opened = os.fstat(descriptor)
+        named = os.stat(name, dir_fd=parent, follow_symlinks=False)
+        if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (
+            named.st_dev,
+            named.st_ino,
+        ):
+            raise GitError("Git worktree metadata changed during cleanup")
+        value = os.read(descriptor, 4097)
+        if len(value) > 4096:
+            raise GitError("Git worktree metadata is too large")
+        return value
+    finally:
+        os.close(descriptor)
+
+
+def _remove_directory_contents(descriptor: int) -> None:
+    """Remove entries only below one retained exclusive metadata directory."""
+    parent_identity = _require_exclusive_directory(descriptor)
+    with os.scandir(descriptor) as entries:
+        names = [entry.name for entry in entries]
+    for name in names:
+        before = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+        if before.st_dev != parent_identity.st_dev or before.st_uid != os.geteuid():
+            raise GitError("Git worktree metadata lacks exclusive ownership")
+        if stat.S_ISDIR(before.st_mode) and not stat.S_ISLNK(before.st_mode):
+            child = os.open(name, _directory_open_flags(), dir_fd=descriptor)
+            try:
+                opened = _require_exclusive_directory(
+                    child,
+                    expected_device=parent_identity.st_dev,
+                )
+                if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
+                    raise GitError("Git worktree metadata changed during cleanup")
+                _remove_directory_contents(child)
+                named = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+                if (named.st_dev, named.st_ino) != (opened.st_dev, opened.st_ino):
+                    raise GitError("Git worktree metadata changed during cleanup")
+                os.rmdir(name, dir_fd=descriptor)
+            finally:
+                os.close(child)
+        elif stat.S_ISREG(before.st_mode):
+            child = os.open(
+                name,
+                os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=descriptor,
+            )
+            try:
+                opened = os.fstat(child)
+                latest = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+                if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino) or (
+                    latest.st_dev,
+                    latest.st_ino,
+                ) != (opened.st_dev, opened.st_ino):
+                    raise GitError("Git worktree metadata changed during cleanup")
+                os.unlink(name, dir_fd=descriptor)
+            finally:
+                os.close(child)
+        else:
+            raise GitError("Git worktree metadata has an unsupported file type")
+    os.fsync(descriptor)
+
+
+def _remove_missing_worktree_registration(
+    repository: _StableDirectory,
+    worktree_path: str,
+) -> None:
+    """Remove only metadata whose backlink names one absent selected worktree."""
+    repository_identity = _require_exclusive_directory(repository.descriptor)
+    git_directory = os.open(".git", _directory_open_flags(), dir_fd=repository.descriptor)
+    try:
+        git_identity = _require_exclusive_directory(
+            git_directory,
+            expected_device=repository_identity.st_dev,
+        )
+        try:
+            worktrees_directory = os.open(
+                "worktrees", _directory_open_flags(), dir_fd=git_directory
+            )
+        except FileNotFoundError:
+            return
+        try:
+            _require_exclusive_directory(
+                worktrees_directory,
+                expected_device=git_identity.st_dev,
+            )
+            expected = os.fsencode(f"{os.path.abspath(worktree_path)}/.git")
+            matches: list[tuple[str, int, int]] = []
+            with os.scandir(worktrees_directory) as entries:
+                names = [entry.name for entry in entries]
+            for name in names:
+                try:
+                    candidate = os.open(name, _directory_open_flags(), dir_fd=worktrees_directory)
+                except OSError:
+                    continue
+                try:
+                    identity = _require_exclusive_directory(
+                        candidate,
+                        expected_device=git_identity.st_dev,
+                    )
+                    if _read_descriptor_file(candidate, "gitdir").strip() == expected:
+                        matches.append((name, identity.st_dev, identity.st_ino))
+                except (GitError, OSError):
+                    pass
+                finally:
+                    os.close(candidate)
+            if not matches:
+                return
+            if len(matches) != 1:
+                raise GitError("Git worktree registration is unavailable")
+            name, device, inode = matches[0]
+            candidate = os.open(name, _directory_open_flags(), dir_fd=worktrees_directory)
+            try:
+                opened = os.fstat(candidate)
+                if (opened.st_dev, opened.st_ino) != (device, inode):
+                    raise GitError("Git worktree metadata changed during cleanup")
+                _remove_directory_contents(candidate)
+                named = os.stat(name, dir_fd=worktrees_directory, follow_symlinks=False)
+                if (named.st_dev, named.st_ino) != (device, inode):
+                    raise GitError("Git worktree metadata changed during cleanup")
+                os.rmdir(name, dir_fd=worktrees_directory)
+                os.fsync(worktrees_directory)
+                os.fsync(git_directory)
+            finally:
+                os.close(candidate)
+        finally:
+            os.close(worktrees_directory)
+    finally:
+        os.close(git_directory)
+
+
+async def _remove_worktree(
+    repository: _StableDirectory,
+    worktree_path: str,
+) -> None:
+    """Remove one exact existing worktree or one exact stale registration."""
+    if isinstance(worktree_path, _StableDirectory):
+        await _run_git(["worktree", "remove", "--force", worktree_path], cwd=repository)
+        return
+    absolute = Path(os.path.abspath(worktree_path))
+    claimed_absent = not os.path.lexists(absolute)
+    if not os.path.lexists(absolute.parent):
+        _remove_missing_worktree_registration(repository, str(absolute))
+        return
+    try:
+        with _retain_directory(str(absolute.parent)) as parent:
+            parent_identity = _require_exclusive_directory(parent.descriptor)
+            try:
+                named = os.stat(
+                    absolute.name,
+                    dir_fd=parent.descriptor,
+                    follow_symlinks=False,
+                )
+            except FileNotFoundError:
+                claimed_absent = True
+            if claimed_absent:
+                _remove_missing_worktree_registration(repository, str(absolute))
+                return
+            descriptor = os.open(
+                absolute.name,
+                _directory_open_flags(),
+                dir_fd=parent.descriptor,
+            )
+            worktree = _StableDirectory(str(absolute), descriptor)
+            try:
+                opened = _require_exclusive_directory(
+                    descriptor,
+                    expected_device=parent_identity.st_dev,
+                )
+                if (named.st_dev, named.st_ino) != (opened.st_dev, opened.st_ino):
+                    raise GitError("Git worktree path changed during cleanup")
+                await _run_git(["worktree", "remove", "--force", worktree], cwd=repository)
+            finally:
+                os.close(descriptor)
+    except GitError:
+        if os.path.lexists(absolute.parent):
+            raise
+        _remove_missing_worktree_registration(repository, str(absolute))
 
 
 def generate_branch_name(username: str | None = None) -> str:
@@ -162,11 +564,61 @@ async def _terminate_and_drain_git_process(process: asyncio.subprocess.Process) 
             await asyncio.shield(drain_task)
         except asyncio.CancelledError:
             continue
-        except BaseException:
+        except BaseException:  # noqa: BLE001 - drain waits out the local effect
             break
     if not drain_task.cancelled():
         with suppress(BaseException):
             drain_task.result()
+
+
+async def _read_bounded_git_stream(
+    stream: asyncio.StreamReader | None,
+    *,
+    byte_limit: int | None,
+    process: asyncio.subprocess.Process,
+) -> tuple[bytes, bool]:
+    """Read one child stream, stop on overflow, then drain without accumulating."""
+    if stream is None:
+        raise GitError("Git child stream is unavailable")
+    chunks: list[bytes] = []
+    byte_count = 0
+    exceeded = False
+    while True:
+        if byte_limit is None or exceeded:
+            chunk_limit = 64 * 1024
+        else:
+            chunk_limit = min(64 * 1024, byte_limit - byte_count + 1)
+        chunk = await stream.read(chunk_limit)
+        if not chunk:
+            return b"".join(chunks), exceeded
+        byte_count += len(chunk)
+        if byte_limit is not None and byte_count > byte_limit:
+            exceeded = True
+            if process.returncode is None:
+                with suppress(ProcessLookupError):
+                    process.kill()
+        if not exceeded:
+            chunks.append(chunk)
+
+
+async def _await_bounded_git_cleanup(
+    process: asyncio.subprocess.Process,
+    completion: asyncio.Task[tuple[tuple[bytes, bool], tuple[bytes, bool], int]],
+) -> None:
+    """Stop one bounded child, drain both pipes, and reap despite cancellation."""
+    if process.returncode is None:
+        with suppress(ProcessLookupError):
+            process.kill()
+    while not completion.done():
+        try:
+            await asyncio.shield(completion)
+        except asyncio.CancelledError:
+            continue
+        except BaseException:  # noqa: BLE001 - cleanup consumes local child failures
+            break
+    if not completion.cancelled():
+        with suppress(BaseException):
+            completion.result()
 
 
 async def _run_git(
@@ -183,6 +635,10 @@ async def run_git_bytes(
     args: list[str],
     cwd: str | None = None,
     env: dict[str, str] | None = None,
+    *,
+    stdout_bytes_max: int | None = None,
+    stderr_bytes_max: int | None = None,
+    accepted_returncodes: tuple[int, ...] = (0,),
 ) -> bytes:
     """Run a git command and return raw stdout bytes without decoding.
 
@@ -194,7 +650,18 @@ async def run_git_bytes(
     """
     if not args:
         raise ValueError("args must not be empty")
-    cmd = [_GIT_EXECUTABLE_PATH, *args]
+    if stdout_bytes_max is not None and (type(stdout_bytes_max) is not int or stdout_bytes_max < 0):
+        raise ValueError("stdout_bytes_max must be a nonnegative integer or None")
+    if stderr_bytes_max is not None and (type(stderr_bytes_max) is not int or stderr_bytes_max < 0):
+        raise ValueError("stderr_bytes_max must be a nonnegative integer or None")
+    if (
+        type(accepted_returncodes) is not tuple
+        or not accepted_returncodes
+        or any(type(code) is not int or code < 0 or code > 255 for code in accepted_returncodes)
+        or len(set(accepted_returncodes)) != len(accepted_returncodes)
+    ):
+        raise ValueError("accepted_returncodes must contain unique process return codes")
+    profile = require_isolated_execution("trusted_git")
     logger.debug("Running git operation %s", args[0])
     child_env = {
         "GCM_INTERACTIVE": "Never",
@@ -208,28 +675,99 @@ async def run_git_bytes(
     }
     if env is not None:
         child_env.update(env)
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        cwd=cwd,
-        env=child_env,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    try:
-        stdout, _stderr = await asyncio.wait_for(
-            proc.communicate(),
-            timeout=_GIT_COMMAND_TIMEOUT_S,
+    with ExitStack() as stack:
+        stable_cwd: _StableDirectory | None
+        if cwd is None:
+            stable_cwd = None
+        elif isinstance(cwd, _StableDirectory):
+            stable_cwd = cwd
+        else:
+            stable_cwd = stack.enter_context(_retain_directory(cwd))
+        stable_arguments = [argument for argument in args if isinstance(argument, _StableDirectory)]
+        descriptors = tuple(
+            dict.fromkeys(
+                directory.descriptor
+                for directory in [stable_cwd, *stable_arguments]
+                if directory is not None
+            )
         )
-    except asyncio.CancelledError:
-        await _terminate_and_drain_git_process(proc)
-        raise
-    except TimeoutError as exc:
-        await _terminate_and_drain_git_process(proc)
-        raise GitError(f"git {args[0]} timed out") from exc
-    if proc.returncode != 0:
-        logger.error("Git operation %s failed", args[0])
-        raise GitError(f"git {args[0]} failed")
-    return stdout
+        command_args = [
+            (
+                argument.process_path(modeled=profile.modeled)
+                if isinstance(argument, _StableDirectory)
+                else argument
+            )
+            for argument in args
+        ]
+        cmd = [_GIT_EXECUTABLE_PATH, *command_args]
+        process_cwd = (
+            None if stable_cwd is None else stable_cwd.process_path(modeled=profile.modeled)
+        )
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            cwd=process_cwd,
+            env=child_env,
+            pass_fds=descriptors,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        if stdout_bytes_max is None and stderr_bytes_max is None:
+            try:
+                stdout, _stderr = await asyncio.wait_for(
+                    proc.communicate(),
+                    timeout=_GIT_COMMAND_TIMEOUT_S,
+                )
+            except asyncio.CancelledError:
+                await _terminate_and_drain_git_process(proc)
+                raise
+            except TimeoutError as exc:
+                await _terminate_and_drain_git_process(proc)
+                raise GitError(f"git {args[0]} timed out") from exc
+        else:
+            stderr_limit = 16 * 1024 if stderr_bytes_max is None else stderr_bytes_max
+
+            async def collect_bounded_streams() -> tuple[
+                tuple[bytes, bool], tuple[bytes, bool], int
+            ]:
+                stdout_result, stderr_result, returncode = await asyncio.gather(
+                    _read_bounded_git_stream(
+                        proc.stdout,
+                        byte_limit=stdout_bytes_max,
+                        process=proc,
+                    ),
+                    _read_bounded_git_stream(
+                        proc.stderr,
+                        byte_limit=stderr_limit,
+                        process=proc,
+                    ),
+                    proc.wait(),
+                )
+                return stdout_result, stderr_result, returncode
+
+            completion = asyncio.create_task(collect_bounded_streams())
+            try:
+                (
+                    (stdout, stdout_exceeded),
+                    (_stderr, stderr_exceeded),
+                    _returncode,
+                ) = await asyncio.wait_for(
+                    asyncio.shield(completion),
+                    timeout=_GIT_COMMAND_TIMEOUT_S,
+                )
+            except asyncio.CancelledError:
+                await _await_bounded_git_cleanup(proc, completion)
+                raise
+            except TimeoutError as exc:
+                await _await_bounded_git_cleanup(proc, completion)
+                raise GitError(f"git {args[0]} timed out") from exc
+            if stdout_exceeded or stderr_exceeded:
+                raise GitError(f"git {args[0]} output exceeded limit")
+        if proc.returncode not in accepted_returncodes:
+            logger.error("Git operation %s failed", args[0])
+            raise GitError(f"git {args[0]} failed")
+        if stable_cwd is not None and not _stable_directory_name_matches(stable_cwd):
+            raise GitError("Git working directory changed during operation")
+        return stdout
 
 
 def _normalize_remote_url_for_compare(url: str) -> str:
@@ -239,8 +777,7 @@ def _normalize_remote_url_for_compare(url: str) -> str:
     normalized_url = url.strip()
     if not normalized_url:
         raise ValueError("url must not be blank")
-    if normalized_url.endswith(".git"):
-        normalized_url = normalized_url[:-4]
+    normalized_url = normalized_url.removesuffix(".git")
     return normalized_url.rstrip("/")
 
 
@@ -327,71 +864,76 @@ async def ensure_remote_url(
     if not remote_url:
         raise ValueError("remote_url must not be empty")
 
-    current_remote_url = await get_remote_url(repo_path, remote_name=remote_name)
-    if current_remote_url is not None:
-        if _normalize_remote_url_for_compare(
-            current_remote_url
-        ) == _normalize_remote_url_for_compare(remote_url):
-            return False
+    with _retain_directory_argument(repo_path) as repository:
+        current_remote_url = await get_remote_url(repository, remote_name=remote_name)
+        if current_remote_url is not None:
+            if _normalize_remote_url_for_compare(
+                current_remote_url
+            ) == _normalize_remote_url_for_compare(remote_url):
+                return False
+            await _run_git(
+                ["remote", "set-url", remote_name, remote_url],
+                cwd=repository,
+            )
+            return True
+
         await _run_git(
-            ["remote", "set-url", remote_name, remote_url],
-            cwd=repo_path,
+            ["remote", "add", remote_name, remote_url],
+            cwd=repository,
         )
         return True
-
-    await _run_git(
-        ["remote", "add", remote_name, remote_url],
-        cwd=repo_path,
-    )
-    return True
 
 
 async def clone_repo(
     url: str,
     dest: str,
     access_token: str | None = None,
+    *,
+    destination_must_be_absent: bool = False,
 ) -> str:
-    """Clone a git repository. Returns the clone path.
-
-    If dest already exists and is a valid git repo with matching remote, reuse it.
-    """
+    """Clone a repository, with optional strict new-storage ownership."""
     _validate_clone_url(url)
 
     dest_path = Path(dest)
     if dest_path.exists():
-        if await validate_local_repo(dest):
-            # Verify the existing clone's remote matches the requested URL
-            # before reusing it to prevent cross-repo data leakage.
-            try:
-                existing_remote = await _run_git(
-                    ["remote", "get-url", "origin"],
-                    cwd=dest,
-                )
-            except GitError:
-                existing_remote = ""
-            if not _remote_urls_match(existing_remote, url):
-                raise GitError("Destination already contains a clone of a different repository")
-            had_remote_refs_before_fetch = await _has_remote_refs(dest)
-            logger.info("Reusing an existing repository clone")
-            try:
-                with _git_askpass_env(access_token) as env:
-                    await _run_git(["fetch", "--all"], cwd=dest, env=env)
-            except GitError as error:
-                if not had_remote_refs_before_fetch:
-                    raise GitError(
-                        "Existing clone is incomplete and could not be refreshed"
-                    ) from error
-                logger.warning("Repository refresh failed; reusing existing refs")
+        if destination_must_be_absent:
+            raise GitError("Clone destination already exists")
+        with _retain_directory_argument(dest) as destination:
+            if await validate_local_repo(destination):
+                # Verify the existing clone's remote matches the requested URL
+                # before reusing it to prevent cross-repo data leakage.
+                try:
+                    existing_remote = await _run_git(
+                        ["remote", "get-url", "origin"],
+                        cwd=destination,
+                    )
+                except GitError:
+                    existing_remote = ""
+                if not _remote_urls_match(existing_remote, url):
+                    raise GitError("Destination already contains a clone of a different repository")
+                had_remote_refs_before_fetch = await _has_remote_refs(destination)
+                logger.info("Reusing an existing repository clone")
+                try:
+                    with _git_askpass_env(access_token) as env:
+                        await _run_git(["fetch", "--all"], cwd=destination, env=env)
+                except GitError as error:
+                    if not had_remote_refs_before_fetch:
+                        raise GitError(
+                            "Existing clone is incomplete and could not be refreshed"
+                        ) from error
+                    logger.warning("Repository refresh failed; reusing existing refs")
+                    return dest
+                if not had_remote_refs_before_fetch and not await _has_remote_refs(destination):
+                    # The origin already matched and the fetch reached it, so zero
+                    # refs mean a valid empty remote rather than a damaged clone.
+                    logger.info("Reusing an existing clone of an empty remote repository")
                 return dest
-            if not had_remote_refs_before_fetch and not await _has_remote_refs(dest):
-                # The origin already matched and the fetch reached it, so zero
-                # refs mean a valid empty remote rather than a damaged clone.
-                logger.info("Reusing an existing clone of an empty remote repository")
-            return dest
-        raise GitError("Destination already exists but is not a git repository")
-    dest_path.parent.mkdir(parents=True, exist_ok=True)
-    with _git_askpass_env(access_token) as env:
-        await _run_git(["clone", url, dest], env=env)
+            raise GitError("Destination already exists but is not a git repository")
+    with (
+        _retain_new_directory(dest_path) as destination,
+        _git_askpass_env(access_token) as env,
+    ):
+        await _run_git(["clone", url, "."], cwd=destination, env=env)
     logger.info("Repository clone completed")
     return dest
 
@@ -400,25 +942,35 @@ async def clone_local_repo(
     source: str,
     dest: str,
     remote_url: str | None = None,
+    *,
+    destination_must_be_absent: bool = False,
 ) -> str:
     """Clone a local git repository for tenant path repairs.
 
     Using the existing checkout as the clone source preserves local branches
     that may not have been pushed to the remote yet.
     """
-    if not await validate_local_repo(source):
-        raise GitError("Source repository is not a valid git repository")
+    with _retain_directory_argument(source) as source_directory:
+        if not await validate_local_repo(source_directory):
+            raise GitError("Source repository is not a valid git repository")
 
-    dest_path = Path(dest)
-    if dest_path.exists():
-        if not await validate_local_repo(dest):
-            raise GitError("Destination already exists but is not a git repository")
-    else:
-        dest_path.parent.mkdir(parents=True, exist_ok=True)
-        await _run_git(["clone", "--no-hardlinks", source, dest])
-
-    if remote_url:
-        await _run_git(["remote", "set-url", "origin", remote_url], cwd=dest)
+        dest_path = Path(dest)
+        if dest_path.exists():
+            if destination_must_be_absent:
+                raise GitError("Clone destination already exists")
+            with _retain_directory_argument(dest) as destination:
+                if not await validate_local_repo(destination):
+                    raise GitError("Destination already exists but is not a git repository")
+                if remote_url:
+                    await _run_git(["remote", "set-url", "origin", remote_url], cwd=destination)
+        else:
+            with _retain_new_directory(dest_path) as destination:
+                await _run_git(
+                    ["clone", "--no-hardlinks", source_directory, "."],
+                    cwd=destination,
+                )
+                if remote_url:
+                    await _run_git(["remote", "set-url", "origin", remote_url], cwd=destination)
 
     logger.info("Local repository clone completed")
     return dest
@@ -431,32 +983,33 @@ async def resolve_remote_base_ref(
     """Fetch origin and return the tracked default remote branch reference."""
     assert repo_path, "repo_path must not be empty"
 
-    with _git_askpass_env(access_token) as env:
-        await _run_git(["fetch", "origin"], cwd=repo_path, env=env)
-        try:
-            symbolic_ref = await _run_git(
-                ["symbolic-ref", "refs/remotes/origin/HEAD"],
-                cwd=repo_path,
-                env=env,
-            )
-        except GitError:
-            symbolic_ref = ""
+    with _retain_directory_argument(repo_path) as repository:
+        with _git_askpass_env(access_token) as env:
+            await _run_git(["fetch", "origin"], cwd=repository, env=env)
+            try:
+                symbolic_ref = await _run_git(
+                    ["symbolic-ref", "refs/remotes/origin/HEAD"],
+                    cwd=repository,
+                    env=env,
+                )
+            except GitError:
+                symbolic_ref = ""
 
-    normalized_symbolic_ref = symbolic_ref.strip()
-    if normalized_symbolic_ref.startswith("refs/remotes/origin/"):
-        remote_branch = normalized_symbolic_ref.removeprefix("refs/remotes/")
-        assert remote_branch, "remote_branch must not be empty"
-        return remote_branch
+        normalized_symbolic_ref = symbolic_ref.strip()
+        if normalized_symbolic_ref.startswith("refs/remotes/origin/"):
+            remote_branch = normalized_symbolic_ref.removeprefix("refs/remotes/")
+            assert remote_branch, "remote_branch must not be empty"
+            return remote_branch
 
-    for fallback_remote_branch in ("origin/main", "origin/master"):
-        try:
-            await _run_git(
-                ["rev-parse", "--verify", fallback_remote_branch],
-                cwd=repo_path,
-            )
-        except GitError:
-            continue
-        return fallback_remote_branch
+        for fallback_remote_branch in ("origin/main", "origin/master"):
+            try:
+                await _run_git(
+                    ["rev-parse", "--verify", fallback_remote_branch],
+                    cwd=repository,
+                )
+            except GitError:
+                continue
+            return fallback_remote_branch
 
     raise GitError("Could not determine the remote default branch")
 
@@ -510,16 +1063,20 @@ async def create_worktree(
     assert worktree_path, "worktree_path must not be empty"
     assert branch, "branch must not be empty"
 
-    Path(worktree_path).parent.mkdir(parents=True, exist_ok=True)
-    worktree_add_args = ["worktree", "add", "-b", branch, worktree_path]
-    if base_ref is not None:
-        normalized_base_ref = base_ref.strip()
-        if not normalized_base_ref:
-            raise ValueError("base_ref must not be empty when provided")
-        worktree_add_args.append(normalized_base_ref)
-    elif not await _head_commit_exists(repo_path):
-        worktree_add_args.append(await _create_empty_root_commit(repo_path))
-    await _run_git(worktree_add_args, cwd=repo_path)
+    with (
+        _retain_directory_argument(repo_path) as repository,
+        _retain_empty_worktree(worktree_path) as worktree,
+    ):
+        worktree_add_args = ["worktree", "add", "-b", branch, worktree]
+        if base_ref is not None:
+            normalized_base_ref = base_ref.strip()
+            if not normalized_base_ref:
+                raise ValueError("base_ref must not be empty when provided")
+            worktree_add_args.append(normalized_base_ref)
+        elif not await _head_commit_exists(repository):
+            worktree_add_args.append(await _create_empty_root_commit(repository))
+        await _run_git(worktree_add_args, cwd=repository)
+        _require_stable_directory_name(worktree, object_name="worktree target")
     logger.info("Repository worktree created")
     return worktree_path
 
@@ -530,17 +1087,23 @@ async def restore_worktree(repo_path: str, worktree_path: str, branch: str) -> s
     assert worktree_path, "worktree_path must not be empty"
     assert branch, "branch must not be empty"
 
-    worktree_dir = Path(worktree_path)
-    if worktree_dir.exists():
-        if await validate_local_repo(worktree_path):
-            return worktree_path
-        raise GitError("Worktree path already exists but is not a git repository")
-
-    worktree_dir.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        await _run_git(["worktree", "add", worktree_path, branch], cwd=repo_path)
-    except GitError:
-        await _run_git(["worktree", "add", "-b", branch, worktree_path], cwd=repo_path)
+    with _retain_directory_argument(repo_path) as repository:
+        worktree_dir = Path(worktree_path)
+        if worktree_dir.exists():
+            with _retain_directory_argument(worktree_path) as existing_worktree:
+                try:
+                    os.stat(".git", dir_fd=existing_worktree.descriptor, follow_symlinks=False)
+                except FileNotFoundError:
+                    pass
+                else:
+                    if await validate_local_repo(existing_worktree):
+                        return worktree_path
+        with _retain_empty_worktree(worktree_path) as worktree:
+            try:
+                await _run_git(["worktree", "add", worktree, branch], cwd=repository)
+            except GitError:
+                await _run_git(["worktree", "add", "-b", branch, worktree], cwd=repository)
+            _require_stable_directory_name(worktree, object_name="worktree target")
 
     logger.info("Repository worktree restored")
     return worktree_path
@@ -548,66 +1111,107 @@ async def restore_worktree(repo_path: str, worktree_path: str, branch: str) -> s
 
 async def delete_worktree(repo_path: str, worktree_path: str) -> None:
     """Remove a git worktree and its branch."""
-    try:
-        branch = await _run_git(
-            ["rev-parse", "--abbrev-ref", "HEAD"],
-            cwd=worktree_path,
-        )
-    except GitError:
-        branch = None
-
-    await _run_git(["worktree", "remove", "--force", worktree_path], cwd=repo_path)
-
-    if branch and branch not in ("main", "master"):
+    with _retain_directory_argument(repo_path) as repository, ExitStack() as stack:
         try:
-            await _run_git(["branch", "-D", branch], cwd=repo_path)
+            existing_worktree = stack.enter_context(_retain_directory_argument(worktree_path))
         except GitError:
-            pass
+            existing_worktree = None
+        branch = None
+        if existing_worktree is not None:
+            try:
+                branch = await _run_git(
+                    ["rev-parse", "--abbrev-ref", "HEAD"],
+                    cwd=existing_worktree,
+                )
+            except GitError:
+                pass
+            await _remove_worktree(repository, existing_worktree)
+        else:
+            await _remove_worktree(repository, worktree_path)
+
+        if branch and branch not in ("main", "master"):
+            try:
+                await _run_git(["branch", "-D", branch], cwd=repository)
+            except GitError:
+                pass
 
     logger.info("Repository worktree deleted")
 
 
+async def read_local_branch_oid(repo_path: str, branch: str) -> str | None:
+    """Read one local branch generation before durable cleanup planning."""
+    if not repo_path or not branch:
+        raise ValueError("branch lookup values must not be empty")
+    value = await _run_git(
+        ["for-each-ref", "--format=%(objectname)", f"refs/heads/{branch}"],
+        cwd=repo_path,
+    )
+    oid = value.strip()
+    if not oid:
+        return None
+    if re.fullmatch(r"[0-9a-f]{40,64}", oid) is None:
+        raise GitError("Local branch identity is invalid")
+    return oid
+
+
 async def cleanup_repository_worktrees(
     repo_path: str,
-    worktrees: list[tuple[str, str]],
+    worktrees: Sequence[tuple[str, str] | tuple[str, str, str | None]],
 ) -> None:
     """Remove selected linked-worktree metadata and local branches after commit."""
     if not repo_path:
         raise ValueError("repo_path must not be empty")
-    for worktree_path, branch in worktrees:
+    normalized: list[tuple[str, str, str | None]] = []
+    for item in worktrees:
+        if len(item) == 2:
+            worktree_path, branch = item
+            branch_oid: str | None = ""
+        else:
+            worktree_path, branch, branch_oid = item
         if not worktree_path or not branch:
             raise ValueError("worktree cleanup values must not be empty")
+        if (
+            branch_oid is not None
+            and branch_oid != ""
+            and re.fullmatch(r"[0-9a-f]{40,64}", branch_oid) is None
+        ):
+            raise ValueError("worktree cleanup branch identity is invalid")
+        normalized.append((worktree_path, branch, branch_oid))
 
     first_error: GitError | None = None
-    for worktree_path, _branch in worktrees:
+    with _retain_directory_argument(repo_path) as repository:
+        for worktree_path, _branch, _branch_oid in normalized:
+            try:
+                await _remove_worktree(repository, worktree_path)
+            except GitError as exc:
+                if first_error is None:
+                    first_error = exc
+
+        existing_refs: set[str] = set()
         try:
-            await _run_git(
-                ["worktree", "remove", "--force", worktree_path],
-                cwd=repo_path,
+            refs_output = await _run_git(
+                ["for-each-ref", "--format=%(refname)", "refs/heads"],
+                cwd=repository,
             )
+            existing_refs = set(refs_output.splitlines())
         except GitError as exc:
             if first_error is None:
                 first_error = exc
 
-    existing_refs: set[str] = set()
-    try:
-        refs_output = await _run_git(
-            ["for-each-ref", "--format=%(refname)", "refs/heads"],
-            cwd=repo_path,
-        )
-        existing_refs = set(refs_output.splitlines())
-    except GitError as exc:
-        if first_error is None:
-            first_error = exc
-
-    for _worktree_path, branch in worktrees:
-        if f"refs/heads/{branch}" not in existing_refs:
-            continue
-        try:
-            await _run_git(["branch", "-D", "--", branch], cwd=repo_path)
-        except GitError as exc:
-            if first_error is None:
-                first_error = exc
+        for _worktree_path, branch, branch_oid in normalized:
+            if f"refs/heads/{branch}" not in existing_refs or branch_oid is None:
+                continue
+            try:
+                if branch_oid:
+                    await _run_git(
+                        ["update-ref", "-d", f"refs/heads/{branch}", branch_oid],
+                        cwd=repository,
+                    )
+                else:
+                    await _run_git(["branch", "-D", "--", branch], cwd=repository)
+            except GitError as exc:
+                if first_error is None:
+                    first_error = exc
 
     if first_error is not None:
         raise GitError("Repository worktree cleanup failed") from first_error
