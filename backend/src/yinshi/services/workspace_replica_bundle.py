@@ -16,7 +16,11 @@ from yinshi.services.git import run_git_bytes
 
 _OID_PATTERN: Final[re.Pattern[str]] = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
 _REF_PATTERN: Final[re.Pattern[str]] = re.compile(r"refs/[A-Za-z0-9][A-Za-z0-9._/-]*\Z")
-_NO_REPLACE_ENV: Final[dict[str, str]] = {"GIT_NO_REPLACE_OBJECTS": "1"}
+_NO_REPLACE_ENV: Final[dict[str, str]] = {
+    "GIT_NO_LAZY_FETCH": "1",
+    "GIT_NO_REPLACE_OBJECTS": "1",
+}
+_OBJECT_KINDS: Final[frozenset[str]] = frozenset({"blob", "commit", "tag", "tree"})
 
 
 @dataclass(frozen=True)
@@ -27,6 +31,9 @@ class BundleLimits:
     max_refs: int = 64
     max_ref_name_bytes: int = 4096
     max_listing_bytes: int = 64 * 4096
+    max_objects: int = 1_000_000
+    max_object_bytes: int = 512 * 1024 * 1024
+    max_inflated_bytes: int = 2 * 1024 * 1024 * 1024
 
     def __post_init__(self) -> None:
         for name in (
@@ -34,6 +41,9 @@ class BundleLimits:
             "max_refs",
             "max_ref_name_bytes",
             "max_listing_bytes",
+            "max_objects",
+            "max_object_bytes",
+            "max_inflated_bytes",
         ):
             value = getattr(self, name)
             if type(value) is not int or value < 1:
@@ -49,6 +59,26 @@ class BundleRef:
 
     name: str
     object_id: str
+
+
+@dataclass(frozen=True)
+class GitObject:
+    """One object physically present in a verified transport."""
+
+    object_id: str
+    kind: Literal["blob", "commit", "tag", "tree"]
+    byte_length: int
+
+
+@dataclass(frozen=True)
+class VerifiedCommittedBundle:
+    """Bounded metadata from consumer-side committed-bundle verification."""
+
+    object_format: Literal["sha1", "sha256"]
+    byte_length: int
+    sha256: str
+    refs: tuple[BundleRef, ...]
+    objects: tuple[GitObject, ...]
 
 
 @dataclass(frozen=True)
@@ -69,6 +99,7 @@ class CommittedBundle:
     byte_length: int
     sha256: str
     refs: tuple[BundleRef, ...]
+    objects: tuple[GitObject, ...]
     head: HeadCapture | None
 
 
@@ -217,11 +248,57 @@ def _parse_advertised_refs(raw: bytes, limits: BundleLimits) -> tuple[BundleRef,
     return tuple(sorted(refs, key=lambda item: item.name))
 
 
-async def _verify_bundle(
+def _parse_object_inventory(raw: bytes, limits: BundleLimits) -> tuple[GitObject, ...]:
+    if len(raw) > limits.max_listing_bytes:
+        raise GitError("Git object inventory exceeded listing limit")
+    lines = raw.splitlines()
+    if len(lines) > limits.max_objects:
+        raise GitError("Git object inventory exceeded object limit")
+    objects: list[GitObject] = []
+    seen: set[str] = set()
+    total_bytes = 0
+    for line in lines:
+        try:
+            oid_raw, kind_raw, length_raw = line.split(b" ", 2)
+            kind = kind_raw.decode("ascii")
+            length_text = length_raw.decode("ascii")
+        except (ValueError, UnicodeDecodeError) as error:
+            raise GitError("Git returned an invalid object inventory") from error
+        object_id = _parse_oid(oid_raw)
+        if object_id in seen or kind not in _OBJECT_KINDS or not length_text.isdecimal():
+            raise GitError("Git returned an invalid object inventory")
+        byte_length = int(length_text)
+        if byte_length > limits.max_object_bytes:
+            raise GitError("Git object exceeded inflated byte limit")
+        total_bytes += byte_length
+        if total_bytes > limits.max_inflated_bytes:
+            raise GitError("Git objects exceeded aggregate inflated byte limit")
+        seen.add(object_id)
+        objects.append(
+            GitObject(
+                object_id=object_id,
+                kind=kind,  # type: ignore[arg-type]
+                byte_length=byte_length,
+            )
+        )
+    return tuple(sorted(objects, key=lambda item: item.object_id))
+
+
+async def verify_committed_bundle(
     content: bytes,
-    limits: BundleLimits,
+    *,
     object_format: Literal["sha1", "sha256"],
-) -> tuple[BundleRef, ...]:
+    limits: BundleLimits = DEFAULT_BUNDLE_LIMITS,
+) -> VerifiedCommittedBundle:
+    """Verify untrusted committed-bundle bytes in an empty bare repository."""
+    if type(content) is not bytes:
+        raise TypeError("content must be bytes")
+    if object_format not in ("sha1", "sha256"):
+        raise ValueError("object_format must be sha1 or sha256")
+    if not content:
+        raise GitError("Git bundle is empty")
+    if len(content) > limits.max_bundle_bytes:
+        raise GitError("Git bundle exceeded byte limit")
     with tempfile.TemporaryDirectory(prefix="yinshi-bundle-") as directory:
         os.chmod(directory, 0o700)
         root = Path(directory)
@@ -239,13 +316,53 @@ async def _verify_bundle(
             env=_NO_REPLACE_ENV,
             stdout_bytes_max=limits.max_listing_bytes,
         )
-        advertised = await run_git_bytes(
+        advertised_raw = await run_git_bytes(
             ["bundle", "list-heads", str(path)],
             cwd=str(repository),
             env=_NO_REPLACE_ENV,
             stdout_bytes_max=limits.max_listing_bytes,
         )
-        return _parse_advertised_refs(advertised, limits)
+        advertised = _parse_advertised_refs(advertised_raw, limits)
+        if not advertised:
+            raise GitError("Git bundle advertised no committed refs")
+        if any(item.name.startswith("refs/replace/") for item in advertised):
+            raise GitError("Git bundle advertised a replacement ref")
+        await run_git_bytes(
+            ["bundle", "unbundle", str(path)],
+            cwd=str(repository),
+            env=_NO_REPLACE_ENV,
+            stdout_bytes_max=limits.max_listing_bytes,
+        )
+        for item in advertised:
+            await _require_commit(str(repository), item.object_id)
+        inventory_raw = await run_git_bytes(
+            [
+                "cat-file",
+                "--batch-all-objects",
+                "--batch-check=%(objectname) %(objecttype) %(objectsize)",
+            ],
+            cwd=str(repository),
+            env=_NO_REPLACE_ENV,
+            stdout_bytes_max=limits.max_listing_bytes,
+        )
+        objects = _parse_object_inventory(inventory_raw, limits)
+        closure_raw = await run_git_bytes(
+            ["rev-list", "--objects", "--no-object-names", "--stdin"],
+            cwd=str(repository),
+            env=_NO_REPLACE_ENV,
+            stdin_bytes=("\n".join(item.object_id for item in advertised) + "\n").encode("ascii"),
+            stdout_bytes_max=limits.max_listing_bytes,
+        )
+        closure = {_parse_oid(line) for line in closure_raw.splitlines()}
+        if closure != {item.object_id for item in objects}:
+            raise GitError("Git bundle contains missing or unreachable objects")
+        return VerifiedCommittedBundle(
+            object_format=object_format,
+            byte_length=len(content),
+            sha256=hashlib.sha256(content).hexdigest(),
+            refs=advertised,
+            objects=objects,
+        )
 
 
 async def create_committed_bundle(
@@ -293,7 +410,12 @@ async def create_committed_bundle(
     )
     if not content:
         raise GitError("Git created an empty bundle")
-    advertised = await _verify_bundle(content, limits, object_format)
+    verified = await verify_committed_bundle(
+        content,
+        object_format=object_format,
+        limits=limits,
+    )
+    advertised = verified.refs
 
     expected = list(before)
     if head_before is not None:
@@ -314,5 +436,6 @@ async def create_committed_bundle(
         byte_length=len(content),
         sha256=hashlib.sha256(content).hexdigest(),
         refs=advertised,
+        objects=verified.objects,
         head=head_before,
     )

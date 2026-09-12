@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import os
 import subprocess
@@ -16,6 +17,7 @@ from yinshi.services.workspace_replica_bundle import (
     BundleRef,
     HeadCapture,
     create_committed_bundle,
+    verify_committed_bundle,
 )
 
 
@@ -188,20 +190,25 @@ async def test_bundle_detects_ref_change_during_creation(
     from yinshi.services import workspace_replica_bundle as module
 
     path = repo(tmp_path)
-    original = module._verify_bundle
+    original = module.verify_committed_bundle
 
     async def changing(
         content: bytes,
-        limits: BundleLimits,
+        *,
         object_format: str,
+        limits: BundleLimits,
     ):
-        advertised = await original(content, limits, object_format)
+        advertised = await original(
+            content,
+            object_format=object_format,
+            limits=limits,
+        )
         (path / "file.txt").write_text("changed", encoding="utf-8")
         git(path, "add", "file.txt")
         git(path, "commit", "-qm", "race")
         return advertised
 
-    monkeypatch.setattr(module, "_verify_bundle", changing)
+    monkeypatch.setattr(module, "verify_committed_bundle", changing)
     with pytest.raises(GitError, match="changed during bundle creation"):
         await create_committed_bundle(path, ("refs/heads/main",), include_head=False)
 
@@ -218,6 +225,99 @@ async def test_bundle_ignores_replacement_objects(tmp_path: Path) -> None:
     git(path, "replace", original, replacement)
     result = await create_committed_bundle(path, ("refs/heads/main",), include_head=False)
     assert result.refs == (BundleRef("refs/heads/main", original),)
+
+
+@pytest.mark.asyncio
+async def test_public_verifier_returns_exact_reachable_inventory(tmp_path: Path) -> None:
+    path = repo(tmp_path)
+    created = await create_committed_bundle(path, ("refs/heads/main",), include_head=True)
+    verified = await verify_committed_bundle(
+        created.bundle_bytes,
+        object_format=created.object_format,
+    )
+    assert verified.refs == created.refs
+    assert verified.sha256 == created.sha256
+    assert verified.byte_length == created.byte_length
+    expected = set(
+        git(
+            path,
+            "rev-list",
+            "--objects",
+            "--no-object-names",
+            "refs/heads/main",
+        ).splitlines()
+    )
+    assert {item.object_id for item in verified.objects} == expected
+
+
+@pytest.mark.asyncio
+async def test_public_verifier_rejects_unadvertised_bundle_object(tmp_path: Path) -> None:
+    path = repo(tmp_path)
+    head = git(path, "rev-parse", "HEAD")
+    closure = git(path, "rev-list", "--objects", "--no-object-names", "HEAD").splitlines()
+    extra_result = await asyncio.to_thread(
+        subprocess.run,
+        ["git", "-C", str(path), "hash-object", "-w", "--stdin"],
+        input=b"unadvertised",
+        check=True,
+        capture_output=True,
+    )
+    extra = extra_result.stdout.decode("ascii").strip()
+    pack_result = await asyncio.to_thread(
+        subprocess.run,
+        ["git", "-C", str(path), "pack-objects", "--stdout"],
+        input=("\n".join([*closure, extra]) + "\n").encode("ascii"),
+        check=True,
+        capture_output=True,
+    )
+    packed = pack_result.stdout
+    bundle = b"# v2 git bundle\n" + head.encode("ascii") + b" refs/heads/main\n\n" + packed
+    with pytest.raises(GitError, match="unreachable"):
+        await verify_committed_bundle(bundle, object_format="sha1")
+
+
+def raw_bundle(path: Path, object_id: str, ref_name: str, objects: list[str]) -> bytes:
+    packed = subprocess.run(
+        ["git", "-C", str(path), "pack-objects", "--stdout"],
+        input=("\n".join(objects) + "\n").encode("ascii"),
+        check=True,
+        capture_output=True,
+    ).stdout
+    return (
+        b"# v2 git bundle\n"
+        + object_id.encode("ascii")
+        + b" "
+        + ref_name.encode("ascii")
+        + b"\n\n"
+        + packed
+    )
+
+
+@pytest.mark.asyncio
+async def test_public_verifier_rejects_replacement_ref(tmp_path: Path) -> None:
+    path = repo(tmp_path)
+    head = git(path, "rev-parse", "HEAD")
+    objects = git(path, "rev-list", "--objects", "--no-object-names", "HEAD").splitlines()
+    bundle = await asyncio.to_thread(raw_bundle, path, head, f"refs/replace/{head}", objects)
+    with pytest.raises(GitError, match="replacement ref"):
+        await verify_committed_bundle(bundle, object_format="sha1")
+
+
+@pytest.mark.asyncio
+async def test_public_verifier_rejects_advertised_noncommit(tmp_path: Path) -> None:
+    path = repo(tmp_path)
+    blob = git(path, "rev-parse", "HEAD:file.txt")
+    bundle = await asyncio.to_thread(raw_bundle, path, blob, "refs/tags/blob", [blob])
+    with pytest.raises(GitError):
+        await verify_committed_bundle(bundle, object_format="sha1")
+
+
+@pytest.mark.asyncio
+async def test_public_verifier_rejects_object_format_mismatch(tmp_path: Path) -> None:
+    path = repo(tmp_path)
+    created = await create_committed_bundle(path, ("refs/heads/main",), include_head=False)
+    with pytest.raises(GitError):
+        await verify_committed_bundle(created.bundle_bytes, object_format="sha256")
 
 
 @pytest.mark.fail_closed_isolation

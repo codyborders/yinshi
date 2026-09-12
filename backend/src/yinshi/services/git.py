@@ -601,6 +601,26 @@ async def _read_bounded_git_stream(
             chunks.append(chunk)
 
 
+async def _write_git_stdin(
+    stream: asyncio.StreamWriter | None,
+    content: bytes | None,
+) -> None:
+    """Write exact child input while tolerating a concurrent bounded stop."""
+    if content is None:
+        return
+    if stream is None:
+        raise GitError("Git child stdin is unavailable")
+    try:
+        stream.write(content)
+        await stream.drain()
+    except (BrokenPipeError, ConnectionResetError):
+        pass
+    finally:
+        stream.close()
+        with suppress(BrokenPipeError, ConnectionResetError):
+            await stream.wait_closed()
+
+
 async def _await_bounded_git_cleanup(
     process: asyncio.subprocess.Process,
     completion: asyncio.Task[tuple[tuple[bytes, bool], tuple[bytes, bool], int]],
@@ -636,6 +656,7 @@ async def run_git_bytes(
     cwd: str | None = None,
     env: dict[str, str] | None = None,
     *,
+    stdin_bytes: bytes | None = None,
     stdout_bytes_max: int | None = None,
     stderr_bytes_max: int | None = None,
     accepted_returncodes: tuple[int, ...] = (0,),
@@ -650,6 +671,8 @@ async def run_git_bytes(
     """
     if not args:
         raise ValueError("args must not be empty")
+    if stdin_bytes is not None and type(stdin_bytes) is not bytes:
+        raise TypeError("stdin_bytes must be bytes or None")
     if stdout_bytes_max is not None and (type(stdout_bytes_max) is not int or stdout_bytes_max < 0):
         raise ValueError("stdout_bytes_max must be a nonnegative integer or None")
     if stderr_bytes_max is not None and (type(stderr_bytes_max) is not int or stderr_bytes_max < 0):
@@ -708,13 +731,17 @@ async def run_git_bytes(
             cwd=process_cwd,
             env=child_env,
             pass_fds=descriptors,
+            stdin=asyncio.subprocess.PIPE if stdin_bytes is not None else None,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
         if stdout_bytes_max is None and stderr_bytes_max is None:
             try:
+                communication = (
+                    proc.communicate() if stdin_bytes is None else proc.communicate(stdin_bytes)
+                )
                 stdout, _stderr = await asyncio.wait_for(
-                    proc.communicate(),
+                    communication,
                     timeout=_GIT_COMMAND_TIMEOUT_S,
                 )
             except asyncio.CancelledError:
@@ -729,7 +756,7 @@ async def run_git_bytes(
             async def collect_bounded_streams() -> tuple[
                 tuple[bytes, bool], tuple[bytes, bool], int
             ]:
-                stdout_result, stderr_result, returncode = await asyncio.gather(
+                stdout_result, stderr_result, returncode, _stdin_result = await asyncio.gather(
                     _read_bounded_git_stream(
                         proc.stdout,
                         byte_limit=stdout_bytes_max,
@@ -741,6 +768,7 @@ async def run_git_bytes(
                         process=proc,
                     ),
                     proc.wait(),
+                    _write_git_stdin(proc.stdin, stdin_bytes),
                 )
                 return stdout_result, stderr_result, returncode
 
