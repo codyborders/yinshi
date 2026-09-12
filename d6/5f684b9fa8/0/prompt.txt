@@ -1,0 +1,2742 @@
+Task: Review current actual diff read-only. Original request requires Phase 6 acceptance before Phase 7. Apply software-design checks for information leakage, temporal decomposition, nonobvious effects, errors, and deep-module boundaries. Every finding needs location, impact, correction, validation, and remediation. State explicitly if no remediation remains.
+ROOT: inspect root_launcher.py, tests, launcher systemd files, tmpfiles. Verify fixed actions and disabled gates, protected socket hard-link pin, executor RuntimeDirectory and socket access, pin-before-effect reclaim, tree preflight, descriptor cleanup, error normalization, account UID and GID separation, supplementary NSS group exclusion, and direct mount-ID normalization. Focused suite: 76 passed.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: Read-only final review of current repository deletion scope after corrections. Inspect actual files. Scope repos.py, repository_deletion_recovery.py, repository_lifecycle.py, git.py, db.py, tenant.py, authority helper, tests. Verify isolation gate; receipt HMAC and DB binding; exact phases and schema constraints; target-parent binding persisted before move; physical identities; atomic no-replace moves; parent sync; missing-both behavior; exact operation cleanup; expected-OID atomic update-ref deletion; transient Git errors; partial registration retry; fresh recovery scans; per-receipt failures; cancellation and DB boundaries. Return concise findings with location, impact, correction, validation. Explicitly say no remediation if clean. Apply software-design review.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: Analyze and propose minimal correct remediation for current repository deletion Git cleanup findings.
+Read repository_deletion_recovery.py, repos.py, git.py, db.py, tenant.py, workspace_deletion.py, and tests.
+Need durable crash-safe cleanup of linked-worktree registration and branch generation after repository DB deletion.
+Reviewer requires common-directory, registration, backlink, ref-generation, cleanup state identities, update-ref --no-deref transaction, post-delete absence check, retries after every unlink, symbolic or concurrent same-OID replacement handling.
+Consider managed repo deletion can skip Git cleanup because repository tree itself is discarded, while imported local repos need safe cleanup.
+Provide exact schema, state, API plan, invariants, transitions, and tests. Do not edit files. Flag simpler safe policy.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: Edit only backend tests for approved imported-repository deletion policy.
+Production now returns 409 detail Delete imported repository workspaces before deleting the repository when an imported local repository has live workspaces. Managed Yinshi-owned repositories still execute durable deletion.
+Current failures are listed in tests/test_api.py, tests/test_repository_deletion_recovery.py, and tests/test_repository_lifecycle_followup.py.
+For tests whose purpose is durable managed deletion internals, patch yinshi.api.repos._managed_repo_plan to return (Path(git_repo), Path(git_repo).parent) around DELETE. Use existing unittest.mock.patch patterns.
+Replace test_delete_registered_repo_prunes_worktrees_and_workspace_branches with a policy test: DELETE imported repository with live workspaces returns exact 409 detail, keeps repo, workspaces, worktree metadata, and branches. Then delete workspaces through existing API if practical and verify repository can delete after no live workspaces. Do not expect repository deletion to mutate imported Git metadata.
+For tenant runtime-preflight test, preserve purpose by patching managed classification.
+For post-commit cleanup failure tests, inject discard_quarantine_entries failure and patch managed classification.
+Add or preserve direct imported repository with zero workspaces deletion success coverage.
+Run focused failing tests with PYTHONPATH=src. Do not edit production. Do not commit. If TDD guard blocks edits, report exact error.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: Read-only corrected repository deletion final acceptance. Inspect current files.
+Prior blocker 1 fixed: repos.storage_ownership is persisted with strict imported or managed domain in app schema v11 and tenant schema v9. Migrations default all legacy rows imported. Only actual clone completion writes managed. Direct local imports remain imported even inside tenant storage. _managed_repo_plan requires managed provenance plus canonical managed path. Tests cover tenant clone and direct import.
+Prior blocker 2 fixed: any receipt with nonempty git_worktrees_json raises before restore or discard. Tests cover both actions and no filesystem call. New deletions persist empty list and never call repository Git cleanup.
+Prior blocker 3 deemed inapplicable under approved threat boundary: quarantine and parents are trusted UID mode0700. Untrusted runtimes are stopped and writable descriptors revoked before first move. Executors have different UIDs. Lifecycle lock serializes service effects. Same-UID trusted processes are trusted. Descriptor replacement checks remain defensive. Class docstring states invariant. Oracle review 4c8e3cd5 agreed exact arbitrary-tree crash progress requires proportional state and is not needed under this boundary.
+Also inspect commit outcome handling, regular files, nested managed paths, authority, identities, recovery, cancellation, schema validation, and tests. Focused tests: 132 schema/provenance/recovery passed plus 209 deletion/root/API passed before provenance updates. Static source checks will be rerun.
+Return findings with location, impact, correction, validation. If clean, explicitly state no findings and no remediation needed.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: Implement now. Do not spend turns re-reading broad context. Scope only root_launcher.py, root tests, deploy tmpfiles/systemd, broker-root-launcher.md.
+Add 32 fixed identities yinshi-executor-00..31. No caller choice. Root chooses lowest free slot under existing RLock by scanning exact prepared replica children. Prepared repo/home UID+GID persist slot. Retry derives it. Reclaim validates it. Quarantine frees it. Pool exhaustion fails before rename.
+All UID/GID values and names distinct from root, app, broker, and each other. Validate NSS primary and supplementary groups. Broker/app/executors must not share protected groups.
+Prepare chowns repo/home tree to selected uid/gid. Operation parent remains root0700. Launch derives slot from prepared owners and builds User/Group selected name.
+Broker runtime root and op/socket begin broker:broker. Root launch validates source op0700 and socket0600, changes socket to broker:selected-gid 0660, then pins. Keep private TemporaryFileSystem=/run:rw and /run/session.sock.
+Update fixed tests for allocation uniqueness, retry stability, reclaim reuse, exhaustion, aliases/groups, command identity, socket transition. Preserve all existing invariants and disabled gates.
+Update tmpfiles workloads to broker:broker mode0711 and docs. Run root tests and static checks. Do not commit or install VM. Begin edits within first two turns.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: Implement approved executor pool in current checkout. Prior attempts only inspected and made no changes. Read root_launcher.py once, then edit.
+Use 32 accounts yinshi-executor-00..31. Add ExecutorIdentity. RootLauncher allocates lowest free slot under RLock by scanning prepared repo/home owner IDs. Partial prepare persists chosen slot by assigning top repo/home ownership before recursive transfer. Retry derives one existing slot owner and requires no conflicting slot.
+RootLauncher production constructs operation-specific ReplicaLifecycleValidator and LaunchObjectValidator. Directly injected validators remain supported for unit tests. Extend validators with executor_name. Extend build_systemd_run_command with executor identity name.
+Validate all pool UID/GID and supplementary groups globally. All protected identities differ. No broker/app membership in pool groups.
+Broker creates runtime root/op/socket as broker:broker 0711/0700/0600. Launch validates and root changes socket to broker:selected GID 0660 before pin.
+Prepare tree selected UID/GID. Launch User/Group selected name. Reclaim validates selected identity. Quarantine releases slot. Pool full fails before move.
+Private /run remains. Update root tests, tmpfiles, docs. Run focused tests and static checks. No VM install or commit. Make source edit now.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/backend/src/yinshi/root_launcher.py, /Users/user/projects/yinshi/backend/tests/test_root_launcher.py, /Users/user/projects/yinshi/backend/tests/test_root_replica_lifecycle.py, /Users/user/projects/yinshi/backend/tests/test_execution_daemons.py, /Users/user/projects/yinshi/deploy/sysusers.d/yinshi.conf, /Users/user/projects/yinshi/deploy/tmpfiles.d/yinshi.conf, /Users/user/projects/yinshi/deploy/systemd/, /Users/user/projects/yinshi/docs/broker-root-launcher.md]
+
+Read-only final review. Do not edit files. Original request: implement a fixed pool of 32 executor identities, yinshi-executor-00 through yinshi-executor-31, for privileged root prepare, launch, and reclaim. Preserve disabled gates. Requirements: lowest free slot under one RLock; exhaustion before any rename or ownership mutation; retry identity persisted through prepared repo and home UID/GID; no broker-controlled slot; quarantine does not reserve slots; launch derives selected User and Group from prepared objects; reclaim validates selected identity; all protected UIDs and primary GIDs distinct; reject supplementary-group crossover; broker creates session socket as broker:broker 0600; root changes only exact validated socket to broker:selected-executor-group 0660 before pinning; separate private /run; no caller-controlled launch parameters. Current design intentionally promotes broker staging into root-owned replicas before it writes executor ownership markers. It then writes both top markers before recursive transfer. Inspect current blobs, not only git diff: backend/src/yinshi/root_launcher.py, backend/tests/test_root_launcher.py, backend/tests/test_root_replica_lifecycle.py, backend/tests/test_execution_daemons.py, deploy/sysusers.d/yinshi.conf, deploy/tmpfiles.d/yinshi.conf, deploy/systemd/*launcher*, deploy/systemd/*broker*, docs/broker-root-launcher.md. Current focused result: PYTHONPATH=src pytest -q tests/test_root_launcher.py tests/test_root_replica_lifecycle.py tests/test_execution_daemons.py => 81 passed. Software-design review rules to apply verbatim: Think strategically. Create deep modules. Hide information. Make interfaces general-purpose. Give each layer a different abstraction. Pull complexity downwards. Define errors out of existence. Design it twice. Name precisely. Be consistent. Make code obvious. During review scan for shallow modules, information leakage, temporal decomposition, pass-through methods, overexposure, conjoined methods, repetition, vague names, comment problems, special-general mixture, nonobvious code, and excessive exceptions. Security and correctness take priority. Return findings first, ordered by severity. Every finding must include exact location or affected requirement, impact, proposed correction, and validation. If no findings remain, state explicitly that no remediation is needed. Also assess whether current tests establish allocation stability, exhaustion-before-mutation, reclaim release, account alias rejection, supplementary groups, selected systemd identity, socket transition, and post-promotion crash recovery.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: You are reviving a previous subagent conversation.
+
+Original run: 80694b6e
+Original agent: final-review
+Original session file: /Users/user/.pi/agent/sessions/--Users-user-projects-yinshi--/2026-09-04T04-44-52-550Z_01a06abb-dfc5-7c65-82bb-7c5f2081ee64/80694b6e/run-0/session.jsonl
+
+Use the stored session context as background. Answer the orchestrator's follow-up below. Do not assume the original child process is still alive.
+
+Follow-up:
+Return the review again now. Use concise STE-safe sentences. Do not use the word Obtain. Findings first. For every finding, include severity, exact location, impact, correction, and validation. If no findings remain, say no remediation is needed. Do not use tools.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/.pi-subagents/artifacts/80694b6e_final-review_0_input.md, /Users/user/projects/yinshi/.pi-subagents/artifacts/80694b6e_final-review_0_output.md, /Users/user/projects/yinshi/backend/src/yinshi/root_launcher.py, /Users/user/projects/yinshi/backend/tests/test_root_launcher.py, /Users/user/projects/yinshi/backend/tests/test_root_replica_lifecycle.py, /Users/user/projects/yinshi/deploy/sysusers.d/yinshi.conf, /Users/user/projects/yinshi/deploy/tmpfiles.d/yinshi.conf, /Users/user/projects/yinshi/docs/broker-root-launcher.md]
+
+Read-only corrected-change review. Do not edit. Original request and fixed pool invariants remain those in .pi-subagents/artifacts/80694b6e_final-review_0_input.md. Read prior findings in .pi-subagents/artifacts/80694b6e_final-review_0_output.md. Finding 1, missing broker lifecycle, remains intentionally open for the next work unit. Review only findings 2 through 5 and any new root-launcher defects. Current corrections: root creates a temporary protected hard link before socket metadata changes; it checks link counts and source identity, mutates through the protected name, cleans temporary state on failure, then publishes the final pin. Reclaim removes and syncs the pin before moving or deleting the identity tree. Tree-less pin recovery maps its GID to one pool identity. Named groups must match user primary GIDs. One active allocation index rejects duplicate slots for every root action. Quarantine does not reserve a slot. Added adversarial tests for replacement metadata, named group alias, duplicate slots across actions, tree-less nonzero pin recovery, quarantine release, and pin-before-tree ordering. Focused result: 87 passed in tests/test_root_launcher.py tests/test_root_replica_lifecycle.py tests/test_execution_daemons.py. Ruff check passes. Inspect current blobs: backend/src/yinshi/root_launcher.py, backend/tests/test_root_launcher.py, backend/tests/test_root_replica_lifecycle.py, deploy/sysusers.d/yinshi.conf, deploy/tmpfiles.d/yinshi.conf, docs/broker-root-launcher.md. Apply software-design principles: deep modules, information hiding, distinct abstraction levels, complexity pulled down, precise names, consistency, obvious code, and defined-away avoidable errors. Scan for shallow modules, information leakage, temporal decomposition, pass-through methods, overexposure, conjoined methods, repetition, vague names, comment problems, special-general mixtures, nonobvious behavior, and excessive exceptions. Return findings first by severity. Each finding needs exact location, impact, correction, and validation. State disposition for prior findings 2 through 5. If those findings are resolved and no new finding remains, state that no remediation is needed for this review scope.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/backend/src/yinshi/execution_daemons.py, /Users/user/projects/yinshi/backend/src/yinshi/services/execution_broker.py, /Users/user/projects/yinshi/backend/src/yinshi/services/broker_journal.py, /Users/user/projects/yinshi/backend/src/yinshi/services/broker_protocol.py, /Users/user/projects/yinshi/backend/src/yinshi/services/workspace_isolation.py, /Users/user/projects/yinshi/backend/src/yinshi/services/workspace_execution.py, /Users/user/projects/yinshi/desktop/src/isolationProfile.ts, /Users/user/projects/yinshi/desktop/src/localRuntime.ts, /Users/user/projects/yinshi/deploy/, /Users/user/projects/yinshi/backend/tests/test_execution_daemons.py, /Users/user/projects/yinshi/backend/tests/test_broker_foundation.py, /Users/user/projects/yinshi/docs/broker-root-launcher.md, /Users/user/projects/yinshi/docs/workspace-os-isolation.md, /Users/user/Downloads/yinshi-thread-orchestration-plan.md]
+
+Read-only implementation plan for remaining Phase 6 broker-backed Linux execution boundary in current dirty Yinshi checkout. Do not edit. Original requirements: authenticated desktop-to-VM transport using bounded framed stdio relay into isolated OrbStack; Ed25519 request and response binding; source transfer by bounded Git bundle only, never a writable host-shared checkout; broker-owned durable replica lifecycle; fixed internal prepare, launch, drain, reclaim flow; broker creates operation runtime directory broker:broker 0700 and AF_UNIX session.sock broker:broker 0600; launcher requests expose only action, operation_id, protocol_version; no database handle across await or external effects; accepted intent durable before any effect; each confirmed or unresolved outcome durable before reply; unknown launcher, timeout, cancellation, and SQLite commit outcomes remain unresolved; production execution stays disabled until profile qualification. Root 32-account pool exists. Inspect backend/src/yinshi/execution_daemons.py, services/execution_broker.py, services/broker_journal.py, services/broker_protocol.py, services/workspace_isolation.py, services/workspace_execution.py, desktop/src/isolationProfile.ts, desktop/src/localRuntime.ts, deploy files, tests, docs, and /Users/user/Downloads/yinshi-thread-orchestration-plan.md. Separate minimal broker lifecycle needed to close current final-review finding from full host transport and ingestion. Produce ordered implementation tasks with exact files, state machine, owners, crash outcomes, bounded protocol fields, and tests. Identify any decisions parent must make. Apply software-design principles: deep modules, information hiding, distinct abstraction levels, pull complexity down, precise names, consistency, obvious code, and defined-away errors. No changes.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/.pi-subagents/artifacts/80694b6e_final-review_0_output.md, /Users/user/projects/yinshi/.pi-subagents/artifacts/8d9e32db_final-review_0_output.md, /Users/user/projects/yinshi/backend/src/yinshi/root_launcher.py, /Users/user/projects/yinshi/backend/tests/test_root_launcher.py, /Users/user/projects/yinshi/backend/tests/test_root_replica_lifecycle.py, /Users/user/projects/yinshi/deploy/sysusers.d/yinshi.conf, /Users/user/projects/yinshi/deploy/tmpfiles.d/yinshi.conf, /Users/user/projects/yinshi/docs/broker-root-launcher.md]
+
+Read-only final corrected review. Do not edit. Review current root executor-pool blobs after prior findings in .pi-subagents/artifacts/80694b6e_final-review_0_output.md and .pi-subagents/artifacts/8d9e32db_final-review_0_output.md. Finding 1 remains assigned to separate broker lifecycle work and is outside this root-only scope. Corrections since prior review: reclaim validates executor-owned top directories without trusting their mutable mode bits, while prepare and launch retain strict mode 0700. Injected validators no longer choose or bypass canonical identities. Every command, launch, prepare, and reclaim resolves allocation first. Injected validator identity must equal persisted identity. Duplicate-marker tests now include injected validators and prove callbacks do not run. Tests cover changed reclaim modes and injection mismatch. Current checks: focused pytest 89 passed; Ruff check passed; Ruff format check reports four files formatted; isort and Flake8 passed; py_compile and git diff --check passed. Inspect backend/src/yinshi/root_launcher.py, backend/tests/test_root_launcher.py, backend/tests/test_root_replica_lifecycle.py, deploy/sysusers.d/yinshi.conf, deploy/tmpfiles.d/yinshi.conf, docs/broker-root-launcher.md. Apply actual software-design review: deep modules, information hiding, distinct abstraction levels, complexity pulled down, precise names, consistency, obvious code, and defined-away avoidable errors. Scan all listed red flags. Return findings first by severity. Every finding needs exact location, impact, correction, and validation. State dispositions for all prior root findings. If no root findings remain, say no remediation is needed for this review scope.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/.pi-subagents/artifacts/234b5f85_final-review_0_output.md, /Users/user/projects/yinshi/.pi-subagents/artifacts/a45c676d_final-review_0_output.md, /Users/user/projects/yinshi/backend/src/yinshi/api/repos.py, /Users/user/projects/yinshi/backend/src/yinshi/services/repository_lifecycle.py, /Users/user/projects/yinshi/backend/src/yinshi/services/repository_deletion_recovery.py, /Users/user/projects/yinshi/backend/src/yinshi/services/git.py, /Users/user/projects/yinshi/backend/src/yinshi/db.py, /Users/user/projects/yinshi/backend/src/yinshi/tenant.py, /Users/user/projects/yinshi/backend/tests/test_api.py, /Users/user/projects/yinshi/backend/tests/test_repository_deletion_recovery.py, /Users/user/projects/yinshi/backend/tests/test_repository_lifecycle_followup.py, /Users/user/projects/yinshi/backend/tests/test_phase6_ownership_schema.py, /Users/user/projects/yinshi/backend/tests/test_phase6_ownership_schema_contracts.py, /Users/user/projects/yinshi/backend/tests/test_git.py]
+
+Read-only corrected repository deletion and clone ownership review. Do not edit. Original request: repository deletion must be restart-safe and must never mutate user-owned imported Git metadata. Imported repositories with live workspaces return HTTP 409 with exact detail Delete imported repository workspaces before deleting the repository. Imported repositories without workspaces delete only application metadata. Managed repositories quarantine and discard only their whole owned tree. Legacy deletion receipts with nonempty git_worktrees_json remain unresolved for manual recovery. Recovery chooses restore or discard from fresh database state. Receipts remain until restore or discard succeeds. Post-commit cleanup may return 204 only while durable delete_committed receipt owns retries. Path location alone never grants ownership. Only a successful non-adopting Yinshi clone records managed. Tenant managed path must exactly equal <tenant.data_dir>/repos/<repo_id>. Legacy managed path must exactly equal ~/.yinshi/repos/<repo_id>. Remote managed clone destinations use repo UUID and must be absent. Read prior review .pi-subagents/artifacts/234b5f85_final-review_0_output.md and failed-response review .pi-subagents/artifacts/a45c676d_final-review_0_output.md if present. Inspect current blobs: backend/src/yinshi/api/repos.py, services/repository_lifecycle.py, services/repository_deletion_recovery.py, services/git.py, db.py, tenant.py, tests/test_api.py, tests/test_repository_deletion_recovery.py, tests/test_repository_lifecycle_followup.py, tests/test_phase6_ownership_schema.py, tests/test_phase6_ownership_schema_contracts.py, tests/test_git.py. Current focused repository result: 32 passed including exact-path regression. Apply actual software-design review: deep modules, information hiding, distinct abstraction levels, complexity pulled down, precise names, consistency, obvious code, and defined-away avoidable errors. Scan all red flags. Return findings first by severity. Every finding needs exact location or requirement, impact, correction, and validation. If no findings remain, state explicitly that no remediation is needed.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: You are reviving a previous subagent conversation.
+
+Original run: 1974bf1f
+Original agent: planner
+Original session file: /Users/user/.pi/agent/sessions/--Users-user-projects-yinshi--/2026-09-04T04-44-52-550Z_01a06abb-dfc5-7c65-82bb-7c5f2081ee64/1974bf1f/run-0/session.jsonl
+
+Use the stored session context as background. Answer the orchestrator's follow-up below. Do not assume the original child process is still alive.
+
+Follow-up:
+Return plan again. Use concise STE-safe sentences. Avoid the word Obtain. Do not use tools. Include current gaps, ordered tasks, owners, states, failures, checks, and parent decisions.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/.pi-subagents/artifacts/62d8cd96_final-review_0_output.md, /Users/user/projects/yinshi/backend/src/yinshi/api/repos.py, /Users/user/projects/yinshi/backend/src/yinshi/services/repository_lifecycle.py, /Users/user/projects/yinshi/backend/src/yinshi/services/repository_deletion_recovery.py, /Users/user/projects/yinshi/backend/tests/test_repository_deletion_recovery.py, /Users/user/projects/yinshi/backend/tests/test_repository_lifecycle_followup.py, /Users/user/projects/yinshi/backend/tests/test_phase6_ownership_schema.py, /Users/user/projects/yinshi/backend/tests/test_phase6_ownership_schema_contracts.py]
+
+Read-only corrected repository deletion review. Do not edit. Read prior finding in .pi-subagents/artifacts/62d8cd96_final-review_0_output.md. Current correction moves target preparation recovery into services/repository_deletion_recovery.py and services/repository_lifecycle.py. A valid prepared receipt with unbound target parents now validates fresh authority and recovery direction, verifies every source, source parent, trusted root, and absent target before any mutation, securely creates or reuses private target parents, syncs each directory parent, persists target identities with a phase-checked exact-receipt CAS, reloads fresh state, then restores. Ambiguous source or target state remains unresolved. Cancellation drains local preparation and database binding. Unknown binding commit returns unresolved and retries from fresh state. Main deletion uses the same preparation helper. Tests cover crash before target creation and after target creation before binding. Current focused deletion result: 34 passed. Ruff, format, isort, Flake8, and strict mypy passed on deletion files. Inspect current blobs fully: backend/src/yinshi/api/repos.py, backend/src/yinshi/services/repository_lifecycle.py, backend/src/yinshi/services/repository_deletion_recovery.py, backend/tests/test_repository_deletion_recovery.py, backend/tests/test_repository_lifecycle_followup.py, backend/tests/test_phase6_ownership_schema.py, backend/tests/test_phase6_ownership_schema_contracts.py. Apply software-design rules: deep modules, information hiding, distinct abstraction levels, pull complexity down, precise names, consistency, obvious code, and defined-away errors. Return findings first by severity. Each finding needs exact location, impact, correction, and validation. State disposition of prior blocker. If no findings remain, state no remediation is needed.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: You are reviving a previous subagent conversation.
+
+Original run: f80a93fd
+Original agent: final-review
+Original session file: /Users/user/.pi/agent/sessions/--Users-user-projects-yinshi--/2026-09-04T04-44-52-550Z_01a06abb-dfc5-7c65-82bb-7c5f2081ee64/f80a93fd/run-0/session.jsonl
+
+Use the stored session context as background. Answer the orchestrator's follow-up below. Do not assume the original child process is still alive.
+
+Follow-up:
+Return review again. Use concise STE-safe sentences. Avoid the word Obtain. Do not use tools. Findings first with location, impact, correction, and validation. State prior finding dispositions. If clean, state no remediation is needed.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: [Read from: /Users/user/projects/yinshi/.pi-subagents/artifacts/62d8cd96_final-review_0_output.md, /Users/user/projects/yinshi/.pi-subagents/artifacts/188892e8_final-review_0_output.md, /Users/user/projects/yinshi/backend/src/yinshi/api/repos.py, /Users/user/projects/yinshi/backend/src/yinshi/services/repository_lifecycle.py, /Users/user/projects/yinshi/backend/src/yinshi/services/repository_deletion_recovery.py, /Users/user/projects/yinshi/backend/tests/test_repository_deletion_recovery.py, /Users/user/projects/yinshi/backend/tests/test_repository_lifecycle_followup.py, /Users/user/projects/yinshi/backend/tests/test_phase6_ownership_schema.py, /Users/user/projects/yinshi/backend/tests/test_phase6_ownership_schema_contracts.py]
+
+Read-only final corrected repository deletion review. Do not edit. Read prior findings in .pi-subagents/artifacts/62d8cd96_final-review_0_output.md and .pi-subagents/artifacts/188892e8_final-review_0_output.md. Corrections: target binding recovery handles unbound prepared receipts with exact identity checks, durable directory sync, phase-checked exact-receipt CAS, fresh reload, and cancellation drain. Restore now prevalidates every entry before any effect. Moved and unmoved restore states must match persisted source, source-parent, trusted-root, target-parent, and object identities. Discard prevalidates all entries before any irreversible effect and rejects every unmoved or recreated source. Unused broken ManagedPathQuarantine.move API was removed after caller search found no uses. New tests cover crash before target creation, crash after target creation before binding, replaced unmoved source, and recreated committed source. Current focused deletion result: 36 passed. Ruff, format, isort, Flake8, strict mypy passed. Inspect current blobs fully: backend/src/yinshi/api/repos.py, backend/src/yinshi/services/repository_lifecycle.py, backend/src/yinshi/services/repository_deletion_recovery.py, backend/tests/test_repository_deletion_recovery.py, backend/tests/test_repository_lifecycle_followup.py, backend/tests/test_phase6_ownership_schema.py, backend/tests/test_phase6_ownership_schema_contracts.py. Apply software-design rules: deep modules, information hiding, distinct abstraction levels, pull complexity down, precise names, consistency, obvious code, and defined-away errors. Return findings first by severity. Each finding needs exact location, impact, correction, and validation. State prior finding dispositions. If clean, state no remediation is needed.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: You are reviving a previous subagent conversation.
+
+Original run: 14bcd936
+Original agent: final-review
+Original session file: /Users/user/.pi/agent/sessions/--Users-user-projects-yinshi--/2026-09-04T04-44-52-550Z_01a06abb-dfc5-7c65-82bb-7c5f2081ee64/14bcd936/run-0/session.jsonl
+
+Use the stored session context as background. Answer the orchestrator's follow-up below. Do not assume the original child process is still alive.
+
+Follow-up:
+Return only concise review findings from your completed inspection. For each, give severity, exact location, impact, correction, and validation. If no findings, state no remediation needed. Do not inspect more files or edit.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+- criterion-2: Return evidence sufficient for an independent acceptance review
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Review gate: required by reviewer.
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    },
+    {
+      "id": "criterion-2",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: You are reviving a previous subagent conversation.
+
+Original run: 206d0eef
+Original agent: final-review
+Original session file: /Users/user/.pi/agent/sessions/--Users-user-projects-yinshi--/2026-09-04T04-44-52-550Z_01a06abb-dfc5-7c65-82bb-7c5f2081ee64/206d0eef/run-0/session.jsonl
+
+Use the stored session context as background. Answer the orchestrator's follow-up below. Do not assume the original child process is still alive.
+
+Follow-up:
+Return only concise review findings from your completed inspection. For each, give severity, exact location, impact, correction, and validation. If no findings, state no remediation needed. Do not inspect more files or edit.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+- criterion-2: Return evidence sufficient for an independent acceptance review
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Review gate: required by reviewer.
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    },
+    {
+      "id": "criterion-2",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: Reconstruct and rewrite the failed broker lifecycle review response.
+Read this transcript: /Users/user/projects/yinshi/.pi-subagents/artifacts/14bcd936_final-review_0_transcript.jsonl
+The original response was replaced by the STE failure message. Recover findings from assistant reasoning, inspected code, tool output, and review context.
+Use software-design review guidance from /Users/user/.pi/agent/skills/software-design/SKILL.md.
+Return only the replacement review. Keep all substantive findings and remediation steps.
+Each finding must include severity, path and line, impact, correction, and validation.
+If no additional findings exist, state that explicitly.
+Use short direct sentences. Keep descriptive sentences at 25 words or fewer.
+Do not use contractions or semicolons.
+The prior STE checker requested “get” at response offsets 1136-1142 and “about” at offsets 3499-3512.
+Do not edit files or run tests.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: Write red tests only for a new authenticated broker stdio relay.
+Target /Users/user/projects/yinshi/backend/tests/test_broker_stdio_relay.py.
+Do not modify production files.
+
+Approved behavior:
+- Relay accepts exactly one four-byte big-endian length-prefixed broker request on stdin.
+- Request body maximum is BROKER_FRAME_BYTES_MAX.
+- Relay requires stdin EOF after the one frame.
+- Relay connects only to a fixed Unix broker socket supplied to the internal testable function.
+- Relay forwards the exact body, half-closes its socket write side, and reads exactly one bounded broker response.
+- Relay writes one framed response to stdout and flushes it.
+- Oversize, truncated, empty, trailing input, connect failure, timeout, clean broker EOF, invalid response framing, and oversized response fail closed.
+- Failure writes no stdout payload. Diagnostic text contains only a stable error code, never request or response bytes.
+- CLI accepts no caller socket path. Packaged default is /run/yinshi/broker.sock.
+- End-to-end authentication remains in existing signed broker request and response bodies. Relay stays opaque.
+
+Use existing framing helpers and test patterns from test_execution_daemons.py where suitable.
+Tests must be deterministic and bounded. Add a file-level behavior comment.
+Run only the new test file and report the expected red failures.
+TDD Guard may fail because this branch has no bound request. Do not alter guard state.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: You are reviving a previous subagent conversation.
+
+Original run: 31dc9ec9
+Original agent: test-writer
+Original session file: /Users/user/.pi/agent/sessions/--Users-user-projects-yinshi--/2026-09-04T04-44-52-550Z_01a06abb-dfc5-7c65-82bb-7c5f2081ee64/31dc9ec9/run-0/session.jsonl
+
+Use the stored session context as background. Answer the orchestrator's follow-up below. Do not assume the original child process is still alive.
+
+Follow-up:
+Correct the red tests. Modify only backend/tests/test_broker_stdio_relay.py.
+Current file is not acceptable. It conflates stdin with the broker socket, omits request input, cannot observe half-close, and has a diagnostic assertion that does nothing.
+
+Use this approved test interface:
+- read_blocking_frame(stream: BinaryIO, maximum: int) -> bytes
+- write_blocking_frame(stream: BinaryIO, body: bytes) -> None
+- relay_broker_request(request: bytes, *, broker_socket: Path, connect: callable, timeout_seconds: float) -> bytes
+- main(argv: Sequence[str] | None = None) -> int uses fixed DEFAULT_BROKER_SOCKET and process stdio.
+
+Use BytesIO for blocking frame tests.
+Use a real temporary AF_UNIX server for successful exchange, clean EOF, trailing response, oversized response, timeout, and half-close.
+The server must read until request EOF before replying. This establishes the client half-close.
+Test exact request forwarding and exact framed stdout behavior separately.
+Test that errors expose stable codes without including payload bytes.
+Test argparse rejects every argument, including a broker socket argument.
+Keep the file under 320 lines. Remove decorative section banners and unused imports.
+Run only this test file. It must fail only because the production module does not exist.
+Do not modify production files. Do not alter TDD Guard state.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+- criterion-2: Return evidence sufficient for an independent acceptance review
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files
+
+Review gate: required by reviewer.
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    },
+    {
+      "id": "criterion-2",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: Implement the authenticated broker stdio relay in /Users/user/projects/yinshi.
+Parent owns architecture. Do not change the approved behavior.
+
+Scope:
+- Add backend/src/yinshi/broker_stdio_relay.py.
+- Add the yinshi-broker-stdio-relay entry point to backend/pyproject.toml.
+- Do not modify tests unless an unavoidable Python type detail requires a narrow correction. Escalate before any behavioral change.
+
+Required public interface:
+- DEFAULT_BROKER_SOCKET is Path("/run/yinshi/broker.sock").
+- RelayError carries one stable code and exposes only that code.
+- read_blocking_frame(stream, maximum) reads one four-byte big-endian frame, rejects zero size, enforces maximum, and requires immediate EOF.
+- write_blocking_frame(stream, body) rejects an empty response or oversized broker response, writes one frame, and flushes.
+- relay_broker_request(request, broker_socket, timeout_seconds, connect=asyncio.open_unix_connection) performs one bounded exchange.
+- It forwards the exact body, drains, half-closes its socket write side, then reads exactly one response.
+- Clean EOF and connection loss map to transport_unknown.
+- Deadline expiry maps to timeout_unknown.
+- Complete invalid framing maps to verification_unknown.
+- It always closes the writer and waits for closure.
+- build_parser accepts no options.
+- main reads stdin before opening the socket. It writes stdout only after a full response. Failure logs only the stable code and returns 1.
+- The relay stays opaque. Existing Ed25519 request and response bodies provide end-to-end authentication.
+- The CLI broker socket path is fixed. Callers cannot override it.
+
+Use existing execution_daemons framing behavior where useful, but keep this module independently testable.
+Do not hold database state. Do not add root actions or gates.
+Run backend/tests/test_broker_stdio_relay.py and relevant daemon tests.
+Run Ruff and mypy on changed files.
+TDD Guard can be unbound here. Do not alter its state.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files, validation-output
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: You are reviving a previous subagent conversation.
+
+Original run: 9e23dddc
+Original agent: worker
+Original session file: /Users/user/.pi/agent/sessions/--Users-user-projects-yinshi--/2026-09-04T04-44-52-550Z_01a06abb-dfc5-7c65-82bb-7c5f2081ee64/9e23dddc/run-0/session.jsonl
+
+Use the stored session context as background. Answer the orchestrator's follow-up below. Do not assume the original child process is still alive.
+
+Follow-up:
+Repair one remaining boundary defect in your broker stdio relay.
+Parent added tests that call relay_broker_request directly with empty and oversized request bodies.
+Validate 1 <= len(request) <= BROKER_FRAME_BYTES_MAX before connect.
+Both violations must raise RelayError("input_invalid") without opening the broker socket.
+Do not change other behavior. Do not modify tests.
+Run test_broker_stdio_relay.py, test_execution_daemons.py, Ruff, format check, and strict mypy for changed source.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: Plan only the first broker replica authority milestone in /Users/user/projects/yinshi.
+Do not plan the full remaining phase.
+Read current broker_journal.py, execution_broker.py, broker_protocol.py, workspace_replica.py, and their tests.
+Use a separate broker-owned append-only replica journal. Do not alter launch journal v2 or the pure workspace replica module.
+Artifact bytes stay outside SQLite. Preserve exact replay and fresh-connection commit verification.
+Root actions remain exactly prepare, launch, and reclaim.
+Graceful drain only. Missing acknowledgment or live runtime remains unresolved.
+Uncommitted index and worktree state uses a separate bounded artifact later.
+Return exact first-milestone dataclasses, tables, events, transitions, APIs, recovery rules, and tests.
+Keep the implementation plan under 1200 words. Read-only. Do not run subagents.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: Read-only mechanical review of the new broker stdio relay.
+Review backend/src/yinshi/broker_stdio_relay.py, backend/tests/test_broker_stdio_relay.py, and the pyproject entry point.
+Check bounds, EOF handling, timeout and cancellation, cleanup, payload privacy, fixed socket policy, parser behavior, type safety, and test quality.
+Current focused result is 61 passed.
+Report findings with severity, location, impact, correction, and validation. State no remediation if none.
+Do not modify files. Do not run subagents.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: Read-only final review of the broker stdio relay milestone.
+Apply the complete software-design skill from /Users/user/.pi/agent/skills/software-design/SKILL.md and its red-flags reference.
+Original goal: authenticated desktop-to-VM stdio transport as the first remaining Phase 6 milestone.
+Actual diff: /tmp/relay-review.diff.
+Relevant callers are future desktop transport and the current broker AF_UNIX daemon.
+
+Approved invariants:
+- Relay is opaque. Existing Ed25519 signed broker frames provide end-to-end authentication.
+- CLI accepts one bounded frame on stdin and connects only to /run/yinshi/broker.sock.
+- It forwards exact request bytes, half-closes write, reads one bounded response, then emits stdout.
+- No partial stdout appears before a complete broker response.
+- Clean EOF or connection loss maps to transport_unknown.
+- Deadline maps to timeout_unknown. Complete invalid response framing maps to verification_unknown.
+- Errors expose stable codes without payload bytes.
+- Relay timeout exceeds the broker connection timeout.
+- No persistence, root action, gate, or launch lifecycle change is allowed.
+
+Current checks: 61 focused relay and daemon tests pass. Ruff lint and format pass. Strict mypy passes.
+Review correctness, security, cancellation, bounded shutdown, packaging, test validity, and design quality.
+For each finding, provide severity, location, impact, correction, validation, and remediation plan.
+If no finding remains, state that no remediation is needed. Do not modify files.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: You are reviving a previous subagent conversation.
+
+Original run: c7a8d827
+Original agent: final-review
+Original session file: /Users/user/.pi/agent/sessions/--Users-user-projects-yinshi--/2026-09-04T04-44-52-550Z_01a06abb-dfc5-7c65-82bb-7c5f2081ee64/c7a8d827/run-0/session.jsonl
+
+Use the stored session context as background. Answer the orchestrator's follow-up below. Do not assume the original child process is still alive.
+
+Follow-up:
+Review the corrected current relay candidate. Stay read-only.
+Full-file candidate diff: /tmp/relay-review-corrected.diff.
+
+Prior high finding:
+- Exceptional and cancelled exchange paths now call writer.transport.abort() before any cleanup await.
+- Normal completion closes and waits only after the broker response reached EOF.
+- New real AF_UNIX tests use a listening socket that does not accept.
+- They confirm timeout and caller cancellation complete before peer acceptance.
+
+Prior medium finding:
+- Candidate diff now contains complete pyproject, relay source, and relay test files.
+- Full-file form intentionally includes inherited pyproject configuration so the candidate is reproducible.
+
+Prior low findings:
+- Parser now uses add_help=False and allow_abbrev=False.
+- Tests reject help spellings, abbreviated help, positional input, and socket overrides.
+- Packaging test parses TOML and checks the exact project script mapping.
+
+Current focused result: 68 passed.
+Ruff lint and format check pass. Strict mypy passes.
+Recheck every prior finding and the corrected cleanup semantics.
+If findings remain, provide location, impact, correction, validation, and remediation plan.
+If none remain, state that no remediation is needed.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: Read-only mechanical review of the new broker replica journal foundation.
+Review backend/src/yinshi/services/broker_replica_journal.py and backend/tests/test_broker_replica_journal.py.
+Check API consistency, Python errors, SQL shapes, bounds, tests, and obvious missing branches.
+Do not edit or commit. Report findings by severity with exact locations and corrections.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```tion of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: Perform read-only final review of the standalone broker replica journal milestone.
+
+Original request:
+- Continue Phase 6 toward managed child integration, authenticated desktop-to-VM transport, bounded repository ingestion, durable replica authority, and drain/export/reclaim.
+- This milestone is the broker-owned replica journal foundation only. It performs no external effects and has no BrokerService wiring.
+
+Use the actual /skill:software-design content from /Users/user/.pi/agent/skills/software-design/SKILL.md.
+Actual complete candidate diff: /tmp/replica-journal-review.diff.
+Implementation plan: .pi-subagents/artifacts/9091a3f4_planner_0_output.md.
+Architecture decision: .pi-subagents/artifacts/83af7a2c_oracle_0_output.md.
+
+Approved public contract:
+- Separate broker-owned schema v1. Launch journal v2 and read-only legacy v1 stay unchanged.
+- ReplicaAuthority binds physical_target_id, replica_generation, execution_owner_id.
+- Seven stages are ordered ingest, verify, publish, admission, drain, export, reclaim.
+- Claim binds owner token and broker incarnation.
+- Positions expose journal ID, sequence, and append receipt ID.
+- Explicit completion APIs use typed bounded receipts. Rejection and unresolved calls are generic but stage-bound.
+- Accepted request payload contains only workspace/repository IDs, source and reconciliation digests, and bounded bundle/worktree references.
+- SQLite contains artifact IDs, lengths, digests, and receipts, never artifact bytes.
+- Exact replays return the durable result. Conflicts fail closed.
+- Commit exceptions close the connection before fresh exact inspection. Presence succeeds. Confirmed absence raises ReplicaJournalCommitAbsent. Conflict remains unresolved.
+- Claimed nonterminal work reports broker_restart_unknown without changing owner. Unclaimed work remains accepted.
+- Missing drain acknowledgment or a live runtime remains terminal unresolved. There is no root stop action.
+- All APIs are synchronous. No SQLite handle crosses an external effect or await.
+
+Prior review findings and dispositions:
+1. Stored identity corruption: fixed by storing and replay-validating frame hash, broker binding, nonce, sequence, payload digest, and row identity.
+2. Artifact bytes through request payload: fixed by an exact reference-only payload schema and a sentinel rejection test.
+3. Commit absence misclassified after earlier same-type rows: fixed by stage-aware logical unique-key inspection.
+4. Concurrent exact accept conflict: fixed by comparing the winning durable row after uniqueness collision. Concurrent test passes.
+5. Arbitrary terminal JSON: fixed by exact broker response fields and request binding plus frame digest.
+6. Handle cleanup: fixed explicit close after open validation and partial connect cleanup.
+7. Missing independent corruption/bound checks: expanded tests for identity, frame, event order, payload, response, race, model fields, and stage-specific reasons.
+8. Weak receipt facts: verify, publish, admission, and two-artifact export receipts now carry and validate stage-specific facts.
+
+Current checks:
+- 142 focused broker, relay, and daemon tests pass.
+- Ruff lint and format check pass on both new files.
+- Strict mypy passes on the source.
+- py_compile and git diff --check pass.
+- No files are staged.
+
+Review the actual diff and relevant broker_protocol.py contract. Do not edit or commit.
+For every finding give severity, location or requirement, impact, correction, validation, and a remediation plan.
+If no findings remain, explicitly state that no remediation is needed.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: You are reviving a previous subagent conversation.
+
+Original run: a21f5f5e
+Original agent: final-review
+Original session file: /Users/user/.pi/agent/sessions/--Users-user-projects-yinshi--/2026-09-04T04-44-52-550Z_01a06abb-dfc5-7c65-82bb-7c5f2081ee64/a21f5f5e/run-0/session.jsonl
+
+Use the stored session context as background. Answer the orchestrator's follow-up below. Do not assume the original child process is still alive.
+
+Follow-up:
+Review the corrected current replica journal candidate. Stay read-only.
+Complete corrected diff: /tmp/replica-journal-review-corrected.diff.
+
+Prior finding 1 disposition:
+- Terminal response validation now takes durable state, stage, error code, and receipt ID.
+- Completed reclaim requires status ok, null error, state completed, stage reclaim, and its reclaim receipt ID.
+- Rejected and unresolved events require status error, exact bounded code, matching state and stage, and the rejection receipt ID when applicable.
+- The same checks run during replay.
+
+Prior finding 2 disposition:
+- Terminal result has an exact flat schema. Extra direct or nested fields are rejected.
+- Error must equal the approved stage code.
+- Tests reject direct result content, nested content, and error content sentinels, then confirm the sentinel is absent from SQLite.
+- A corruption test changes both response bytes and stored response digest, restores the immutable trigger, and confirms reopen fails on terminal semantics.
+
+Current results: 21 journal tests pass; 144 combined broker, relay, and daemon tests pass. Ruff lint and format pass. Strict source mypy, py_compile, and diff checks pass. No files are staged.
+Recheck both prior high findings and the whole corrected candidate.
+For any finding provide severity, location, impact, correction, validation, and remediation plan.
+If none remain, explicitly state that no remediation is needed.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: Read-only map for the next Phase 6 transfer milestone in the current host checkout.
+Find reusable repository path policy, ignored-file policy, trusted Git runner, index and snapshot capture, artifact bounds, and atomic publication helpers.
+Read workspace_replica.py and thread workspace modules.
+Return exact files, symbols, current contracts, and the smallest standalone implementation boundary.
+Do not edit or commit.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: Read-only final review of current workspace replica conflict-stage correction.
+Use the software-design skill content. Inspect these exact files:
+- backend/src/yinshi/services/workspace_replica.py
+- backend/tests/test_workspace_replica_reconciliation.py
+
+Original requirement: the exact-index artifact must preserve conflict stages and modeled index flags without weakening path, mode, identity, or effect safety.
+Approved invariants: stage is 0 through 3. One path has either stage zero alone, or unique conflict stages. Duplicate (raw_path, stage) rejects. Mixed stage zero and conflict rejects. Canonical ordering is (raw_path, stage). Exact storage bytes do not change. Stage and flags affect fingerprints. Existing modes and path rules remain unchanged.
+Actual edits are localized near _corrected_validate_index_entry, _corrected_validate_entries, _corrected_canonicalize_spec, IndexEntry docs, and tests near test_binding_refuses_each_unsupported_index_state.
+Current results: 206 focused tests pass. Ruff lint passes. Strict source mypy and py_compile pass. Ruff format had one unrelated prior drift that the parent corrected manually. No files are staged.
+Review correctness, information hiding, error classification, compatibility, and test gaps. Do not edit or rerun successful commands.
+For each finding give severity, location, impact, correction, validation, and remediation plan. If none remain, explicitly state no remediation is needed.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: You are reviving a previous subagent conversation.
+
+Original run: a81df0b1
+Original agent: final-review
+Original session file: /Users/user/.pi/agent/sessions/--Users-user-projects-yinshi--/2026-09-04T04-44-52-550Z_01a06abb-dfc5-7c65-82bb-7c5f2081ee64/a81df0b1/run-0/session.jsonl
+
+Use the stored session context as background. Answer the orchestrator's follow-up below. Do not assume the original child process is still alive.
+
+Follow-up:
+Review corrected current files read-only.
+Prior medium: added one _corrected_canonical_index_entries helper. Unchanged-storage validation, transition compilation, and final canonicalization now compare or retain the same canonical (raw_path, stage) order. Added a test with reversed desired conflict entries and unchanged index storage.
+Prior low stage classification: exact integer type is checked first. Every integer outside 0..3 now gets invalid_index_stage. Added negative and Boolean tests.
+Prior test gap: fingerprint test now parameterizes intent_to_add, skip_worktree, and assume_unchanged. It checks protocol, baseline, desired, and bound fingerprints.
+Current results: 211 tests pass. Ruff lint and format pass. Strict source mypy and py_compile pass. No files staged.
+Recheck all prior findings and current correction. For any finding give severity, location, impact, correction, validation, and remediation plan. If none remain, explicitly state no remediation is needed.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: Read-only final review of standalone worktree artifact codec.
+Use software-design skill. Review current files:
+- backend/src/yinshi/services/workspace_replica_artifact.py
+- backend/tests/test_workspace_replica_artifact.py
+
+Requirement: deterministic bounded binary artifact preserves exact index bytes, staged and unstaged worktree data, allowed ignored files, executable bits, opaque symlink text, object roots, HEAD facts, and policy digest. It rejects unsafe paths, unsupported kinds, hardlinks, privilege bits, topology faults, overflow, truncation, digest mismatch, unknown framing, and trailing bytes. No filesystem, Git, network, SQLite, broker, root, or gate effects are allowed.
+Architecture: four ordered SHA-256-bound sections CONTROL, INDEX, MANIFEST, ROOTS. Consumer limits apply independently. Source-state digest binds all section digests.
+Current checks: 38 tests pass. Ruff lint passes. Strict source mypy and py_compile pass. Ruff format corrections were applied manually after the check. No files staged.
+Inspect parser allocation bounds, canonicality, head/ref validation, manifest topology, representability, aggregate arithmetic, duplicate roots, type strictness, information exposure in errors, and tests.
+For every finding give severity, location, impact, correction, validation, and remediation plan. If none remain, explicitly state no remediation is needed. Do not edit.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: You are reviving a previous subagent conversation.
+
+Original run: 561af98c
+Original agent: final-review
+Original session file: /Users/user/.pi/agent/sessions/--Users-user-projects-yinshi--/2026-09-04T04-44-52-550Z_01a06abb-dfc5-7c65-82bb-7c5f2081ee64/561af98c/run-0/session.jsonl
+
+Use the stored session context as background. Answer the orchestrator's follow-up below. Do not assume the original child process is still alive.
+
+Follow-up:
+Return your prior review findings again in short direct sentences. Do not use tools. Include severity, location, impact, correction, validation, and remediation. End with explicit no-remediation statement only if no findings exist.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: Read-only final review. Use software-design skill.
+Inspect backend/src/yinshi/services/workspace_replica_artifact.py and backend/tests/test_workspace_replica_artifact.py.
+Check deterministic four-section framing, bounded decoding, canonical paths and HEAD refs, exact index bytes, manifest topology, node modes, ignored-policy binding, roots, digests, type checks, and error privacy.
+Current results: 50 tests pass. Ruff lint and format pass. Strict mypy and py_compile pass. No files staged.
+Return only findings. Each finding needs severity, location, impact, correction, validation, and remediation. If none remain, state that no remediation is needed. Do not edit or rerun checks.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: You are reviving a previous subagent conversation.
+
+Original run: 6d1dfe85
+Original agent: final-review
+Original session file: /Users/user/.pi/agent/sessions/--Users-user-projects-yinshi--/2026-09-04T04-44-52-550Z_01a06abb-dfc5-7c65-82bb-7c5f2081ee64/6d1dfe85/run-0/session.jsonl
+
+Use the stored session context as background. Answer the orchestrator's follow-up below. Do not assume the original child process is still alive.
+
+Follow-up:
+No tools. Restate each finding in one short bullet. Use fewer than 15 words per sentence. Include severity and file line. Omit explanations and JSON.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return a concise result and residual risks when applicable
+
+Required evidence: manual-notes, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: Read-only corrected review. Use software-design.
+Review backend/src/yinshi/services/workspace_replica_artifact.py and backend/tests/test_workspace_replica_artifact.py.
+Prior findings covered unborn HEAD inconsistency, post-allocation limits, ignored directories, raw TypeError, and missing boundary/privacy/digest tests. Parent corrected each.
+Current results: 55 tests pass. Ruff, format, strict mypy, py_compile, and diff check pass.
+Report only unresolved findings with severity and line. If none remain, say: No remediation is needed.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: Read-only final review. Use software-design.
+Review current changes in backend/src/yinshi/services/git.py, backend/tests/test_git_bytes_runner.py, backend/src/yinshi/services/workspace_replica_bundle.py, and backend/tests/test_workspace_replica_bundle.py.
+Requirement: bounded Git output must stop and reap on overflow, timeout, or cancellation. Bundle creation must include only explicit committed refs and optional committed HEAD. It must preserve annotated tags, SHA-1/SHA-256, symbolic/detached HEAD, exact advertised refs, digest, and byte length. It must verify the bundle, detect source ref races, reject hostile names, and keep trusted_git fail-closed.
+Current results: 62 tests pass. Strict mypy passed. Latest manual format corrections applied. No files staged for this milestone.
+Inspect subprocess cleanup, deadlocks, output limits, Git commands, temporary-file safety, HEAD parsing, race checks, replacement objects, empty repositories, and test gaps.
+Each finding needs severity, location, impact, correction, validation, and remediation. If none remain, say no remediation is needed. Do not edit.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: Read-only corrected-change review. Use software-design.
+Review backend/src/yinshi/services/git.py, backend/tests/test_git_bytes_runner.py, backend/src/yinshi/services/workspace_replica_bundle.py, and backend/tests/test_workspace_replica_bundle.py.
+Prior findings: bounded cleanup deadlock and repeat-cancellation risk; stderr limit ignored with unbounded stdout; refs not required to peel to commits; status-based HEAD target corruption.
+Corrections: bounded readers kill on first overflow then continue draining without accumulation; cleanup shields one completion through cancellation; explicit stderr bounds select bounded mode while stdout may remain unbounded; bounded stdout defaults stderr to 16 KiB; return codes can be narrowly declared; refs must peel to commits; HEAD uses symbolic-ref with exact target and detached/unborn distinction; verification uses a private empty bare repository with matching object format; tests now use actual live processes, actual ref mutation, nonbranch HEAD with corrupt index, nested and noncommit tags, replacement objects, SHA-256, exact names and OIDs.
+Current checks: 69 focused tests pass. Ruff lint and format pass. Strict source mypy and py_compile pass.
+Inspect actual current diff. Each finding needs severity, location, impact, correction, validation, and remediation. If none remain, state no remediation is needed. Do not edit.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
+
+---
+
+Task: Read-only final clearance review. Use software-design.
+Review current four files: backend/src/yinshi/services/git.py, backend/tests/test_git_bytes_runner.py, backend/src/yinshi/services/workspace_replica_bundle.py, backend/tests/test_workspace_replica_bundle.py.
+Prior remaining finding: recursive symbolic-ref flattened nested symbolic HEAD. Fixed with git symbolic-ref --quiet --no-recurse HEAD. Live test now makes HEAD -> refs/yinshi/alias -> refs/yinshi/head -> commit, corrupts index, and asserts direct alias plus OID.
+Earlier findings on process draining, repeated cancellation, stderr limits, commit peeling, exact nonbranch HEAD, actual ref race, replacement objects, and private independent verification were corrected.
+Current results: 69 tests pass. Ruff lint and format pass. Strict source mypy, py_compile, and diff check pass.
+Inspect current code. Report each finding with location, impact, correction, validation, and remediation. If none remain, explicitly state no remediation is needed. Do not edit.
+
+## Acceptance Contract
+Acceptance level: attested
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Return concrete findings with file paths and severity when applicable
+
+Required evidence: review-findings, residual-risks
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
