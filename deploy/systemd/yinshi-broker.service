@@ -1,0 +1,36 @@
+[Unit]
+Description=Yinshi signed execution broker foundation
+Requires=yinshi-broker.socket
+After=yinshi-broker.socket yinshi-launcher.socket
+
+[Service]
+Type=simple
+User=yinshi-broker
+Group=yinshi-broker
+UMask=0077
+ExecStart=/opt/yinshi/runtime-v1/bin/yinshi-broker --systemd-socket
+Environment=YINSHI_LAUNCH_EXECUTION_ENABLED=false
+TimeoutStopSec=15s
+ReadWritePaths=/var/lib/yinshi /run/yinshi /var/lib/yinshi-launcher/staging /run/yinshi-launcher-state/workloads
+ReadOnlyPaths=-/var/lib/yinshi/control/broker-journal.sqlite3
+NoNewPrivileges=yes
+PrivateNetwork=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# Deliberately no [Install] section. Foundation must not be enabled at boot.

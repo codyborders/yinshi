@@ -1,0 +1,11 @@
+{
+  "architecture": "arm64",
+  "cpu_count": 1,
+  "disk_gib": 8,
+  "distribution": "ubuntu:24.04",
+  "execution_enabled": false,
+  "isolated": true,
+  "memory_mib": 1024,
+  "network_isolated": true,
+  "profile_version": 1
+}

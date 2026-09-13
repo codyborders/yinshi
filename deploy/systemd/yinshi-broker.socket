@@ -1,0 +1,12 @@
+[Unit]
+Description=Yinshi signed execution broker socket
+
+[Socket]
+ListenStream=/run/yinshi/broker.sock
+SocketUser=yinshi-broker
+SocketGroup=yinshi-app
+SocketMode=0660
+RemoveOnStop=yes
+Service=yinshi-broker.service
+
+# Deliberately no [Install] section. Foundation must not be socket-activated at boot.

@@ -430,6 +430,8 @@ class BrokerControlService:
         launch_service: BrokerService,
         replica_coordinator: BrokerReplicaLifecycleCoordinator | None,
         replica_lifecycle_enabled: bool,
+        launch_request_timeout_seconds: float = 120.0,
+        replica_lifecycle_timeout_seconds: float = 360.0,
     ) -> None:
         if (
             not isinstance(broker_incarnation, str)
@@ -448,6 +450,13 @@ class BrokerControlService:
             raise TypeError("launch service is invalid")
         if type(replica_lifecycle_enabled) is not bool:
             raise TypeError("replica lifecycle gate is invalid")
+        if (
+            type(launch_request_timeout_seconds) not in {int, float}
+            or not 0 < launch_request_timeout_seconds <= 3_600
+            or type(replica_lifecycle_timeout_seconds) not in {int, float}
+            or not 0 < replica_lifecycle_timeout_seconds <= 3_600
+        ):
+            raise ValueError("broker control request timeout is invalid")
         if replica_lifecycle_enabled and replica_coordinator is None:
             raise ValueError("enabled replica lifecycle requires a coordinator")
         self._broker_incarnation = broker_incarnation
@@ -458,6 +467,8 @@ class BrokerControlService:
         self._launch_service = launch_service
         self._replica_coordinator = replica_coordinator
         self._replica_lifecycle_enabled = replica_lifecycle_enabled
+        self._launch_request_timeout_seconds = float(launch_request_timeout_seconds)
+        self._replica_lifecycle_timeout_seconds = float(replica_lifecycle_timeout_seconds)
 
     @property
     def application_uid(self) -> int:
@@ -490,7 +501,10 @@ class BrokerControlService:
         """Route authenticated launch and replica frames without schema overlap."""
         request = self._authenticate(frame, peer_uid=peer_uid)
         if request.request_type == _SUPPORTED_REQUEST_TYPE:
-            return await self._launch_service.handle(frame, peer_uid=peer_uid)
+            return await asyncio.wait_for(
+                self._launch_service.handle(frame, peer_uid=peer_uid),
+                timeout=self._launch_request_timeout_seconds,
+            )
         if request.request_type != _REPLICA_REQUEST_TYPE:
             raise BrokerProtocolError("broker request type is not supported")
         if not self._replica_lifecycle_enabled:
@@ -502,4 +516,7 @@ class BrokerControlService:
         coordinator = self._replica_coordinator
         if coordinator is None:
             raise RuntimeError("enabled replica lifecycle has no coordinator")
-        return await coordinator.run(request, frame, authority)
+        return await asyncio.wait_for(
+            coordinator.run(request, frame, authority),
+            timeout=self._replica_lifecycle_timeout_seconds,
+        )

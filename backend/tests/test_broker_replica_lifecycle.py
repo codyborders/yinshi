@@ -254,6 +254,16 @@ class _Effect:
         return result
 
 
+class _DelayedEffect(_Effect):
+    def __init__(self, stage: str, trace: list[tuple[str, str]], *, delay: float) -> None:
+        super().__init__(stage, trace)
+        self.delay = delay
+
+    async def apply(self, context: ReplicaLifecycleContext) -> StageReconciliation:
+        await asyncio.sleep(self.delay)
+        return await super().apply(context)
+
+
 def _effects(
     trace: list[tuple[str, str]],
     overrides: dict[str, _Effect] | None = None,
@@ -309,6 +319,51 @@ def _result(frame: bytes | None) -> dict[str, object]:
     value = json.loads(frame)
     assert isinstance(value["result"], dict)
     return value["result"]
+
+
+async def test_scaled_aggregate_budget_allows_serial_in_budget_stages(
+    tmp_path: Path,
+) -> None:
+    trace: list[tuple[str, str]] = []
+    effects = _effects(
+        trace,
+        {
+            stage: _DelayedEffect(stage, trace, delay=0.03)
+            for stage in ("ingest", "verify", "publish")
+        },
+    )
+    effects["admission"] = _Effect(
+        "admission",
+        trace,
+        apply_result=StageRejected(
+            "admission_rejected",
+            "rejected_admission_000000000000000",
+        ),
+    )
+    coordinator = _coordinator(
+        _journal(tmp_path),
+        effects,
+        effect_timeout_seconds=0.05,
+    )
+    request, frame = _signed_request()
+
+    response = await asyncio.wait_for(
+        coordinator.run(request, frame, AUTHORITY),
+        timeout=0.2,
+    )
+    result = _result(response)
+    assert result == {
+        "code": "admission_rejected",
+        "receipt_id": "rejected_admission_000000000000000",
+        "stage": "admission",
+        "state": "rejected",
+    }
+    assert trace == [
+        ("apply", "ingest"),
+        ("apply", "verify"),
+        ("apply", "publish"),
+        ("apply", "admission"),
+    ]
 
 
 async def test_runs_exact_stage_order_with_start_before_each_effect(tmp_path: Path) -> None:

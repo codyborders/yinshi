@@ -1,0 +1,9 @@
+[Unit]
+Description=Yinshi contained executor workloads
+
+[Slice]
+CPUQuota=100%
+MemoryMax=640M
+TasksMax=128
+
+# Deliberately no [Install] section. Launcher selects this slice only after explicit enablement.

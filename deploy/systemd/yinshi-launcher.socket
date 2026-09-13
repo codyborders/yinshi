@@ -1,0 +1,13 @@
+[Unit]
+Description=Yinshi fixed-profile root launcher socket
+
+[Socket]
+ListenStream=/run/yinshi-launcher/control.sock
+DirectoryMode=0710
+SocketUser=root
+SocketGroup=yinshi-broker
+SocketMode=0660
+RemoveOnStop=yes
+Service=yinshi-launcher.service
+
+# Deliberately no [Install] section. Foundation must not be socket-activated at boot.
