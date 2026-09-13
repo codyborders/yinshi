@@ -3,7 +3,7 @@
   "checkpoint_id": "63343b73c31f",
   "strategy": "manual-commit",
   "branch": "main",
-  "checkpoints_count": 1,
+  "checkpoints_count": 2,
   "files_touched": [
     "backend/src/yinshi/services/workspace_replica_bundle.py",
     "backend/src/yinshi/services/workspace_replica_object_pack.py",
@@ -18,13 +18,20 @@
       "compact_transcript": "/63/343b73c31f/0/transcript.jsonl",
       "content_hash": "/63/343b73c31f/0/content_hash.txt",
       "prompt": "/63/343b73c31f/0/prompt.txt"
+    },
+    {
+      "metadata": "/63/343b73c31f/1/metadata.json",
+      "transcript": "/63/343b73c31f/1/full.jsonl",
+      "compact_transcript": "/63/343b73c31f/1/transcript.jsonl",
+      "content_hash": "/63/343b73c31f/1/content_hash.txt",
+      "prompt": "/63/343b73c31f/1/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 32870535,
+    "input_tokens": 65952822,
     "cache_creation_tokens": 0,
-    "cache_read_tokens": 1136040576,
-    "output_tokens": 2571320,
-    "api_call_count": 8474
+    "cache_read_tokens": 2278251648,
+    "output_tokens": 5140325,
+    "api_call_count": 16990
   }
 }
