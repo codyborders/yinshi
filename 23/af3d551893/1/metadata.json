@@ -1,0 +1,59 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "23af3d551893",
+  "session_id": "session",
+  "strategy": "manual-commit",
+  "created_at": "2026-09-13T16:03:45.344247Z",
+  "branch": "main",
+  "checkpoints_count": 2,
+  "save_step_count": 3,
+  "files_touched": [
+    "backend/src/yinshi/services/broker_artifact_transport.py",
+    "backend/src/yinshi/services/broker_replica_journal.py",
+    "backend/src/yinshi/services/execution_broker.py",
+    "backend/tests/test_broker_replica_journal.py",
+    "backend/tests/test_broker_replica_lifecycle.py"
+  ],
+  "agent": "Pi",
+  "model": "gpt-5.6-sol",
+  "turn_id": "edf662a1c99f",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 134613,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 119296,
+    "output_tokens": 24037,
+    "api_call_count": 7
+  },
+  "session_metrics": {
+    "turn_count": 236
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-09-13T16:03:45.034142Z",
+    "agent_lines": 466,
+    "agent_removed": 13,
+    "human_added": 334,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 800,
+    "total_lines_changed": 813,
+    "agent_percentage": 58.91758917589176,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 3,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
+}
