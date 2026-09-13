@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import fcntl
 import hashlib
 import json
@@ -231,9 +232,26 @@ class BrokerArtifactStore:
         descriptor, _root_identity = self._open_root()
         os.close(descriptor)
 
+    @property
+    def limits(self) -> BrokerArtifactLimits:
+        """Return the immutable transport and semantic limit profile."""
+        return self._limits
+
     def _open_root(self) -> tuple[int, str]:
         try:
             named = os.lstat(self._root)
+        except OSError as error:
+            raise BrokerArtifactStoreUnresolvedError(
+                "artifact store root lookup is unresolved"
+            ) from error
+        if (
+            not stat.S_ISDIR(named.st_mode)
+            or named.st_uid != self._expected_uid
+            or named.st_gid != self._expected_gid
+            or stat.S_IMODE(named.st_mode) != 0o700
+        ):
+            raise BrokerArtifactStoreRejectedError("artifact store root is not private")
+        try:
             descriptor = os.open(
                 self._root,
                 os.O_RDONLY
@@ -242,7 +260,9 @@ class BrokerArtifactStore:
                 | getattr(os, "O_NOFOLLOW", 0),
             )
         except OSError as error:
-            raise BrokerArtifactStoreRejectedError("artifact store root is unavailable") from error
+            raise BrokerArtifactStoreUnresolvedError(
+                "artifact store root open is unresolved"
+            ) from error
         try:
             opened = os.fstat(descriptor)
             if (
@@ -691,8 +711,16 @@ class BrokerArtifactStore:
                 | getattr(os, "O_NONBLOCK", 0),
                 dir_fd=directory,
             )
-        except OSError as error:
+        except FileNotFoundError as error:
             raise BrokerArtifactStoreRejectedError("stored artifact is unavailable") from error
+        except OSError as error:
+            if error.errno in {errno.ELOOP, errno.ENOTDIR}:
+                raise BrokerArtifactStoreRejectedError(
+                    "stored artifact metadata is invalid"
+                ) from error
+            raise BrokerArtifactStoreUnresolvedError(
+                "stored artifact access is unresolved"
+            ) from error
         try:
             value = os.fstat(descriptor)
             if (
@@ -786,8 +814,16 @@ class BrokerArtifactStore:
                 | getattr(os, "O_NOFOLLOW", 0),
                 dir_fd=root,
             )
-        except OSError as error:
+        except FileNotFoundError as error:
             raise BrokerArtifactStoreRejectedError("stored artifact set is unavailable") from error
+        except OSError as error:
+            if error.errno in {errno.ELOOP, errno.ENOTDIR}:
+                raise BrokerArtifactStoreRejectedError(
+                    "stored artifact set metadata is invalid"
+                ) from error
+            raise BrokerArtifactStoreUnresolvedError(
+                "stored artifact set access is unresolved"
+            ) from error
         opened: list[OpenedArtifact] = []
         try:
             value = os.fstat(directory)

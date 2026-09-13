@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import hashlib
 import json
 import os
@@ -14,6 +15,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Final, Literal
 
+from yinshi.exceptions import GitError
 from yinshi.services.broker_artifact_store import (
     BrokerArtifactStoreRejectedError,
     BrokerArtifactStoreUnresolvedError,
@@ -39,6 +41,7 @@ from yinshi.services.workspace_replica_artifact import (
     DEFAULT_ARTIFACT_LIMITS,
     ArtifactLimits,
     VerifiedWorktreeArtifact,
+    WorktreeArtifactError,
     decode_worktree_artifact,
 )
 from yinshi.services.workspace_replica_bundle import (
@@ -329,10 +332,13 @@ def _decode_declared_worktree(
     declaration: ReplicaArtifactSetDeclaration,
     worktree_bytes: bytes,
 ) -> VerifiedWorktreeArtifact:
-    return decode_worktree_artifact(
-        _match_content(declaration.worktree, worktree_bytes),
-        limits=declaration.limits.worktree,
-    )
+    try:
+        return decode_worktree_artifact(
+            _match_content(declaration.worktree, worktree_bytes),
+            limits=declaration.limits.worktree,
+        )
+    except WorktreeArtifactError as error:
+        raise ReplicaPublicationRejectedError("worktree artifact is invalid") from error
 
 
 def _inventory_digest(items: object) -> str:
@@ -456,6 +462,16 @@ async def _verify_artifact_set(
 def _root_identity(root: Path, expected_uid: int, expected_gid: int) -> tuple[int, str]:
     try:
         named = os.lstat(root)
+    except OSError as error:
+        raise ReplicaPublicationUnresolvedError("publication root lookup is unresolved") from error
+    if (
+        not stat.S_ISDIR(named.st_mode)
+        or named.st_uid != expected_uid
+        or named.st_gid != expected_gid
+        or stat.S_IMODE(named.st_mode) != 0o700
+    ):
+        raise ReplicaPublicationRejectedError("publication root is not exclusively owned")
+    try:
         descriptor = os.open(
             root,
             os.O_RDONLY
@@ -464,19 +480,24 @@ def _root_identity(root: Path, expected_uid: int, expected_gid: int) -> tuple[in
             | getattr(os, "O_NOFOLLOW", 0),
         )
     except OSError as error:
-        raise ReplicaPublicationRejectedError("publication root is unavailable") from error
-    opened = os.fstat(descriptor)
-    if (
-        not stat.S_ISDIR(opened.st_mode)
-        or (named.st_dev, named.st_ino) != (opened.st_dev, opened.st_ino)
-        or opened.st_uid != expected_uid
-        or opened.st_gid != expected_gid
-        or stat.S_IMODE(opened.st_mode) != 0o700
-    ):
+        raise ReplicaPublicationUnresolvedError("publication root open is unresolved") from error
+    try:
+        opened = os.fstat(descriptor)
+        if (
+            not stat.S_ISDIR(opened.st_mode)
+            or (named.st_dev, named.st_ino) != (opened.st_dev, opened.st_ino)
+            or opened.st_uid != expected_uid
+            or opened.st_gid != expected_gid
+            or stat.S_IMODE(opened.st_mode) != 0o700
+        ):
+            raise ReplicaPublicationRejectedError("publication root is not exclusively owned")
+        identity = _canonical_json({"device": opened.st_dev, "inode": opened.st_ino}).decode(
+            "ascii"
+        )
+        return descriptor, identity
+    except BaseException:
         os.close(descriptor)
-        raise ReplicaPublicationRejectedError("publication root is not exclusively owned")
-    identity = _canonical_json({"device": opened.st_dev, "inode": opened.st_ino}).decode("ascii")
-    return descriptor, identity
+        raise
 
 
 def _write_regular(parent: int, name: str, content: bytes) -> tuple[int, int]:
@@ -640,8 +661,16 @@ def _open_pinned_regular(
             | getattr(os, "O_NONBLOCK", 0),
             dir_fd=parent,
         )
+    except FileNotFoundError as error:
+        raise ReplicaPublicationRejectedError("published artifact is unavailable") from error
     except OSError as error:
-        raise ReplicaPublicationRejectedError("published artifact storage is invalid") from error
+        if error.errno in {errno.ELOOP, errno.ENOTDIR}:
+            raise ReplicaPublicationRejectedError(
+                "published artifact storage is invalid"
+            ) from error
+        raise ReplicaPublicationUnresolvedError(
+            "published artifact access is unresolved"
+        ) from error
     try:
         opened = os.fstat(descriptor)
         named = os.stat(name, dir_fd=parent, follow_symlinks=False)
@@ -1013,8 +1042,22 @@ class WorkspaceReplicaPublicationStore:
             raise
         except ReplicaPublicationRejectedError:
             raise
-        except Exception as error:
+        except ReplicaPublicationUnresolvedError:
+            raise
+        except GitError as error:
+            if isinstance(error.__cause__, (OSError, TimeoutError)):
+                raise ReplicaPublicationUnresolvedError(
+                    "artifact verifier outcome is unresolved"
+                ) from error
             raise ReplicaPublicationRejectedError("artifact verification failed") from error
+        except OSError as error:
+            raise ReplicaPublicationUnresolvedError(
+                "artifact verification is unresolved"
+            ) from error
+        except Exception as error:
+            raise ReplicaPublicationUnresolvedError(
+                "artifact verifier outcome is unresolved"
+            ) from error
         await self._recheck_opened_source(opened, recheck_source)
         await _run_blocking(
             _recheck_opened_descriptors,
@@ -1481,11 +1524,7 @@ class WorkspaceReplicaPublicationStore:
                 raise ReplicaPublicationUnresolvedError("publication cancellation is unresolved")
             raise
         except Exception as error:
-            if moved:
-                raise ReplicaPublicationUnresolvedError(
-                    "publication outcome is unresolved"
-                ) from error
-            raise ReplicaPublicationRejectedError("publication staging failed") from error
+            raise ReplicaPublicationUnresolvedError("publication outcome is unresolved") from error
         finally:
             os.close(root_descriptor)
 
@@ -1519,9 +1558,17 @@ class WorkspaceReplicaPublicationStore:
                     | getattr(os, "O_NOFOLLOW", 0),
                     dir_fd=root_descriptor,
                 )
-            except OSError as error:
+            except FileNotFoundError as error:
                 raise ReplicaPublicationRejectedError(
                     "published artifact set is unavailable"
+                ) from error
+            except OSError as error:
+                if error.errno in {errno.ELOOP, errno.ENOTDIR}:
+                    raise ReplicaPublicationRejectedError(
+                        "published artifact set is invalid"
+                    ) from error
+                raise ReplicaPublicationUnresolvedError(
+                    "published artifact set access is unresolved"
                 ) from error
             try:
                 final_identity = _directory_identity(final_descriptor)
@@ -1572,9 +1619,23 @@ class WorkspaceReplicaPublicationStore:
                     raise
                 except ReplicaPublicationRejectedError:
                     raise
-                except Exception as error:
+                except ReplicaPublicationUnresolvedError:
+                    raise
+                except GitError as error:
+                    if isinstance(error.__cause__, (OSError, TimeoutError)):
+                        raise ReplicaPublicationUnresolvedError(
+                            "published artifact verifier outcome is unresolved"
+                        ) from error
                     raise ReplicaPublicationRejectedError(
                         "published artifact verification failed"
+                    ) from error
+                except OSError as error:
+                    raise ReplicaPublicationUnresolvedError(
+                        "published artifact verification is unresolved"
+                    ) from error
+                except Exception as error:
+                    raise ReplicaPublicationUnresolvedError(
+                        "published artifact verifier outcome is unresolved"
                     ) from error
                 if expected_verification is not None and verification != expected_verification:
                     raise ReplicaPublicationRejectedError("published verification receipt changed")
@@ -1666,5 +1727,187 @@ class WorkspaceReplicaPublicationStore:
             raise
         except ReplicaPublicationRejectedError:
             raise
+        except ReplicaPublicationUnresolvedError:
+            raise
         except Exception as error:
-            raise ReplicaPublicationRejectedError("published artifact inspection failed") from error
+            raise ReplicaPublicationUnresolvedError(
+                "published artifact inspection is unresolved"
+            ) from error
+
+    def _synchronize_recovered_publication(
+        self,
+        declaration: ReplicaArtifactSetDeclaration,
+        inspection: ReplicaInspectionReceipt,
+    ) -> None:
+        root_descriptor, root_identity = _root_identity(
+            self._root,
+            self._expected_uid,
+            self._expected_gid,
+        )
+        final_descriptor = -1
+        pins: list[_PinnedRegular] = []
+        try:
+            final_descriptor = os.open(
+                declaration.operation_id,
+                os.O_RDONLY
+                | getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=root_descriptor,
+            )
+            final_value = os.fstat(final_descriptor)
+            named_final = os.stat(
+                declaration.operation_id,
+                dir_fd=root_descriptor,
+                follow_symlinks=False,
+            )
+            if (
+                not stat.S_ISDIR(final_value.st_mode)
+                or not stat.S_ISDIR(named_final.st_mode)
+                or stat.S_IMODE(final_value.st_mode) != 0o700
+                or final_value.st_uid != self._expected_uid
+                or final_value.st_gid != self._expected_gid
+                or (final_value.st_dev, final_value.st_ino)
+                != (named_final.st_dev, named_final.st_ino)
+                or _directory_identity(final_descriptor) != inspection.final_directory_identity
+            ):
+                raise ReplicaPublicationRejectedError("recovered publication directory changed")
+            maxima = {
+                _BUNDLE_FILE: declaration.limits.bundle.max_bundle_bytes,
+                _WORKTREE_FILE: declaration.limits.worktree.max_total_bytes,
+                _INDEX_OBJECTS_FILE: declaration.limits.index_objects.max_pack_bytes,
+                "artifact-set.json": 1024 * 1024,
+            }
+            pins = _open_pinned_files(
+                final_descriptor,
+                maxima,
+                self._expected_uid,
+                self._expected_gid,
+            )
+            expected = {
+                _BUNDLE_FILE: (
+                    declaration.bundle.byte_length,
+                    declaration.bundle.sha256,
+                ),
+                _WORKTREE_FILE: (
+                    declaration.worktree.byte_length,
+                    declaration.worktree.sha256,
+                ),
+                _INDEX_OBJECTS_FILE: (
+                    declaration.index_objects.byte_length,
+                    declaration.index_objects.sha256,
+                ),
+                "artifact-set.json": (None, inspection.publication_marker_sha256),
+            }
+            if any(
+                (
+                    expected[pinned.name][0] is not None
+                    and pinned.byte_length != expected[pinned.name][0]
+                )
+                or pinned.sha256 != expected[pinned.name][1]
+                for pinned in pins
+            ):
+                raise ReplicaPublicationRejectedError("recovered publication content changed")
+            for pinned in pins:
+                os.fsync(pinned.descriptor)
+            os.fsync(final_descriptor)
+            os.fsync(root_descriptor)
+            _recheck_pinned_files(
+                final_descriptor,
+                pins,
+                self._expected_uid,
+                self._expected_gid,
+            )
+            current_root = os.fstat(root_descriptor)
+            named_root = os.lstat(self._root)
+            current_final = os.fstat(final_descriptor)
+            named_final = os.stat(
+                declaration.operation_id,
+                dir_fd=root_descriptor,
+                follow_symlinks=False,
+            )
+            if (
+                not stat.S_ISDIR(current_root.st_mode)
+                or not stat.S_ISDIR(named_root.st_mode)
+                or current_root.st_uid != self._expected_uid
+                or current_root.st_gid != self._expected_gid
+                or named_root.st_uid != self._expected_uid
+                or named_root.st_gid != self._expected_gid
+                or stat.S_IMODE(current_root.st_mode) != 0o700
+                or stat.S_IMODE(named_root.st_mode) != 0o700
+                or not stat.S_ISDIR(current_final.st_mode)
+                or not stat.S_ISDIR(named_final.st_mode)
+                or current_final.st_uid != self._expected_uid
+                or current_final.st_gid != self._expected_gid
+                or named_final.st_uid != self._expected_uid
+                or named_final.st_gid != self._expected_gid
+                or stat.S_IMODE(current_final.st_mode) != 0o700
+                or stat.S_IMODE(named_final.st_mode) != 0o700
+                or not _has_exact_entries(final_descriptor, _EXPECTED_FILES)
+                or _canonical_json(
+                    {"device": current_root.st_dev, "inode": current_root.st_ino}
+                ).decode("ascii")
+                != root_identity
+                or (named_root.st_dev, named_root.st_ino)
+                != (current_root.st_dev, current_root.st_ino)
+                or _directory_identity(final_descriptor) != inspection.final_directory_identity
+                or (named_final.st_dev, named_final.st_ino)
+                != (current_final.st_dev, current_final.st_ino)
+            ):
+                raise ReplicaPublicationRejectedError("recovered publication identity changed")
+        finally:
+            for pinned in pins:
+                os.close(pinned.descriptor)
+            if final_descriptor >= 0:
+                os.close(final_descriptor)
+            os.close(root_descriptor)
+
+    async def reconcile_published_artifact_set(
+        self,
+        declaration: ReplicaArtifactSetDeclaration,
+    ) -> ReplicaPublicationReceipt | None:
+        """Return authority-bound publication state for one trusted declaration."""
+        declaration = _validate_declaration(declaration, self._ceilings)
+        presence = await _run_blocking(
+            self._final_presence,
+            declaration.operation_id,
+        )
+        if presence is False:
+            return None
+        try:
+            inspection = await self._inspect_final(declaration)
+            await _run_blocking(
+                self._synchronize_recovered_publication,
+                declaration,
+                inspection,
+            )
+        except asyncio.CancelledError:
+            raise
+        except ReplicaPublicationRejectedError:
+            raise
+        except ReplicaPublicationUnresolvedError:
+            raise
+        except Exception as error:
+            raise ReplicaPublicationUnresolvedError(
+                "publication reconciliation is unresolved"
+            ) from error
+        return self._publication_receipt(declaration, inspection)
+
+    def _final_presence(self, operation_id: str) -> bool:
+        root_descriptor, _ = _root_identity(
+            self._root,
+            self._expected_uid,
+            self._expected_gid,
+        )
+        try:
+            try:
+                os.stat(operation_id, dir_fd=root_descriptor, follow_symlinks=False)
+            except FileNotFoundError:
+                return False
+            except OSError as error:
+                raise ReplicaPublicationUnresolvedError(
+                    "publication presence lookup is unresolved"
+                ) from error
+            return True
+        finally:
+            os.close(root_descriptor)

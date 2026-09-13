@@ -3,22 +3,37 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import hashlib
 import os
 import stat
 import subprocess
 import threading
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
 
 import pytest
 
+from yinshi.exceptions import GitError
 from yinshi.services.broker_artifact_store import (
     BrokerArtifactLimits,
     BrokerArtifactStore,
     ReplicaArtifactManifest,
 )
-from yinshi.services.broker_replica_journal import ArtifactReference
+from yinshi.services.broker_protocol import BROKER_PROTOCOL_VERSION, BrokerRequest
+from yinshi.services.broker_replica_artifact_effects import (
+    BrokerReplicaArtifactEffects,
+    broker_artifact_limits_for_replica,
+)
+from yinshi.services.broker_replica_journal import ArtifactReference, ReplicaAuthority
+from yinshi.services.broker_replica_lifecycle import (
+    ReplicaLifecycleContext,
+    StageOutcomeUnknown,
+)
+from yinshi.services.replica_artifact_contract import (
+    compute_replica_artifact_set_sha256,
+    compute_replica_limits_sha256,
+)
 from yinshi.services.workspace_publication import WorkspacePublicationError
 from yinshi.services.workspace_replica_artifact import (
     ManifestEntry,
@@ -505,8 +520,8 @@ async def test_second_pinned_open_failure_closes_first_descriptor(
         monkeypatch.setattr(module.os, "open", guarded_open)
         monkeypatch.setattr(module.os, "close", tracked_close)
         with pytest.raises(
-            ReplicaPublicationRejectedError,
-            match="artifact verification failed",
+            ReplicaPublicationUnresolvedError,
+            match="artifact verification is unresolved",
         ):
             await publication.verify_opened_artifact_set(
                 declaration,
@@ -584,6 +599,379 @@ async def test_cancellation_drains_pending_descriptor_scan_without_blocking_loop
     assert not (root / declaration.operation_id).exists()
     retained = list(root.glob(".*.pending.abandoned.*"))
     assert len(retained) == 1, list(root.iterdir())
+
+
+@pytest.mark.asyncio
+async def test_real_artifact_effects_ingest_verify_publish_and_reconcile(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    declaration, bundle, worktree, objects = await declaration_and_bytes(tmp_path)
+    incoming_root = tmp_path / "incoming"
+    incoming_root.mkdir(mode=0o700)
+    incoming = BrokerArtifactStore(
+        incoming_root,
+        limits=broker_artifact_limits_for_replica(declaration.limits),
+        expected_uid=os.geteuid(),
+        expected_gid=os.getegid(),
+    )
+    publication = store(tmp_path)
+    await incoming.receive(
+        incoming_manifest(declaration),
+        artifact_reader(bundle, worktree, objects),
+    )
+    authority = ReplicaAuthority(
+        physical_target_id=declaration.identity.physical_target_id,
+        replica_generation=declaration.identity.replica_generation,
+        execution_owner_id=declaration.identity.execution_owner_id,
+    )
+    limits_sha256 = compute_replica_limits_sha256(asdict(declaration.limits))
+    payload = {
+        "authority": {
+            "execution_owner_id": authority.execution_owner_id,
+            "physical_target_id": authority.physical_target_id,
+            "replica_generation": authority.replica_generation,
+        },
+        "bundle": {
+            "artifact_id": declaration.bundle.artifact_id,
+            "byte_length": declaration.bundle.byte_length,
+            "sha256": declaration.bundle.sha256,
+        },
+        "index_objects": {
+            "artifact_id": declaration.index_objects.artifact_id,
+            "byte_length": declaration.index_objects.byte_length,
+            "sha256": declaration.index_objects.sha256,
+        },
+        "limits_sha256": limits_sha256,
+        "object_format": declaration.object_format,
+        "reconciliation_fingerprint": declaration.reconciliation_fingerprint,
+        "repository_id": declaration.repository_id,
+        "source_state_sha256": declaration.source_state_sha256,
+        "workspace_id": declaration.workspace_id,
+        "worktree": {
+            "artifact_id": declaration.worktree.artifact_id,
+            "byte_length": declaration.worktree.byte_length,
+            "sha256": declaration.worktree.sha256,
+        },
+    }
+    payload["artifact_set_sha256"] = compute_replica_artifact_set_sha256(
+        operation_id=declaration.operation_id,
+        repository_id=declaration.repository_id,
+        workspace_id=declaration.workspace_id,
+        physical_target_id=authority.physical_target_id,
+        replica_generation=authority.replica_generation,
+        execution_owner_id=authority.execution_owner_id,
+        object_format=declaration.object_format,
+        source_state_sha256=declaration.source_state_sha256,
+        reconciliation_fingerprint=declaration.reconciliation_fingerprint,
+        bundle=asdict(declaration.bundle),
+        worktree=asdict(declaration.worktree),
+        index_objects=asdict(declaration.index_objects),
+        limits_sha256=limits_sha256,
+    )
+    request = BrokerRequest(
+        protocol_version=BROKER_PROTOCOL_VERSION,
+        broker_incarnation="b" * 32,
+        database_incarnation="d" * 32,
+        connection_sequence=1,
+        operation_id=declaration.operation_id,
+        request_type="replica.lifecycle",
+        nonce="nonce_000000000001",
+        payload_digest="0" * 64,
+        payload=payload,
+    )
+    context = ReplicaLifecycleContext(
+        request=request,
+        authority=authority,
+        owner_token="owner_token_000000000000000",
+    )
+    effects = BrokerReplicaArtifactEffects(
+        incoming=incoming,
+        publication=publication,
+        limits=declaration.limits,
+    )
+
+    assert (await effects.ingest.apply(context)).outcome == "completed"
+    assert (await effects.verify.apply(context)).outcome == "completed"
+    real_publish = publication.publish_opened_artifact_set
+
+    async def publish_then_report_unknown(
+        declaration_arg,
+        opened_arg,
+        *,
+        recheck_source,
+        expected_verification=None,
+    ):
+        await real_publish(
+            declaration_arg,
+            opened_arg,
+            recheck_source=recheck_source,
+            expected_verification=expected_verification,
+        )
+        raise ReplicaPublicationUnresolvedError("publication acknowledgment is unknown")
+
+    monkeypatch.setattr(
+        publication,
+        "publish_opened_artifact_set",
+        publish_then_report_unknown,
+    )
+    with pytest.raises(StageOutcomeUnknown) as apply_unknown:
+        await effects.publish.apply(context)
+    assert apply_unknown.value.reason == "publication_unknown"
+
+    monkeypatch.setattr(publication, "publish_opened_artifact_set", real_publish)
+    recovered = await effects.publish.reconcile(context)
+    assert recovered.outcome == "completed"
+
+    def fail_recovered_sync(*_arguments: object) -> None:
+        raise OSError("sync state is uncertain")
+
+    monkeypatch.setattr(
+        publication,
+        "_synchronize_recovered_publication",
+        fail_recovered_sync,
+    )
+    with pytest.raises(StageOutcomeUnknown) as unknown:
+        await effects.publish.reconcile(context)
+    assert unknown.value.reason == "publication_unknown"
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_syncs_files_directory_and_root_before_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from yinshi.services import workspace_replica_publication as module
+
+    declaration, bundle, worktree, objects = await declaration_and_bytes(tmp_path)
+    publication = store(tmp_path)
+    await publication.publish_artifact_set(declaration, bundle, worktree, objects)
+    real_fsync = os.fsync
+    synchronized_modes: list[str] = []
+
+    def tracked_fsync(descriptor: int) -> None:
+        value = os.fstat(descriptor)
+        synchronized_modes.append("file" if stat.S_ISREG(value.st_mode) else "directory")
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(module.os, "fsync", tracked_fsync)
+    receipt = await publication.reconcile_published_artifact_set(declaration)
+
+    assert receipt is not None
+    assert synchronized_modes[-6:] == [
+        "file",
+        "file",
+        "file",
+        "file",
+        "directory",
+        "directory",
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mutation", ["extra", "mode"])
+async def test_reconciliation_rejects_late_namespace_and_mode_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+) -> None:
+    from yinshi.services import workspace_replica_publication as module
+
+    declaration, bundle, worktree, objects = await declaration_and_bytes(tmp_path)
+    publication = store(tmp_path)
+    await publication.publish_artifact_set(declaration, bundle, worktree, objects)
+    final = tmp_path / "published" / declaration.operation_id
+    final_inodes = {path.stat().st_ino for path in final.iterdir()}
+    real_fsync = os.fsync
+    mutated = False
+
+    def mutating_fsync(descriptor: int) -> None:
+        nonlocal mutated
+        if not mutated and os.fstat(descriptor).st_ino in final_inodes:
+            if mutation == "extra":
+                (final / "late-extra").write_bytes(b"changed")
+            else:
+                final.chmod(0o777)
+            mutated = True
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(module.os, "fsync", mutating_fsync)
+    with pytest.raises(ReplicaPublicationRejectedError, match="identity changed"):
+        await publication.reconcile_published_artifact_set(declaration)
+    assert mutated
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("replacement", ["root", "final"])
+async def test_reconciliation_rejects_late_directory_replacement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    replacement: str,
+) -> None:
+    from yinshi.services import workspace_replica_publication as module
+
+    declaration, bundle, worktree, objects = await declaration_and_bytes(tmp_path)
+    publication = store(tmp_path)
+    await publication.publish_artifact_set(declaration, bundle, worktree, objects)
+    root = tmp_path / "published"
+    final = root / declaration.operation_id
+    final_inodes = {path.stat().st_ino for path in final.iterdir()}
+    real_fsync = os.fsync
+    mutated = False
+
+    def mutating_fsync(descriptor: int) -> None:
+        nonlocal mutated
+        if not mutated and os.fstat(descriptor).st_ino in final_inodes:
+            if replacement == "root":
+                retained_root = tmp_path / "published-replaced"
+                root.rename(retained_root)
+                root.mkdir(mode=0o700)
+            else:
+                retained_final = root / "retained-final"
+                final.rename(retained_final)
+                final.mkdir(mode=0o700)
+            mutated = True
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(module.os, "fsync", mutating_fsync)
+    with pytest.raises(ReplicaPublicationRejectedError, match="identity changed"):
+        await publication.reconcile_published_artifact_set(declaration)
+    assert mutated
+
+
+@pytest.mark.asyncio
+async def test_semantic_os_failure_is_publication_unresolved(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from yinshi.services import workspace_replica_publication as module
+
+    declaration, bundle, worktree, objects = await declaration_and_bytes(tmp_path)
+    incoming = incoming_store(tmp_path)
+    await incoming.receive(
+        incoming_manifest(declaration),
+        artifact_reader(bundle, worktree, objects),
+    )
+    publication = store(tmp_path)
+
+    def fail_write(*_arguments: object) -> tuple[int, int]:
+        raise OSError(errno.ENOSPC, "storage full")
+
+    monkeypatch.setattr(module, "_write_descriptor_regular", fail_write)
+    with (
+        incoming.open_incoming(incoming_manifest(declaration)) as opened,
+        pytest.raises(ReplicaPublicationUnresolvedError, match="unresolved"),
+    ):
+        await publication.verify_opened_artifact_set(
+            declaration,
+            opened,
+            recheck_source=incoming.recheck_opened_async,
+        )
+
+
+@pytest.mark.asyncio
+async def test_git_timeout_is_publication_unresolved(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from yinshi.services import workspace_replica_publication as module
+
+    declaration, bundle, worktree, objects = await declaration_and_bytes(tmp_path)
+    incoming = incoming_store(tmp_path)
+    await incoming.receive(
+        incoming_manifest(declaration),
+        artifact_reader(bundle, worktree, objects),
+    )
+    publication = store(tmp_path)
+
+    async def fail_verifier(*_arguments: object, **_keywords: object) -> object:
+        try:
+            raise TimeoutError("deadline")
+        except TimeoutError as error:
+            raise GitError("git bundle timed out") from error
+
+    monkeypatch.setattr(module, "verify_committed_bundle_file", fail_verifier)
+    with (
+        incoming.open_incoming(incoming_manifest(declaration)) as opened,
+        pytest.raises(ReplicaPublicationUnresolvedError, match="verifier outcome"),
+    ):
+        await publication.verify_opened_artifact_set(
+            declaration,
+            opened,
+            recheck_source=incoming.recheck_opened_async,
+        )
+
+
+@pytest.mark.asyncio
+async def test_malformed_worktree_semantics_are_rejected(tmp_path: Path) -> None:
+    declaration, bundle, _worktree, objects = await declaration_and_bytes(tmp_path)
+    malformed = b"not-a-worktree-artifact"
+    changed = replace(
+        declaration,
+        worktree=replace(
+            declaration.worktree,
+            byte_length=len(malformed),
+            sha256=hashlib.sha256(malformed).hexdigest(),
+        ),
+    )
+
+    incoming = incoming_store(tmp_path)
+    manifest = incoming_manifest(changed)
+    await incoming.receive(manifest, artifact_reader(bundle, malformed, objects))
+    with (
+        incoming.open_incoming(manifest) as opened,
+        pytest.raises(ReplicaPublicationRejectedError, match="worktree artifact is invalid"),
+    ):
+        await store(tmp_path).verify_opened_artifact_set(
+            changed,
+            opened,
+            recheck_source=incoming.recheck_opened_async,
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["typed", "git-timeout"])
+async def test_public_inspection_preserves_unresolved_verification(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    declaration, bundle, worktree, objects = await declaration_and_bytes(tmp_path)
+    publication = store(tmp_path)
+    await publication.publish_artifact_set(declaration, bundle, worktree, objects)
+
+    async def fail_verification(*_arguments: object, **_keywords: object) -> object:
+        if failure == "typed":
+            raise ReplicaPublicationUnresolvedError("storage is uncertain")
+        try:
+            raise TimeoutError("deadline")
+        except TimeoutError as error:
+            raise GitError("git bundle timed out") from error
+
+    monkeypatch.setattr(publication, "_verify_pinned_semantics", fail_verification)
+    with pytest.raises(ReplicaPublicationUnresolvedError, match="uncertain|unresolved"):
+        await publication.inspect_published_artifact_set(declaration)
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_sync_failure_is_unresolved(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    declaration, bundle, worktree, objects = await declaration_and_bytes(tmp_path)
+    publication = store(tmp_path)
+    await publication.publish_artifact_set(declaration, bundle, worktree, objects)
+
+    def fail_sync(*_arguments: object) -> None:
+        raise OSError("sync failed")
+
+    monkeypatch.setattr(
+        publication,
+        "_synchronize_recovered_publication",
+        fail_sync,
+    )
+    with pytest.raises(ReplicaPublicationUnresolvedError, match="reconciliation"):
+        await publication.reconcile_published_artifact_set(declaration)
 
 
 def test_descriptor_copy_uses_bounded_chunks(
@@ -831,6 +1219,19 @@ async def test_late_directory_mode_change_is_rejected(
     release.set()
     with pytest.raises(ReplicaPublicationRejectedError, match="changed"):
         await task
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_preserves_confirmed_root_mode_rejection(
+    tmp_path: Path,
+) -> None:
+    declaration, bundle, worktree, objects = await declaration_and_bytes(tmp_path)
+    publication = store(tmp_path)
+    await publication.publish_artifact_set(declaration, bundle, worktree, objects)
+    (tmp_path / "published").chmod(0o755)
+
+    with pytest.raises(ReplicaPublicationRejectedError, match="exclusively owned"):
+        await publication.reconcile_published_artifact_set(declaration)
 
 
 @pytest.mark.asyncio
