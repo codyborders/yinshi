@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import os
 import re
+import stat
 import tempfile
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final, Literal
+from typing import Final, Literal, TypeVar
 
 from yinshi.exceptions import GitError
 from yinshi.services.git import run_git_bytes
@@ -21,6 +23,25 @@ _NO_REPLACE_ENV: Final[dict[str, str]] = {
     "GIT_NO_REPLACE_OBJECTS": "1",
 }
 _OBJECT_KINDS: Final[frozenset[str]] = frozenset({"blob", "commit", "tag", "tree"})
+_T = TypeVar("_T")
+
+
+async def _run_blocking(
+    function: Callable[..., _T],
+    *arguments: object,
+    **keyword_arguments: object,
+) -> _T:
+    task = asyncio.create_task(asyncio.to_thread(function, *arguments, **keyword_arguments))
+    cancellation: asyncio.CancelledError | None = None
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError as error:
+            cancellation = error
+    result = task.result()
+    if cancellation is not None:
+        raise cancellation
+    return result
 
 
 @dataclass(frozen=True)
@@ -284,32 +305,94 @@ def _parse_object_inventory(raw: bytes, limits: BundleLimits) -> tuple[GitObject
     return tuple(sorted(objects, key=lambda item: item.object_id))
 
 
-async def verify_committed_bundle(
-    content: bytes,
+def _hash_descriptor(descriptor: int, byte_length: int) -> str:
+    digest = hashlib.sha256()
+    offset = 0
+    while offset < byte_length:
+        content = os.pread(descriptor, min(1024 * 1024, byte_length - offset), offset)
+        if not content:
+            raise GitError("Git bundle is truncated")
+        digest.update(content)
+        offset += len(content)
+    if os.pread(descriptor, 1, byte_length):
+        raise GitError("Git bundle grew during verification")
+    return digest.hexdigest()
+
+
+def _validate_pinned_bundle(
+    path: Path,
+    descriptor: int,
+    *,
+    byte_length: int,
+    sha256: str,
+    limits: BundleLimits,
+) -> tuple[int, int]:
+    if not path.is_absolute() or type(descriptor) is not int or descriptor < 0:
+        raise ValueError("bundle path and descriptor are invalid")
+    if type(byte_length) is not int or not 0 < byte_length <= limits.max_bundle_bytes:
+        raise GitError("Git bundle exceeded byte limit")
+    if not re.fullmatch(r"[0-9a-f]{64}", sha256):
+        raise ValueError("bundle digest is invalid")
+    opened = os.fstat(descriptor)
+    named = os.stat(path, follow_symlinks=False)
+    if (
+        not stat.S_ISREG(opened.st_mode)
+        or not stat.S_ISREG(named.st_mode)
+        or (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino)
+        or opened.st_uid != os.geteuid()
+        or opened.st_gid != os.getegid()
+        or named.st_uid != os.geteuid()
+        or named.st_gid != os.getegid()
+        or stat.S_IMODE(opened.st_mode) != 0o600
+        or stat.S_IMODE(named.st_mode) != 0o600
+        or opened.st_nlink != 1
+        or named.st_nlink != 1
+        or opened.st_size != byte_length
+        or named.st_size != byte_length
+        or _hash_descriptor(descriptor, byte_length) != sha256
+    ):
+        raise GitError("Git bundle file is not an exact private regular file")
+    return opened.st_dev, opened.st_ino
+
+
+def _recheck_pinned_bundle(
+    path: Path,
+    descriptor: int,
+    *,
+    identity: tuple[int, int],
+    byte_length: int,
+    sha256: str,
+    limits: BundleLimits,
+) -> None:
+    if (
+        _validate_pinned_bundle(
+            path,
+            descriptor,
+            byte_length=byte_length,
+            sha256=sha256,
+            limits=limits,
+        )
+        != identity
+    ):
+        raise GitError("Git bundle changed during verification")
+
+
+async def _verify_committed_bundle_path(
+    path: Path,
     *,
     object_format: Literal["sha1", "sha256"],
-    limits: BundleLimits = DEFAULT_BUNDLE_LIMITS,
+    byte_length: int,
+    sha256: str,
+    limits: BundleLimits,
 ) -> VerifiedCommittedBundle:
-    """Verify untrusted committed-bundle bytes in an empty bare repository."""
-    if type(content) is not bytes:
-        raise TypeError("content must be bytes")
-    if object_format not in ("sha1", "sha256"):
-        raise ValueError("object_format must be sha1 or sha256")
-    if not content:
-        raise GitError("Git bundle is empty")
-    if len(content) > limits.max_bundle_bytes:
-        raise GitError("Git bundle exceeded byte limit")
     with tempfile.TemporaryDirectory(prefix="yinshi-bundle-") as directory:
         os.chmod(directory, 0o700)
-        root = Path(directory)
-        repository = root / "verification.git"
+        repository = Path(directory) / "verification.git"
         await run_git_bytes(
             ["init", "--bare", f"--object-format={object_format}", str(repository)],
             env=_NO_REPLACE_ENV,
             stdout_bytes_max=limits.max_listing_bytes,
         )
-        path = root / "committed.bundle"
-        _write_private_bundle(path, content)
         await run_git_bytes(
             ["bundle", "verify", str(path)],
             cwd=str(repository),
@@ -358,11 +441,87 @@ async def verify_committed_bundle(
             raise GitError("Git bundle contains missing or unreachable objects")
         return VerifiedCommittedBundle(
             object_format=object_format,
-            byte_length=len(content),
-            sha256=hashlib.sha256(content).hexdigest(),
+            byte_length=byte_length,
+            sha256=sha256,
             refs=advertised,
             objects=objects,
         )
+
+
+async def verify_committed_bundle_file(
+    path: str | Path,
+    descriptor: int,
+    *,
+    object_format: Literal["sha1", "sha256"],
+    byte_length: int,
+    sha256: str,
+    limits: BundleLimits = DEFAULT_BUNDLE_LIMITS,
+) -> VerifiedCommittedBundle:
+    """Verify one descriptor-pinned private bundle without loading its bytes."""
+    if object_format not in ("sha1", "sha256"):
+        raise ValueError("object_format must be sha1 or sha256")
+    bundle_path = Path(path)
+    identity = await _run_blocking(
+        _validate_pinned_bundle,
+        bundle_path,
+        descriptor,
+        byte_length=byte_length,
+        sha256=sha256,
+        limits=limits,
+    )
+    verified = await _verify_committed_bundle_path(
+        bundle_path,
+        object_format=object_format,
+        byte_length=byte_length,
+        sha256=sha256,
+        limits=limits,
+    )
+    await _run_blocking(
+        _recheck_pinned_bundle,
+        bundle_path,
+        descriptor,
+        identity=identity,
+        byte_length=byte_length,
+        sha256=sha256,
+        limits=limits,
+    )
+    return verified
+
+
+async def verify_committed_bundle(
+    content: bytes,
+    *,
+    object_format: Literal["sha1", "sha256"],
+    limits: BundleLimits = DEFAULT_BUNDLE_LIMITS,
+) -> VerifiedCommittedBundle:
+    """Verify untrusted committed-bundle bytes in an empty bare repository."""
+    if type(content) is not bytes:
+        raise TypeError("content must be bytes")
+    if object_format not in ("sha1", "sha256"):
+        raise ValueError("object_format must be sha1 or sha256")
+    if not content:
+        raise GitError("Git bundle is empty")
+    if len(content) > limits.max_bundle_bytes:
+        raise GitError("Git bundle exceeded byte limit")
+    with tempfile.TemporaryDirectory(prefix="yinshi-bundle-input-") as directory:
+        os.chmod(directory, 0o700)
+        path = Path(directory) / "committed.bundle"
+        _write_private_bundle(path, content)
+        descriptor = os.open(
+            path,
+            os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
+        )
+        try:
+            return await verify_committed_bundle_file(
+                path,
+                descriptor,
+                object_format=object_format,
+                byte_length=len(content),
+                sha256=hashlib.sha256(content).hexdigest(),
+                limits=limits,
+            )
+        finally:
+            os.close(descriptor)
 
 
 async def create_committed_bundle(

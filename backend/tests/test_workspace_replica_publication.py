@@ -7,11 +7,18 @@ import hashlib
 import os
 import stat
 import subprocess
+import threading
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
+from yinshi.services.broker_artifact_store import (
+    BrokerArtifactLimits,
+    BrokerArtifactStore,
+    ReplicaArtifactManifest,
+)
+from yinshi.services.broker_replica_journal import ArtifactReference
 from yinshi.services.workspace_publication import WorkspacePublicationError
 from yinshi.services.workspace_replica_artifact import (
     ManifestEntry,
@@ -140,6 +147,48 @@ async def declaration_and_bytes(tmp_path: Path):
     return declaration, bundle.bundle_bytes, worktree, object_pack.pack_bytes
 
 
+def incoming_manifest(
+    declaration: ReplicaArtifactSetDeclaration,
+) -> ReplicaArtifactManifest:
+    return ReplicaArtifactManifest(
+        operation_id=declaration.operation_id,
+        bundle=ArtifactReference(
+            artifact_id=declaration.bundle.artifact_id,
+            sha256=declaration.bundle.sha256,
+            byte_length=declaration.bundle.byte_length,
+        ),
+        worktree=ArtifactReference(
+            artifact_id=declaration.worktree.artifact_id,
+            sha256=declaration.worktree.sha256,
+            byte_length=declaration.worktree.byte_length,
+        ),
+        index_objects=ArtifactReference(
+            artifact_id=declaration.index_objects.artifact_id,
+            sha256=declaration.index_objects.sha256,
+            byte_length=declaration.index_objects.byte_length,
+        ),
+    )
+
+
+def artifact_reader(*parts: bytes) -> asyncio.StreamReader:
+    reader = asyncio.StreamReader()
+    for part in parts:
+        reader.feed_data(part)
+    reader.feed_eof()
+    return reader
+
+
+def incoming_store(tmp_path: Path) -> BrokerArtifactStore:
+    root = tmp_path / "incoming"
+    root.mkdir(mode=0o700)
+    return BrokerArtifactStore(
+        root,
+        limits=BrokerArtifactLimits(),
+        expected_uid=os.geteuid(),
+        expected_gid=os.getegid(),
+    )
+
+
 def store(tmp_path: Path) -> WorkspaceReplicaPublicationStore:
     root = tmp_path / "published"
     root.mkdir(mode=0o700)
@@ -176,6 +225,404 @@ async def test_publication_receipt_binds_three_artifacts_and_authority(tmp_path:
     assert type(inspection) is ReplicaInspectionReceipt
     assert inspection.artifact_set_sha256 == receipt.artifact_set_sha256
     assert not hasattr(inspection, "synchronization_receipt_id")
+
+
+@pytest.mark.asyncio
+async def test_opened_artifact_set_verifies_and_publishes_from_pinned_sources(
+    tmp_path: Path,
+) -> None:
+    declaration, bundle, worktree, objects = await declaration_and_bytes(tmp_path)
+    incoming = incoming_store(tmp_path)
+    manifest = incoming_manifest(declaration)
+    await incoming.receive(manifest, artifact_reader(bundle, worktree, objects))
+    publication = store(tmp_path)
+
+    with incoming.open_incoming(manifest) as opened:
+        verification = await publication.verify_opened_artifact_set(
+            declaration,
+            opened,
+            recheck_source=incoming.recheck_opened_async,
+        )
+        receipt = await publication.publish_opened_artifact_set(
+            declaration,
+            opened,
+            recheck_source=incoming.recheck_opened_async,
+            expected_verification=verification,
+        )
+
+    assert receipt.verification == verification
+    final = tmp_path / "published" / declaration.operation_id
+    assert (final / "committed.bundle").read_bytes() == bundle
+    assert (final / "worktree.yra").read_bytes() == worktree
+    assert (final / "index-objects.pack").read_bytes() == objects
+    with (
+        incoming.open_incoming(manifest) as opened,
+        pytest.raises(ReplicaPublicationCollisionError),
+    ):
+        await publication.publish_opened_artifact_set(
+            declaration,
+            opened,
+            recheck_source=incoming.recheck_opened_async,
+            expected_verification=verification,
+        )
+
+
+@pytest.mark.asyncio
+async def test_opened_artifact_set_rejects_source_replacement_during_semantic_verification(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    declaration, bundle, worktree, objects = await declaration_and_bytes(tmp_path)
+    incoming = incoming_store(tmp_path)
+    manifest = incoming_manifest(declaration)
+    await incoming.receive(manifest, artifact_reader(bundle, worktree, objects))
+    publication = store(tmp_path)
+    original = publication._verify_pinned_semantics
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def paused(*args, **kwargs):
+        started.set()
+        await release.wait()
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(publication, "_verify_pinned_semantics", paused)
+    with incoming.open_incoming(manifest) as opened:
+        task = asyncio.create_task(
+            publication.verify_opened_artifact_set(
+                declaration,
+                opened,
+                recheck_source=incoming.recheck_opened_async,
+            )
+        )
+        await started.wait()
+        source = tmp_path / "incoming" / declaration.operation_id / "worktree.yra"
+        replacement = source.with_name("replacement")
+        replacement.write_bytes(worktree)
+        replacement.chmod(0o600)
+        replacement.replace(source)
+        release.set()
+        with pytest.raises(ReplicaPublicationRejectedError, match="source changed"):
+            await task
+
+
+@pytest.mark.asyncio
+async def test_opened_artifact_set_rejects_declaration_digest_mismatch(tmp_path: Path) -> None:
+    declaration, bundle, worktree, objects = await declaration_and_bytes(tmp_path)
+    incoming = incoming_store(tmp_path)
+    manifest = incoming_manifest(declaration)
+    await incoming.receive(manifest, artifact_reader(bundle, worktree, objects))
+    changed = replace(
+        declaration,
+        bundle=replace(declaration.bundle, sha256="b" * 64),
+    )
+
+    with (
+        incoming.open_incoming(manifest) as opened,
+        pytest.raises(ReplicaPublicationRejectedError, match="opened artifact changed"),
+    ):
+        await store(tmp_path).verify_opened_artifact_set(
+            changed,
+            opened,
+            recheck_source=incoming.recheck_opened_async,
+        )
+
+
+@pytest.mark.asyncio
+async def test_opened_artifact_publication_cancellation_retires_pending_stage(
+    tmp_path: Path,
+) -> None:
+    declaration, bundle, worktree, objects = await declaration_and_bytes(tmp_path)
+    incoming = incoming_store(tmp_path)
+    manifest = incoming_manifest(declaration)
+    await incoming.receive(manifest, artifact_reader(bundle, worktree, objects))
+    publication = store(tmp_path)
+    started = asyncio.Event()
+    calls = 0
+
+    async def paused_recheck(opened) -> None:
+        nonlocal calls
+        calls += 1
+        await incoming.recheck_opened_async(opened)
+        if calls == 3:
+            started.set()
+            await asyncio.Event().wait()
+
+    with incoming.open_incoming(manifest) as opened:
+        task = asyncio.create_task(
+            publication.publish_opened_artifact_set(
+                declaration,
+                opened,
+                recheck_source=paused_recheck,
+            )
+        )
+        await started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    root = tmp_path / "published"
+    assert not (root / declaration.operation_id).exists()
+    retained = list(root.glob(".*.pending.*"))
+    assert len(retained) == 1
+    assert ".pending.abandoned." in retained[0].name
+
+
+@pytest.mark.asyncio
+async def test_cancellation_during_descriptor_copy_is_settled_and_rejected_safely(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from yinshi.services import workspace_replica_publication as module
+
+    declaration, bundle, worktree, objects = await declaration_and_bytes(tmp_path)
+    incoming = incoming_store(tmp_path)
+    manifest = incoming_manifest(declaration)
+    await incoming.receive(manifest, artifact_reader(bundle, worktree, objects))
+    publication = store(tmp_path)
+    real_copy = module._copy_descriptor_regular
+    started = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    calls = 0
+
+    def paused_copy(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 5:
+            started.set()
+            release.wait(timeout=5)
+            try:
+                return real_copy(*args, **kwargs)
+            finally:
+                finished.set()
+        return real_copy(*args, **kwargs)
+
+    monkeypatch.setattr(module, "_copy_descriptor_regular", paused_copy)
+    with incoming.open_incoming(manifest) as opened:
+        task = asyncio.create_task(
+            publication.publish_opened_artifact_set(
+                declaration,
+                opened,
+                recheck_source=incoming.recheck_opened_async,
+            )
+        )
+        assert await asyncio.to_thread(started.wait, 5)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    assert finished.is_set()
+    root = tmp_path / "published"
+    assert not (root / declaration.operation_id).exists()
+    retained = list(root.glob(".*.pending.abandoned.*"))
+    assert len(retained) == 1
+
+
+@pytest.mark.asyncio
+async def test_source_mutation_during_descriptor_copy_is_rejected_before_visibility(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from yinshi.services import workspace_replica_publication as module
+
+    declaration, bundle, worktree, objects = await declaration_and_bytes(tmp_path)
+    incoming = incoming_store(tmp_path)
+    manifest = incoming_manifest(declaration)
+    await incoming.receive(manifest, artifact_reader(bundle, worktree, objects))
+    publication = store(tmp_path)
+    real_copy = module._copy_descriptor_regular
+    calls = 0
+
+    def mutating_copy(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 5:
+            source = tmp_path / "incoming" / declaration.operation_id / "index-objects.pack"
+            changed = bytearray(source.read_bytes())
+            changed[0] ^= 1
+            source.write_bytes(changed)
+            source.chmod(0o600)
+        return real_copy(*args, **kwargs)
+
+    monkeypatch.setattr(module, "_copy_descriptor_regular", mutating_copy)
+    with (
+        incoming.open_incoming(manifest) as opened,
+        pytest.raises(ReplicaPublicationRejectedError, match="source artifact digest changed"),
+    ):
+        await publication.publish_opened_artifact_set(
+            declaration,
+            opened,
+            recheck_source=incoming.recheck_opened_async,
+        )
+
+    root = tmp_path / "published"
+    assert not (root / declaration.operation_id).exists()
+    retained = list(root.glob(".*.pending.abandoned.*"))
+    assert len(retained) == 1
+    assert {path.name for path in retained[0].iterdir()} == {
+        "artifact-set.json",
+        "committed.bundle",
+        "worktree.yra",
+        "index-objects.pack",
+    }
+    assert list(root.glob(f".{declaration.operation_id}.pending.*")) == retained
+
+
+@pytest.mark.asyncio
+async def test_second_pinned_open_failure_closes_first_descriptor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from yinshi.services import workspace_replica_publication as module
+
+    declaration, bundle, worktree, objects = await declaration_and_bytes(tmp_path)
+    incoming = incoming_store(tmp_path)
+    manifest = incoming_manifest(declaration)
+    await incoming.receive(manifest, artifact_reader(bundle, worktree, objects))
+    publication = store(tmp_path)
+    real_open = os.open
+    real_close = os.close
+    opened_bundle_copies: list[int] = []
+    closed: list[int] = []
+
+    def guarded_open(path, flags, mode=0o777, **kwargs):
+        if kwargs.get("dir_fd") is None and str(path).endswith("index-objects.pack"):
+            raise OSError("second pinned open failed")
+        descriptor = real_open(path, flags, mode, **kwargs)
+        if kwargs.get("dir_fd") is None and str(path).endswith("committed.bundle"):
+            opened_bundle_copies.append(descriptor)
+        return descriptor
+
+    def tracked_close(descriptor: int) -> None:
+        closed.append(descriptor)
+        real_close(descriptor)
+
+    with incoming.open_incoming(manifest) as opened:
+        monkeypatch.setattr(module.os, "open", guarded_open)
+        monkeypatch.setattr(module.os, "close", tracked_close)
+        with pytest.raises(
+            ReplicaPublicationRejectedError,
+            match="artifact verification failed",
+        ):
+            await publication.verify_opened_artifact_set(
+                declaration,
+                opened,
+                recheck_source=incoming.recheck_opened_async,
+            )
+
+    assert opened_bundle_copies
+    assert opened_bundle_copies[0] in closed
+
+
+@pytest.mark.asyncio
+async def test_cancellation_drains_pending_descriptor_scan_without_blocking_loop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from yinshi.services import workspace_replica_publication as module
+
+    declaration, bundle, worktree, objects = await declaration_and_bytes(tmp_path)
+    incoming = incoming_store(tmp_path)
+    manifest = incoming_manifest(declaration)
+    await incoming.receive(manifest, artifact_reader(bundle, worktree, objects))
+    publication = store(tmp_path)
+    real_hash = module._hash_descriptor
+    real_close = os.close
+    started = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    scanned: list[int] = []
+    closed: list[int] = []
+    calls = 0
+
+    def paused_hash(descriptor: int, byte_length: int) -> str:
+        nonlocal calls
+        calls += 1
+        if calls == 7:
+            scanned.append(descriptor)
+            started.set()
+            release.wait(timeout=5)
+            try:
+                return real_hash(descriptor, byte_length)
+            finally:
+                finished.set()
+        return real_hash(descriptor, byte_length)
+
+    def tracked_close(descriptor: int) -> None:
+        closed.append(descriptor)
+        real_close(descriptor)
+
+    monkeypatch.setattr(module, "_hash_descriptor", paused_hash)
+    monkeypatch.setattr(module.os, "close", tracked_close)
+    with incoming.open_incoming(manifest) as opened:
+        task = asyncio.create_task(
+            publication.publish_opened_artifact_set(
+                declaration,
+                opened,
+                recheck_source=incoming.recheck_opened_async,
+            )
+        )
+        assert await asyncio.to_thread(started.wait, 5)
+        task.cancel()
+        heartbeats = 0
+        for _ in range(3):
+            await asyncio.sleep(0)
+            heartbeats += 1
+        assert heartbeats == 3
+        assert not task.done()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    assert finished.is_set()
+    assert scanned and scanned[0] in closed
+    root = tmp_path / "published"
+    assert not (root / declaration.operation_id).exists()
+    retained = list(root.glob(".*.pending.abandoned.*"))
+    assert len(retained) == 1, list(root.iterdir())
+
+
+def test_descriptor_copy_uses_bounded_chunks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from yinshi.services import workspace_replica_publication as module
+
+    source_path = tmp_path / "source"
+    source_content = b"x" * (3 * 64 * 1024 + 17)
+    source_path.write_bytes(source_content)
+    source_path.chmod(0o600)
+    target = tmp_path / "target"
+    target.mkdir(mode=0o700)
+    source_descriptor = os.open(source_path, os.O_RDONLY)
+    target_descriptor = os.open(target, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    real_pread = os.pread
+    requested: list[int] = []
+
+    def tracked_pread(descriptor: int, size: int, offset: int) -> bytes:
+        requested.append(size)
+        return real_pread(descriptor, size, offset)
+
+    monkeypatch.setattr(module.os, "pread", tracked_pread)
+    try:
+        module._write_descriptor_regular(
+            target_descriptor,
+            "copied",
+            source_descriptor,
+            len(source_content),
+            hashlib.sha256(source_content).hexdigest(),
+        )
+    finally:
+        os.close(target_descriptor)
+        os.close(source_descriptor)
+
+    assert (target / "copied").read_bytes() == source_content
+    assert max(requested) <= 64 * 1024
+    assert requested.count(64 * 1024) == 3
 
 
 @pytest.mark.asyncio
@@ -301,7 +748,7 @@ async def test_inspection_rejects_file_replaced_during_await(
     declaration, bundle, worktree, objects = await declaration_and_bytes(tmp_path)
     publication = store(tmp_path)
     await publication.publish_artifact_set(declaration, bundle, worktree, objects)
-    original = publication.verify_artifact_set
+    original = publication._verify_pinned_semantics
     started = asyncio.Event()
     release = asyncio.Event()
 
@@ -310,7 +757,7 @@ async def test_inspection_rejects_file_replaced_during_await(
         await release.wait()
         return await original(*args, **kwargs)
 
-    monkeypatch.setattr(publication, "verify_artifact_set", paused)
+    monkeypatch.setattr(publication, "_verify_pinned_semantics", paused)
     task = asyncio.create_task(publication.inspect_published_artifact_set(declaration))
     await started.wait()
     final = tmp_path / "published" / declaration.operation_id
@@ -332,20 +779,16 @@ async def test_publication_rejects_root_or_final_swap_during_final_verification(
 ) -> None:
     declaration, bundle, worktree, objects = await declaration_and_bytes(tmp_path)
     publication = store(tmp_path)
-    original = publication.verify_artifact_set
+    original = publication._verify_pinned_semantics
     started = asyncio.Event()
     release = asyncio.Event()
-    calls = 0
 
     async def paused(*args, **kwargs):
-        nonlocal calls
-        calls += 1
-        if calls == 2:
-            started.set()
-            await release.wait()
+        started.set()
+        await release.wait()
         return await original(*args, **kwargs)
 
-    monkeypatch.setattr(publication, "verify_artifact_set", paused)
+    monkeypatch.setattr(publication, "_verify_pinned_semantics", paused)
     task = asyncio.create_task(
         publication.publish_artifact_set(declaration, bundle, worktree, objects)
     )
@@ -371,7 +814,7 @@ async def test_late_directory_mode_change_is_rejected(
     declaration, bundle, worktree, objects = await declaration_and_bytes(tmp_path)
     publication = store(tmp_path)
     await publication.publish_artifact_set(declaration, bundle, worktree, objects)
-    original = publication.verify_artifact_set
+    original = publication._verify_pinned_semantics
     started = asyncio.Event()
     release = asyncio.Event()
 
@@ -380,7 +823,7 @@ async def test_late_directory_mode_change_is_rejected(
         await release.wait()
         return await original(*args, **kwargs)
 
-    monkeypatch.setattr(publication, "verify_artifact_set", paused)
+    monkeypatch.setattr(publication, "_verify_pinned_semantics", paused)
     task = asyncio.create_task(publication.inspect_published_artifact_set(declaration))
     await started.wait()
     final = tmp_path / "published" / declaration.operation_id

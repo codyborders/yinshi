@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import stat
 import tempfile
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -13,7 +14,7 @@ from typing import Final, Literal
 
 from yinshi.exceptions import GitError
 from yinshi.services.git import run_git_bytes
-from yinshi.services.workspace_replica_bundle import GitObject
+from yinshi.services.workspace_replica_bundle import GitObject, _run_blocking
 
 _OID_PATTERN: Final[re.Pattern[str]] = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
 _GIT_ENV: Final[dict[str, str]] = {
@@ -187,19 +188,117 @@ def _check_pack_header(
     return object_count
 
 
-async def verify_index_object_pack(
-    content: bytes,
+def _write_pack_descriptor(descriptor: int, content: bytes) -> str:
+    view = memoryview(content)
+    offset = 0
+    while offset < len(view):
+        count = os.write(descriptor, view[offset:])
+        if count <= 0:
+            raise GitError("index object pack write made no progress")
+        offset += count
+    os.fsync(descriptor)
+    return hashlib.sha256(content).hexdigest()
+
+
+def _hash_pack_descriptor(descriptor: int, byte_length: int) -> str:
+    digest = hashlib.sha256()
+    offset = 0
+    while offset < byte_length:
+        content = os.pread(descriptor, min(1024 * 1024, byte_length - offset), offset)
+        if not content:
+            raise GitError("index object pack is truncated")
+        digest.update(content)
+        offset += len(content)
+    if os.pread(descriptor, 1, byte_length):
+        raise GitError("index object pack grew during verification")
+    return digest.hexdigest()
+
+
+def _validate_pinned_pack(
+    path: Path,
+    descriptor: int,
+    *,
+    byte_length: int,
+    sha256: str,
+    limits: IndexObjectPackLimits,
+) -> tuple[int, int]:
+    if not path.is_absolute() or type(descriptor) is not int or descriptor < 0:
+        raise ValueError("index object pack path and descriptor are invalid")
+    if type(byte_length) is not int or not 0 < byte_length <= limits.max_pack_bytes:
+        raise GitError("index object pack exceeded byte limit")
+    if not re.fullmatch(r"[0-9a-f]{64}", sha256):
+        raise ValueError("index object pack digest is invalid")
+    opened = os.fstat(descriptor)
+    named = os.stat(path, follow_symlinks=False)
+    if (
+        not stat.S_ISREG(opened.st_mode)
+        or not stat.S_ISREG(named.st_mode)
+        or (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino)
+        or opened.st_uid != os.geteuid()
+        or opened.st_gid != os.getegid()
+        or named.st_uid != os.geteuid()
+        or named.st_gid != os.getegid()
+        or stat.S_IMODE(opened.st_mode) != 0o600
+        or stat.S_IMODE(named.st_mode) != 0o600
+        or opened.st_nlink != 1
+        or named.st_nlink != 1
+        or opened.st_size != byte_length
+        or named.st_size != byte_length
+        or _hash_pack_descriptor(descriptor, byte_length) != sha256
+    ):
+        raise GitError("index object pack is not an exact private regular file")
+    return opened.st_dev, opened.st_ino
+
+
+def _pack_object_count_from_descriptor(
+    descriptor: int,
+    *,
+    byte_length: int,
+    object_format: Literal["sha1", "sha256"],
+    limits: IndexObjectPackLimits,
+) -> int:
+    digest_length = 20 if object_format == "sha1" else 32
+    header = os.pread(descriptor, 12, 0)
+    if byte_length < 12 + digest_length or len(header) != 12 or header[:4] != b"PACK":
+        raise GitError("index object pack header is invalid")
+    version = int.from_bytes(header[4:8], "big")
+    if version not in (2, 3):
+        raise GitError("index object pack version is unsupported")
+    object_count = int.from_bytes(header[8:12], "big")
+    if object_count > limits.max_objects:
+        raise GitError("index object pack count exceeded limit")
+    return object_count
+
+
+async def verify_index_object_pack_file(
+    path: str | Path,
+    descriptor: int,
     *,
     object_format: Literal["sha1", "sha256"],
     expected_oids: Sequence[str],
+    byte_length: int,
+    sha256: str,
     limits: IndexObjectPackLimits = DEFAULT_INDEX_OBJECT_PACK_LIMITS,
 ) -> VerifiedIndexObjectPack:
-    """Verify untrusted supplemental pack bytes in an empty bare repository."""
-    if type(content) is not bytes:
-        raise TypeError("content must be bytes")
+    """Verify one descriptor-pinned pack through file-backed Git input."""
     validated_format = _validate_object_format(object_format)
     expected = _validate_oids(expected_oids, object_format=validated_format, limits=limits)
-    object_count = _check_pack_header(content, object_format=validated_format, limits=limits)
+    pack_path = Path(path)
+    identity = await _run_blocking(
+        _validate_pinned_pack,
+        pack_path,
+        descriptor,
+        byte_length=byte_length,
+        sha256=sha256,
+        limits=limits,
+    )
+    object_count = await _run_blocking(
+        _pack_object_count_from_descriptor,
+        descriptor,
+        byte_length=byte_length,
+        object_format=validated_format,
+        limits=limits,
+    )
     if object_count != len(expected):
         raise GitError("index object pack inventory count differs from expectation")
     with tempfile.TemporaryDirectory(prefix="yinshi-index-pack-") as directory:
@@ -210,11 +309,12 @@ async def verify_index_object_pack(
             env=_GIT_ENV,
             stdout_bytes_max=limits.max_listing_bytes,
         )
+        os.lseek(descriptor, 0, os.SEEK_SET)
         await run_git_bytes(
             ["index-pack", "--strict", "--stdin"],
             cwd=str(repository),
             env=_GIT_ENV,
-            stdin_bytes=content,
+            stdin_descriptor=descriptor,
             stdout_bytes_max=128,
         )
         inventory_raw = await run_git_bytes(
@@ -234,12 +334,63 @@ async def verify_index_object_pack(
         )
     if tuple(item.object_id for item in objects) != expected:
         raise GitError("index object pack inventory differs from expectation")
+    if (
+        await _run_blocking(
+            _validate_pinned_pack,
+            pack_path,
+            descriptor,
+            byte_length=byte_length,
+            sha256=sha256,
+            limits=limits,
+        )
+        != identity
+    ):
+        raise GitError("index object pack changed during verification")
     return VerifiedIndexObjectPack(
         object_format=validated_format,
-        sha256=hashlib.sha256(content).hexdigest(),
-        byte_length=len(content),
+        sha256=sha256,
+        byte_length=byte_length,
         objects=objects,
     )
+
+
+async def verify_index_object_pack(
+    content: bytes,
+    *,
+    object_format: Literal["sha1", "sha256"],
+    expected_oids: Sequence[str],
+    limits: IndexObjectPackLimits = DEFAULT_INDEX_OBJECT_PACK_LIMITS,
+) -> VerifiedIndexObjectPack:
+    """Verify untrusted supplemental pack bytes in an empty bare repository."""
+    if type(content) is not bytes:
+        raise TypeError("content must be bytes")
+    validated_format = _validate_object_format(object_format)
+    _check_pack_header(content, object_format=validated_format, limits=limits)
+    with tempfile.TemporaryDirectory(prefix="yinshi-index-pack-input-") as directory:
+        os.chmod(directory, 0o700)
+        path = Path(directory) / "index-objects.pack"
+        descriptor = os.open(
+            path,
+            os.O_RDWR
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+        try:
+            sha256 = await _run_blocking(_write_pack_descriptor, descriptor, content)
+            return await verify_index_object_pack_file(
+                path,
+                descriptor,
+                object_format=validated_format,
+                expected_oids=expected_oids,
+                byte_length=len(content),
+                sha256=sha256,
+                limits=limits,
+            )
+        finally:
+            os.close(descriptor)
 
 
 async def create_index_object_pack(

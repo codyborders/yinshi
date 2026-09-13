@@ -8,10 +8,18 @@ import json
 import os
 import re
 import stat
+import tempfile
+from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Final, Literal
 
+from yinshi.services.broker_artifact_store import (
+    BrokerArtifactStoreRejectedError,
+    BrokerArtifactStoreUnresolvedError,
+    OpenedArtifact,
+    OpenedReplicaArtifacts,
+)
 from yinshi.services.replica_artifact_contract import (
     REPLICA_ARTIFACT_FILENAMES,
     REPLICA_ARTIFACT_MEDIA_TYPES,
@@ -30,17 +38,23 @@ from yinshi.services.workspace_publication import (
 from yinshi.services.workspace_replica_artifact import (
     DEFAULT_ARTIFACT_LIMITS,
     ArtifactLimits,
+    VerifiedWorktreeArtifact,
     decode_worktree_artifact,
 )
 from yinshi.services.workspace_replica_bundle import (
     DEFAULT_BUNDLE_LIMITS,
     BundleLimits,
+    VerifiedCommittedBundle,
+    _run_blocking,
     verify_committed_bundle,
+    verify_committed_bundle_file,
 )
 from yinshi.services.workspace_replica_object_pack import (
     DEFAULT_INDEX_OBJECT_PACK_LIMITS,
     IndexObjectPackLimits,
+    VerifiedIndexObjectPack,
     verify_index_object_pack,
+    verify_index_object_pack_file,
 )
 
 _SHA256_PATTERN: Final[re.Pattern[str]] = re.compile(r"[0-9a-f]{64}\Z")
@@ -311,32 +325,25 @@ def _match_content(binding: ReplicaArtifactBinding, content: object) -> bytes:
     return content
 
 
+def _decode_declared_worktree(
+    declaration: ReplicaArtifactSetDeclaration,
+    worktree_bytes: bytes,
+) -> VerifiedWorktreeArtifact:
+    return decode_worktree_artifact(
+        _match_content(declaration.worktree, worktree_bytes),
+        limits=declaration.limits.worktree,
+    )
+
+
 def _inventory_digest(items: object) -> str:
     return _domain_digest(b"yinshi-replica-inventory-v1", items)
 
 
-async def _verify_artifact_set(
+def _missing_index_objects(
     declaration: ReplicaArtifactSetDeclaration,
-    bundle_bytes: bytes,
-    worktree_bytes: bytes,
-    index_object_bytes: bytes,
-    ceilings: ReplicaStoreLimits,
-) -> ReplicaVerificationReceipt:
-    declaration = _validate_declaration(declaration, ceilings)
-    bundle_bytes = _match_content(declaration.bundle, bundle_bytes)
-    worktree_bytes = _match_content(declaration.worktree, worktree_bytes)
-    index_object_bytes = _match_content(declaration.index_objects, index_object_bytes)
-    try:
-        worktree = decode_worktree_artifact(worktree_bytes, limits=declaration.limits.worktree)
-        bundle = await verify_committed_bundle(
-            bundle_bytes,
-            object_format=declaration.object_format,
-            limits=declaration.limits.bundle,
-        )
-    except asyncio.CancelledError:
-        raise
-    except Exception as error:
-        raise ReplicaPublicationRejectedError("artifact verification failed") from error
+    worktree: VerifiedWorktreeArtifact,
+    bundle: VerifiedCommittedBundle,
+) -> tuple[str, ...]:
     if worktree.object_format != declaration.object_format:
         raise ReplicaPublicationRejectedError("worktree object format differs from declaration")
     if worktree.source_state_sha256.hex() != declaration.source_state_sha256:
@@ -353,18 +360,14 @@ async def _verify_artifact_set(
         bundled = bundled_by_id.get(object_id)
         if bundled is not None and bundled.kind != "blob":
             raise ReplicaPublicationRejectedError("index object in bundle is not a blob")
-    missing = tuple(sorted(index_oids - set(bundled_by_id)))
-    try:
-        index_pack = await verify_index_object_pack(
-            index_object_bytes,
-            object_format=declaration.object_format,
-            expected_oids=missing,
-            limits=declaration.limits.index_objects,
-        )
-    except asyncio.CancelledError:
-        raise
-    except Exception as error:
-        raise ReplicaPublicationRejectedError("index object verification failed") from error
+    return tuple(sorted(index_oids - set(bundled_by_id)))
+
+
+def _verification_receipt(
+    declaration: ReplicaArtifactSetDeclaration,
+    bundle: VerifiedCommittedBundle,
+    index_pack: VerifiedIndexObjectPack,
+) -> ReplicaVerificationReceipt:
     refs_value = [asdict(item) for item in bundle.refs]
     bundle_inventory = [asdict(item) for item in bundle.objects]
     index_inventory = [asdict(item) for item in index_pack.objects]
@@ -414,6 +417,40 @@ async def _verify_artifact_set(
         bundle_inventory_sha256=bundle_inventory_sha256,
         index_inventory_sha256=index_inventory_sha256,
     )
+
+
+async def _verify_artifact_set(
+    declaration: ReplicaArtifactSetDeclaration,
+    bundle_bytes: bytes,
+    worktree_bytes: bytes,
+    index_object_bytes: bytes,
+    ceilings: ReplicaStoreLimits,
+) -> ReplicaVerificationReceipt:
+    declaration = _validate_declaration(declaration, ceilings)
+    bundle_bytes = _match_content(declaration.bundle, bundle_bytes)
+    worktree_bytes = _match_content(declaration.worktree, worktree_bytes)
+    index_object_bytes = _match_content(declaration.index_objects, index_object_bytes)
+    try:
+        worktree = decode_worktree_artifact(worktree_bytes, limits=declaration.limits.worktree)
+        bundle = await verify_committed_bundle(
+            bundle_bytes,
+            object_format=declaration.object_format,
+            limits=declaration.limits.bundle,
+        )
+        missing = _missing_index_objects(declaration, worktree, bundle)
+        index_pack = await verify_index_object_pack(
+            index_object_bytes,
+            object_format=declaration.object_format,
+            expected_oids=missing,
+            limits=declaration.limits.index_objects,
+        )
+    except asyncio.CancelledError:
+        raise
+    except ReplicaPublicationRejectedError:
+        raise
+    except Exception as error:
+        raise ReplicaPublicationRejectedError("artifact verification failed") from error
+    return _verification_receipt(declaration, bundle, index_pack)
 
 
 def _root_identity(root: Path, expected_uid: int, expected_gid: int) -> tuple[int, str]:
@@ -474,6 +511,81 @@ def _write_regular(parent: int, name: str, content: bytes) -> tuple[int, int]:
         os.close(descriptor)
 
 
+def _create_descriptor_target(parent: int, name: str) -> tuple[int, tuple[int, int]]:
+    descriptor = os.open(
+        name,
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_EXCL
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0),
+        0o600,
+        dir_fd=parent,
+    )
+    try:
+        value = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(value.st_mode)
+            or value.st_nlink != 1
+            or value.st_size != 0
+            or stat.S_IMODE(value.st_mode) != 0o600
+        ):
+            raise OSError("artifact target mode or link count is invalid")
+        return descriptor, (value.st_dev, value.st_ino)
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _copy_descriptor_regular(
+    descriptor: int,
+    source: int,
+    byte_length: int,
+    sha256: str,
+) -> None:
+    digest = hashlib.sha256()
+    offset = 0
+    while offset < byte_length:
+        content = os.pread(source, min(64 * 1024, byte_length - offset), offset)
+        if not content:
+            raise ReplicaPublicationRejectedError("source artifact is truncated")
+        digest.update(content)
+        view = memoryview(content)
+        written = 0
+        while written < len(view):
+            count = os.write(descriptor, view[written:])
+            if count <= 0:
+                raise OSError("artifact write did not make progress")
+            written += count
+        offset += len(content)
+    if os.pread(source, 1, byte_length) or digest.hexdigest() != sha256:
+        raise ReplicaPublicationRejectedError("source artifact digest changed")
+    os.fsync(descriptor)
+    value = os.fstat(descriptor)
+    if (
+        not stat.S_ISREG(value.st_mode)
+        or value.st_nlink != 1
+        or value.st_size != byte_length
+        or stat.S_IMODE(value.st_mode) != 0o600
+    ):
+        raise OSError("artifact file mode, length, or link count is invalid")
+
+
+def _write_descriptor_regular(
+    parent: int,
+    name: str,
+    source: int,
+    byte_length: int,
+    sha256: str,
+) -> tuple[int, int]:
+    descriptor, identity = _create_descriptor_target(parent, name)
+    try:
+        _copy_descriptor_regular(descriptor, source, byte_length, sha256)
+        return identity
+    finally:
+        os.close(descriptor)
+
+
 @dataclass(frozen=True)
 class _PinnedRegular:
     descriptor: int
@@ -481,22 +593,35 @@ class _PinnedRegular:
     device: int
     inode: int
     byte_length: int
-    content: bytes
+    sha256: str
 
 
 def _read_descriptor(descriptor: int, byte_length: int) -> bytes:
-    os.lseek(descriptor, 0, os.SEEK_SET)
     chunks: list[bytes] = []
-    remaining = byte_length
-    while remaining:
-        chunk = os.read(descriptor, min(1024 * 1024, remaining))
+    offset = 0
+    while offset < byte_length:
+        chunk = os.pread(descriptor, min(1024 * 1024, byte_length - offset), offset)
         if not chunk:
             raise ReplicaPublicationRejectedError("published artifact is truncated")
         chunks.append(chunk)
-        remaining -= len(chunk)
-    if os.read(descriptor, 1):
+        offset += len(chunk)
+    if os.pread(descriptor, 1, byte_length):
         raise ReplicaPublicationRejectedError("published artifact grew during inspection")
     return b"".join(chunks)
+
+
+def _hash_descriptor(descriptor: int, byte_length: int) -> str:
+    digest = hashlib.sha256()
+    offset = 0
+    while offset < byte_length:
+        chunk = os.pread(descriptor, min(1024 * 1024, byte_length - offset), offset)
+        if not chunk:
+            raise ReplicaPublicationRejectedError("published artifact is truncated")
+        digest.update(chunk)
+        offset += len(chunk)
+    if os.pread(descriptor, 1, byte_length):
+        raise ReplicaPublicationRejectedError("published artifact grew during inspection")
+    return digest.hexdigest()
 
 
 def _open_pinned_regular(
@@ -531,14 +656,13 @@ def _open_pinned_regular(
             or (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino)
         ):
             raise ReplicaPublicationRejectedError("published artifact storage is invalid")
-        content = _read_descriptor(descriptor, opened.st_size)
         return _PinnedRegular(
             descriptor=descriptor,
             name=name,
             device=opened.st_dev,
             inode=opened.st_ino,
             byte_length=opened.st_size,
-            content=content,
+            sha256=_hash_descriptor(descriptor, opened.st_size),
         )
     except BaseException:
         os.close(descriptor)
@@ -567,9 +691,137 @@ def _recheck_pinned_regular(
         or named.st_gid != expected_gid
         or opened.st_nlink != 1
         or named.st_nlink != 1
-        or _read_descriptor(pinned.descriptor, pinned.byte_length) != pinned.content
+        or _hash_descriptor(pinned.descriptor, pinned.byte_length) != pinned.sha256
     ):
         raise ReplicaPublicationRejectedError("published artifact changed during verification")
+
+
+def _open_pinned_files(
+    parent: int,
+    maxima: dict[str, int],
+    expected_uid: int,
+    expected_gid: int,
+) -> list[_PinnedRegular]:
+    pins: list[_PinnedRegular] = []
+    try:
+        for name, maximum in maxima.items():
+            pins.append(
+                _open_pinned_regular(
+                    parent,
+                    name,
+                    maximum,
+                    expected_uid,
+                    expected_gid,
+                )
+            )
+        return pins
+    except BaseException:
+        for pinned in pins:
+            os.close(pinned.descriptor)
+        raise
+
+
+async def _open_pinned_files_drained(
+    parent: int,
+    maxima: dict[str, int],
+    expected_uid: int,
+    expected_gid: int,
+) -> list[_PinnedRegular]:
+    task = asyncio.create_task(
+        asyncio.to_thread(
+            _open_pinned_files,
+            parent,
+            maxima,
+            expected_uid,
+            expected_gid,
+        )
+    )
+    cancellation: asyncio.CancelledError | None = None
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError as error:
+            cancellation = error
+    pins = task.result()
+    if cancellation is not None:
+        for pinned in pins:
+            os.close(pinned.descriptor)
+        raise cancellation
+    return pins
+
+
+def _recheck_pinned_files(
+    parent: int,
+    pins: list[_PinnedRegular],
+    expected_uid: int,
+    expected_gid: int,
+) -> None:
+    for pinned in pins:
+        _recheck_pinned_regular(parent, pinned, expected_uid, expected_gid)
+
+
+def _opened_binding_matches(
+    binding: ReplicaArtifactBinding,
+    artifact: OpenedArtifact,
+) -> bool:
+    reference = artifact.reference
+    return (
+        reference.artifact_id == binding.artifact_id
+        and reference.sha256 == binding.sha256
+        and reference.byte_length == binding.byte_length
+    )
+
+
+def _recheck_opened_descriptors(
+    declaration: ReplicaArtifactSetDeclaration,
+    opened: OpenedReplicaArtifacts,
+    expected_uid: int,
+    expected_gid: int,
+) -> None:
+    if (
+        type(opened) is not OpenedReplicaArtifacts
+        or opened.operation_id != declaration.operation_id
+    ):
+        raise ReplicaPublicationRejectedError("opened artifact set identity is invalid")
+    entries = (
+        (_BUNDLE_FILE, declaration.bundle, opened.bundle),
+        (_WORKTREE_FILE, declaration.worktree, opened.worktree),
+        (_INDEX_OBJECTS_FILE, declaration.index_objects, opened.index_objects),
+    )
+    directory = os.fstat(opened.directory_descriptor)
+    if (
+        not stat.S_ISDIR(directory.st_mode)
+        or directory.st_uid != expected_uid
+        or directory.st_gid != expected_gid
+        or stat.S_IMODE(directory.st_mode) != 0o700
+        or not _has_exact_entries(
+            opened.directory_descriptor,
+            frozenset(REPLICA_ARTIFACT_FILENAMES.values()),
+        )
+    ):
+        raise ReplicaPublicationRejectedError("opened artifact directory changed")
+    for name, binding, artifact in entries:
+        current = os.fstat(artifact.descriptor)
+        named = os.stat(name, dir_fd=opened.directory_descriptor, follow_symlinks=False)
+        if (
+            not _opened_binding_matches(binding, artifact)
+            or not stat.S_ISREG(current.st_mode)
+            or not stat.S_ISREG(named.st_mode)
+            or (current.st_dev, current.st_ino) != (artifact.device, artifact.inode)
+            or (named.st_dev, named.st_ino) != (artifact.device, artifact.inode)
+            or current.st_uid != expected_uid
+            or current.st_gid != expected_gid
+            or named.st_uid != expected_uid
+            or named.st_gid != expected_gid
+            or stat.S_IMODE(current.st_mode) != 0o600
+            or stat.S_IMODE(named.st_mode) != 0o600
+            or current.st_nlink != 1
+            or named.st_nlink != 1
+            or current.st_size != binding.byte_length
+            or named.st_size != binding.byte_length
+            or _hash_descriptor(artifact.descriptor, binding.byte_length) != binding.sha256
+        ):
+            raise ReplicaPublicationRejectedError("opened artifact changed")
 
 
 def _directory_identity(descriptor: int) -> str:
@@ -615,6 +867,164 @@ class WorkspaceReplicaPublicationStore:
         """Return the exact immutable limit profile accepted by this store."""
         return self._limits_sha256
 
+    @property
+    def limits(self) -> ReplicaStoreLimits:
+        """Return the immutable configured publication limit profile."""
+        return self._ceilings
+
+    async def _verify_pinned_semantics(
+        self,
+        declaration: ReplicaArtifactSetDeclaration,
+        *,
+        bundle_descriptor: int,
+        worktree_descriptor: int,
+        index_objects_descriptor: int,
+    ) -> ReplicaVerificationReceipt:
+        """Verify exact descriptor sources through private file-backed Git inputs."""
+        with tempfile.TemporaryDirectory(prefix="yinshi-replica-pinned-") as directory:
+            os.chmod(directory, 0o700)
+            root = Path(directory)
+            root_descriptor = os.open(
+                root,
+                os.O_RDONLY
+                | getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
+            )
+            try:
+                await _run_blocking(
+                    _write_descriptor_regular,
+                    root_descriptor,
+                    _BUNDLE_FILE,
+                    bundle_descriptor,
+                    declaration.bundle.byte_length,
+                    declaration.bundle.sha256,
+                )
+                await _run_blocking(
+                    _write_descriptor_regular,
+                    root_descriptor,
+                    _INDEX_OBJECTS_FILE,
+                    index_objects_descriptor,
+                    declaration.index_objects.byte_length,
+                    declaration.index_objects.sha256,
+                )
+                worktree_bytes = await _run_blocking(
+                    _read_descriptor,
+                    worktree_descriptor,
+                    declaration.worktree.byte_length,
+                )
+            finally:
+                os.close(root_descriptor)
+            bundle_path = root / _BUNDLE_FILE
+            index_path = root / _INDEX_OBJECTS_FILE
+            bundle_copy = os.open(
+                bundle_path,
+                os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
+            )
+            try:
+                index_copy = os.open(
+                    index_path,
+                    os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
+                )
+                try:
+                    worktree = await _run_blocking(
+                        _decode_declared_worktree,
+                        declaration,
+                        worktree_bytes,
+                    )
+                    bundle = await verify_committed_bundle_file(
+                        bundle_path,
+                        bundle_copy,
+                        object_format=declaration.object_format,
+                        byte_length=declaration.bundle.byte_length,
+                        sha256=declaration.bundle.sha256,
+                        limits=declaration.limits.bundle,
+                    )
+                    missing = _missing_index_objects(declaration, worktree, bundle)
+                    index_pack = await verify_index_object_pack_file(
+                        index_path,
+                        index_copy,
+                        object_format=declaration.object_format,
+                        expected_oids=missing,
+                        byte_length=declaration.index_objects.byte_length,
+                        sha256=declaration.index_objects.sha256,
+                        limits=declaration.limits.index_objects,
+                    )
+                finally:
+                    os.close(index_copy)
+            finally:
+                os.close(bundle_copy)
+        return _verification_receipt(declaration, bundle, index_pack)
+
+    async def _verify_opened_semantics(
+        self,
+        declaration: ReplicaArtifactSetDeclaration,
+        opened: OpenedReplicaArtifacts,
+    ) -> ReplicaVerificationReceipt:
+        return await self._verify_pinned_semantics(
+            declaration,
+            bundle_descriptor=opened.bundle.descriptor,
+            worktree_descriptor=opened.worktree.descriptor,
+            index_objects_descriptor=opened.index_objects.descriptor,
+        )
+
+    async def _recheck_opened_source(
+        self,
+        opened: OpenedReplicaArtifacts,
+        recheck_source: Callable[[OpenedReplicaArtifacts], Awaitable[None]],
+    ) -> None:
+        try:
+            await recheck_source(opened)
+        except asyncio.CancelledError:
+            raise
+        except BrokerArtifactStoreRejectedError as error:
+            raise ReplicaPublicationRejectedError("opened artifact source changed") from error
+        except BrokerArtifactStoreUnresolvedError as error:
+            raise ReplicaPublicationUnresolvedError(
+                "opened artifact source is unresolved"
+            ) from error
+        except Exception as error:
+            raise ReplicaPublicationUnresolvedError(
+                "opened artifact source recheck failed"
+            ) from error
+
+    async def verify_opened_artifact_set(
+        self,
+        declaration: ReplicaArtifactSetDeclaration,
+        opened: OpenedReplicaArtifacts,
+        *,
+        recheck_source: Callable[[OpenedReplicaArtifacts], Awaitable[None]],
+    ) -> ReplicaVerificationReceipt:
+        """Verify descriptor-pinned incoming artifacts and recheck their owner."""
+        declaration = _validate_declaration(declaration, self._ceilings)
+        if not callable(recheck_source):
+            raise TypeError("recheck_source must be callable")
+        await self._recheck_opened_source(opened, recheck_source)
+        await _run_blocking(
+            _recheck_opened_descriptors,
+            declaration,
+            opened,
+            self._expected_uid,
+            self._expected_gid,
+        )
+        try:
+            receipt = await self._verify_opened_semantics(declaration, opened)
+        except asyncio.CancelledError:
+            raise
+        except ReplicaPublicationRejectedError:
+            raise
+        except Exception as error:
+            raise ReplicaPublicationRejectedError("artifact verification failed") from error
+        await self._recheck_opened_source(opened, recheck_source)
+        await _run_blocking(
+            _recheck_opened_descriptors,
+            declaration,
+            opened,
+            self._expected_uid,
+            self._expected_gid,
+        )
+        return receipt
+
     async def verify_artifact_set(
         self,
         declaration: ReplicaArtifactSetDeclaration,
@@ -635,7 +1045,7 @@ class WorkspaceReplicaPublicationStore:
         self,
         parent: int,
         pending_name: str,
-        expected: dict[str, bytes],
+        expected: dict[str, tuple[int, str]],
     ) -> tuple[str, dict[str, tuple[int, int]]]:
         child = os.open(
             pending_name,
@@ -655,16 +1065,16 @@ class WorkspaceReplicaPublicationStore:
                 or not _has_exact_entries(child, _EXPECTED_FILES)
             ):
                 raise ReplicaPublicationRejectedError("publication stage directory is invalid")
-            for name, content in expected.items():
+            for name, (byte_length, sha256) in expected.items():
                 pinned = _open_pinned_regular(
                     child,
                     name,
-                    len(content),
+                    byte_length,
                     self._expected_uid,
                     self._expected_gid,
                 )
                 pins.append(pinned)
-                if pinned.content != content:
+                if pinned.byte_length != byte_length or pinned.sha256 != sha256:
                     raise ReplicaPublicationRejectedError("publication stage content changed")
             for pinned in pins:
                 _recheck_pinned_regular(
@@ -821,14 +1231,84 @@ class WorkspaceReplicaPublicationStore:
         worktree_bytes: bytes,
         index_object_bytes: bytes,
     ) -> ReplicaPublicationReceipt:
-        """Verify, sync, and publish one set through one no-replace rename."""
+        """Verify, sync, and publish one in-memory set through one rename."""
         verification = await self.verify_artifact_set(
             declaration,
             bundle_bytes,
             worktree_bytes,
             index_object_bytes,
         )
+        return await self._publish_verified_sources(
+            declaration,
+            verification,
+            byte_sources={
+                _BUNDLE_FILE: bundle_bytes,
+                _WORKTREE_FILE: worktree_bytes,
+                _INDEX_OBJECTS_FILE: index_object_bytes,
+            },
+            descriptor_sources={},
+        )
+
+    async def publish_opened_artifact_set(
+        self,
+        declaration: ReplicaArtifactSetDeclaration,
+        opened: OpenedReplicaArtifacts,
+        *,
+        recheck_source: Callable[[OpenedReplicaArtifacts], Awaitable[None]],
+        expected_verification: ReplicaVerificationReceipt | None = None,
+    ) -> ReplicaPublicationReceipt:
+        """Verify and stream one descriptor-pinned set through one rename."""
+        verification = await self.verify_opened_artifact_set(
+            declaration,
+            opened,
+            recheck_source=recheck_source,
+        )
+        if expected_verification is not None and verification != expected_verification:
+            raise ReplicaPublicationRejectedError("source verification receipt changed")
+        return await self._publish_verified_sources(
+            declaration,
+            verification,
+            byte_sources={},
+            descriptor_sources={
+                _BUNDLE_FILE: (
+                    opened.bundle.descriptor,
+                    declaration.bundle.byte_length,
+                    declaration.bundle.sha256,
+                ),
+                _WORKTREE_FILE: (
+                    opened.worktree.descriptor,
+                    declaration.worktree.byte_length,
+                    declaration.worktree.sha256,
+                ),
+                _INDEX_OBJECTS_FILE: (
+                    opened.index_objects.descriptor,
+                    declaration.index_objects.byte_length,
+                    declaration.index_objects.sha256,
+                ),
+            },
+            opened=opened,
+            recheck_source=recheck_source,
+        )
+
+    async def _publish_verified_sources(
+        self,
+        declaration: ReplicaArtifactSetDeclaration,
+        verification: ReplicaVerificationReceipt,
+        *,
+        byte_sources: dict[str, bytes],
+        descriptor_sources: dict[str, tuple[int, int, str]],
+        opened: OpenedReplicaArtifacts | None = None,
+        recheck_source: Callable[[OpenedReplicaArtifacts], Awaitable[None]] | None = None,
+    ) -> ReplicaPublicationReceipt:
         declaration = _validate_declaration(declaration, self._ceilings)
+        if bool(opened is None) != bool(recheck_source is None):
+            raise TypeError("opened source and recheck callback must be supplied together")
+        if set(byte_sources) | set(descriptor_sources) != {
+            _BUNDLE_FILE,
+            _WORKTREE_FILE,
+            _INDEX_OBJECTS_FILE,
+        } or set(byte_sources) & set(descriptor_sources):
+            raise TypeError("publication sources must contain exactly three distinct roles")
         try:
             require_atomic_no_replace_support()
         except WorkspacePublicationError as error:
@@ -860,12 +1340,17 @@ class WorkspaceReplicaPublicationStore:
             marker = _canonical_json(
                 {"declaration": asdict(declaration), "verification": asdict(verification)}
             )
+            expected_content = {**byte_sources, "artifact-set.json": marker}
             expected = {
-                _BUNDLE_FILE: bundle_bytes,
-                _WORKTREE_FILE: worktree_bytes,
-                _INDEX_OBJECTS_FILE: index_object_bytes,
-                "artifact-set.json": marker,
+                name: (len(content), hashlib.sha256(content).hexdigest())
+                for name, content in expected_content.items()
             }
+            expected.update(
+                {
+                    name: (byte_length, sha256)
+                    for name, (_descriptor, byte_length, sha256) in descriptor_sources.items()
+                }
+            )
             try:
                 pending_descriptor = os.open(
                     pending_name,
@@ -877,22 +1362,45 @@ class WorkspaceReplicaPublicationStore:
                 )
                 try:
                     pending_identity = _directory_identity(pending_descriptor)
-                    for name, content in expected.items():
+                    for name, content in expected_content.items():
                         file_identities[name] = _write_regular(
                             pending_descriptor,
                             name,
                             content,
                         )
+                    for name, (source, byte_length, sha256) in descriptor_sources.items():
+                        target, identity = _create_descriptor_target(pending_descriptor, name)
+                        file_identities[name] = identity
+                        try:
+                            await _run_blocking(
+                                _copy_descriptor_regular,
+                                target,
+                                source,
+                                byte_length,
+                                sha256,
+                            )
+                        finally:
+                            os.close(target)
                     os.fsync(pending_descriptor)
                 finally:
                     os.close(pending_descriptor)
-                inspected_identity, inspected_files = self._inspect_pending(
+                inspected_identity, inspected_files = await _run_blocking(
+                    self._inspect_pending,
                     root_descriptor,
                     pending_name,
                     expected,
                 )
                 if inspected_identity != pending_identity or inspected_files != file_identities:
                     raise ReplicaPublicationRejectedError("publication stage identities changed")
+                if opened is not None and recheck_source is not None:
+                    await self._recheck_opened_source(opened, recheck_source)
+                    await _run_blocking(
+                        _recheck_opened_descriptors,
+                        declaration,
+                        opened,
+                        self._expected_uid,
+                        self._expected_gid,
+                    )
             except BaseException as error:
                 if pending_identity is None:
                     raise ReplicaPublicationUnresolvedError(
@@ -1041,23 +1549,33 @@ class WorkspaceReplicaPublicationStore:
                     _INDEX_OBJECTS_FILE: declaration.index_objects.byte_length,
                     "artifact-set.json": 1024 * 1024,
                 }
-                for name, maximum in maxima.items():
-                    pins.append(
-                        _open_pinned_regular(
-                            final_descriptor,
-                            name,
-                            maximum,
-                            self._expected_uid,
-                            self._expected_gid,
-                        )
-                    )
-                content = {pinned.name: pinned.content for pinned in pins}
-                verification = await self.verify_artifact_set(
-                    declaration,
-                    content[_BUNDLE_FILE],
-                    content[_WORKTREE_FILE],
-                    content[_INDEX_OBJECTS_FILE],
+                pins = await _open_pinned_files_drained(
+                    final_descriptor,
+                    maxima,
+                    self._expected_uid,
+                    self._expected_gid,
                 )
+                pinned_by_name = {pinned.name: pinned for pinned in pins}
+                marker = await _run_blocking(
+                    _read_descriptor,
+                    pinned_by_name["artifact-set.json"].descriptor,
+                    pinned_by_name["artifact-set.json"].byte_length,
+                )
+                try:
+                    verification = await self._verify_pinned_semantics(
+                        declaration,
+                        bundle_descriptor=pinned_by_name[_BUNDLE_FILE].descriptor,
+                        worktree_descriptor=pinned_by_name[_WORKTREE_FILE].descriptor,
+                        index_objects_descriptor=pinned_by_name[_INDEX_OBJECTS_FILE].descriptor,
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except ReplicaPublicationRejectedError:
+                    raise
+                except Exception as error:
+                    raise ReplicaPublicationRejectedError(
+                        "published artifact verification failed"
+                    ) from error
                 if expected_verification is not None and verification != expected_verification:
                     raise ReplicaPublicationRejectedError("published verification receipt changed")
                 expected_marker = _canonical_json(
@@ -1066,7 +1584,6 @@ class WorkspaceReplicaPublicationStore:
                         "verification": asdict(verification),
                     }
                 )
-                marker = content["artifact-set.json"]
                 if marker != expected_marker:
                     raise ReplicaPublicationRejectedError(
                         "publication marker differs from artifact set"
@@ -1105,13 +1622,13 @@ class WorkspaceReplicaPublicationStore:
                     raise ReplicaPublicationRejectedError(
                         "published artifact set changed during verification"
                     )
-                for pinned in pins:
-                    _recheck_pinned_regular(
-                        final_descriptor,
-                        pinned,
-                        self._expected_uid,
-                        self._expected_gid,
-                    )
+                await _run_blocking(
+                    _recheck_pinned_files,
+                    final_descriptor,
+                    pins,
+                    self._expected_uid,
+                    self._expected_gid,
+                )
             finally:
                 for pinned in pins:
                     os.close(pinned.descriptor)

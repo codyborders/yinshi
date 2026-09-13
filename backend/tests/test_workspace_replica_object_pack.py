@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import subprocess
+import threading
+import time
 from dataclasses import replace
 from pathlib import Path
 
@@ -43,6 +46,48 @@ def repository(tmp_path: Path, object_format: str) -> Path:
     git(path, "add", "file.txt")
     git(path, "commit", "-qm", "initial")
     return path
+
+
+@pytest.mark.asyncio
+async def test_byte_pack_write_does_not_block_event_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from yinshi.services import workspace_replica_object_pack as module
+
+    header = b"PACK\x00\x00\x00\x02\x00\x00\x00\x00"
+    content = header + hashlib.sha1(header).digest()
+    real_write = os.write
+    release = threading.Event()
+    calls = 0
+
+    def paused_write(descriptor: int, value: bytes | memoryview) -> int:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            release.wait(timeout=1)
+        return real_write(descriptor, value)
+
+    monkeypatch.setattr(module.os, "write", paused_write)
+    timer = threading.Timer(0.25, release.set)
+    timer.start()
+    started = time.monotonic()
+    task = asyncio.create_task(
+        verify_index_object_pack(
+            content,
+            object_format="sha1",
+            expected_oids=(),
+        )
+    )
+    await asyncio.sleep(0)
+    heartbeat_delay = time.monotonic() - started
+    try:
+        verified = await task
+    finally:
+        release.set()
+        timer.cancel()
+
+    assert heartbeat_delay < 0.1
+    assert verified.objects == ()
 
 
 @pytest.mark.asyncio
