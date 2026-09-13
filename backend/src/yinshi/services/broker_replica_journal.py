@@ -15,7 +15,10 @@ from pathlib import Path
 from typing import cast
 
 from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+    Ed25519PrivateKey,
+    Ed25519PublicKey,
+)
 
 from yinshi.services.broker_protocol import (
     BROKER_FRAME_BYTES_MAX,
@@ -41,6 +44,7 @@ ARTIFACT_BYTES_MAX = 8 * 1024 * 1024 * 1024
 RECEIPT_JSON_BYTES_MAX = 2_048
 _APPLICATION_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _TOKEN_PATTERN = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
+_ERROR_CODE_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _DIGEST_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _APPEND_RECEIPT_PATTERN = re.compile(r"^[0-9a-f]{32}$")
 _JOURNAL_ID_PATTERN = re.compile(r"^[0-9a-f]{32}_[0-9a-f]{64}$")
@@ -94,6 +98,10 @@ class ReplicaJournalCommitAbsent(ReplicaJournalSyncError):
 
 class ReplicaJournalConflictError(ReplicaJournalSyncError):
     """Reject a call that conflicts with an immutable event."""
+
+
+class ReplicaJournalEffectResultError(ValueError):
+    """Reject an effect result that cannot satisfy a journal transition."""
 
 
 def _token(value: object, description: str) -> str:
@@ -297,6 +305,7 @@ class IncompleteReplicaLifecycle:
     stage: str
     stage_started: bool
     reason: str
+    authority: ReplicaAuthority
 
 
 @dataclass(frozen=True, slots=True)
@@ -802,7 +811,8 @@ def _validate_response_frame(
         raise ValueError("replica terminal response status conflicts with durable state")
     expected_result: dict[str, JsonValue] = {"stage": stage, "state": state}
     if code is not None:
-        _token(code, "terminal response code")
+        if not isinstance(code, str) or _ERROR_CODE_PATTERN.fullmatch(code) is None:
+            raise ValueError("replica terminal response code is invalid")
         expected_result["code"] = code
     if receipt_id is not None:
         _token(receipt_id, "terminal response receipt ID")
@@ -1542,7 +1552,7 @@ class BrokerReplicaJournal:
             else "reclaim"
         )
         return ReplicaJournalDecision(
-            "in_flight" if replay.stage_started or replay.next_stage_index else "claimed",
+            "in_flight" if replay.stage_started else "claimed",
             stage,
             None,
             replay.owner_broker_incarnation,
@@ -1559,6 +1569,78 @@ class BrokerReplicaJournal:
             return self._decision(self._replay(events))
         finally:
             database.close()
+
+    def require_response_signer(
+        self,
+        broker_incarnation: str,
+        private_key: Ed25519PrivateKey,
+    ) -> None:
+        """Require a private signer that matches one configured response key."""
+        _token(broker_incarnation, "response broker incarnation")
+        if not isinstance(private_key, Ed25519PrivateKey):
+            raise TypeError("replica response private key is invalid")
+        expected = self._response_public_keys.get(broker_incarnation)
+        if expected is None:
+            raise ValueError("replica response signer incarnation is not configured")
+        actual_bytes = private_key.public_key().public_bytes(
+            serialization.Encoding.Raw,
+            serialization.PublicFormat.Raw,
+        )
+        expected_bytes = expected.public_bytes(
+            serialization.Encoding.Raw,
+            serialization.PublicFormat.Raw,
+        )
+        if actual_bytes != expected_bytes:
+            raise ValueError("replica response signer does not match configured authority")
+
+    def validate_stage_receipt(
+        self,
+        request: BrokerRequest,
+        authority: ReplicaAuthority,
+        stage: str,
+        receipt: object,
+    ) -> None:
+        """Validate a typed effect receipt without opening the journal database."""
+        if not isinstance(request, BrokerRequest):
+            raise TypeError("replica receipt request is invalid")
+        if not isinstance(authority, ReplicaAuthority):
+            raise TypeError("replica receipt authority is invalid")
+        try:
+            self._validate_stage(stage)
+            _receipt_json(stage, receipt)
+            _validate_receipt_binding(stage, receipt, request, authority)
+        except (TypeError, ValueError) as error:
+            raise ReplicaJournalEffectResultError("replica stage receipt is invalid") from error
+
+    def validate_rejection(
+        self,
+        stage: str,
+        status: str,
+        receipt: RejectedReceipt,
+    ) -> None:
+        """Validate a rejected effect result without opening the database."""
+        try:
+            self._validate_stage(stage)
+            if status not in _REJECTED_STATUSES[stage]:
+                raise ValueError("replica rejection status is invalid")
+            if not isinstance(receipt, RejectedReceipt):
+                raise TypeError("replica rejection receipt is invalid")
+            _rejected_json(receipt)
+        except (TypeError, ValueError) as error:
+            raise ReplicaJournalEffectResultError(
+                "replica rejected effect result is invalid"
+            ) from error
+
+    def validate_unresolved_reason(self, stage: str, reason: str) -> None:
+        """Validate an unresolved reason without opening the database."""
+        try:
+            self._validate_stage(stage)
+            if reason not in _BASE_UNRESOLVED_REASONS | _STAGE_UNRESOLVED_REASONS[stage]:
+                raise ValueError("replica unresolved reason is invalid for the stage")
+        except (TypeError, ValueError) as error:
+            raise ReplicaJournalEffectResultError(
+                "replica unresolved effect result is invalid"
+            ) from error
 
     def accept(
         self,
@@ -1783,11 +1865,11 @@ class BrokerReplicaJournal:
         replay = self._require_active(request, owner_token=owner_token, stage=stage)
         if not replay.stage_started:
             raise ReplicaJournalConflictError("replica stage start is missing")
-        _validate_receipt_binding(
-            stage,
-            receipt,
+        self.validate_stage_receipt(
             _authenticate_request_frame(replay.request_frame, self._request_public_key),
             replay.authority,
+            stage,
+            receipt,
         )
         return self._append(
             identity,
@@ -1811,11 +1893,7 @@ class BrokerReplicaJournal:
     ) -> ReplicaJournalPosition:
         identity = self._identity(request)
         _token(owner_token, "owner token")
-        self._validate_stage(stage)
-        if status not in _REJECTED_STATUSES[stage]:
-            raise ValueError("replica rejection status is invalid")
-        if not isinstance(receipt, RejectedReceipt):
-            raise TypeError("replica rejection receipt is invalid")
+        self.validate_rejection(stage, status, receipt)
         receipt_json = _rejected_json(receipt)
         response = _validate_response_frame(
             response_frame,
@@ -1862,9 +1940,7 @@ class BrokerReplicaJournal:
     ) -> ReplicaJournalPosition:
         identity = self._identity(request)
         _token(owner_token, "owner token")
-        self._validate_stage(stage)
-        if reason not in _BASE_UNRESOLVED_REASONS | _STAGE_UNRESOLVED_REASONS[stage]:
-            raise ValueError("replica unresolved reason is invalid for the stage")
+        self.validate_unresolved_reason(stage, reason)
         response = _validate_response_frame(
             response_frame,
             request,
@@ -1926,11 +2002,28 @@ class BrokerReplicaJournal:
                         stage=_STAGES[replay.next_stage_index],
                         stage_started=replay.stage_started,
                         reason="broker_restart_unknown",
+                        authority=replay.authority,
                     )
                 )
             return tuple(pending)
         finally:
             database.close()
+
+    def authenticated_request(self, lifecycle: IncompleteReplicaLifecycle) -> BrokerRequest:
+        """Authenticate and return the request for an incomplete lifecycle."""
+        if not isinstance(lifecycle, IncompleteReplicaLifecycle):
+            raise TypeError("replica lifecycle is invalid")
+        if not lifecycle.request_frame:
+            raise ReplicaJournalSyncError("replica lifecycle request frame is invalid")
+        try:
+            return _authenticate_request_frame(
+                lifecycle.request_frame,
+                self._request_public_key,
+            )
+        except ValueError as error:
+            raise ReplicaJournalSyncError(
+                "replica lifecycle request authentication failed"
+            ) from error
 
     @staticmethod
     def _validate_stage(stage: str) -> None:
