@@ -129,6 +129,11 @@ def _signed_request() -> tuple[BrokerRequest, bytes]:
         nonce="nonce_00000000001",
         payload={
             "artifact_set_sha256": ARTIFACT_SET_SHA256,
+            "authority": {
+                "execution_owner_id": AUTHORITY.execution_owner_id,
+                "physical_target_id": AUTHORITY.physical_target_id,
+                "replica_generation": AUTHORITY.replica_generation,
+            },
             "bundle": _artifact_json(BUNDLE),
             "index_objects": _artifact_json(INDEX_OBJECTS),
             "limits_sha256": LIMITS_SHA256,

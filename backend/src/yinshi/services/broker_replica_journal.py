@@ -533,6 +533,25 @@ def _artifact_binding_json(
     }
 
 
+def parse_replica_authority(value: object) -> ReplicaAuthority:
+    required = {"execution_owner_id", "physical_target_id", "replica_generation"}
+    if not isinstance(value, dict) or set(value) != required:
+        raise ValueError("replica request authority fields are invalid")
+    return ReplicaAuthority(
+        physical_target_id=cast(str, value["physical_target_id"]),
+        replica_generation=cast(int, value["replica_generation"]),
+        execution_owner_id=cast(str, value["execution_owner_id"]),
+    )
+
+
+def replica_authority_from_request(request: BrokerRequest) -> ReplicaAuthority:
+    """Parse the logical authority bound into one authenticated lifecycle request."""
+    if not isinstance(request, BrokerRequest) or request.request_type != "replica.lifecycle":
+        raise ValueError("replica lifecycle request is invalid")
+    payload = _validate_replica_payload(request.payload)
+    return parse_replica_authority(payload["authority"])
+
+
 def _expected_artifact_set_sha256(
     request: BrokerRequest,
     authority: ReplicaAuthority,
@@ -650,6 +669,7 @@ def _canonical_object(raw: object, *, maximum: int, description: str) -> dict[st
 def _validate_replica_payload(value: object) -> dict[str, JsonValue]:
     required = {
         "artifact_set_sha256",
+        "authority",
         "bundle",
         "index_objects",
         "limits_sha256",
@@ -664,6 +684,7 @@ def _validate_replica_payload(value: object) -> dict[str, JsonValue]:
         raise ValueError("replica request payload fields are invalid")
     validate_replica_identifier(value["workspace_id"], "request workspace ID")
     validate_replica_identifier(value["repository_id"], "request repository ID")
+    parse_replica_authority(value["authority"])
     if type(value["object_format"]) is not str or value["object_format"] not in _OBJECT_FORMATS:
         raise ValueError("replica request object format is invalid")
     _digest(value["artifact_set_sha256"], "request artifact set SHA-256")
@@ -1663,6 +1684,10 @@ class BrokerReplicaJournal:
         if not isinstance(authority, ReplicaAuthority):
             raise TypeError("replica authority is invalid")
         payload = _validate_replica_payload(request.payload)
+        if parse_replica_authority(payload["authority"]) != authority:
+            raise ReplicaJournalConflictError(
+                "replica request authority differs from supplied authority"
+            )
         if payload["limits_sha256"] != self._expected_limits_sha256:
             raise ReplicaJournalConflictError("replica request limit profile is not configured")
         expected_artifact_set = _expected_artifact_set_sha256(request, authority)

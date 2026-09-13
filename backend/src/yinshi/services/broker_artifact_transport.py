@@ -25,7 +25,11 @@ from yinshi.services.broker_protocol import (
     create_signed_response,
     parse_signed_request,
 )
-from yinshi.services.broker_replica_journal import ArtifactReference, ReplicaAuthority
+from yinshi.services.broker_replica_journal import (
+    ArtifactReference,
+    ReplicaAuthority,
+    parse_replica_authority,
+)
 from yinshi.services.replica_artifact_contract import (
     REPLICA_ARTIFACT_MEDIA_TYPES,
     compute_replica_artifact_set_sha256,
@@ -51,7 +55,6 @@ _PAYLOAD_KEYS = frozenset(
         "worktree",
     }
 )
-_AUTHORITY_KEYS = frozenset({"execution_owner_id", "physical_target_id", "replica_generation"})
 _REFERENCE_KEYS = frozenset({"artifact_id", "byte_length", "sha256"})
 
 
@@ -78,16 +81,6 @@ def _artifact_reference(value: object, description: str) -> ArtifactReference:
         artifact_id=cast(str, value["artifact_id"]),
         sha256=cast(str, value["sha256"]),
         byte_length=cast(int, value["byte_length"]),
-    )
-
-
-def _authority(value: object) -> ReplicaAuthority:
-    if not isinstance(value, dict) or set(value) != _AUTHORITY_KEYS:
-        raise ValueError("artifact upload authority fields are invalid")
-    return ReplicaAuthority(
-        physical_target_id=cast(str, value["physical_target_id"]),
-        replica_generation=cast(int, value["replica_generation"]),
-        execution_owner_id=cast(str, value["execution_owner_id"]),
     )
 
 
@@ -126,7 +119,7 @@ def parse_upload_declaration(
         "reconciliation fingerprint",
     )
     artifact_set_sha256 = _digest(payload["artifact_set_sha256"], "artifact set SHA-256")
-    authority = _authority(payload["authority"])
+    authority = parse_replica_authority(payload["authority"])
     bundle = _artifact_reference(payload["bundle"], "bundle")
     worktree = _artifact_reference(payload["worktree"], "worktree")
     index_objects = _artifact_reference(payload["index_objects"], "index objects")

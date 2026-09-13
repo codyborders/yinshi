@@ -34,6 +34,7 @@ from yinshi.services.broker_replica_journal import (
     RejectedReceipt,
     ReplicaAuthority,
     ReplicaJournalCommitAbsent,
+    ReplicaJournalConflictError,
     ReplicaJournalDecision,
     ReplicaJournalPosition,
     ReplicaJournalSyncError,
@@ -133,6 +134,11 @@ ARTIFACT_SET_SHA256 = artifact_set_sha256("a" * 32)
 def request_payload(operation_id: str = "a" * 32) -> dict[str, JsonValue]:
     return {
         "artifact_set_sha256": artifact_set_sha256(operation_id),
+        "authority": {
+            "execution_owner_id": AUTHORITY.execution_owner_id,
+            "physical_target_id": AUTHORITY.physical_target_id,
+            "replica_generation": AUTHORITY.replica_generation,
+        },
         "bundle": artifact_json(BUNDLE),
         "index_objects": artifact_json(INDEX_OBJECTS),
         "limits_sha256": LIMITS_SHA256,
@@ -929,6 +935,21 @@ def test_fixed_artifact_set_rejects_invalid_object_formats(
     request, frame = signed_request(Ed25519PrivateKey.generate(), payload=payload)
     with pytest.raises(ValueError):
         replica.accept(request, frame, AUTHORITY)
+    assert rows(replica.path) == []
+
+
+def test_accept_requires_supplied_authority_to_match_signed_payload(tmp_path: Path) -> None:
+    replica = journal(tmp_path)
+    request, frame = signed_request(Ed25519PrivateKey.generate())
+    changed = ReplicaAuthority(
+        physical_target_id=AUTHORITY.physical_target_id,
+        replica_generation=AUTHORITY.replica_generation + 1,
+        execution_owner_id=AUTHORITY.execution_owner_id,
+    )
+
+    with pytest.raises(ReplicaJournalConflictError, match="supplied authority"):
+        replica.accept(request, frame, changed)
+
     assert rows(replica.path) == []
 
 
