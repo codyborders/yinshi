@@ -464,6 +464,25 @@ class BrokerArtifactStore:
                     return count
         return count
 
+    async def consume(
+        self,
+        manifest: ReplicaArtifactManifest,
+        reader: asyncio.StreamReader,
+    ) -> None:
+        """Validate and consume one exact upload without creating storage effects."""
+        manifest = self._validate_manifest(manifest)
+        if not isinstance(reader, asyncio.StreamReader):
+            raise BrokerArtifactStoreRejectedError("artifact reader is invalid")
+        try:
+            async with asyncio.timeout(float(self._limits.transfer_timeout_seconds)):
+                for reference in (manifest.bundle, manifest.worktree, manifest.index_objects):
+                    await self._receive_one(reader, reference, None)
+                await self._read_trailer(reader)
+        except TimeoutError as error:
+            raise BrokerArtifactStoreUnresolvedError(
+                "artifact transfer deadline is unresolved"
+            ) from error
+
     async def receive(
         self,
         manifest: ReplicaArtifactManifest,
@@ -597,10 +616,20 @@ class BrokerArtifactStore:
                     target_parent_identity=root_identity,
                     source_identity=pending_identity,
                 )
-            except WorkspacePublicationCollisionError as error:
-                raise BrokerArtifactStoreCollisionError(
-                    "artifact operation target already exists"
-                ) from error
+            except WorkspacePublicationCollisionError:
+                await quarantine_live_attempt()
+                try:
+                    return await self.inspect_incoming_async(manifest)
+                except BrokerArtifactStoreRejectedError as inspection_error:
+                    raise BrokerArtifactStoreCollisionError(
+                        "artifact operation target already exists"
+                    ) from inspection_error
+                except BrokerArtifactStoreUnresolvedError:
+                    raise
+                except Exception as inspection_error:
+                    raise BrokerArtifactStoreUnresolvedError(
+                        "artifact publication collision is unresolved"
+                    ) from inspection_error
             except (WorkspacePublicationError, OSError) as error:
                 raise BrokerArtifactStoreUnresolvedError(
                     "artifact publication outcome is unresolved"

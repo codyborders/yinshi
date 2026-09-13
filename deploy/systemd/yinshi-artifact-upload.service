@@ -1,0 +1,36 @@
+[Unit]
+Description=Yinshi authenticated replica artifact upload service
+Requires=yinshi-artifact-upload.socket
+After=yinshi-artifact-upload.socket
+
+[Service]
+Type=simple
+User=yinshi-broker
+Group=yinshi-broker
+UMask=0077
+ExecStart=/opt/yinshi/runtime-v1/bin/yinshi-artifact-upload --systemd-socket
+Environment=YINSHI_REPLICA_UPLOAD_ENABLED=false
+TimeoutStopSec=15s
+ReadWritePaths=/var/lib/yinshi/artifact-incoming
+ReadOnlyPaths=/var/lib/yinshi/control
+NoNewPrivileges=yes
+PrivateNetwork=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# Deliberately no [Install] section. Upload transport must not be enabled at boot.

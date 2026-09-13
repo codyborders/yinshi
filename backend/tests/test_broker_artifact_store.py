@@ -145,6 +145,52 @@ async def test_invalid_transfer_never_becomes_incoming(
 
 
 @pytest.mark.asyncio
+async def test_concurrent_exact_retries_return_the_same_receipt(tmp_path: Path) -> None:
+    first_store = store(tmp_path)
+    second_store = BrokerArtifactStore(
+        tmp_path / "incoming",
+        limits=BrokerArtifactLimits(),
+        expected_uid=os.geteuid(),
+        expected_gid=os.getegid(),
+    )
+    declared = manifest()
+    content = BUNDLE + WORKTREE + INDEX_OBJECTS
+
+    first, second = await asyncio.gather(
+        first_store.receive(declared, reader_for(content)),
+        second_store.receive(declared, reader_for(content)),
+    )
+
+    assert first == second
+
+
+@pytest.mark.asyncio
+async def test_concurrent_conflicting_retry_never_reuses_the_winner(tmp_path: Path) -> None:
+    first_store = store(tmp_path)
+    second_store = BrokerArtifactStore(
+        tmp_path / "incoming",
+        limits=BrokerArtifactLimits(),
+        expected_uid=os.geteuid(),
+        expected_gid=os.getegid(),
+    )
+    declared = manifest()
+    conflicting_bundle = b"conflicting-bundle"
+    conflicting = manifest(bundle=reference("other", conflicting_bundle))
+
+    outcomes = await asyncio.gather(
+        first_store.receive(declared, reader_for(BUNDLE, WORKTREE, INDEX_OBJECTS)),
+        second_store.receive(
+            conflicting,
+            reader_for(conflicting_bundle, WORKTREE, INDEX_OBJECTS),
+        ),
+        return_exceptions=True,
+    )
+
+    assert sum(isinstance(outcome, IngestReceipt) for outcome in outcomes) == 1
+    assert sum(isinstance(outcome, BrokerArtifactStoreCollisionError) for outcome in outcomes) == 1
+
+
+@pytest.mark.asyncio
 async def test_limits_reject_before_any_directory_effect(tmp_path: Path) -> None:
     artifact_store = store(tmp_path, max_set_bytes=1)
     with pytest.raises(BrokerArtifactStoreRejectedError, match="limit"):

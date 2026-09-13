@@ -7,6 +7,13 @@ name = "yinshi"
 version = "0.1.0"
 requires-python = ">=3.11"
 
+[project.scripts]
+yinshi-broker = "yinshi.execution_daemons:broker_main"
+yinshi-root-launcher = "yinshi.execution_daemons:launcher_main"
+yinshi-broker-stdio-relay = "yinshi.broker_stdio_relay:main"
+yinshi-broker-artifact-stdio-relay = "yinshi.broker_artifact_stdio_relay:main"
+yinshi-artifact-upload = "yinshi.artifact_upload_daemon:main"
+
 [tool.black]
 line-length = 100
 target-version = ["py311"]
@@ -14,6 +21,16 @@ target-version = ["py311"]
 [tool.isort]
 profile = "black"
 line_length = 100
+combine_as_imports = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["tests", "yinshi"]
+combine-as-imports = true
 
 [tool.mypy]
 python_version = "3.11"
@@ -23,3 +40,6 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+markers = [
+    "fail_closed_isolation: use the real fail-closed isolation profile instead of the modeled supported test double",
+]

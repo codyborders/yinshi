@@ -1,0 +1,12 @@
+[Unit]
+Description=Yinshi authenticated replica artifact upload socket
+
+[Socket]
+ListenStream=/run/yinshi/artifact-upload.sock
+SocketUser=yinshi-broker
+SocketGroup=yinshi-app
+SocketMode=0660
+RemoveOnStop=yes
+Service=yinshi-artifact-upload.service
+
+# Deliberately no [Install] section. Upload transport must not activate at boot.
