@@ -1,0 +1,59 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "b045cb443338",
+  "session_id": "01a09a52-8947-7b01-9faa-00db52637ec8",
+  "strategy": "manual-commit",
+  "created_at": "2026-09-13T11:27:21.541727Z",
+  "branch": "main",
+  "checkpoints_count": 1,
+  "save_step_count": 1,
+  "files_touched": [
+    "backend/pyproject.toml",
+    "backend/src/yinshi/artifact_upload_daemon.py",
+    "backend/src/yinshi/broker_artifact_stdio_relay.py",
+    "backend/src/yinshi/services/broker_artifact_store.py",
+    "backend/src/yinshi/services/broker_artifact_transport.py",
+    "backend/tests/test_broker_artifact_stdio_relay.py",
+    "backend/tests/test_broker_artifact_transport.py",
+    "deploy/systemd/yinshi-artifact-upload.service",
+    "deploy/systemd/yinshi-artifact-upload.service.d/zzzz-yinshi-hardening.conf",
+    "deploy/systemd/yinshi-artifact-upload.socket",
+    "deploy/tmpfiles.d/yinshi.conf",
+    "docs/broker-root-launcher.md"
+  ],
+  "agent": "Pi",
+  "model": "gpt-5.6-sol",
+  "turn_id": "836c81b42231",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 32605373,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 1135829760,
+    "output_tokens": 2574346,
+    "api_call_count": 8482
+  },
+  "session_metrics": {
+    "turn_count": 1
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-09-13T11:27:17.75286Z",
+    "agent_lines": 1719,
+    "agent_removed": 4,
+    "human_added": 137,
+    "human_modified": 31,
+    "human_removed": 0,
+    "total_committed": 1887,
+    "total_lines_changed": 1891,
+    "agent_percentage": 91.1158117398202,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
+}

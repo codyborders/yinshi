@@ -1,0 +1,37 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "b045cb443338",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "backend/pyproject.toml",
+    "backend/src/yinshi/artifact_upload_daemon.py",
+    "backend/src/yinshi/broker_artifact_stdio_relay.py",
+    "backend/src/yinshi/services/broker_artifact_store.py",
+    "backend/src/yinshi/services/broker_artifact_transport.py",
+    "backend/tests/test_broker_artifact_stdio_relay.py",
+    "backend/tests/test_broker_artifact_transport.py",
+    "deploy/systemd/yinshi-artifact-upload.service",
+    "deploy/systemd/yinshi-artifact-upload.service.d/zzzz-yinshi-hardening.conf",
+    "deploy/systemd/yinshi-artifact-upload.socket",
+    "deploy/tmpfiles.d/yinshi.conf",
+    "docs/broker-root-launcher.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/b0/45cb443338/0/metadata.json",
+      "transcript": "/b0/45cb443338/0/full.jsonl",
+      "compact_transcript": "/b0/45cb443338/0/transcript.jsonl",
+      "content_hash": "/b0/45cb443338/0/content_hash.txt",
+      "prompt": "/b0/45cb443338/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 32605373,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 1135829760,
+    "output_tokens": 2574346,
+    "api_call_count": 8482
+  }
+}
