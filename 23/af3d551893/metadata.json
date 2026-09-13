@@ -1,0 +1,29 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "23af3d551893",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "backend/src/yinshi/services/broker_replica_journal.py",
+    "backend/src/yinshi/services/execution_broker.py",
+    "backend/tests/test_broker_replica_journal.py",
+    "backend/tests/test_broker_replica_lifecycle.py"
+  ],
+  "sessions": [
+    {
+      "metadata": "/23/af3d551893/0/metadata.json",
+      "transcript": "/23/af3d551893/0/full.jsonl",
+      "compact_transcript": "/23/af3d551893/0/transcript.jsonl",
+      "content_hash": "/23/af3d551893/0/content_hash.txt",
+      "prompt": "/23/af3d551893/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 32870535,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 1136040576,
+    "output_tokens": 2571320,
+    "api_call_count": 8474
+  }
+}
