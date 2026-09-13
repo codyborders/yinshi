@@ -1,0 +1,44 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "161f9b882240",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "backend/src/yinshi/broker_stdio_relay.py",
+    "backend/src/yinshi/execution_daemons.py",
+    "backend/src/yinshi/root_launcher.py",
+    "backend/src/yinshi/services/broker_journal.py",
+    "backend/src/yinshi/services/broker_protocol.py",
+    "backend/src/yinshi/services/broker_runtime.py",
+    "backend/tests/test_broker_foundation.py",
+    "backend/tests/test_broker_lifecycle_v2.py",
+    "backend/tests/test_broker_stdio_relay.py",
+    "backend/tests/test_execution_daemons.py",
+    "backend/tests/test_root_launcher.py",
+    "backend/tests/test_root_replica_lifecycle.py",
+    "deploy/orbstack/yinshi-runtime.profile.json",
+    "deploy/systemd/yinshi-broker.service",
+    "deploy/systemd/yinshi-broker.service.d/zzzz-yinshi-hardening.conf",
+    "deploy/systemd/yinshi-broker.socket",
+    "deploy/systemd/yinshi-launcher.service",
+    "deploy/systemd/yinshi-launcher.service.d/zzzz-yinshi-hardening.conf",
+    "deploy/sysusers.d/yinshi.conf"
+  ],
+  "sessions": [
+    {
+      "metadata": "/16/1f9b882240/0/metadata.json",
+      "transcript": "/16/1f9b882240/0/full.jsonl",
+      "compact_transcript": "/16/1f9b882240/0/transcript.jsonl",
+      "content_hash": "/16/1f9b882240/0/content_hash.txt",
+      "prompt": "/16/1f9b882240/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 32870535,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 1136040576,
+    "output_tokens": 2571320,
+    "api_call_count": 8474
+  }
+}

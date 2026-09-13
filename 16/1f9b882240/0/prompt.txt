@@ -1,0 +1,55 @@
+Task: You are a delegated subagent running from a fork of the parent session. Treat the inherited conversation as reference-only context, not a live thread to continue. Do not continue or answer prior messages as if they are waiting for a reply. Your sole job is to execute the task below and return a focused result for that task using your tools.
+
+Task:
+Implement the next Phase 6 milestone in current shared checkout, no commit: descriptor-pinned bounded verification and publication bridge from BrokerArtifactStore.OpenedReplicaArtifacts to WorkspaceReplicaPublicationStore. Parent architecture: never reopen incoming content by caller-formed path. Hold opened descriptors across semantic verification, post-verification source recheck, streaming publication copy, and post-copy source recheck. Add additive APIs, preserving existing bytes APIs/tests. Stream bundle and index pack to safe broker-owned temporary files or publication pending files in bounded chunks and verify using file-backed Git commands. Avoid whole bundle/index bytes and avoid full-file equality copies in _PinnedRegular. It is acceptable for worktree.yra alone to remain bounded in memory under its configured limit for its decoder, but do not hold all three roles. Replace pin content retention with digest/length and chunked rehash where needed. Publication must retain exact 0700/0600 owner/link-count, no-follow descriptors, no-replace rename, quarantine, marker, fsync order, source identity rechecks, timeout/cancellation unknown classifications. Add deterministic descriptor-based verify and publish receipts equal in semantics to existing byte APIs. Expose configured limits safely. Add tests for descriptor continuity, source mutation, digest mismatch, bounded chunk copying, exact retry/collision, cancellation, and existing 50-test regression. Read coding/python/software-design skills and actual current APIs first. If TDD Guard blocks edits, return exact patch packet. Run focused tests, Ruff, format, strict mypy, py_compile, diff check. Escalate conflicts, do not invent paths or weaken current behavior.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files, validation-output
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
