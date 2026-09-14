@@ -1,0 +1,55 @@
+Task: You are a delegated subagent running from a fork of the parent session. Treat the inherited conversation as reference-only context, not a live thread to continue. Do not continue or answer prior messages as if they are waiting for a reply. Your sole job is to execute the task below and return a focused result for that task using your tools.
+
+Task:
+Continue and complete the descriptor-pinned publication milestone from current shared checkout. A prior worker timed out after modifying workspace_replica_bundle.py, workspace_replica_object_pack.py, and workspace_replica_publication.py. No tests were added. Existing publication suite hangs because old race tests monkeypatch verify_artifact_set, while new _inspect_final bypasses that method. Diagnose all current changes. Preserve equivalent race injection observability through a clearly named internal async semantic-verification method and update existing tests narrowly to target it, never delete race coverage. Complete additive descriptor-source verification/publication APIs with source descriptors held and rechecked. Bundle/index copy and hashing must use bounded chunks and pinned descriptors; only worktree may remain bounded in memory. Preserve all existing byte APIs and behaviors, publication modes/ownership/no-replace/quarantine/fsync/cancellation/unknown semantics. Add descriptor bridge tests with BrokerArtifactStore opened set, source mutation, digest mismatch, bounded chunk behavior, retry/collision and cancellation. Run focused suites in smaller bounded groups, Ruff, format, strict mypy, py_compile, diff check. Do not commit. If current partial design is unsound, repair it rather than reverting production behavior.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files, validation-output
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
