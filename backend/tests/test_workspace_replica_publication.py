@@ -37,14 +37,23 @@ from yinshi.services.replica_artifact_contract import (
 from yinshi.services.workspace_publication import WorkspacePublicationError
 from yinshi.services.workspace_replica_artifact import (
     ManifestEntry,
+    VerifiedWorktreeArtifact,
     WorktreeArtifactInput,
     WorktreeEntryKind,
     decode_worktree_artifact,
     encode_worktree_artifact,
 )
-from yinshi.services.workspace_replica_bundle import create_committed_bundle
-from yinshi.services.workspace_replica_object_pack import create_index_object_pack
+from yinshi.services.workspace_replica_bundle import (
+    VerifiedCommittedBundle,
+    create_committed_bundle,
+)
+from yinshi.services.workspace_replica_object_pack import (
+    VerifiedIndexObjectPack,
+    create_index_object_pack,
+)
 from yinshi.services.workspace_replica_publication import (
+    OpenedPublishedArtifact,
+    OpenedPublishedReplicaArtifacts,
     ReplicaArtifactBinding,
     ReplicaArtifactSetDeclaration,
     ReplicaIdentity,
@@ -215,6 +224,97 @@ def store(tmp_path: Path) -> WorkspaceReplicaPublicationStore:
     )
 
 
+def published_artifact_paths(final: Path) -> tuple[Path, ...]:
+    return (
+        final,
+        final / "artifact-set.json",
+        final / "committed.bundle",
+        final / "worktree.yra",
+        final / "index-objects.pack",
+    )
+
+
+def age_published_artifact_set(final: Path) -> dict[Path, tuple[int, int]]:
+    paths = published_artifact_paths(final)
+    for offset, path in enumerate(paths):
+        value = path.lstat()
+        os.utime(
+            path,
+            ns=(1_600_000_000_000_000_000 + offset, value.st_mtime_ns),
+            follow_symlinks=False,
+        )
+    return {path: (path.lstat().st_atime_ns, path.lstat().st_mtime_ns) for path in paths}
+
+
+def published_timestamps(final: Path) -> dict[Path, tuple[int, int]]:
+    return {
+        path: (path.lstat().st_atime_ns, path.lstat().st_mtime_ns)
+        for path in published_artifact_paths(final)
+    }
+
+
+def published_ctimes(final: Path) -> dict[Path, int]:
+    return {path: path.lstat().st_ctime_ns for path in published_artifact_paths(final)}
+
+
+HAS_O_NOATIME = hasattr(os, "O_NOATIME")
+
+
+def assert_published_metadata_unchanged(
+    final: Path,
+    timestamps: dict[Path, tuple[int, int]],
+    ctimes: dict[Path, int],
+) -> None:
+    """mtime and ctime must never change; atime only where the OS supports it."""
+    if HAS_O_NOATIME:
+        assert published_timestamps(final) == timestamps
+    assert {path: value[1] for path, value in published_timestamps(final).items()} == {
+        path: value[1] for path, value in timestamps.items()
+    }
+    assert published_ctimes(final) == ctimes
+
+
+def test_read_no_atime_flag_constant_matches_platform_support() -> None:
+    from yinshi.services import workspace_replica_publication as module
+
+    assert module._READ_NO_ATIME_FLAGS == getattr(os, "O_NOATIME", 0)
+
+
+@pytest.mark.asyncio
+async def test_published_read_descriptors_request_no_atime_when_opened(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from yinshi.services import workspace_replica_publication as module
+
+    declaration, bundle_bytes, worktree_bytes, object_bytes = await declaration_and_bytes(tmp_path)
+    publication = store(tmp_path)
+    await publication.publish_artifact_set(
+        declaration,
+        bundle_bytes,
+        worktree_bytes,
+        object_bytes,
+    )
+    synthetic = 1 << 30
+    monkeypatch.setattr(module, "_READ_NO_ATIME_FLAGS", synthetic)
+    requested: list[bool] = []
+
+    def tracked_open(
+        path: str | Path,
+        flags: int,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        flags |= module._READ_NO_ATIME_FLAGS
+        requested.append(bool(flags & synthetic))
+        return os.open(path, flags & ~synthetic, dir_fd=dir_fd)
+
+    monkeypatch.setattr(module, "_open_read_no_atime", tracked_open)
+    await publication.inspect_published_artifact_set(declaration)
+    assert len(requested) == 6
+    assert all(requested)
+
+
 @pytest.mark.asyncio
 async def test_publication_receipt_binds_three_artifacts_and_authority(tmp_path: Path) -> None:
     declaration, bundle, worktree, objects = await declaration_and_bytes(tmp_path)
@@ -240,6 +340,678 @@ async def test_publication_receipt_binds_three_artifacts_and_authority(tmp_path:
     assert type(inspection) is ReplicaInspectionReceipt
     assert inspection.artifact_set_sha256 == receipt.artifact_set_sha256
     assert not hasattr(inspection, "synchronization_receipt_id")
+
+
+@pytest.mark.asyncio
+async def test_open_published_artifact_set_yields_pinned_typed_authority_without_writes(
+    tmp_path: Path,
+) -> None:
+    declaration, bundle_bytes, worktree_bytes, object_bytes = await declaration_and_bytes(tmp_path)
+    publication = store(tmp_path)
+    receipt = await publication.publish_artifact_set(
+        declaration,
+        bundle_bytes,
+        worktree_bytes,
+        object_bytes,
+    )
+    root = tmp_path / "published"
+    final = root / declaration.operation_id
+    paths = (root, final, *sorted(final.iterdir()))
+    before = {
+        path: (path.lstat().st_dev, path.lstat().st_ino, path.lstat().st_mtime_ns) for path in paths
+    }
+
+    async with publication.open_published_artifact_set(declaration, receipt) as opened:
+        assert type(opened) is OpenedPublishedReplicaArtifacts
+        assert opened.declaration is declaration
+        assert opened.publication is receipt
+        assert type(opened.bundle) is OpenedPublishedArtifact
+        assert type(opened.verified_bundle) is VerifiedCommittedBundle
+        assert type(opened.verified_worktree) is VerifiedWorktreeArtifact
+        assert type(opened.verified_index_objects) is VerifiedIndexObjectPack
+        assert os.pread(opened.bundle.descriptor, len(bundle_bytes), 0) == bundle_bytes
+        assert os.pread(opened.worktree.descriptor, len(worktree_bytes), 0) == worktree_bytes
+        assert os.pread(opened.index_objects.descriptor, len(object_bytes), 0) == object_bytes
+        marker = os.pread(
+            opened.publication_marker.descriptor,
+            opened.publication_marker.byte_length,
+            0,
+        )
+        assert hashlib.sha256(marker).hexdigest() == receipt.publication_marker_sha256
+        await publication.recheck_opened_published_artifact_set(opened)
+        descriptors = (
+            opened.root_descriptor,
+            opened.directory_descriptor,
+            opened.publication_marker.descriptor,
+            opened.bundle.descriptor,
+            opened.worktree.descriptor,
+            opened.index_objects.descriptor,
+        )
+
+    assert {
+        path: (path.lstat().st_dev, path.lstat().st_ino, path.lstat().st_mtime_ns) for path in paths
+    } == before
+    for descriptor in descriptors:
+        with pytest.raises(OSError):
+            os.fstat(descriptor)
+
+
+@pytest.mark.asyncio
+async def test_open_published_artifact_set_requires_exact_publication_receipt(
+    tmp_path: Path,
+) -> None:
+    declaration, bundle_bytes, worktree_bytes, object_bytes = await declaration_and_bytes(tmp_path)
+    publication = store(tmp_path)
+    receipt = await publication.publish_artifact_set(
+        declaration,
+        bundle_bytes,
+        worktree_bytes,
+        object_bytes,
+    )
+    changed = replace(receipt, publication_receipt_id="0" * 64)
+
+    with pytest.raises(ReplicaPublicationRejectedError, match="receipt"):
+        async with publication.open_published_artifact_set(declaration, changed):
+            pytest.fail("invalid authority was opened")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "replacement",
+    ["root", "operation", "marker", "bundle", "worktree", "index_objects"],
+)
+async def test_recheck_opened_published_artifact_set_rejects_replacement(
+    tmp_path: Path,
+    replacement: str,
+) -> None:
+    declaration, bundle_bytes, worktree_bytes, object_bytes = await declaration_and_bytes(tmp_path)
+    publication = store(tmp_path)
+    receipt = await publication.publish_artifact_set(
+        declaration,
+        bundle_bytes,
+        worktree_bytes,
+        object_bytes,
+    )
+    root = tmp_path / "published"
+    final = root / declaration.operation_id
+
+    async with publication.open_published_artifact_set(declaration, receipt) as opened:
+        if replacement == "root":
+            root.rename(tmp_path / "retained-root")
+            root.mkdir(mode=0o700)
+        elif replacement == "operation":
+            final.rename(root / "retained-operation")
+            final.mkdir(mode=0o700)
+        else:
+            names = {
+                "marker": "artifact-set.json",
+                "bundle": "committed.bundle",
+                "worktree": "worktree.yra",
+                "index_objects": "index-objects.pack",
+            }
+            target = final / names[replacement]
+            replacement_path = final / "replacement"
+            replacement_path.write_bytes(target.read_bytes())
+            replacement_path.chmod(0o600)
+            replacement_path.replace(target)
+        with pytest.raises(ReplicaPublicationRejectedError, match="changed"):
+            await publication.recheck_opened_published_artifact_set(opened)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mutation", ["extra", "mode", "link", "owner", "size", "digest"])
+async def test_recheck_opened_published_artifact_set_rejects_metadata_and_content_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+) -> None:
+    declaration, bundle_bytes, worktree_bytes, object_bytes = await declaration_and_bytes(tmp_path)
+    publication = store(tmp_path)
+    receipt = await publication.publish_artifact_set(
+        declaration,
+        bundle_bytes,
+        worktree_bytes,
+        object_bytes,
+    )
+    final = tmp_path / "published" / declaration.operation_id
+    target = final / "worktree.yra"
+
+    async with publication.open_published_artifact_set(declaration, receipt) as opened:
+        if mutation == "extra":
+            (final / "extra").write_bytes(b"extra")
+        elif mutation == "mode":
+            target.chmod(0o400)
+        elif mutation == "link":
+            os.link(target, tmp_path / "foreign-hardlink")
+        elif mutation == "owner":
+            from yinshi.services import workspace_replica_publication as module
+
+            real_fstat = os.fstat
+
+            class ChangedOwnerStat:
+                def __init__(self, value: os.stat_result) -> None:
+                    self._value = value
+                    self.st_uid = value.st_uid + 1
+
+                def __getattr__(self, name: str) -> object:
+                    return getattr(self._value, name)
+
+            def changed_owner(descriptor: int) -> object:
+                value = real_fstat(descriptor)
+                if descriptor == opened.worktree.descriptor:
+                    return ChangedOwnerStat(value)
+                return value
+
+            monkeypatch.setattr(module.os, "fstat", changed_owner)
+        elif mutation == "size":
+            target.write_bytes(worktree_bytes + b"x")
+        else:
+            target.write_bytes(b"x" + worktree_bytes[1:])
+        with pytest.raises(ReplicaPublicationRejectedError, match="changed"):
+            await publication.recheck_opened_published_artifact_set(opened)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "replacement",
+    ["root", "operation", "marker", "bundle", "worktree", "index_objects"],
+)
+async def test_open_published_artifact_set_rejects_replacement_during_acquisition(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    replacement: str,
+) -> None:
+    declaration, bundle_bytes, worktree_bytes, object_bytes = await declaration_and_bytes(tmp_path)
+    publication = store(tmp_path)
+    receipt = await publication.publish_artifact_set(
+        declaration,
+        bundle_bytes,
+        worktree_bytes,
+        object_bytes,
+    )
+    root = tmp_path / "published"
+    final = root / declaration.operation_id
+    original = publication._verify_pinned_semantics
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def paused(*args: object, **kwargs: object):
+        started.set()
+        await release.wait()
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(publication, "_verify_pinned_semantics", paused)
+
+    async def consume() -> None:
+        async with publication.open_published_artifact_set(declaration, receipt):
+            pytest.fail("replaced publication yielded authority")
+
+    task = asyncio.create_task(consume())
+    await started.wait()
+    if replacement == "root":
+        root.rename(tmp_path / "retained-root")
+        root.mkdir(mode=0o700)
+    elif replacement == "operation":
+        final.rename(root / "retained-operation")
+        final.mkdir(mode=0o700)
+    else:
+        names = {
+            "marker": "artifact-set.json",
+            "bundle": "committed.bundle",
+            "worktree": "worktree.yra",
+            "index_objects": "index-objects.pack",
+        }
+        target = final / names[replacement]
+        replacement_path = final / "replacement"
+        replacement_path.write_bytes(target.read_bytes())
+        replacement_path.chmod(0o600)
+        replacement_path.replace(target)
+    release.set()
+    with pytest.raises(ReplicaPublicationRejectedError, match="changed"):
+        await task
+
+
+@pytest.mark.asyncio
+async def test_open_published_artifact_set_cancellation_drains_acquisition_and_closes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    declaration, bundle_bytes, worktree_bytes, object_bytes = await declaration_and_bytes(tmp_path)
+    publication = store(tmp_path)
+    receipt = await publication.publish_artifact_set(
+        declaration,
+        bundle_bytes,
+        worktree_bytes,
+        object_bytes,
+    )
+    original = publication._open_verified_published_artifact_set
+    started = asyncio.Event()
+    release = asyncio.Event()
+    descriptors: list[int] = []
+
+    async def paused(*args: object, **kwargs: object):
+        verified = await original(*args, **kwargs)
+        descriptors.extend(
+            [
+                verified.pinned.root_descriptor,
+                verified.pinned.directory_descriptor,
+                *(item.descriptor for item in verified.pinned.pins),
+            ]
+        )
+        started.set()
+        await release.wait()
+        return verified
+
+    monkeypatch.setattr(publication, "_open_verified_published_artifact_set", paused)
+
+    async def consume() -> None:
+        async with publication.open_published_artifact_set(declaration, receipt):
+            pytest.fail("canceled acquisition yielded authority")
+
+    task = asyncio.create_task(consume())
+    await started.wait()
+    task.cancel()
+    await asyncio.sleep(0)
+    assert not task.done()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert descriptors
+    for descriptor in descriptors:
+        with pytest.raises(OSError):
+            os.fstat(descriptor)
+
+
+@pytest.mark.asyncio
+async def test_open_published_artifact_set_cancellation_drains_descriptor_closure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from yinshi.services import workspace_replica_publication as module
+
+    declaration, bundle_bytes, worktree_bytes, object_bytes = await declaration_and_bytes(tmp_path)
+    publication = store(tmp_path)
+    receipt = await publication.publish_artifact_set(
+        declaration,
+        bundle_bytes,
+        worktree_bytes,
+        object_bytes,
+    )
+    original = module._close_pinned_published_artifact_set
+    started = threading.Event()
+    release = threading.Event()
+    descriptors: list[int] = []
+
+    def paused(pinned: object) -> None:
+        started.set()
+        release.wait(timeout=5)
+        original(pinned)
+
+    monkeypatch.setattr(module, "_close_pinned_published_artifact_set", paused)
+
+    async def consume() -> None:
+        async with publication.open_published_artifact_set(declaration, receipt) as opened:
+            descriptors.extend(
+                [
+                    opened.root_descriptor,
+                    opened.directory_descriptor,
+                    opened.publication_marker.descriptor,
+                    opened.bundle.descriptor,
+                    opened.worktree.descriptor,
+                    opened.index_objects.descriptor,
+                ]
+            )
+
+    task = asyncio.create_task(consume())
+    assert await asyncio.to_thread(started.wait, 5)
+    task.cancel()
+    await asyncio.sleep(0)
+    assert not task.done()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    for descriptor in descriptors:
+        with pytest.raises(OSError):
+            os.fstat(descriptor)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("api", ["inspect", "open"])
+async def test_cancellation_during_sync_published_pin_closes_all_descriptors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    api: str,
+) -> None:
+    declaration, bundle_bytes, worktree_bytes, object_bytes = await declaration_and_bytes(tmp_path)
+    publication = store(tmp_path)
+    receipt = await publication.publish_artifact_set(
+        declaration,
+        bundle_bytes,
+        worktree_bytes,
+        object_bytes,
+    )
+    final = tmp_path / "published" / declaration.operation_id
+    before = age_published_artifact_set(final)
+    ctimes = published_ctimes(final)
+    original = publication._pin_published_artifact_set
+    started = threading.Event()
+    release = threading.Event()
+    descriptors: list[int] = []
+
+    def paused(*args: object, **kwargs: object):
+        pinned = original(*args, **kwargs)
+        descriptors.extend(
+            [
+                pinned.root_descriptor,
+                pinned.directory_descriptor,
+                *(item.descriptor for item in pinned.pins),
+            ]
+        )
+        started.set()
+        release.wait(timeout=5)
+        return pinned
+
+    monkeypatch.setattr(publication, "_pin_published_artifact_set", paused)
+
+    async def consume() -> None:
+        if api == "inspect":
+            await publication.inspect_published_artifact_set(declaration)
+        else:
+            async with publication.open_published_artifact_set(declaration, receipt):
+                pytest.fail("canceled acquisition yielded authority")
+
+    task = asyncio.create_task(consume())
+    assert await asyncio.to_thread(started.wait, 5)
+    task.cancel()
+    await asyncio.sleep(0)
+    assert not task.done()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert len(descriptors) == 6
+    for descriptor in descriptors:
+        with pytest.raises(OSError):
+            os.fstat(descriptor)
+    assert_published_metadata_unchanged(final, before, ctimes)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("api", ["inspect", "open", "recheck"])
+async def test_published_marker_read_io_failure_is_unresolved_and_leaves_metadata_unchanged(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    api: str,
+) -> None:
+    from yinshi.services import workspace_replica_publication as module
+
+    declaration, bundle_bytes, worktree_bytes, object_bytes = await declaration_and_bytes(tmp_path)
+    publication = store(tmp_path)
+    receipt = await publication.publish_artifact_set(
+        declaration,
+        bundle_bytes,
+        worktree_bytes,
+        object_bytes,
+    )
+    final = tmp_path / "published" / declaration.operation_id
+    marker_inode = (final / "artifact-set.json").stat().st_ino
+    original = module._read_descriptor
+
+    def fail_marker_read(descriptor: int, byte_length: int) -> bytes:
+        if os.fstat(descriptor).st_ino == marker_inode:
+            raise OSError(errno.EIO, "marker read failed")
+        return original(descriptor, byte_length)
+
+    if api == "recheck":
+        async with publication.open_published_artifact_set(declaration, receipt) as opened:
+            before = age_published_artifact_set(final)
+            ctimes = published_ctimes(final)
+            monkeypatch.setattr(module, "_read_descriptor", fail_marker_read)
+            with pytest.raises(ReplicaPublicationUnresolvedError, match="unresolved"):
+                await publication.recheck_opened_published_artifact_set(opened)
+            assert_published_metadata_unchanged(final, before, ctimes)
+    else:
+        before = age_published_artifact_set(final)
+        ctimes = published_ctimes(final)
+        monkeypatch.setattr(module, "_read_descriptor", fail_marker_read)
+        with pytest.raises(ReplicaPublicationUnresolvedError, match="unresolved"):
+            if api == "inspect":
+                await publication.inspect_published_artifact_set(declaration)
+            else:
+                async with publication.open_published_artifact_set(declaration, receipt):
+                    pytest.fail("failed marker read yielded authority")
+        assert_published_metadata_unchanged(final, before, ctimes)
+
+
+@pytest.mark.asyncio
+async def test_published_inspect_open_and_recheck_leave_metadata_unchanged(
+    tmp_path: Path,
+) -> None:
+    declaration, bundle_bytes, worktree_bytes, object_bytes = await declaration_and_bytes(tmp_path)
+    publication = store(tmp_path)
+    receipt = await publication.publish_artifact_set(
+        declaration,
+        bundle_bytes,
+        worktree_bytes,
+        object_bytes,
+    )
+    final = tmp_path / "published" / declaration.operation_id
+    before = age_published_artifact_set(final)
+    ctimes = published_ctimes(final)
+
+    await publication.inspect_published_artifact_set(declaration)
+    assert_published_metadata_unchanged(final, before, ctimes)
+    async with publication.open_published_artifact_set(declaration, receipt) as opened:
+        assert_published_metadata_unchanged(final, before, ctimes)
+        await publication.recheck_opened_published_artifact_set(opened)
+        assert_published_metadata_unchanged(final, before, ctimes)
+        await publication.recheck_opened_published_artifact_set(opened)
+        assert_published_metadata_unchanged(final, before, ctimes)
+    assert_published_metadata_unchanged(final, before, ctimes)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["success", "rejection", "eio", "cancellation"])
+async def test_published_read_outcomes_leave_atime_mtime_and_ctime_unchanged(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    outcome: str,
+) -> None:
+    from yinshi.services import workspace_replica_publication as module
+
+    declaration, bundle_bytes, worktree_bytes, object_bytes = await declaration_and_bytes(tmp_path)
+    publication = store(tmp_path)
+    await publication.publish_artifact_set(
+        declaration,
+        bundle_bytes,
+        worktree_bytes,
+        object_bytes,
+    )
+    final = tmp_path / "published" / declaration.operation_id
+    if outcome == "rejection":
+        marker = final / "artifact-set.json"
+        marker.write_bytes(marker.read_bytes() + b" ")
+    age_published_artifact_set(final)
+    timestamps = published_timestamps(final)
+    ctimes = published_ctimes(final)
+
+    if outcome == "success":
+        await publication.inspect_published_artifact_set(declaration)
+    elif outcome == "rejection":
+        with pytest.raises(ReplicaPublicationRejectedError, match="marker"):
+            await publication.inspect_published_artifact_set(declaration)
+    elif outcome == "eio":
+        marker_inode = (final / "artifact-set.json").stat().st_ino
+        original = module._read_descriptor
+
+        def fail_marker_read(descriptor: int, byte_length: int) -> bytes:
+            if os.fstat(descriptor).st_ino == marker_inode:
+                raise OSError(errno.EIO, "marker read failed")
+            return original(descriptor, byte_length)
+
+        monkeypatch.setattr(module, "_read_descriptor", fail_marker_read)
+        with pytest.raises(ReplicaPublicationUnresolvedError, match="unresolved"):
+            await publication.inspect_published_artifact_set(declaration)
+    else:
+        original = publication._pin_published_artifact_set
+        started = threading.Event()
+        release = threading.Event()
+        descriptors: list[int] = []
+
+        def paused_pin(*args: object, **kwargs: object):
+            pinned = original(*args, **kwargs)
+            descriptors.extend(
+                [
+                    pinned.root_descriptor,
+                    pinned.directory_descriptor,
+                    *(item.descriptor for item in pinned.pins),
+                ]
+            )
+            started.set()
+            release.wait(timeout=5)
+            return pinned
+
+        monkeypatch.setattr(publication, "_pin_published_artifact_set", paused_pin)
+        task = asyncio.create_task(publication.inspect_published_artifact_set(declaration))
+        assert await asyncio.to_thread(started.wait, 5)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert len(descriptors) == 6
+        for descriptor in descriptors:
+            with pytest.raises(OSError):
+                os.fstat(descriptor)
+
+    assert_published_metadata_unchanged(final, timestamps, ctimes)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["eio", "unresolved"])
+async def test_pin_task_failure_wins_over_stored_cancellation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    from yinshi.services import workspace_replica_publication as module
+
+    declaration, bundle_bytes, worktree_bytes, object_bytes = await declaration_and_bytes(tmp_path)
+    publication = store(tmp_path)
+    await publication.publish_artifact_set(
+        declaration,
+        bundle_bytes,
+        worktree_bytes,
+        object_bytes,
+    )
+    final = tmp_path / "published" / declaration.operation_id
+    worktree_inode = (final / "worktree.yra").stat().st_ino
+    original_hash = module._hash_descriptor
+    real_open = os.open
+    real_close = os.close
+    started = threading.Event()
+    release = threading.Event()
+    opened: list[int] = []
+    closed: list[int] = []
+
+    def failing_hash(descriptor: int, byte_length: int) -> str:
+        if os.fstat(descriptor).st_ino == worktree_inode:
+            started.set()
+            release.wait(timeout=5)
+            if failure == "eio":
+                raise OSError(errno.EIO, "worktree hash failed")
+            raise ReplicaPublicationUnresolvedError("worktree hash is unresolved")
+        return original_hash(descriptor, byte_length)
+
+    def tracked_open(path, flags, mode=0o777, **kwargs):
+        descriptor = real_open(path, flags, mode, **kwargs)
+        opened.append(descriptor)
+        return descriptor
+
+    def tracked_close(descriptor: int) -> None:
+        closed.append(descriptor)
+        real_close(descriptor)
+
+    monkeypatch.setattr(module, "_hash_descriptor", failing_hash)
+    monkeypatch.setattr(module.os, "open", tracked_open)
+    monkeypatch.setattr(module.os, "close", tracked_close)
+    task = asyncio.create_task(publication.inspect_published_artifact_set(declaration))
+    assert await asyncio.to_thread(started.wait, 5)
+    release.set()
+    task.cancel()
+    with pytest.raises(ReplicaPublicationUnresolvedError):
+        await task
+    assert set(opened) == set(closed)
+    for descriptor in opened:
+        with pytest.raises(OSError):
+            os.fstat(descriptor)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["eio", "unresolved"])
+async def test_open_acquisition_failure_wins_over_stored_cancellation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    from yinshi.services import workspace_replica_publication as module
+
+    declaration, bundle_bytes, worktree_bytes, object_bytes = await declaration_and_bytes(tmp_path)
+    publication = store(tmp_path)
+    receipt = await publication.publish_artifact_set(
+        declaration,
+        bundle_bytes,
+        worktree_bytes,
+        object_bytes,
+    )
+    final = tmp_path / "published" / declaration.operation_id
+    marker_inode = (final / "artifact-set.json").stat().st_ino
+    original = module._read_descriptor
+    real_open = os.open
+    real_close = os.close
+    started = threading.Event()
+    release = threading.Event()
+    opened: list[int] = []
+    closed: list[int] = []
+
+    def failing_marker_read(descriptor: int, byte_length: int) -> bytes:
+        if os.fstat(descriptor).st_ino == marker_inode:
+            started.set()
+            release.wait(timeout=5)
+            if failure == "eio":
+                raise OSError(errno.EIO, "marker read failed")
+            raise ReplicaPublicationUnresolvedError("marker read is unresolved")
+        return original(descriptor, byte_length)
+
+    def tracked_open(path, flags, mode=0o777, **kwargs):
+        descriptor = real_open(path, flags, mode, **kwargs)
+        opened.append(descriptor)
+        return descriptor
+
+    def tracked_close(descriptor: int) -> None:
+        closed.append(descriptor)
+        real_close(descriptor)
+
+    monkeypatch.setattr(module, "_read_descriptor", failing_marker_read)
+    monkeypatch.setattr(module.os, "open", tracked_open)
+    monkeypatch.setattr(module.os, "close", tracked_close)
+
+    async def consume() -> None:
+        async with publication.open_published_artifact_set(declaration, receipt):
+            pytest.fail("failed acquisition yielded authority")
+
+    task = asyncio.create_task(consume())
+    assert await asyncio.to_thread(started.wait, 5)
+    task.cancel()
+    await asyncio.sleep(0)
+    assert not task.done()
+    release.set()
+    with pytest.raises(ReplicaPublicationUnresolvedError):
+        await task
+    assert set(opened) == set(closed)
+    for descriptor in opened:
+        with pytest.raises(OSError):
+            os.fstat(descriptor)
 
 
 @pytest.mark.asyncio
