@@ -15,7 +15,6 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from yinshi.exceptions import GitError
-from yinshi.services.workspace_isolation import require_isolated_execution
 
 logger = logging.getLogger(__name__)
 
@@ -674,9 +673,7 @@ async def run_git_bytes(
         raise ValueError("args must not be empty")
     if stdin_bytes is not None and type(stdin_bytes) is not bytes:
         raise TypeError("stdin_bytes must be bytes or None")
-    if stdin_descriptor is not None and (
-        type(stdin_descriptor) is not int or stdin_descriptor < 0
-    ):
+    if stdin_descriptor is not None and (type(stdin_descriptor) is not int or stdin_descriptor < 0):
         raise TypeError("stdin_descriptor must be a nonnegative integer or None")
     if stdin_bytes is not None and stdin_descriptor is not None:
         raise ValueError("stdin_bytes and stdin_descriptor are mutually exclusive")
@@ -691,7 +688,7 @@ async def run_git_bytes(
         or len(set(accepted_returncodes)) != len(accepted_returncodes)
     ):
         raise ValueError("accepted_returncodes must contain unique process return codes")
-    profile = require_isolated_execution("trusted_git")
+    modeled = not sys.platform.startswith("linux")
     logger.debug("Running git operation %s", args[0])
     child_env = {
         "GCM_INTERACTIVE": "Never",
@@ -723,16 +720,14 @@ async def run_git_bytes(
         )
         command_args = [
             (
-                argument.process_path(modeled=profile.modeled)
+                argument.process_path(modeled=modeled)
                 if isinstance(argument, _StableDirectory)
                 else argument
             )
             for argument in args
         ]
         cmd = [_GIT_EXECUTABLE_PATH, *command_args]
-        process_cwd = (
-            None if stable_cwd is None else stable_cwd.process_path(modeled=profile.modeled)
-        )
+        process_cwd = None if stable_cwd is None else stable_cwd.process_path(modeled=modeled)
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             cwd=process_cwd,

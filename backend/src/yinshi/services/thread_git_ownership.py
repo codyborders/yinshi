@@ -368,6 +368,29 @@ async def _validate_workspace_binding(workspace_path: str, common: Path) -> None
     )
 
 
+async def preflight_thread_git_workspace(
+    repo_path: str,
+    workspace_path: str,
+    database_identity: str,
+) -> None:
+    """Inspect existing physical Git ownership without creating storage."""
+    try:
+        common = await _common_directory(repo_path)
+        expected_owner = await asyncio.to_thread(_owner_payload, common, database_identity)
+        if await _common_directory(repo_path) != common:
+            raise ThreadGitOwnershipError()
+        if await _common_directory(workspace_path) != common:
+            raise ThreadGitOwnershipError()
+        await asyncio.to_thread(_validate_storage_layout, common)
+        await _validate_workspace_binding(repo_path, common)
+        await _validate_workspace_binding(workspace_path, common)
+        owner_exists = await _record_operation(common, expected_owner, create=False)
+        if not owner_exists and await _unknown_thread_artifacts(repo_path, common):
+            raise ThreadGitOwnershipError()
+    except (OSError, ValueError) as exc:
+        raise ThreadGitOwnershipError() from exc
+
+
 async def verify_thread_git_workspace(workspace_path: str, branch: str, namespace: str) -> None:
     """Validate a checkout under an already held physical namespace lock."""
     try:

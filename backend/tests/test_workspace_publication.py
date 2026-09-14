@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import sqlite3
 import stat
 import subprocess
 import threading
@@ -30,6 +31,37 @@ from yinshi.services.workspace_publication import (
     rewrite_linked_worktree_backlinks,
 )
 from yinshi.tenant import TenantContext
+
+
+@pytest.fixture(autouse=True)
+def _workspace_publication_schema(db: sqlite3.Connection) -> None:
+    """Provide schemas that remain intentionally absent from production startup."""
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS workspace_checkout_repairs ("
+        "operation_id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, repo_id TEXT NOT NULL, "
+        "authority_hash TEXT NOT NULL, selection_hash TEXT NOT NULL, owner_token TEXT NOT NULL, "
+        "execution_operation_id TEXT, database_identity TEXT NOT NULL, tenant_id TEXT NOT NULL, "
+        "runtime_id TEXT, state TEXT NOT NULL, source_repo_path TEXT NOT NULL, "
+        "final_repo_path TEXT NOT NULL, remote_url TEXT, installation_id INTEGER, "
+        "workspace_paths_json TEXT, created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, "
+        "updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)"
+    )
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS workspace_checkout_publications ("
+        "operation_id TEXT NOT NULL, generation INTEGER NOT NULL, object_kind TEXT NOT NULL, "
+        "workspace_id TEXT, state TEXT NOT NULL, staging_path TEXT NOT NULL, "
+        "final_path TEXT NOT NULL, owner_token TEXT NOT NULL, staging_identity_json TEXT, "
+        "final_identity_json TEXT, staging_parent_identity_json TEXT NOT NULL, "
+        "final_parent_identity_json TEXT NOT NULL, marker_directory TEXT, marker_key TEXT, "
+        "marker_authority_hash TEXT, marker_operation_id TEXT, marker_physical_identity_json TEXT, "
+        "backlink_json TEXT NOT NULL DEFAULT '{}', backlinks_validated INTEGER NOT NULL DEFAULT 0, "
+        "rename_started INTEGER NOT NULL DEFAULT 0, rename_completed INTEGER NOT NULL DEFAULT 0, "
+        "directory_synced INTEGER NOT NULL DEFAULT 0, cleanup_state TEXT NOT NULL DEFAULT 'pending', "
+        "created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, "
+        "updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, "
+        "PRIMARY KEY (operation_id, generation))"
+    )
+    db.commit()
 
 
 def _run_git(*arguments: str, cwd: Path) -> str:
@@ -512,7 +544,13 @@ async def test_absent_managed_repository_uses_logical_repair_without_execution_i
     )
 
     assert isinstance(publication, WorkspaceCheckoutPublication)
-    assert db.execute("SELECT COUNT(*) FROM workspace_execution_receipts").fetchone()[0] == 0
+    assert (
+        db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+            "AND name = 'workspace_execution_receipts'"
+        ).fetchone()
+        is None
+    )
     assert (
         db.execute("SELECT execution_operation_id FROM workspace_checkout_repairs").fetchone()[0]
         is None
@@ -535,6 +573,12 @@ async def test_repair_cannot_start_after_workspace_deletion_claim(
         "INSERT INTO workspaces (id, repo_id, name, branch, path, state) "
         "VALUES ('workspace-deleting', 'repo-deleting', 'main', 'main', ?, 'deleting')",
         (git_repo,),
+    )
+    db.execute(
+        "CREATE TABLE workspace_deletions ("
+        "operation_id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, repo_id TEXT NOT NULL, "
+        "repo_path TEXT NOT NULL, workspace_path TEXT NOT NULL, branch TEXT NOT NULL, "
+        "authority_hash TEXT NOT NULL, state TEXT NOT NULL)"
     )
     db.execute(
         "INSERT INTO workspace_deletions "

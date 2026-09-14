@@ -53,13 +53,18 @@ async def test_agent_spawn_persists_trusted_identity_and_auto_start(db, git_repo
         service = ThreadOrchestrationService()
         body = ThreadChildCreate(idempotency_key=str(uuid.uuid4()), title="Child", task="Inspect")
         first = await service.spawn_child(
-            request, parent_session_id=parent_session_id, body=body, caller=caller
+            request,
+            parent_session_id=parent_session_id,
+            body=body,
+            caller=caller,
+            runtime_ready=lambda: True,
         )
         replay = await service.spawn_child(
             request,
             parent_session_id=parent_session_id,
             body=body.model_copy(update={"idempotency_key": str(uuid.uuid4())}),
             caller=caller,
+            runtime_ready=lambda: True,
         )
         row = db.execute(
             "SELECT * FROM thread_delegations WHERE id = ?", (first.delegation_id,)
@@ -117,11 +122,19 @@ async def test_turn_spawn_limit_counts_new_calls_but_not_same_call_replay(
         idempotency_key=str(uuid.uuid4()), title="Child", task="Inspect", start_immediately=False
     )
     first = await service.spawn_child(
-        request, parent_session_id="parent-session", caller=caller, body=body
+        request,
+        parent_session_id="parent-session",
+        caller=caller,
+        body=body,
+        runtime_ready=lambda: True,
     )
     assert (
         await service.spawn_child(
-            request, parent_session_id="parent-session", caller=caller, body=body
+            request,
+            parent_session_id="parent-session",
+            caller=caller,
+            body=body,
+            runtime_ready=lambda: True,
         )
         == first
     )
@@ -131,6 +144,7 @@ async def test_turn_spawn_limit_counts_new_calls_but_not_same_call_replay(
             parent_session_id="parent-session",
             caller=replace(caller, tool_call_id="second"),
             body=body,
+            runtime_ready=lambda: True,
         )
     assert error.value.code == "spawn_limit_exceeded"
     assert db.execute("SELECT COUNT(*) FROM thread_delegations").fetchone()[0] == 1

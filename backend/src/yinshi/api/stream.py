@@ -1182,7 +1182,11 @@ async def prompt_session(
             )
             handlers = None
             if operations != frozenset({"ping_thread_bridge"}):
-                handlers = build_thread_handlers(request, thread_service)
+                handlers = build_thread_handlers(
+                    request,
+                    thread_service,
+                    runtime_ready=lambda: sidecar is not None and sidecar.connected,
+                )
             sidecar_events = sidecar.query(
                 session_id,
                 prompt,
@@ -1280,9 +1284,9 @@ async def prompt_session(
                         if isinstance(provider_payload, str):
                             result_provider = provider_payload
                         stored_turn = _serialize_stored_turn(turn_events)
-                        assert (
-                            stored_turn is not None
-                        ), "result event must be present in stored turn"
+                        assert stored_turn is not None, (
+                            "result event must be present in stored turn"
+                        )
                         # Ensure an assistant message row exists even for
                         # short responses (< batch size) or tool-only turns.
                         if assistant_msg_id is None:

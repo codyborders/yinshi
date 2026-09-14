@@ -45,7 +45,6 @@ from yinshi.services.workspace_admission import (
     read_workspace_identity,
     resume_workspace_admission_marker,
 )
-from yinshi.services.workspace_isolation import require_isolated_execution
 from yinshi.tenant import TenantContext
 
 _BACKLINK_BYTES_MAX: Final[int] = 4096
@@ -959,6 +958,58 @@ def _validate_repo_child(final_repo: Path, repo_id: str) -> None:
         raise WorkspacePublicationError("Checkout repair repository ID is not path-safe")
 
 
+def _has_workspace_deletion_owner(database: sqlite3.Connection, repo_id: str) -> bool:
+    """Check optional deletion ownership without requiring its deferred schema."""
+    table = database.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'workspace_deletions'"
+    ).fetchone()
+    if table is None:
+        return False
+    owner = database.execute(
+        "SELECT 1 FROM workspace_deletions WHERE repo_id = ? "
+        "AND state IN ('claiming', 'claimed', 'draining') LIMIT 1",
+        (repo_id,),
+    ).fetchone()
+    return owner is not None
+
+
+def _has_active_workspace_execution(
+    database: sqlite3.Connection,
+    repo_id: str,
+    execution_operation_id: str | None,
+) -> bool:
+    """Check optional execution ownership without requiring its deferred schema."""
+    table = database.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'workspace_execution_receipts'"
+    ).fetchone()
+    if table is None:
+        return False
+    execution = database.execute(
+        "SELECT e.operation_id FROM workspace_execution_receipts e "
+        "JOIN workspaces w ON w.id = e.workspace_id WHERE w.repo_id = ? "
+        "AND e.status IN ('reserved', 'prepared') AND e.operation_id != COALESCE(?, '') "
+        "LIMIT 1",
+        (repo_id, execution_operation_id),
+    ).fetchone()
+    return execution is not None
+
+
+def _has_active_thread_integration(database: sqlite3.Connection, repo_id: str) -> bool:
+    """Check optional integration ownership without requiring its removed schema."""
+    table = database.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'thread_integrations'"
+    ).fetchone()
+    if table is None:
+        return False
+    integration = database.execute(
+        "SELECT 1 FROM thread_integrations i JOIN workspaces w "
+        "ON w.id = i.parent_workspace_id WHERE w.repo_id = ? "
+        "AND i.status IN ('checking', 'applying', 'blocked') LIMIT 1",
+        (repo_id,),
+    ).fetchone()
+    return integration is not None
+
+
 def _begin_repair_locked(
     database: sqlite3.Connection,
     *,
@@ -975,33 +1026,20 @@ def _begin_repair_locked(
 ) -> tuple[str, str, str] | None:
     """Create or recover one exact logical repair owner before filesystem work."""
     current = _authorize_checkout(database, authorize, expected)
-    deletion_owner = database.execute(
-        "SELECT 1 FROM workspace_deletions WHERE repo_id = ? "
-        "AND state IN ('claiming', 'claimed', 'draining') LIMIT 1",
-        (expected.repo_id,),
-    ).fetchone()
+    deletion_owner = _has_workspace_deletion_owner(database, expected.repo_id)
     deleting_workspace = database.execute(
         "SELECT 1 FROM workspaces WHERE repo_id = ? AND state = 'deleting' LIMIT 1",
         (expected.repo_id,),
     ).fetchone()
-    if deletion_owner is not None or deleting_workspace is not None:
+    if deletion_owner or deleting_workspace is not None:
         raise WorkspacePublicationError("Checkout repair conflicts with workspace deletion")
-    active_execution = database.execute(
-        "SELECT e.operation_id FROM workspace_execution_receipts e "
-        "JOIN workspaces w ON w.id = e.workspace_id WHERE w.repo_id = ? "
-        "AND e.status IN ('reserved', 'prepared') AND e.operation_id != COALESCE(?, '') "
-        "LIMIT 1",
-        (expected.repo_id, execution_operation_id),
-    ).fetchone()
-    if active_execution is not None:
+    if _has_active_workspace_execution(
+        database,
+        expected.repo_id,
+        execution_operation_id,
+    ):
         raise WorkspacePublicationError("Checkout repair conflicts with active execution")
-    active_integration = database.execute(
-        "SELECT 1 FROM thread_integrations i JOIN workspaces w "
-        "ON w.id = i.parent_workspace_id WHERE w.repo_id = ? "
-        "AND i.status IN ('checking', 'applying', 'blocked') LIMIT 1",
-        (expected.repo_id,),
-    ).fetchone()
-    if active_integration is not None:
+    if _has_active_thread_integration(database, expected.repo_id):
         raise WorkspacePublicationError("Checkout repair conflicts with active integration")
     selection_hash = _logical_selection_hash(current)
     row = database.execute(
@@ -2211,7 +2249,6 @@ async def publish_workspace_checkout_for_tenant(
     _validate_repo_child(final_repo, state.repo_id)
     selected_recorded_path = dict(state.workspace_paths).get(state.workspace_id)
     await _authorize_external(run_database_operation, authorize, state)
-    require_isolated_execution("trusted_git")
     repo_available = await validate_local_repo(state.repo_path)
     selected_worktree_missing = False
     if selected_recorded_path is not None:

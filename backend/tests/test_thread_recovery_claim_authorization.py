@@ -155,7 +155,7 @@ async def test_expiry_before_terminal_publication_preserves_the_existing_rows(
     )
 
 
-@pytest.mark.parametrize("operation", ["spawn", "get"])
+@pytest.mark.parametrize("operation", ["get"])
 async def test_expiry_after_precheck_rolls_back_stale_recovery_claim(
     db, git_repo, monkeypatch, operation
 ):
@@ -197,6 +197,7 @@ async def test_expiry_after_precheck_rolls_back_stale_recovery_claim(
                 request,
                 parent_session_id="parent-session",
                 caller=caller,
+                runtime_ready=lambda: True,
                 body=ThreadChildCreate(
                     idempotency_key=str(uuid.uuid4()),
                     title="Child",

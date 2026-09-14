@@ -186,7 +186,11 @@ async def test_spawn_does_not_reconcile_outside_authorized_parent(
             )
     else:
         await service.spawn_child(
-            request, parent_session_id="parent-session", body=body, caller=caller
+            request,
+            parent_session_id="parent-session",
+            body=body,
+            caller=caller,
+            runtime_ready=lambda: True,
         )
     stored = db.execute(
         "SELECT status FROM thread_delegations WHERE id = ?", (placeholder_id,)

@@ -1,6 +1,7 @@
 """Strict model-facing adapters for the backend-owned thread lifecycle."""
 
 import json
+from collections.abc import Callable
 from typing import Annotated, Any, Literal
 
 from fastapi import Request
@@ -34,6 +35,7 @@ _CORE_ERROR_CODES = {
     "tree_limit_exceeded": "tree_limit_exceeded",
     "spawn_limit_exceeded": "spawn_turn_limit_exceeded",
     "parent_not_authorized": "thread_not_found",
+    "runtime_unavailable": "runtime_unavailable",
 }
 
 
@@ -120,6 +122,8 @@ _INPUTS: dict[str, type[_ToolInput]] = {
 def build_thread_handlers(
     request: Request,
     service: ThreadOrchestrationService,
+    *,
+    runtime_ready: Callable[[], bool] | None = None,
 ) -> dict[str, ThreadOrchestrationHandler]:
     """Bind strict tools to one backend request without repeating domain authority."""
 
@@ -129,7 +133,14 @@ def build_thread_handlers(
         ) -> dict[str, Any]:
             try:
                 body = _INPUTS[operation].model_validate(arguments)
-                return await _dispatch(request, service, caller, operation, body)
+                return await _dispatch(
+                    request,
+                    service,
+                    caller,
+                    operation,
+                    body,
+                    runtime_ready=runtime_ready,
+                )
             except ValidationError as exc:
                 raise OrchestrationProtocolError(
                     "invalid_arguments", "Invalid thread tool arguments."
@@ -166,6 +177,8 @@ async def _dispatch(
     caller: VerifiedThreadCaller,
     operation: str,
     body: _ToolInput,
+    *,
+    runtime_ready: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     if isinstance(body, _SpawnInput):
         # The legacy request type requires a UUID. Core replaces this value with trusted call identity.
@@ -175,7 +188,11 @@ async def _dispatch(
             **body.model_dump(),
         )
         outcome = await service.spawn_child(
-            request, parent_session_id=caller.session_id, body=spawn, caller=caller
+            request,
+            parent_session_id=caller.session_id,
+            body=spawn,
+            caller=caller,
+            runtime_ready=runtime_ready,
         )
         return _outcome(outcome)
     if isinstance(body, _GetInput):

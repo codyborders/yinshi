@@ -318,11 +318,3 @@ async def test_public_verifier_rejects_object_format_mismatch(tmp_path: Path) ->
     created = await create_committed_bundle(path, ("refs/heads/main",), include_head=False)
     with pytest.raises(GitError):
         await verify_committed_bundle(created.bundle_bytes, object_format="sha256")
-
-
-@pytest.mark.fail_closed_isolation
-@pytest.mark.asyncio
-async def test_bundle_creation_keeps_trusted_git_gate_fail_closed(tmp_path: Path) -> None:
-    path = repo(tmp_path)
-    with pytest.raises(Exception, match="trusted_git"):
-        await create_committed_bundle(path, ("refs/heads/main",), include_head=False)

@@ -32,8 +32,8 @@ from yinshi.exceptions import (
 from yinshi.services.git import (
     _run_git,
     create_worktree,
+    run_git_bytes as _run_git_bytes,
 )
-from yinshi.services.git import run_git_bytes as _run_git_bytes
 from yinshi.services.repository_lifecycle import (
     repository_lifecycle,
     repository_lifecycle_root,
@@ -44,6 +44,7 @@ from yinshi.services.thread_git_ownership import (
     ThreadGitFinalization,
     ThreadGitOwnershipError,
     ThreadGitWorktree,
+    preflight_thread_git_workspace,
     thread_git_claim_namespace,
     thread_git_namespace,
     verify_thread_git_workspace,
@@ -303,7 +304,7 @@ def _load_parent_location(
         "SELECT * FROM workspaces WHERE id = ?",
         (parent_workspace_id,),
     ).fetchone()
-    if workspace is None:
+    if workspace is None or workspace["state"] != "ready":
         raise WorkspaceNotFoundError(f"Workspace {parent_workspace_id} not found")
     repo_id = str(workspace["repo_id"])
     repo = db.execute(
@@ -473,6 +474,33 @@ async def _ref_exists(repo_path: str, ref: str) -> bool:
 
 class ThreadWorkspaceService:
     """Provision and finalize isolated Git workspaces for child threads."""
+
+    async def preflight_child_admission(
+        self,
+        context: ThreadParentGitContext,
+        *,
+        database_identity: str,
+    ) -> None:
+        """Check parent storage and Git worktree support without mutation."""
+        if os.path.islink(context.repo_path):
+            raise ThreadGitOwnershipError()
+        if os.path.islink(context.parent_workspace_path):
+            raise ThreadGitOwnershipError()
+        worktree_root = os.path.join(context.repo_path, _WORKTREE_DIRECTORY)
+        if os.path.islink(worktree_root):
+            raise ThreadGitOwnershipError()
+        await preflight_thread_git_workspace(
+            context.repo_path,
+            context.parent_workspace_path,
+            database_identity,
+        )
+        listing = await _run_git_bytes(
+            ["worktree", "list", "--porcelain", "-z"],
+            cwd=context.repo_path,
+        )
+        expected = b"worktree " + os.fsencode(os.path.realpath(context.parent_workspace_path))
+        if not any(record == expected for record in listing.split(b"\0")):
+            raise ThreadGitOwnershipError()
 
     @staticmethod
     def child_artifact_location(repo_path: str, delegation_id: str) -> tuple[str, str]:
@@ -897,7 +925,7 @@ class ThreadWorkspaceService:
                 )
             if failures:
                 logger.warning(
-                    "Thread workspace cleanup left %d artifact(s) for " "delegation reconciliation",
+                    "Thread workspace cleanup left %d artifact(s) for delegation reconciliation",
                     len(failures),
                 )
             raise
@@ -966,7 +994,7 @@ class ThreadWorkspaceService:
             )
         if failures:
             raise GitError(
-                f"thread workspace cleanup failed for delegation " f"{normalized_delegation_id}"
+                f"thread workspace cleanup failed for delegation {normalized_delegation_id}"
             ) from failures[0]
         logger.info("Discarded partial child thread workspace artifacts")
 

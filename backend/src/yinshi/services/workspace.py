@@ -3,7 +3,10 @@
 import logging
 import os
 import sqlite3
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, cast
 
 from yinshi.config import get_settings
@@ -16,6 +19,7 @@ from yinshi.exceptions import (
     WorkspaceNotFoundError,
 )
 from yinshi.services.git import (
+    _run_git,
     clone_local_repo,
     clone_repo,
     create_worktree,
@@ -25,6 +29,7 @@ from yinshi.services.git import (
     get_remote_url,
     resolve_remote_base_ref,
     restore_worktree,
+    run_git_bytes,
     validate_local_repo,
 )
 from yinshi.services.github_app import normalize_github_remote, resolve_github_clone_access
@@ -53,6 +58,25 @@ class WorkspaceCheckoutState:
     remote_url: str | None
     installation_id: int | None
     workspaces: tuple[tuple[str, str], ...]
+    workspace_paths: tuple[tuple[str, str], ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class WorkspaceDeletionTarget:
+    """Authorized database snapshot for public workspace cleanup."""
+
+    workspace_id: str
+    repo_id: str
+    repo_path: str
+    workspace_path: str
+    branch: str
+    session_ids: tuple[str, ...]
+    lock_root: str
+    delegation_id: str | None
+    snapshot_ref: str | None
+    snapshot_commit: str | None
+    result_ref: str | None
+    result_commit: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -261,22 +285,26 @@ def load_workspace_checkout_state(
     repo_path = repo["root_path"]
     assert repo_path, "repo root_path must not be empty"
     workspaces = db.execute(
-        "SELECT id, branch FROM workspaces WHERE repo_id = ? ORDER BY created_at ASC",
+        "SELECT id, branch, path FROM workspaces WHERE repo_id = ? ORDER BY created_at ASC",
         (repo_id,),
     ).fetchall()
     workspace_branches: list[tuple[str, str]] = []
+    workspace_paths: list[tuple[str, str]] = []
     for row in workspaces:
         branch = row["branch"]
         if not branch:
             raise WorkspaceNotFoundError(f"Workspace {row['id']} is missing its branch name")
         workspace_branches.append((row["id"], branch))
+        workspace_paths.append((row["id"], str(row["path"])))
+    repo_keys = repo.keys()
     return WorkspaceCheckoutState(
         workspace_id=workspace_id,
         repo_id=repo_id,
         repo_path=repo_path,
         remote_url=repo["remote_url"],
-        installation_id=(repo["installation_id"] if "installation_id" in repo.keys() else None),
+        installation_id=(repo["installation_id"] if "installation_id" in repo_keys else None),
         workspaces=tuple(workspace_branches),
+        workspace_paths=tuple(workspace_paths),
     )
 
 
@@ -580,6 +608,231 @@ async def _create_workspace_for_repo_unlocked(
 
     row = db.execute("SELECT * FROM workspaces WHERE rowid = ?", (cursor.lastrowid,)).fetchone()
     return dict(row)
+
+
+def _workspace_matches_deletion_target(
+    workspace: sqlite3.Row,
+    target: WorkspaceDeletionTarget,
+) -> bool:
+    return (
+        str(workspace["repo_id"]) == target.repo_id
+        and str(workspace["path"]) == target.workspace_path
+        and str(workspace["branch"]) == target.branch
+    )
+
+
+def _validate_delegated_deletion_refs(target: WorkspaceDeletionTarget) -> None:
+    if target.delegation_id is None:
+        return
+    refs = (
+        (target.snapshot_ref, f"refs/yinshi/snapshots/{target.delegation_id}"),
+        (target.result_ref, f"refs/yinshi/results/{target.delegation_id}"),
+    )
+    if any(ref is not None and ref != expected for ref, expected in refs):
+        raise GitError("delegated workspace ref ownership is invalid")
+
+
+def prepare_workspace_deletion(
+    db: sqlite3.Connection,
+    workspace_id: str,
+    *,
+    tenant: TenantContext | None = None,
+) -> WorkspaceDeletionTarget:
+    """Authorize cleanup and return immutable values needed outside SQLite."""
+    workspace = _fetch_workspace(db, workspace_id)
+    ensure_workspace_has_no_delegated_children(db, workspace_id)
+    repo = _fetch_repo(db, workspace["repo_id"])
+    session_rows = db.execute(
+        "SELECT id FROM sessions WHERE workspace_id = ? ORDER BY id",
+        (workspace_id,),
+    ).fetchall()
+    delegated_rows = db.execute(
+        "SELECT d.id, d.snapshot_ref, d.base_commit AS snapshot_commit, "
+        "r.result_ref, r.result_commit FROM thread_delegations d "
+        "JOIN sessions s ON s.id = d.child_session_id "
+        "LEFT JOIN thread_results r ON r.delegation_id = d.id "
+        "WHERE s.workspace_id = ?",
+        (workspace_id,),
+    ).fetchall()
+    if len(delegated_rows) > 1:
+        raise WorkspaceHasDelegatedThreads("Workspace has conflicting delegated ownership")
+    delegated = delegated_rows[0] if delegated_rows else None
+    target = WorkspaceDeletionTarget(
+        workspace_id=workspace_id,
+        repo_id=str(workspace["repo_id"]),
+        repo_path=str(repo["root_path"]),
+        workspace_path=str(workspace["path"]),
+        branch=str(workspace["branch"]),
+        session_ids=tuple(str(row["id"]) for row in session_rows),
+        lock_root=str(repository_lifecycle_root(db, tenant)),
+        delegation_id=str(delegated["id"]) if delegated is not None else None,
+        snapshot_ref=(
+            str(delegated["snapshot_ref"])
+            if delegated is not None and delegated["snapshot_ref"] is not None
+            else None
+        ),
+        snapshot_commit=(
+            str(delegated["snapshot_commit"])
+            if delegated is not None and delegated["snapshot_commit"] is not None
+            else None
+        ),
+        result_ref=(
+            str(delegated["result_ref"])
+            if delegated is not None and delegated["result_ref"] is not None
+            else None
+        ),
+        result_commit=(
+            str(delegated["result_commit"])
+            if delegated is not None and delegated["result_commit"] is not None
+            else None
+        ),
+    )
+    _validate_delegated_deletion_refs(target)
+    return target
+
+
+def transition_workspace_state(
+    db: sqlite3.Connection,
+    workspace_id: str,
+    state: str,
+) -> bool:
+    """Change public workspace state unless cleanup already owns it."""
+    cursor = db.execute(
+        "UPDATE workspaces SET state = ? WHERE id = ? AND state != 'deleting'",
+        (state, workspace_id),
+    )
+    db.commit()
+    return cursor.rowcount == 1
+
+
+def claim_workspace_deletion(
+    db: sqlite3.Connection,
+    target: WorkspaceDeletionTarget,
+) -> None:
+    """Block new child reservations before external cleanup starts."""
+    db.execute("BEGIN IMMEDIATE")
+    try:
+        workspace = _fetch_workspace(db, target.workspace_id)
+        if not _workspace_matches_deletion_target(workspace, target):
+            raise WorkspaceNotFoundError(target.workspace_id)
+        _validate_delegated_deletion_refs(target)
+        ensure_workspace_has_no_delegated_children(db, target.workspace_id)
+        if workspace["state"] == "deleting":
+            db.commit()
+            return
+        if workspace["state"] != "ready":
+            raise WorkspaceNotFoundError(target.workspace_id)
+        updated = db.execute(
+            "UPDATE workspaces SET state = 'deleting' WHERE id = ? AND state = 'ready'",
+            (target.workspace_id,),
+        ).rowcount
+        if updated != 1:
+            raise WorkspaceNotFoundError(target.workspace_id)
+        db.commit()
+    except BaseException:
+        db.rollback()
+        raise
+
+
+def release_workspace_deletion(
+    db: sqlite3.Connection,
+    target: WorkspaceDeletionTarget,
+) -> None:
+    """Release a cleanup claim when no Git removal has started."""
+    db.execute("BEGIN IMMEDIATE")
+    try:
+        workspace = db.execute(
+            "SELECT * FROM workspaces WHERE id = ?",
+            (target.workspace_id,),
+        ).fetchone()
+        if (
+            workspace is not None
+            and _workspace_matches_deletion_target(workspace, target)
+            and workspace["state"] == "deleting"
+        ):
+            db.execute(
+                "UPDATE workspaces SET state = 'ready' WHERE id = ? AND state = 'deleting'",
+                (target.workspace_id,),
+            )
+        db.commit()
+    except BaseException:
+        db.rollback()
+        raise
+
+
+@asynccontextmanager
+async def workspace_deletion_lifecycle(
+    target: WorkspaceDeletionTarget,
+) -> AsyncIterator[None]:
+    """Serialize one cleanup owner across database and external effects."""
+    async with repository_lifecycle(target.repo_id, Path(target.lock_root)):
+        yield
+
+
+async def _delete_owned_ref_if_matches(
+    repo_path: str,
+    ref: str,
+    expected_oid: str,
+) -> None:
+    current = (
+        await run_git_bytes(
+            ["for-each-ref", "--count=1", "--format=%(objectname)", ref],
+            cwd=repo_path,
+        )
+    ).strip()
+    if not current:
+        return
+    if current.decode("ascii", errors="strict") != expected_oid:
+        raise GitError("delegated workspace ref ownership changed")
+    await _run_git(
+        ["update-ref", "--no-deref", "-d", ref, expected_oid],
+        cwd=repo_path,
+    )
+
+
+async def apply_workspace_deletion(
+    target: WorkspaceDeletionTarget,
+    *,
+    tenant: TenantContext | None = None,
+) -> None:
+    """Remove one workspace while its deletion lifecycle is held."""
+    await delete_worktree(target.repo_path, target.workspace_path)
+    if target.delegation_id is not None:
+        refs = (
+            (target.snapshot_ref, target.snapshot_commit),
+            (target.result_ref, target.result_commit),
+        )
+        for ref, expected_oid in refs:
+            if ref is not None and expected_oid is not None:
+                await _delete_owned_ref_if_matches(
+                    target.repo_path,
+                    ref,
+                    expected_oid,
+                )
+    if tenant is not None:
+        delete_workspace_runtime_home(tenant, target.workspace_id)
+    else:
+        for session_id in target.session_ids:
+            try:
+                delete_local_pi_session_file(session_id)
+            except OSError:
+                logger.warning("Failed to delete Pi session file")
+
+
+def finalize_workspace_deletion(
+    db: sqlite3.Connection,
+    target: WorkspaceDeletionTarget,
+) -> None:
+    """Reauthorize the exact workspace row before removing database state."""
+    workspace = _fetch_workspace(db, target.workspace_id)
+    if (
+        not _workspace_matches_deletion_target(workspace, target)
+        or workspace["state"] != "deleting"
+    ):
+        raise WorkspaceNotFoundError(target.workspace_id)
+    ensure_workspace_has_no_delegated_children(db, target.workspace_id)
+    db.execute("DELETE FROM workspaces WHERE id = ?", (target.workspace_id,))
+    db.commit()
 
 
 async def delete_workspace(

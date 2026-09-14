@@ -1,5 +1,6 @@
 """Endpoints for workspace (worktree) management."""
 
+import asyncio
 import logging
 import sqlite3
 from typing import Any
@@ -12,6 +13,7 @@ from yinshi.api.deps import (
     get_db_for_request,
     get_tenant,
     get_user_email,
+    run_db_operation_for_request,
 )
 from yinshi.config import get_settings
 from yinshi.exceptions import (
@@ -24,9 +26,16 @@ from yinshi.models import WorkspaceCreate, WorkspaceOut, WorkspaceUpdate
 from yinshi.services.run_coordinator import get_run_coordinator
 from yinshi.services.sidecar import release_sessions
 from yinshi.services.workspace import (
+    WorkspaceDeletionTarget,
+    apply_workspace_deletion,
+    claim_workspace_deletion,
     create_workspace_for_repo,
-    delete_workspace,
     ensure_workspace_has_no_delegated_children,
+    finalize_workspace_deletion,
+    prepare_workspace_deletion,
+    release_workspace_deletion,
+    transition_workspace_state,
+    workspace_deletion_lifecycle,
 )
 
 logger = logging.getLogger(__name__)
@@ -157,11 +166,12 @@ def update_workspace(
         updates = {
             k: v for k, v in body.model_dump(exclude_unset=True).items() if k in _UPDATABLE_COLUMNS
         }
-        if updates:
-            sets = ", ".join(f"{k} = ?" for k in updates)
-            vals = list(updates.values()) + [workspace_id]
-            db.execute(f"UPDATE workspaces SET {sets} WHERE id = ?", vals)  # noqa: S608
-            db.commit()
+        if updates and not transition_workspace_state(
+            db,
+            workspace_id,
+            str(updates["state"]),
+        ):
+            raise HTTPException(status_code=409, detail=_RUNTIME_BUSY_DETAIL)
         return _workspace_projection(db, workspace_id)
 
 
@@ -169,43 +179,60 @@ def update_workspace(
 async def remove_workspace(workspace_id: str, request: Request) -> None:
     """Stop runtime activity, then delete a workspace and its durable paths."""
     tenant = get_tenant(request)
-    with get_db_for_request(request) as db:
+
+    def authorize(db: sqlite3.Connection) -> WorkspaceDeletionTarget:
         check_workspace_owner(db, workspace_id, request)
         _reject_delegated_parent_workspace(db, workspace_id)
-        session_rows = db.execute(
-            "SELECT id FROM sessions WHERE workspace_id = ?",
-            (workspace_id,),
-        ).fetchall()
-        try:
-            coordinator = get_run_coordinator()
-            for session_row in session_rows:
-                await coordinator.request_cancel(str(session_row["id"]))
-            if request.app.state.mode == "desktop":
-                # Desktop shares one long-lived sidecar, so these pi sessions
-                # would otherwise stay resident until the app quits. Hosted
-                # mode destroys the whole container below instead.
-                await release_sessions(
-                    get_settings().sidecar_socket_path,
-                    [str(session_row["id"]) for session_row in session_rows],
-                )
-            elif tenant is not None:
-                container_manager = getattr(request.app.state, "container_manager", None)
-                if container_manager is not None:
-                    container_removed = await container_manager.destroy_container(
-                        tenant.user_id,
-                        runtime_id=workspace_id,
+        return prepare_workspace_deletion(db, workspace_id, tenant=tenant)
+
+    try:
+        target = await run_db_operation_for_request(request, authorize)
+        async with workspace_deletion_lifecycle(target):
+            await run_db_operation_for_request(
+                request,
+                lambda db: claim_workspace_deletion(db, target),
+            )
+            try:
+                coordinator = get_run_coordinator()
+                for session_id in target.session_ids:
+                    await coordinator.request_cancel(session_id)
+                if request.app.state.mode == "desktop":
+                    # Desktop shares one long-lived sidecar. Release its sessions
+                    # before removing their workspace paths.
+                    await release_sessions(
+                        get_settings().sidecar_socket_path,
+                        list(target.session_ids),
                     )
-                    if not container_removed:
-                        raise HTTPException(status_code=409, detail=_RUNTIME_BUSY_DETAIL)
-                elif get_settings().container_enabled:
-                    raise RuntimeError("container manager is unavailable")
-            await delete_workspace(db, workspace_id, tenant=tenant)
-        except (WorkspaceNotFoundError, RepoNotFoundError):
-            raise HTTPException(status_code=404, detail="Workspace not found")
-        except WorkspaceHasDelegatedThreads as exc:
-            raise _thread_children_present_error() from exc
-        except HTTPException:
-            raise
-        except Exception:
-            logger.error("Failed to delete workspace")
-            raise HTTPException(status_code=500, detail="Failed to delete workspace")
+                elif tenant is not None:
+                    container_manager = getattr(request.app.state, "container_manager", None)
+                    if container_manager is not None:
+                        container_removed = await container_manager.destroy_container(
+                            tenant.user_id,
+                            runtime_id=workspace_id,
+                        )
+                        if not container_removed:
+                            raise HTTPException(status_code=409, detail=_RUNTIME_BUSY_DETAIL)
+                    elif get_settings().container_enabled:
+                        raise RuntimeError("container manager is unavailable")
+            except BaseException:
+                await asyncio.shield(
+                    run_db_operation_for_request(
+                        request,
+                        lambda db: release_workspace_deletion(db, target),
+                    )
+                )
+                raise
+            await apply_workspace_deletion(target, tenant=tenant)
+            await run_db_operation_for_request(
+                request,
+                lambda db: finalize_workspace_deletion(db, target),
+            )
+    except (WorkspaceNotFoundError, RepoNotFoundError):
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    except WorkspaceHasDelegatedThreads as exc:
+        raise _thread_children_present_error() from exc
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Failed to delete workspace: %s", type(exc).__name__)
+        raise HTTPException(status_code=500, detail="Failed to delete workspace")

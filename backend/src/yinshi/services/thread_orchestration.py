@@ -255,6 +255,13 @@ class ThreadHierarchyDisabledError(ThreadOrchestrationError):
         super().__init__("thread_hierarchy_disabled", message)
 
 
+class ThreadRuntimeUnavailableError(ThreadOrchestrationError):
+    """Raised when the selected existing runtime is not healthy."""
+
+    def __init__(self, message: str = "selected runtime is unavailable") -> None:
+        super().__init__("runtime_unavailable", message)
+
+
 class ThreadParentNotAuthorizedError(ThreadOrchestrationError):
     """Raised when the authenticated caller does not own the parent session."""
 
@@ -378,17 +385,12 @@ class ThreadOrchestrationService:
             self._activated_databases.add(identity)
 
     @staticmethod
-    def authorize_caller(
+    def _authorize_caller_identity(
         db: sqlite3.Connection,
         request: Request,
         caller: VerifiedThreadCaller,
     ) -> None:
         """Require the calling session to own its active durable prompt run."""
-        from yinshi.config import get_settings
-
-        settings = get_settings()
-        if not settings.thread_hierarchy_enabled or not settings.agent_delegation_enabled:
-            raise ThreadHierarchyDisabledError()
         tenant = get_tenant(request)
         tenant_id = tenant.user_id if tenant is not None else None
         if (
@@ -404,6 +406,21 @@ class ThreadOrchestrationService:
         ).fetchone()
         if run is None or run["status"] != "running":
             raise ThreadNotFoundError(caller.session_id)
+
+    @classmethod
+    def authorize_caller(
+        cls,
+        db: sqlite3.Connection,
+        request: Request,
+        caller: VerifiedThreadCaller,
+    ) -> None:
+        """Apply feature policy before authorizing one active caller."""
+        from yinshi.config import get_settings
+
+        settings = get_settings()
+        if not settings.thread_hierarchy_enabled or not settings.agent_delegation_enabled:
+            raise ThreadHierarchyDisabledError()
+        cls._authorize_caller_identity(db, request, caller)
 
     def authorize_descendant(
         self,
@@ -1123,30 +1140,13 @@ class ThreadOrchestrationService:
         body: ThreadChildCreate,
         retry_of_delegation_id: str | None = None,
         caller: VerifiedThreadCaller | None = None,
+        runtime_ready: Callable[[], bool] | None = None,
     ) -> ThreadSpawnOutcome:
-        """Reserve one manual child thread and attach its queued child.
-
-        ``retry_of_delegation_id`` records retry lineage on the reservation
-        atomically and is reserved for the retry flow; manual spawns omit it.
-        """
+        """Reserve one child after bounded authorization and physical preflight."""
         if not isinstance(parent_session_id, str) or not parent_session_id.strip():
             raise ValueError("parent_session_id must be a non-empty string")
         from yinshi.config import get_settings
 
-        if not get_settings().thread_hierarchy_enabled:
-            raise ThreadHierarchyDisabledError()
-        await run_db_operation_for_request(
-            request,
-            lambda db: self._authorize_spawn_parent(db, request, parent_session_id, caller),
-        )
-        # Operation-driven recovery is limited to the authorized parent.
-        await reconcile_stale_provisioning(
-            request,
-            parent_session_id=parent_session_id,
-            authorization_guard=lambda db: self._authorize_spawn_parent(
-                db, request, parent_session_id, caller
-            ),
-        )
         if caller is not None:
             body = body.model_copy(
                 update={
@@ -1161,6 +1161,65 @@ class ThreadOrchestrationService:
         idempotency_key = _canonical_idempotency_key(body.idempotency_key)
         workspace_service = ThreadWorkspaceService()
         reservation_id = uuid.uuid4().hex
+        expected_parent_context: ThreadParentGitContext | None = None
+
+        if caller is not None:
+            existing = await run_db_operation_for_request(
+                request,
+                lambda db: self._existing_spawn(
+                    db,
+                    request,
+                    parent_session_id,
+                    idempotency_key,
+                    body,
+                    retry_of_delegation_id,
+                    caller,
+                ),
+            )
+            if existing is not None:
+                return ThreadSpawnOutcome.from_row(existing)
+            settings = get_settings()
+            if not settings.thread_hierarchy_enabled or not settings.agent_delegation_enabled:
+                raise ThreadHierarchyDisabledError()
+
+            def load_preflight(db: sqlite3.Connection) -> ThreadParentGitContext:
+                self._authorize_spawn_parent(db, request, parent_session_id, caller)
+                row = db.execute(
+                    "SELECT workspace_id FROM sessions WHERE id = ?",
+                    (parent_session_id,),
+                ).fetchone()
+                if row is None:
+                    raise ThreadNotFoundError(parent_session_id)
+                return workspace_service.load_parent_context(
+                    db,
+                    get_tenant(request),
+                    parent_workspace_id=str(row["workspace_id"]),
+                    delegation_id=reservation_id,
+                )
+
+            expected_parent_context = await run_db_operation_for_request(request, load_preflight)
+            if runtime_ready is None or runtime_ready() is not True:
+                raise ThreadRuntimeUnavailableError()
+            await workspace_service.preflight_child_admission(
+                expected_parent_context,
+                database_identity=request_database_identity(request),
+            )
+        else:
+            if not get_settings().thread_hierarchy_enabled:
+                raise ThreadHierarchyDisabledError()
+            await run_db_operation_for_request(
+                request,
+                lambda db: self._authorize_spawn_parent(db, request, parent_session_id, None),
+            )
+
+        if caller is None:
+            await reconcile_stale_provisioning(
+                request,
+                parent_session_id=parent_session_id,
+                authorization_guard=lambda db: self._authorize_spawn_parent(
+                    db, request, parent_session_id, None
+                ),
+            )
         reservation = await run_db_operation_for_request(
             request,
             lambda db: self._reserve(
@@ -1172,6 +1231,7 @@ class ThreadOrchestrationService:
                 retry_of_delegation_id,
                 reservation_id=reservation_id,
                 caller=caller,
+                expected_parent_context=expected_parent_context,
             ),
         )
         outcome = ThreadSpawnOutcome.from_row(reservation)
@@ -2440,8 +2500,7 @@ class ThreadOrchestrationService:
             raise ThreadHierarchyDisabledError()
         if row["initiator"] == "agent":
             origin = db.execute(
-                "SELECT id FROM prompt_runs WHERE id = ? AND session_id = ? "
-                "AND status = 'running'",
+                "SELECT id FROM prompt_runs WHERE id = ? AND session_id = ? AND status = 'running'",
                 (row["delegated_by_run_id"], row["parent_session_id"]),
             ).fetchone()
             if origin is None:
@@ -2758,6 +2817,30 @@ class ThreadOrchestrationService:
             db.rollback()
             raise
 
+    def _existing_spawn(
+        self,
+        db: sqlite3.Connection,
+        request: Request,
+        parent_session_id: str,
+        idempotency_key: str,
+        body: ThreadChildCreate,
+        retry_of_delegation_id: str | None,
+        caller: VerifiedThreadCaller,
+    ) -> sqlite3.Row | None:
+        """Return one authorized exact replay before new admission checks."""
+        _authorize_parent(db, request, parent_session_id)
+        if caller.session_id != parent_session_id:
+            raise ThreadNotFoundError(parent_session_id)
+        self._authorize_caller_identity(db, request, caller)
+        row = db.execute(
+            "SELECT * FROM thread_delegations WHERE parent_session_id = ? AND idempotency_key = ?",
+            (parent_session_id, idempotency_key),
+        ).fetchone()
+        if row is None:
+            return None
+        _assert_spawn_replay_matches(row, body, retry_of_delegation_id, caller)
+        return cast(sqlite3.Row, row)
+
     def _authorize_spawn_parent(
         self,
         db: sqlite3.Connection,
@@ -2782,6 +2865,7 @@ class ThreadOrchestrationService:
         *,
         reservation_id: str | None = None,
         caller: VerifiedThreadCaller | None = None,
+        expected_parent_context: ThreadParentGitContext | None = None,
     ) -> sqlite3.Row:
         """Insert one provisioning delegation inside one immediate transaction."""
         db.execute("BEGIN IMMEDIATE")
@@ -2797,8 +2881,24 @@ class ThreadOrchestrationService:
             )
             if existing is not None:
                 db.rollback()
-                _assert_request_matches(existing, body, retry_of_delegation_id)
+                _assert_spawn_replay_matches(existing, body, retry_of_delegation_id, caller)
                 return existing
+            parent = db.execute(
+                "SELECT s.workspace_id, w.state FROM sessions s "
+                "JOIN workspaces w ON w.id = s.workspace_id WHERE s.id = ?",
+                (parent_session_id,),
+            ).fetchone()
+            if parent is None or parent["state"] != "ready":
+                raise ThreadNotFoundError(parent_session_id)
+            if expected_parent_context is not None:
+                current_parent_context = ThreadWorkspaceService().load_parent_context(
+                    db,
+                    get_tenant(request),
+                    parent_workspace_id=str(parent["workspace_id"]),
+                    delegation_id=expected_parent_context.delegation_id,
+                )
+                if current_parent_context != expected_parent_context:
+                    raise ThreadGitOwnershipError()
             self._assert_no_cancellation(db, parent_session_id)
             _enforce_spawn_limits(db, request, parent_session_id)
             if caller is not None:
@@ -2853,6 +2953,27 @@ class ThreadOrchestrationService:
         except BaseException:
             db.rollback()
             raise
+
+
+def _assert_spawn_replay_matches(
+    row: sqlite3.Row,
+    body: ThreadChildCreate,
+    retry_of_delegation_id: str | None,
+    caller: VerifiedThreadCaller | None,
+) -> None:
+    """Require request metadata and exact initiator identity for one replay."""
+    _assert_request_matches(row, body, retry_of_delegation_id)
+    if caller is None:
+        return
+    if (
+        row["initiator"] != "agent"
+        or row["delegated_by_run_id"] != caller.run_id
+        or row["delegated_by_tool_call_id"] != caller.tool_call_id
+        or int(row["auto_start"]) != int(body.start_immediately)
+    ):
+        raise ThreadIdempotencyConflictError(
+            "idempotency key was already used by a different initiator",
+        )
 
 
 def _authorize_session(

@@ -4107,6 +4107,73 @@ def test_update_workspace_no_changes(client: TestClient, test_entities: Entities
     assert resp.json()["state"] == "ready"
 
 
+def test_update_workspace_rejects_changes_during_deletion(
+    client: TestClient,
+    db: sqlite3.Connection,
+    test_entities: Entities,
+) -> None:
+    """PATCH cannot reopen a workspace while cleanup owns it."""
+    db.execute(
+        "UPDATE workspaces SET state = 'deleting' WHERE id = ?",
+        (test_entities.workspace_id,),
+    )
+    db.commit()
+
+    response = client.patch(
+        f"/api/workspaces/{test_entities.workspace_id}",
+        json={"state": "ready"},
+    )
+
+    assert response.status_code == 409
+    assert (
+        db.execute(
+            "SELECT state FROM workspaces WHERE id = ?",
+            (test_entities.workspace_id,),
+        ).fetchone()[0]
+        == "deleting"
+    )
+
+
+def test_update_workspace_cannot_overwrite_concurrent_deletion_claim(
+    client: TestClient,
+    db: sqlite3.Connection,
+    test_entities: Entities,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A deletion claim committed after PATCH reads still wins."""
+    from yinshi.api import workspaces as workspace_api
+
+    original_check = workspace_api.check_workspace_owner
+
+    def claim_during_patch(
+        connection: sqlite3.Connection,
+        workspace_id: str,
+        request: Any,
+    ) -> None:
+        original_check(connection, workspace_id, request)
+        connection.execute(
+            "UPDATE workspaces SET state = 'deleting' WHERE id = ?",
+            (workspace_id,),
+        )
+        connection.commit()
+
+    monkeypatch.setattr(workspace_api, "check_workspace_owner", claim_during_patch)
+
+    response = client.patch(
+        f"/api/workspaces/{test_entities.workspace_id}",
+        json={"state": "ready"},
+    )
+
+    assert response.status_code == 409
+    assert (
+        db.execute(
+            "SELECT state FROM workspaces WHERE id = ?",
+            (test_entities.workspace_id,),
+        ).fetchone()[0]
+        == "deleting"
+    )
+
+
 def test_update_workspace_invalid_state(client: TestClient, test_entities: Entities) -> None:
     """PATCH /api/workspaces/:id with invalid state should 422."""
     resp = client.patch(
