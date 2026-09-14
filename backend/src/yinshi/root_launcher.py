@@ -15,6 +15,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
+from yinshi.services.filesystem_identity import descriptor_mount_id as _mount_id
+
 APP_NAME = "yinshi-app"
 BROKER_NAME = "yinshi-broker"
 BROKER_UID = 999
@@ -348,20 +350,6 @@ def _physical_identity(value: os.stat_result) -> tuple[int, int]:
 def _close_descriptors(descriptors: list[int]) -> None:
     for descriptor in reversed(descriptors):
         os.close(descriptor)
-
-
-def _mount_id(descriptor: int) -> int:
-    try:
-        raw = Path(f"/proc/self/fdinfo/{descriptor}").read_bytes()
-    except OSError as exc:
-        raise RuntimeError("mount identity is unavailable") from exc
-    values = [line.split()[1] for line in raw.splitlines() if line.startswith(b"mnt_id:")]
-    if len(values) != 1:
-        raise RuntimeError("mount identity is invalid")
-    try:
-        return int(values[0])
-    except ValueError as exc:
-        raise RuntimeError("mount identity is invalid") from exc
 
 
 def _walk_to_fixed_root(

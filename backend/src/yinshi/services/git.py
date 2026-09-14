@@ -657,6 +657,7 @@ async def run_git_bytes(
     env: dict[str, str] | None = None,
     *,
     stdin_bytes: bytes | None = None,
+    stdin_descriptor: int | None = None,
     stdout_bytes_max: int | None = None,
     stderr_bytes_max: int | None = None,
     accepted_returncodes: tuple[int, ...] = (0,),
@@ -673,6 +674,12 @@ async def run_git_bytes(
         raise ValueError("args must not be empty")
     if stdin_bytes is not None and type(stdin_bytes) is not bytes:
         raise TypeError("stdin_bytes must be bytes or None")
+    if stdin_descriptor is not None and (
+        type(stdin_descriptor) is not int or stdin_descriptor < 0
+    ):
+        raise TypeError("stdin_descriptor must be a nonnegative integer or None")
+    if stdin_bytes is not None and stdin_descriptor is not None:
+        raise ValueError("stdin_bytes and stdin_descriptor are mutually exclusive")
     if stdout_bytes_max is not None and (type(stdout_bytes_max) is not int or stdout_bytes_max < 0):
         raise ValueError("stdout_bytes_max must be a nonnegative integer or None")
     if stderr_bytes_max is not None and (type(stderr_bytes_max) is not int or stderr_bytes_max < 0):
@@ -731,7 +738,11 @@ async def run_git_bytes(
             cwd=process_cwd,
             env=child_env,
             pass_fds=descriptors,
-            stdin=asyncio.subprocess.PIPE if stdin_bytes is not None else None,
+            stdin=(
+                stdin_descriptor
+                if stdin_descriptor is not None
+                else (asyncio.subprocess.PIPE if stdin_bytes is not None else None)
+            ),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )

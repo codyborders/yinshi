@@ -149,11 +149,65 @@ def test_sha256_and_unborn_repositories_round_trip() -> None:
     assert decoded.object_format == "sha256"
     assert decoded.root_oids == (sha256_oid,)
 
-    unborn = WorktreeArtifactInput(object_format="sha1", head_state="unborn")
+    unborn = WorktreeArtifactInput(
+        object_format="sha1",
+        head_state="unborn",
+        head_target=b"refs/heads/topic",
+    )
     decoded_unborn = decode_worktree_artifact(encode_worktree_artifact(unborn))
     assert decoded_unborn.has_index is False
     assert decoded_unborn.index_bytes is None
     assert decoded_unborn.head_oid == b""
+    assert decoded_unborn.head_target == b"refs/heads/topic"
+
+
+def test_unborn_head_requires_exact_canonical_branch_target() -> None:
+    """Unborn artifacts carry a validated refs/heads/* target or fail closed."""
+    encoded = encode_worktree_artifact(
+        WorktreeArtifactInput(
+            object_format="sha1",
+            head_state="unborn",
+            head_target=b"refs/heads/topic",
+        )
+    )
+    decoded = decode_worktree_artifact(encoded)
+    assert decoded.head_state == "unborn"
+    assert decoded.head_target == b"refs/heads/topic"
+    for target in (
+        b"",
+        b"main",
+        b"refs/tags/v1",
+        b"refs/heads/.hidden",
+        b"refs/heads/a.lock",
+    ):
+        with pytest.raises(WorktreeArtifactEncodeError):
+            encode_worktree_artifact(
+                WorktreeArtifactInput(
+                    object_format="sha1",
+                    head_state="unborn",
+                    head_target=target,
+                )
+            )
+    with pytest.raises(WorktreeArtifactEncodeError):
+        encode_worktree_artifact(
+            WorktreeArtifactInput(
+                object_format="sha1",
+                head_state="unborn",
+                head_oid=OID,
+                head_target=b"refs/heads/topic",
+            )
+        )
+    legacy_control = (
+        bytes((1, 0, 0, 0))
+        + (0).to_bytes(4, "big")
+        + (0).to_bytes(4, "big")
+        + (0).to_bytes(4, "big")
+        + (0).to_bytes(8, "big")
+        + b"\x00"
+    )
+    legacy_frame = reframe([(1, legacy_control), (2, b""), (3, b""), (4, b"")])
+    with pytest.raises(WorktreeArtifactDecodeError, match="unborn"):
+        decode_worktree_artifact(legacy_frame)
 
 
 @pytest.mark.parametrize(
@@ -236,6 +290,7 @@ def test_encoder_rejects_duplicate_paths_and_invalid_heads() -> None:
             WorktreeArtifactInput(
                 object_format="sha1",
                 head_state="unborn",
+                head_oid=OID,
                 head_target=b"refs/heads/main",
             )
         )
@@ -279,6 +334,12 @@ def test_encoder_rejects_unmaterializable_symlink_and_preserves_ignored_director
     )
     with pytest.raises(WorktreeArtifactEncodeError):
         encode_worktree_artifact(empty_symlink)
+    nul_symlink = replace(
+        artifact_input(),
+        entries=(ManifestEntry(b"link", WorktreeEntryKind.SYMLINK, b"bad\x00target"),),
+    )
+    with pytest.raises(WorktreeArtifactEncodeError):
+        encode_worktree_artifact(nul_symlink)
     ignored_directory = replace(
         artifact_input(),
         entries=(
@@ -424,6 +485,18 @@ def test_decoder_rejects_control_count_and_aggregate_mismatches() -> None:
             decode_worktree_artifact(corrupted)
 
 
+def test_decoder_rejects_nul_symlink_target() -> None:
+    source = replace(
+        artifact_input(),
+        entries=(ManifestEntry(b"link", WorktreeEntryKind.SYMLINK, b"x"),),
+    )
+    values = sections(encode_worktree_artifact(source))
+    manifest = bytearray(values[2][1])
+    manifest[-1] = 0
+    with pytest.raises(WorktreeArtifactDecodeError, match="symlink"):
+        decode_worktree_artifact(reframe([*values[:2], (3, bytes(manifest)), values[3]]))
+
+
 def test_decoder_rejects_manifest_kind_flags_parent_and_order_corruption() -> None:
     values = sections(encode_worktree_artifact(artifact_input()))
     manifest = values[2][1]
@@ -539,6 +612,7 @@ def staged_artifact(tmp_path: Path, object_format: str) -> tuple[WorktreeArtifac
         WorktreeArtifactInput(
             object_format=object_format,
             head_state="unborn",
+            head_target=b"refs/heads/main",
             index_bytes=index_bytes,
             root_oids=(object_id,),
         ),
@@ -583,6 +657,7 @@ def test_real_intent_to_add_uses_nonzero_empty_blob_oid(
     source = WorktreeArtifactInput(
         object_format=object_format,
         head_state="unborn",
+        head_target=b"refs/heads/main",
         index_bytes=(repository / ".git" / "index").read_bytes(),
         root_oids=(object_id,),
     )
@@ -607,6 +682,7 @@ def test_real_conflict_index_preserves_three_stages(tmp_path: Path) -> None:
     source = WorktreeArtifactInput(
         object_format="sha1",
         head_state="unborn",
+        head_target=b"refs/heads/main",
         index_bytes=(repository / ".git" / "index").read_bytes(),
         root_oids=tuple(sorted(object_ids)),
     )
@@ -659,6 +735,7 @@ def test_root_input_order_does_not_change_canonical_artifact() -> None:
     source = WorktreeArtifactInput(
         object_format="sha1",
         head_state="unborn",
+        head_target=b"refs/heads/main",
         index_bytes=index,
         root_oids=(first, second),
     )
@@ -700,6 +777,7 @@ def test_version_three_flags_and_approved_extensions_are_preserved() -> None:
     source = WorktreeArtifactInput(
         object_format="sha1",
         head_state="unborn",
+        head_target=b"refs/heads/main",
         index_bytes=index,
         root_oids=(object_id,),
     )

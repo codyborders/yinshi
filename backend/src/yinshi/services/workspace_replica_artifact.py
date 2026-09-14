@@ -284,7 +284,9 @@ def _validate_entry_shape(
         raise error("manifest entry kind is unsupported")
     if entry.kind is WorktreeEntryKind.DIRECTORY and (entry.content or entry.executable):
         raise error("directory entry state is invalid")
-    if entry.kind is WorktreeEntryKind.SYMLINK and (entry.executable or not entry.content):
+    if entry.kind is WorktreeEntryKind.SYMLINK and (
+        entry.executable or not entry.content or b"\x00" in entry.content
+    ):
         raise error("symlink entry state is invalid")
     if len(entry.content) > limits.max_content_bytes:
         raise error("entry content exceeds maximum content bytes")
@@ -518,8 +520,16 @@ def _validate_head(
     if len(artifact.head_target) > 0xFFFFFFFF:
         raise WorktreeArtifactEncodeError("HEAD target is too large")
     if artifact.head_state == "unborn":
-        if artifact.head_oid or artifact.head_target:
-            raise WorktreeArtifactEncodeError("unborn HEAD must not carry target state")
+        # Unborn HEAD authority is the exact preserved branch target with an
+        # empty object ID. Older unborn artifacts without a target fail closed
+        # on decode instead of being fabricated during materialization.
+        if artifact.head_oid:
+            raise WorktreeArtifactEncodeError("unborn HEAD must not carry an object ID")
+        _validate_symbolic_head_target(
+            artifact.head_target,
+            limits,
+            WorktreeArtifactEncodeError,
+        )
     elif artifact.head_state == "detached":
         if artifact.head_target or len(artifact.head_oid) != oid_size:
             raise WorktreeArtifactEncodeError("detached HEAD state is invalid")
@@ -740,8 +750,16 @@ def _parse_control(
     policy_digest = bytes(reader.take(32, "policy digest")) if policy_code else None
     if reader.remaining:
         raise WorktreeArtifactDecodeError("control section has trailing bytes")
-    if head_state == "unborn" and (head_target or head_oid):
-        raise WorktreeArtifactDecodeError("unborn HEAD state is invalid")
+    if head_state == "unborn":
+        # An unborn artifact must carry a validated refs/heads/* target.
+        # Older artifacts with no target fail closed here.
+        if head_oid or not head_target:
+            raise WorktreeArtifactDecodeError("unborn HEAD state is invalid")
+        _validate_symbolic_head_target(
+            head_target,
+            limits,
+            WorktreeArtifactDecodeError,
+        )
     if head_state == "detached" and head_target:
         raise WorktreeArtifactDecodeError("detached HEAD state is invalid")
     if head_state == "symbolic":
