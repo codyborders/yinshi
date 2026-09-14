@@ -1,0 +1,28 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "32f06811308d",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "backend/src/yinshi/services/git.py",
+    "backend/src/yinshi/services/workspace_replica_artifact.py",
+    "backend/tests/test_workspace_replica_artifact.py"
+  ],
+  "sessions": [
+    {
+      "metadata": "/32/f06811308d/0/metadata.json",
+      "transcript": "/32/f06811308d/0/full.jsonl",
+      "compact_transcript": "/32/f06811308d/0/transcript.jsonl",
+      "content_hash": "/32/f06811308d/0/content_hash.txt",
+      "prompt": "/32/f06811308d/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 32870535,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 1136040576,
+    "output_tokens": 2571320,
+    "api_call_count": 8474
+  }
+}
