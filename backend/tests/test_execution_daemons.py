@@ -12,6 +12,7 @@ import time
 import uuid
 from collections.abc import Callable, Generator
 from contextlib import suppress
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -48,7 +49,15 @@ from yinshi.services.broker_protocol import (
     parse_signed_request,
     verify_broker_response,
 )
+from yinshi.services.broker_replica_journal_v2 import (
+    BrokerReplicaJournalV2,
+    LegacyReplicaJournalStateError,
+    ReplicaJournalV2SyncError,
+)
 from yinshi.services.broker_replica_lifecycle import StageOutcomeUnknown, StageRejected
+from yinshi.services.broker_replica_lifecycle_v2 import (
+    BrokerReplicaLifecycleCoordinatorV2,
+)
 from yinshi.services.execution_broker import (
     BrokerControlService,
     BrokerService,
@@ -643,15 +652,15 @@ def _prepare_production_roots(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> tuple[Path, Path, Path]:
-    replica_journal = tmp_path / "replica.sqlite3"
+    replica_journal_v2 = tmp_path / "replica-v2.sqlite3"
     incoming = tmp_path / "incoming"
     publication = tmp_path / "publication"
     incoming.mkdir(mode=0o700)
     publication.mkdir(mode=0o700)
     monkeypatch.setattr(
         execution_daemons,
-        "BROKER_REPLICA_JOURNAL_PATH",
-        replica_journal,
+        "BROKER_REPLICA_JOURNAL_V2_PATH",
+        replica_journal_v2,
     )
     monkeypatch.setattr(execution_daemons, "BROKER_ARTIFACT_INCOMING_ROOT", incoming)
     monkeypatch.setattr(
@@ -659,16 +668,24 @@ def _prepare_production_roots(
         "BROKER_PUBLICATION_STAGING_ROOT",
         publication,
     )
-    return replica_journal, incoming, publication
+    return replica_journal_v2, incoming, publication
 
 
 def test_production_composition_builds_fixed_fail_closed_services(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    replica_journal, incoming, publication = _prepare_production_roots(
+    replica_journal_v2, incoming, publication = _prepare_production_roots(
         tmp_path,
         monkeypatch,
+    )
+    legacy_replica_v1 = tmp_path / "legacy-replica-v1.sqlite3"
+    legacy_replica_v1.write_bytes(b"legacy-replica-v1-bytes")
+    legacy_before = legacy_replica_v1.stat().st_mtime_ns
+    monkeypatch.setattr(
+        execution_daemons,
+        "BROKER_REPLICA_JOURNAL_PATH",
+        legacy_replica_v1,
     )
     for environment in (
         execution_daemons.REPLICA_LIFECYCLE_ENABLED_ENVIRONMENT,
@@ -679,7 +696,12 @@ def test_production_composition_builds_fixed_fail_closed_services(
     composition = execution_daemons._build_broker_composition(_production_config(tmp_path))
 
     assert isinstance(composition.control_service, BrokerControlService)
-    assert composition.replica_journal.path == replica_journal
+    assert isinstance(composition.replica_journal, BrokerReplicaJournalV2)
+    assert composition.replica_journal.path == replica_journal_v2
+    assert isinstance(
+        composition.replica_coordinator,
+        BrokerReplicaLifecycleCoordinatorV2,
+    )
     assert composition.incoming_store._root == incoming
     assert composition.publication_store._root == publication
     assert composition.replica_lifecycle_enabled is False
@@ -687,6 +709,8 @@ def test_production_composition_builds_fixed_fail_closed_services(
         stage: False for stage in execution_daemons.REPLICA_LIFECYCLE_STAGES
     }
     assert set(composition.stage_effects) == set(execution_daemons.REPLICA_LIFECYCLE_STAGES)
+    assert legacy_replica_v1.read_bytes() == b"legacy-replica-v1-bytes"
+    assert legacy_replica_v1.stat().st_mtime_ns == legacy_before
 
 
 @pytest.mark.asyncio
@@ -1101,6 +1125,11 @@ async def test_broker_checks_v1_before_recovery_and_listener_acceptance(
         assert application_id == execution_daemons.BROKER_APPLICATION_ID
         events.append("inspect_v1")
 
+    def inspect_replica(path: Path, *, application_id: str) -> None:
+        assert path == execution_daemons.BROKER_REPLICA_JOURNAL_PATH
+        assert application_id == execution_daemons.BROKER_APPLICATION_ID
+        events.append("inspect_replica_v1")
+
     def build(
         _config: object,
         *,
@@ -1123,6 +1152,11 @@ async def test_broker_checks_v1_before_recovery_and_listener_acceptance(
 
     monkeypatch.setattr(execution_daemons, "load_broker_config", load)
     monkeypatch.setattr(execution_daemons, "inspect_legacy_v1_journal", inspect)
+    monkeypatch.setattr(
+        execution_daemons,
+        "inspect_legacy_replica_v1_journal",
+        inspect_replica,
+    )
     monkeypatch.setattr(execution_daemons, "_build_broker_composition", build)
     monkeypatch.setattr(execution_daemons, "_run_daemon", run_daemon)
 
@@ -1130,6 +1164,7 @@ async def test_broker_checks_v1_before_recovery_and_listener_acceptance(
     assert events == [
         "load",
         "inspect_v1",
+        "inspect_replica_v1",
         "build_v2",
         "recover_launch",
         "recover_replica",
@@ -1181,3 +1216,85 @@ def test_root_and_broker_deadlines_are_strictly_nested() -> None:
         < execution_daemons.BROKER_REPLICA_LIFECYCLE_TIMEOUT_SECONDS
         < execution_daemons.BROKER_TRANSPORT_TIMEOUT_SECONDS
     )
+
+
+def test_replica_v2_binds_stable_response_key_and_rejects_rotation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    replica_journal_v2, _incoming, _publication = _prepare_production_roots(
+        tmp_path,
+        monkeypatch,
+    )
+    config = _production_config(tmp_path)
+    composition = execution_daemons._build_broker_composition(config)
+    assert composition.replica_journal.path == replica_journal_v2
+
+    changed_incarnation = replace(config, broker_incarnation="c" * 32)
+    rebuilt = execution_daemons._build_broker_composition(changed_incarnation)
+    assert isinstance(rebuilt.replica_coordinator, BrokerReplicaLifecycleCoordinatorV2)
+    assert rebuilt.replica_journal.path == replica_journal_v2
+
+    rotated_private_path = tmp_path / "rotated.key"
+    rotated_private_path.write_bytes(b"\x22" * 32)
+    rotated_private_path.chmod(0o600)
+    rotated_response = replace(config, broker_private_key_path=rotated_private_path)
+    with pytest.raises(ReplicaJournalV2SyncError, match="metadata is not configured"):
+        execution_daemons._build_broker_composition(rotated_response)
+
+    rotated_request_path = tmp_path / "rotated-application.pub"
+    rotated_request_path.write_bytes(
+        Ed25519PrivateKey.generate()
+        .public_key()
+        .public_bytes(
+            serialization.Encoding.Raw,
+            serialization.PublicFormat.Raw,
+        )
+    )
+    rotated_request_path.chmod(0o600)
+    rotated_request = replace(config, application_public_key_path=rotated_request_path)
+    with pytest.raises(ReplicaJournalV2SyncError, match="metadata is not configured"):
+        execution_daemons._build_broker_composition(rotated_request)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "legacy replica journal contains an accepted operation",
+        "legacy replica journal contains malformed history",
+    ],
+)
+async def test_broker_rejects_unsafe_replica_v1_before_all_later_work(
+    monkeypatch: pytest.MonkeyPatch,
+    reason: str,
+) -> None:
+    events: list[str] = []
+
+    class StartupConfig:
+        application_uid = APPLICATION_UID
+
+    def inspect_launch(_path: Path, *, application_id: str) -> None:
+        assert application_id == execution_daemons.BROKER_APPLICATION_ID
+        events.append("inspect_launch_v1")
+
+    def inspect_replica(_path: Path, *, application_id: str) -> None:
+        assert application_id == execution_daemons.BROKER_APPLICATION_ID
+        raise LegacyReplicaJournalStateError(reason)
+
+    def fail(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("later startup work must not run")
+
+    monkeypatch.setattr(execution_daemons, "load_broker_config", StartupConfig)
+    monkeypatch.setattr(execution_daemons, "inspect_legacy_v1_journal", inspect_launch)
+    monkeypatch.setattr(
+        execution_daemons,
+        "inspect_legacy_replica_v1_journal",
+        inspect_replica,
+    )
+    monkeypatch.setattr(execution_daemons, "_build_broker_composition", fail)
+    monkeypatch.setattr(execution_daemons, "_run_daemon", fail)
+
+    with pytest.raises(LegacyReplicaJournalStateError, match="replica journal"):
+        await execution_daemons._run_broker()
+    assert events == ["inspect_launch_v1"]

@@ -55,7 +55,6 @@ from yinshi.services.broker_replica_artifact_effects import (
 )
 from yinshi.services.broker_replica_journal import (
     AdmissionReceipt,
-    BrokerReplicaJournal,
     DrainReceipt,
     ExportReceipt,
     IngestReceipt,
@@ -63,15 +62,21 @@ from yinshi.services.broker_replica_journal import (
     ReclaimReceipt,
     VerifyReceipt,
 )
+from yinshi.services.broker_replica_journal_v2 import (
+    BrokerReplicaJournalV2,
+    inspect_legacy_replica_v1_journal,
+)
 from yinshi.services.broker_replica_lifecycle import (
     REPLICA_LIFECYCLE_STAGES,
-    BrokerReplicaLifecycleCoordinator,
-    ReplicaLifecycleContext,
-    ReplicaLifecycleEffects,
-    ReplicaStageEffect,
     StageOutcomeUnknown,
     StageReconciliation,
     StageRejected,
+)
+from yinshi.services.broker_replica_lifecycle_v2 import (
+    BrokerReplicaLifecycleCoordinatorV2,
+    ReplicaLifecycleContextV2,
+    ReplicaLifecycleEffectsV2,
+    ReplicaStageEffectV2,
 )
 from yinshi.services.broker_runtime import BrokerRuntime, BrokerRuntimeLayout
 from yinshi.services.execution_broker import (
@@ -109,7 +114,10 @@ BROKER_PRIVATE_KEY_PATH = Path("/var/lib/yinshi/control/broker.key")
 APPLICATION_PUBLIC_KEY_PATH = Path("/var/lib/yinshi/control/application.pub")
 LEGACY_BROKER_JOURNAL_PATH = Path("/var/lib/yinshi/control/broker-journal.sqlite3")
 BROKER_JOURNAL_PATH = Path("/var/lib/yinshi/control/broker-journal-v2.sqlite3")
+# Legacy replica V1 journal is read-only after this milestone: inspected at startup,
+# never written or migrated. V2 replica state lives in the fixed -v2 journal below.
 BROKER_REPLICA_JOURNAL_PATH = Path("/var/lib/yinshi/control/broker-replica-journal.sqlite3")
+BROKER_REPLICA_JOURNAL_V2_PATH = Path("/var/lib/yinshi/control/broker-replica-journal-v2.sqlite3")
 BROKER_ARTIFACT_INCOMING_ROOT = Path("/var/lib/yinshi/artifact-incoming")
 BROKER_PUBLICATION_STAGING_ROOT = Path("/var/lib/yinshi-launcher/staging")
 BROKER_RUNTIME_ROOT = Path("/run/yinshi-launcher-state/workloads")
@@ -1006,7 +1014,7 @@ class _GatedStageEffect:
     def __init__(
         self,
         stage: str,
-        delegate: ReplicaStageEffect[object],
+        delegate: ReplicaStageEffectV2[object],
         *,
         enabled: bool,
     ) -> None:
@@ -1016,7 +1024,7 @@ class _GatedStageEffect:
 
     async def apply(
         self,
-        context: ReplicaLifecycleContext,
+        context: ReplicaLifecycleContextV2,
     ) -> StageReconciliation[object]:
         if not self._enabled:
             raise StageRejected(
@@ -1027,7 +1035,7 @@ class _GatedStageEffect:
 
     async def reconcile(
         self,
-        context: ReplicaLifecycleContext,
+        context: ReplicaLifecycleContextV2,
     ) -> StageReconciliation[object]:
         if not self._enabled:
             raise StageOutcomeUnknown(_STAGE_UNRESOLVED_REASONS[self._stage])
@@ -1042,7 +1050,7 @@ class _FailClosedStageEffect:
 
     async def apply(
         self,
-        context: ReplicaLifecycleContext,
+        context: ReplicaLifecycleContextV2,
     ) -> StageReconciliation[object]:
         raise StageRejected(
             _STAGE_REJECTION_STATUSES[self._stage],
@@ -1051,7 +1059,7 @@ class _FailClosedStageEffect:
 
     async def reconcile(
         self,
-        context: ReplicaLifecycleContext,
+        context: ReplicaLifecycleContextV2,
     ) -> StageReconciliation[object]:
         del context
         raise StageOutcomeUnknown(_STAGE_UNRESOLVED_REASONS[self._stage])
@@ -1063,15 +1071,15 @@ class BrokerProductionComposition:
 
     launch_service: BrokerService
     control_service: BrokerControlService
-    replica_coordinator: BrokerReplicaLifecycleCoordinator
-    replica_journal: BrokerReplicaJournal
+    replica_coordinator: BrokerReplicaLifecycleCoordinatorV2
+    replica_journal: BrokerReplicaJournalV2
     artifact_effects: BrokerReplicaArtifactEffects
     incoming_store: BrokerArtifactStore
     publication_store: WorkspaceReplicaPublicationStore
     limits_sha256: str
     replica_lifecycle_enabled: bool
     stage_gates_enabled: Mapping[str, bool]
-    stage_effects: Mapping[str, ReplicaStageEffect[object]]
+    stage_effects: Mapping[str, ReplicaStageEffectV2[object]]
 
 
 def _build_broker(
@@ -1131,14 +1139,12 @@ def _build_broker_composition(
     )
     limits = DEFAULT_REPLICA_STORE_LIMITS
     limits_sha256 = compute_replica_limits_sha256(asdict(limits))
-    replica_journal = BrokerReplicaJournal(
-        BROKER_REPLICA_JOURNAL_PATH,
+    replica_journal = BrokerReplicaJournalV2(
+        BROKER_REPLICA_JOURNAL_V2_PATH,
         application_id=BROKER_APPLICATION_ID,
         expected_limits_sha256=limits_sha256,
         request_public_key=application_public_key,
-        response_public_keys={
-            config.broker_incarnation: broker_private_key.public_key(),
-        },
+        response_public_key=broker_private_key.public_key(),
     )
     incoming_store = BrokerArtifactStore(
         BROKER_ARTIFACT_INCOMING_ROOT,
@@ -1157,21 +1163,21 @@ def _build_broker_composition(
         publication=publication_store,
         limits=limits,
     )
-    stage_effects: Mapping[str, ReplicaStageEffect[object]] = MappingProxyType(
+    stage_effects: Mapping[str, ReplicaStageEffectV2[object]] = MappingProxyType(
         {
             "ingest": _GatedStageEffect(
                 "ingest",
-                artifact_effects.ingest,
+                cast(ReplicaStageEffectV2[IngestReceipt], artifact_effects.ingest),
                 enabled=stage_enabled["ingest"],
             ),
             "verify": _GatedStageEffect(
                 "verify",
-                artifact_effects.verify,
+                cast(ReplicaStageEffectV2[VerifyReceipt], artifact_effects.verify),
                 enabled=stage_enabled["verify"],
             ),
             "publish": _GatedStageEffect(
                 "publish",
-                artifact_effects.publish,
+                cast(ReplicaStageEffectV2[PublishReceipt], artifact_effects.publish),
                 enabled=stage_enabled["publish"],
             ),
             "admission": _FailClosedStageEffect("admission"),
@@ -1180,19 +1186,19 @@ def _build_broker_composition(
             "reclaim": _FailClosedStageEffect("reclaim"),
         }
     )
-    lifecycle_effects = ReplicaLifecycleEffects(
-        ingest=cast(ReplicaStageEffect[IngestReceipt], stage_effects["ingest"]),
-        verify=cast(ReplicaStageEffect[VerifyReceipt], stage_effects["verify"]),
-        publish=cast(ReplicaStageEffect[PublishReceipt], stage_effects["publish"]),
-        admission=cast(ReplicaStageEffect[AdmissionReceipt], stage_effects["admission"]),
-        drain=cast(ReplicaStageEffect[DrainReceipt], stage_effects["drain"]),
-        export=cast(ReplicaStageEffect[ExportReceipt], stage_effects["export"]),
-        reclaim=cast(ReplicaStageEffect[ReclaimReceipt], stage_effects["reclaim"]),
+    lifecycle_effects = ReplicaLifecycleEffectsV2(
+        ingest=cast(ReplicaStageEffectV2[IngestReceipt], stage_effects["ingest"]),
+        verify=cast(ReplicaStageEffectV2[VerifyReceipt], stage_effects["verify"]),
+        publish=cast(ReplicaStageEffectV2[PublishReceipt], stage_effects["publish"]),
+        admission=cast(ReplicaStageEffectV2[AdmissionReceipt], stage_effects["admission"]),
+        drain=cast(ReplicaStageEffectV2[DrainReceipt], stage_effects["drain"]),
+        export=cast(ReplicaStageEffectV2[ExportReceipt], stage_effects["export"]),
+        reclaim=cast(ReplicaStageEffectV2[ReclaimReceipt], stage_effects["reclaim"]),
     )
-    replica_coordinator = BrokerReplicaLifecycleCoordinator(
+    replica_coordinator = BrokerReplicaLifecycleCoordinatorV2(
         replica_journal,
         broker_incarnation=config.broker_incarnation,
-        broker_private_keys={config.broker_incarnation: broker_private_key},
+        broker_private_key=broker_private_key,
         effects=lifecycle_effects,
         effect_timeout_seconds=BROKER_EFFECT_TIMEOUT_SECONDS,
     )
@@ -1253,6 +1259,10 @@ async def _run_broker(
     config = load_broker_config()
     inspect_legacy_v1_journal(
         LEGACY_BROKER_JOURNAL_PATH,
+        application_id=BROKER_APPLICATION_ID,
+    )
+    inspect_legacy_replica_v1_journal(
+        BROKER_REPLICA_JOURNAL_PATH,
         application_id=BROKER_APPLICATION_ID,
     )
     composition = _build_broker_composition(

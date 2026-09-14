@@ -26,10 +26,17 @@ from yinshi.services.broker_replica_journal import (
     ReplicaAuthority,
     replica_authority_from_request,
 )
-from yinshi.services.broker_replica_lifecycle import BrokerReplicaLifecycleCoordinator
+from yinshi.services.broker_replica_journal_v2 import (
+    ReplicaDrainContinuation,
+    replica_drain_continuation_from_request,
+)
+from yinshi.services.broker_replica_lifecycle_v2 import (
+    BrokerReplicaLifecycleCoordinatorV2,
+)
 
 _SUPPORTED_REQUEST_TYPE = "executor.launch"
 _REPLICA_REQUEST_TYPE = "replica.lifecycle"
+_REPLICA_DRAIN_REQUEST_TYPE = "replica.drain"
 _FORBIDDEN_LAUNCH_FIELDS = frozenset(
     {
         "capabilities",
@@ -428,7 +435,7 @@ class BrokerControlService:
         application_public_key: Ed25519PublicKey,
         broker_private_key: Ed25519PrivateKey,
         launch_service: BrokerService,
-        replica_coordinator: BrokerReplicaLifecycleCoordinator | None,
+        replica_coordinator: BrokerReplicaLifecycleCoordinatorV2 | None,
         replica_lifecycle_enabled: bool,
         launch_request_timeout_seconds: float = 120.0,
         replica_lifecycle_timeout_seconds: float = 360.0,
@@ -448,6 +455,11 @@ class BrokerControlService:
             raise TypeError("broker private key is invalid")
         if not callable(getattr(launch_service, "handle", None)):
             raise TypeError("launch service is invalid")
+        if replica_coordinator is not None and not (
+            callable(getattr(replica_coordinator, "start", None))
+            and callable(getattr(replica_coordinator, "continue_drain", None))
+        ):
+            raise TypeError("replica coordinator is invalid")
         if type(replica_lifecycle_enabled) is not bool:
             raise TypeError("replica lifecycle gate is invalid")
         if (
@@ -505,18 +517,32 @@ class BrokerControlService:
                 self._launch_service.handle(frame, peer_uid=peer_uid),
                 timeout=self._launch_request_timeout_seconds,
             )
-        if request.request_type != _REPLICA_REQUEST_TYPE:
+        if request.request_type not in (
+            _REPLICA_REQUEST_TYPE,
+            _REPLICA_DRAIN_REQUEST_TYPE,
+        ):
             raise BrokerProtocolError("broker request type is not supported")
         if not self._replica_lifecycle_enabled:
             return self._disabled_replica_response(request)
-        try:
-            authority: ReplicaAuthority = replica_authority_from_request(request)
-        except (TypeError, ValueError) as error:
-            raise BrokerProtocolError("replica lifecycle payload is invalid") from error
         coordinator = self._replica_coordinator
         if coordinator is None:
             raise RuntimeError("enabled replica lifecycle has no coordinator")
+        if request.request_type == _REPLICA_REQUEST_TYPE:
+            try:
+                authority: ReplicaAuthority = replica_authority_from_request(request)
+            except (TypeError, ValueError) as error:
+                raise BrokerProtocolError("replica lifecycle payload is invalid") from error
+            return await asyncio.wait_for(
+                coordinator.start(request, frame, authority),
+                timeout=self._replica_lifecycle_timeout_seconds,
+            )
+        try:
+            continuation: ReplicaDrainContinuation = replica_drain_continuation_from_request(
+                request
+            )
+        except (TypeError, ValueError) as error:
+            raise BrokerProtocolError("replica drain payload is invalid") from error
         return await asyncio.wait_for(
-            coordinator.run(request, frame, authority),
+            coordinator.continue_drain(request, frame, continuation),
             timeout=self._replica_lifecycle_timeout_seconds,
         )
