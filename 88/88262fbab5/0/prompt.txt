@@ -1,0 +1,55 @@
+Task: You are a delegated subagent running from a fork of the parent session. Treat the inherited conversation as reference-only context, not a live thread to continue. Do not continue or answer prior messages as if they are waiting for a reply. Your sole job is to execute the task below and return a focused result for that task using your tools.
+
+Task:
+Implement the first settled production broker artifact transport milestone in the current shared checkout. You are the only writer. Do not commit. Architecture is parent-approved: add a separate artifact upload socket/service and a separate opaque streaming stdio relay, leaving existing broker socket, one-frame broker_stdio_relay, _read_frame, and executor.launch unchanged. Upload wire format is one normal length-prefixed signed control frame followed immediately by exactly the three raw artifact byte sequences in fixed order, then EOF. The relay is opaque, uses a compiled fixed socket path, has a hard aggregate input cap, cannot accept caller socket paths, forwards stdin with bounded chunks, writes EOF, then returns one bounded signed response. Upload service authenticates kernel peer UID before bytes, Ed25519 request key, protocol/database/broker incarnations, request_type replica.artifacts.upload, exact payload schema, configured limits digest, authority, and recomputed artifact_set_sha256 before BrokerArtifactStore.receive. Payload is the existing lifecycle metadata plus an authority object of exact physical_target_id, replica_generation, execution_owner_id. Response is signed and exact {stored:true, receipt_id, artifact_set_sha256}. Invalid auth is fail-closed. Valid rejection/unknown returns signed stable result without secrets. Exact retries consume and validate the whole body. Add default-false upload gate and config only to the new upload daemon, not existing broker daemon. Separate connection timeout must strictly exceed store transfer timeout. Add systemd socket/service, tmpfiles, pyproject entry point, and focused tests. Preserve fixed paths, 0600/0700 ownership, bounded buffers, cancellation cleanup, no bytes in SQLite. Before edits read coding-practices, python-practices, and current code/tests. If TDD Guard blocks edits, return an exact parent-applicable edit packet instead of bypassing it. Run focused pytest, Ruff, strict mypy, py_compile, and systemd verify where possible. Escalate any contract conflict rather than improvising.
+
+## Acceptance Contract
+Acceptance level: checked
+Completion is not accepted from prose alone. End with a structured acceptance report.
+
+Criteria:
+- criterion-1: Implement the requested change without widening scope
+
+Required evidence: changed-files, tests-added, commands-run, residual-risks, no-staged-files, validation-output
+
+Finish with a fenced JSON block tagged `acceptance-report` in this shape:
+Use empty arrays when no items apply; array fields contain strings unless object entries are shown.
+`criteriaSatisfied[].status` must be exactly one of: satisfied, not-satisfied, not-applicable.
+`commandsRun[].result` must be exactly one of: passed, failed, not-run.
+`manualNotes` and `notes` are optional strings; an empty string means no note and does not satisfy `manual-notes` evidence.
+```acceptance-report
+{
+  "criteriaSatisfied": [
+    {
+      "id": "criterion-1",
+      "status": "satisfied",
+      "evidence": "specific proof"
+    }
+  ],
+  "changedFiles": [
+    "src/file.ts"
+  ],
+  "testsAddedOrUpdated": [
+    "test/file.test.ts"
+  ],
+  "commandsRun": [
+    {
+      "command": "command",
+      "result": "passed",
+      "summary": "short result"
+    }
+  ],
+  "validationOutput": [
+    "validation output or concise summary"
+  ],
+  "residualRisks": [
+    "none"
+  ],
+  "noStagedFiles": true,
+  "diffSummary": "short description of the diff",
+  "reviewFindings": [
+    "blocker: file.ts:12 - issue found, or no blockers"
+  ],
+  "manualNotes": "anything else the parent should know"
+}
+```
