@@ -106,6 +106,8 @@ async def test_signed_early_response_wins_over_large_remaining_upload(socket_pat
         assert await reader.readexactly(length) == control
         writer.write(_frame(response))
         await writer.drain()
+        writer.write_eof()
+        await reader.read()
         writer.close()
         await writer.wait_closed()
 

@@ -53,16 +53,28 @@ async def test_thread_read_recovers_missed_terminal_observer(db, git_repo, monke
         expires_at=time.monotonic() + 60,
         database_path=db.execute("PRAGMA database_list").fetchone()[2],
     )
-    if operation == "get":
-        response = await service.get_agent_thread(
-            request, caller=caller, thread_id=child.child_session_id
-        )
-        thread = response["thread"]
-    else:
+
+    async def read_thread():
+        if operation == "get":
+            response = await service.get_agent_thread(
+                request, caller=caller, thread_id=child.child_session_id
+            )
+            return response["thread"]
         response = await service.list_agent_children(request, caller=caller)
-        thread = response["children"][0]
+        return response["children"][0]
+
+    thread = await read_thread()
     assert thread["status"] == "completed"
+    if not thread["result_available"]:
+        assert thread["result_pending"] is True
+        await service.reconcile(
+            request,
+            delegation_ids=[child.delegation_id],
+            caller=caller,
+        )
+        thread = await read_thread()
     assert thread["result_available"] is True
+    assert thread["result_pending"] is False
 
 
 async def test_list_children_can_exclude_terminal_placeholders(db, git_repo, monkeypatch):
