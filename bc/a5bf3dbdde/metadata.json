@@ -3,7 +3,7 @@
   "checkpoint_id": "bca5bf3dbdde",
   "strategy": "manual-commit",
   "branch": "main",
-  "checkpoints_count": 3,
+  "checkpoints_count": 4,
   "files_touched": [
     "backend/pyproject.toml",
     "backend/src/yinshi/api/auth_routes.py",
@@ -30,6 +30,13 @@
       "compact_transcript": "/bc/a5bf3dbdde/2/transcript.jsonl",
       "content_hash": "/bc/a5bf3dbdde/2/content_hash.txt",
       "prompt": "/bc/a5bf3dbdde/2/prompt.txt"
+    },
+    {
+      "metadata": "/bc/a5bf3dbdde/3/metadata.json",
+      "transcript": "/bc/a5bf3dbdde/3/full.jsonl",
+      "compact_transcript": "/bc/a5bf3dbdde/3/transcript.jsonl",
+      "content_hash": "/bc/a5bf3dbdde/3/content_hash.txt",
+      "prompt": "/bc/a5bf3dbdde/3/prompt.txt"
     }
   ],
   "token_usage": {
