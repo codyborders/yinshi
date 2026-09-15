@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { RunnerRpcError } from "../runner/encryptedRunnerClient";
+
 import { createRuntimeTransport } from "./runtimeTransport";
 
 const runnerPublicKey = "MeAwP9ZBjS-MDni5HyLoyu0Pvkhlbc9HZ-SDT3Abj2I";
@@ -1101,6 +1103,41 @@ describe("runtime transport", () => {
       ),
     ).rejects.toThrow("query keys must be unique");
     expect(encryptedRequest).toHaveBeenCalledTimes(3);
+  });
+
+  it("does not close connection on RunnerRpcError from same-lane request", async () => {
+    const closeSpy = vi.fn();
+    let requestCallCount = 0;
+    const connection = {
+      request: vi.fn().mockImplementation(async () => {
+        requestCallCount += 1;
+        if (requestCallCount === 1) {
+          throw new RunnerRpcError(404, { error: "Thread result not found" });
+        }
+        return { ok: true };
+      }),
+      close: closeSpy,
+    };
+    const connectEncrypted = vi.fn().mockResolvedValue(connection);
+    const transport = createRuntimeTransport(
+      { location: "managed", runnerPublicKey },
+      {
+        apiClient: apiClient(),
+        encryptedRequest: vi.fn(),
+        connectEncrypted,
+      },
+    );
+
+    const sessionId = "a".repeat(32);
+    const result = transport.get(`/api/threads/${sessionId}/result`);
+    const metadata = transport.get(`/api/sessions/${sessionId}`);
+
+    await expect(result).rejects.toBeInstanceOf(RunnerRpcError);
+    await expect(metadata).resolves.toEqual({ ok: true });
+
+    expect(closeSpy).not.toHaveBeenCalled();
+    expect(connection.request).toHaveBeenCalledTimes(2);
+    transport.close();
   });
 
   it("separates workspace and session read and write scopes", async () => {

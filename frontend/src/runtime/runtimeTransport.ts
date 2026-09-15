@@ -6,6 +6,7 @@ import {
 import {
   connectEncryptedRunner,
   requestEncryptedRunner,
+  RunnerRpcError,
   type EncryptedRunnerConnection,
   type EncryptedRunnerConnectionOptions,
   type EncryptedRunnerRequest,
@@ -525,10 +526,12 @@ export function createRuntimeTransport(
         }
         return result;
       } catch (error) {
-        if (managedConnections.get(connectionLane) === activeEntry) {
-          managedConnections.delete(connectionLane);
+        if (!(error instanceof RunnerRpcError)) {
+          if (managedConnections.get(connectionLane) === activeEntry) {
+            managedConnections.delete(connectionLane);
+          }
+          connection.close();
         }
-        connection.close();
         throw error;
       }
     });
