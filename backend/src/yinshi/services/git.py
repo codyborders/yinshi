@@ -759,9 +759,9 @@ async def run_git_bytes(
         else:
             stderr_limit = 16 * 1024 if stderr_bytes_max is None else stderr_bytes_max
 
-            async def collect_bounded_streams() -> tuple[
-                tuple[bytes, bool], tuple[bytes, bool], int
-            ]:
+            async def collect_bounded_streams() -> (
+                tuple[tuple[bytes, bool], tuple[bytes, bool], int]
+            ):
                 stdout_result, stderr_result, returncode, _stdin_result = await asyncio.gather(
                     _read_bounded_git_stream(
                         proc.stdout,

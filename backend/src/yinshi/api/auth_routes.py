@@ -57,14 +57,8 @@ from yinshi.services.desktop_auth import (
     DesktopRefreshInvalidError,
     DesktopTokenExchange,
     approve_desktop_authorization_request,
-)
-from yinshi.services.desktop_auth import (
     create_desktop_authorization_request as store_desktop_request,
-)
-from yinshi.services.desktop_auth import (
     exchange_desktop_authorization_code as exchange_desktop_code,
-)
-from yinshi.services.desktop_auth import (
     rotate_desktop_refresh_token,
 )
 from yinshi.services.github_app import get_installation_details

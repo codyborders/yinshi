@@ -5,8 +5,7 @@ from __future__ import annotations
 import string
 
 import pytest
-from hypothesis import assume, given
-from hypothesis import strategies as st
+from hypothesis import assume, given, strategies as st
 
 from yinshi.exceptions import GitError
 

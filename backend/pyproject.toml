@@ -17,6 +17,9 @@ yinshi-artifact-upload = "yinshi.artifact_upload_daemon:main"
 [tool.black]
 line-length = 100
 target-version = ["py311"]
+force-exclude = '''
+/src/yinshi/services/(broker_journal|broker_replica_journal)\.py
+'''
 
 [tool.isort]
 profile = "black"

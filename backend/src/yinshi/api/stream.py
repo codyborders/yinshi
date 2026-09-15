@@ -1284,9 +1284,9 @@ async def prompt_session(
                         if isinstance(provider_payload, str):
                             result_provider = provider_payload
                         stored_turn = _serialize_stored_turn(turn_events)
-                        assert stored_turn is not None, (
-                            "result event must be present in stored turn"
-                        )
+                        assert (
+                            stored_turn is not None
+                        ), "result event must be present in stored turn"
                         # Ensure an assistant message row exists even for
                         # short responses (< batch size) or tool-only turns.
                         if assistant_msg_id is None:
