@@ -1,10 +1,10 @@
 # Thread Orchestration Contract
 
-Status: Phase 6 feature acceptance is complete at commit `88ef80cf74fa9bfd02e0e8dbd4a8e7fd5f536d66`. Release qualification is not complete.
+Status: Phases 0 through 6 are functionally complete at commit `88ef80cf74fa9bfd02e0e8dbd4a8e7fd5f536d66`. Release qualification is not complete.
 
 Source: `yinshi-thread-orchestration-plan.md`, based on commit `e18c86948f533ffb002bd6ca46118b8ee3fcaafb`.
 
-Delegations persist across restarts and execute prompts in isolated child workspaces. Parents can cancel a child, create a distinct retry, or read its result. Phase 5 exposes six optional model tools through the private duplex sidecar bridge. Phase 6 adds admission preflight and public-boundary acceptance. Agent delegation remains disabled by default.
+The current release scope is one-level delegation. A root can create children, but children cannot delegate. Delegations persist across restarts and execute prompts in isolated child workspaces. Parents can cancel a child, create a distinct retry, or read its result. Phase 5 exposes six optional model tools through the private duplex sidecar bridge. Phase 6 adds admission preflight and public-boundary acceptance. Agent delegation remains disabled by default.
 
 ## Phase 6 acceptance boundary
 
@@ -39,15 +39,21 @@ The accepted public-boundary scenarios are:
 
 ## Release qualification status
 
-As of 2026-09-15, controlled dogfooding is blocked. Commit `88ef80cf74fa9bfd02e0e8dbd4a8e7fd5f536d66` is pushed to `origin/main`. GitHub Actions run `34921801486` is red.
+As of 2026-09-15, controlled dogfooding is blocked. Commit `88ef80cf74fa9bfd02e0e8dbd4a8e7fd5f536d66` is pushed to `origin/main`. GitHub Actions run `34927831622` is red. The desktop job passed, and the other three required jobs failed.
 
-Local Phase 6 tests, sidecar tests, frontend tests, production build, strict mypy, Ruff formatting, and the Linux smoke pass. A full backend run has 3,097 passes, one skip, and one timing failure in an unchanged replica lifecycle test. Bounded reruns classify that failure as a wall-clock test problem outside Phase 6 behavior. One earlier thread-result read failure did not recur in eleven bounded runs.
+Local Phase 6 tests, strict mypy, Ruff formatting, and the Linux smoke pass. The sidecar run has 119 passes and one host-dependent skip. The frontend run has 427 passes, and its production build passes. A full backend run has 3,097 passes, one skip, and one timing failure in an unchanged replica lifecycle test. Bounded reruns classify that failure as a wall-clock test problem outside Phase 6 behavior. One earlier thread-result read failure did not recur in eleven bounded runs.
 
-Remote CI exposes several existing Linux portability failures. They affect deferred replica tests, a Git identity fixture, macOS temporary paths, and a sidecar timer test. CI also reports frontend dependency audit findings. The backend job omitted sidecar dependencies required by Node-backed Python tests. The workflow now installs those dependencies. Broader CI correction remains outside the Phase 6 product boundary.
+The latest backend CI installs sidecar dependencies successfully. Remaining Linux failures affect deferred replica tests, SQLite fixtures, Git identity, temporary paths, and artifact relay timing. Sidecar CI has an unchanged timer-test cancellation. Frontend CI reports dependency audit findings. Broader CI correction remains outside the Phase 6 product boundary.
 
 Track backend timing in [issue 62](https://github.com/codyborders/yinshi/issues/62). Track CI portability in [issue 63](https://github.com/codyborders/yinshi/issues/63). Track frontend dependency updates in [issue 64](https://github.com/codyborders/yinshi/issues/64).
 
 Do not enable agent delegation for real users until the required CI jobs pass on one exact commit.
+
+## Verified runtime locations
+
+The public end-to-end delegation tests run in desktop mode with the real Node sidecar. The Linux smoke repeats this local runtime path.
+
+Hosted request tests verify selected tenant storage and prevent fallback storage activation. Managed and BYOC routing remain unchanged. Phase 6 makes no end-to-end release claim for those locations.
 
 ## Rollout controls
 
@@ -55,13 +61,21 @@ Do not enable agent delegation for real users until the required CI jobs pass on
 | --- | --- | --- | --- |
 | Thread hierarchy | `THREAD_HIERARCHY_ENABLED` | `true` | `true` |
 | Agent delegation | `AGENT_DELEGATION_ENABLED` | `false` | `true` only after release qualification passes |
-| Nested delegation | `THREAD_MAX_DEPTH` | `1` | Keep `1` initially. Increase only during a named nested-delegation trial. |
+| Nested delegation | `THREAD_MAX_DEPTH` | `1` | Keep `1`. Any increase requires a new approved plan. |
 | Automatic integration | No production control or execution path | Off | Keep off. |
 | Automatic retry after restart | No production control or execution path | Off | Keep off. |
 
 Initial dogfood limits must remain conservative. Keep the documented defaults unless a trial names a lower bound.
 
-Disable `AGENT_DELEGATION_ENABLED` if any trigger occurs:
+### Controlled enablement
+
+Require every release CI job to pass on one exact commit. Enable delegation only in an internal development environment. Set `THREAD_HIERARCHY_ENABLED=true` and `AGENT_DELEGATION_ENABLED=true`. Keep `THREAD_MAX_DEPTH=1` and retain the configured child and tree limits. Restart the application. Verify one ordinary session before starting the controlled dogfood tasks.
+
+### Rollback
+
+Set `AGENT_DELEGATION_ENABLED=false`, then restart the application. Verify that ordinary sessions continue unchanged.
+
+Disable agent delegation if any trigger occurs:
 
 - duplicate reservation or duplicate Git writer.
 - incorrect parent, tenant, runtime, or tool-call identity.
@@ -433,8 +447,12 @@ Copying a database does not transfer its physical Git ownership. Database reloca
 
 Do not delete ownership records or refs to force adoption. Retained artifacts require operator investigation and an approved recovery procedure.
 
-## Deferred work
+## Deferred orchestration ideas
 
-Recursive deletion, general operation queues, automatic ownership transfer, managed Git integration, and broader resource budgets remain deferred.
+Phase 7 is deferred and is not part of the active roadmap. Deferred capabilities include nested delegation, durable parent-to-child steering, and reopening completed child threads. Hard token or financial budgets also remain outside the current scope. The same restriction applies to automatic retention, root cleanup, cross-location thread-tree transfer, and managed child-result integration.
 
-`THREAD_MANAGED_INTEGRATION_ENABLED` remains false by default. It does not disable managed execution or change hosted, desktop, managed, or BYOC routing.
+Recursive deletion, general operation queues, and automatic ownership transfer also remain deferred.
+
+A deferred capability becomes eligible for design only when repeated real tasks show the limitation. The current workflow must be unable to address it. The user benefit must be clear. A failing public-boundary test must define the smallest required behavior.
+
+Future architecture requires production results and a new approved plan.
