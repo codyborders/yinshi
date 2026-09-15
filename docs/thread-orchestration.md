@@ -1,10 +1,79 @@
 # Thread Orchestration Contract
 
-Status: Phase 5 implementation is under acceptance review. Manual APIs and the legacy ping bridge remain compatible.
+Status: Phase 6 feature acceptance is complete at commit `88ef80cf74fa9bfd02e0e8dbd4a8e7fd5f536d66`. Release qualification is not complete.
 
 Source: `yinshi-thread-orchestration-plan.md`, based on commit `e18c86948f533ffb002bd6ca46118b8ee3fcaafb`.
 
-Delegations persist across restarts and execute prompts in isolated child workspaces. Parents can cancel a child, create a distinct retry, or read its result. Phase 5 exposes six optional model tools through the private duplex sidecar bridge. Agent delegation remains disabled by default.
+Delegations persist across restarts and execute prompts in isolated child workspaces. Parents can cancel a child, create a distinct retry, or read its result. Phase 5 exposes six optional model tools through the private duplex sidecar bridge. Phase 6 adds admission preflight and public-boundary acceptance. Agent delegation remains disabled by default.
+
+## Phase 6 acceptance boundary
+
+Phase 6 covers one bounded delegation path. Agent admission checks exact replay identity before feature, runtime, or Git checks. New admission reads a database snapshot and closes the connection. It then checks runtime and Git state before transactional reauthorization and reservation.
+
+The admission preflight creates no refs, worktrees, directories, or lock files. It checks existing runtime health through `SidecarClient.connected`. Manual stale-provisioning recovery remains on manual write paths. It does not run between agent preflight and reservation.
+
+Delegated cleanup validates its database target and hidden refs before external effects. One repository lifecycle owner covers the claim through database finalization. Public workspace state changes cannot overwrite an active deletion claim. Repeated cleanup safely accepts already-absent owned refs.
+
+The accepted public-boundary scenarios are:
+
+| Scenario | Accepted result |
+| --- | --- |
+| Root prompt delegates to concurrent children | Each child reserves once, starts through the real Node sidecar, and returns a sealed result. |
+| Exact tool replay | The same caller run and tool-call identity return the original delegation without another reservation or Git writer. |
+| Wait, list, get, report, and cancel | Calls remain bounded, authorized to descendants, and consistent with durable state. |
+| Disabled agent delegation | Existing sessions remain valid. Agent mutation tools reject new work without changing manual child behavior. |
+| One process restart with one blocked child | The child becomes interrupted. Committed events and files remain. Model execution is not retried. |
+| Repeated delegated cleanup | The first public deletion removes owned resources. A later request reports absence without touching unrelated resources. |
+| Linux release smoke | Root prompt spawns one child and receives one sealed result. Shutdown is clean on Python 3.12.3 and Node 22.23.2. |
+
+### Failure contracts
+
+- Runtime unavailability returns `runtime_unavailable` before reservation.
+- Changed replay identity conflicts instead of returning another caller's row.
+- Capacity and ancestry limits are rechecked inside the reservation transaction.
+- A parent workspace in `deleting` cannot receive a new manual or agent child.
+- Ref ownership mismatches stop cleanup before ref deletion.
+- Runtime teardown failure returns the workspace to `ready` before another cleanup attempt.
+- Git cleanup failure retains the `deleting` claim for serialized retry.
+- Restart recovery interrupts orphaned execution and never repeats model work automatically.
+
+## Release qualification status
+
+As of 2026-09-15, controlled dogfooding is blocked. Commit `88ef80cf74fa9bfd02e0e8dbd4a8e7fd5f536d66` is pushed to `origin/main`. GitHub Actions run `34921801486` is red.
+
+Local Phase 6 tests, sidecar tests, frontend tests, production build, strict mypy, Ruff formatting, and the Linux smoke pass. A full backend run has 3,097 passes, one skip, and one timing failure in an unchanged replica lifecycle test. Bounded reruns classify that failure as a wall-clock test problem outside Phase 6 behavior. One earlier thread-result read failure did not recur in eleven bounded runs.
+
+Remote CI exposes several existing Linux portability failures. They affect deferred replica tests, a Git identity fixture, macOS temporary paths, and a sidecar timer test. CI also reports frontend dependency audit findings. The backend job omitted sidecar dependencies required by Node-backed Python tests. The workflow now installs those dependencies. Broader CI correction remains outside the Phase 6 product boundary.
+
+Track backend timing in [issue 62](https://github.com/codyborders/yinshi/issues/62). Track CI portability in [issue 63](https://github.com/codyborders/yinshi/issues/63). Track frontend dependency updates in [issue 64](https://github.com/codyborders/yinshi/issues/64).
+
+Do not enable agent delegation for real users until the required CI jobs pass on one exact commit.
+
+## Rollout controls
+
+| Capability | Control | Default | Initial dogfood setting |
+| --- | --- | --- | --- |
+| Thread hierarchy | `THREAD_HIERARCHY_ENABLED` | `true` | `true` |
+| Agent delegation | `AGENT_DELEGATION_ENABLED` | `false` | `true` only after release qualification passes |
+| Nested delegation | `THREAD_MAX_DEPTH` | `1` | Keep `1` initially. Increase only during a named nested-delegation trial. |
+| Automatic integration | No production control or execution path | Off | Keep off. |
+| Automatic retry after restart | No production control or execution path | Off | Keep off. |
+
+Initial dogfood limits must remain conservative. Keep the documented defaults unless a trial names a lower bound.
+
+Disable `AGENT_DELEGATION_ENABLED` if any trigger occurs:
+
+- duplicate reservation or duplicate Git writer.
+- incorrect parent, tenant, runtime, or tool-call identity.
+- database connection held during Git, sidecar, filesystem, container, or wait work.
+- hidden ref or worktree ownership mismatch.
+- result seal mismatch or result exposure before sealing.
+- restart repeats model execution.
+- cleanup removes unrelated state or cannot retry safely.
+- prompts, tasks, results, paths, refs, branches, filenames, or capabilities appear in logs.
+- repeated runtime failures exceed the dogfood trial threshold.
+
+Disabling agent delegation must not delete existing sessions. Preserve diagnostic state and record the affected commit. Use the manual orchestration path during investigation.
 
 ## Terms and ownership
 
