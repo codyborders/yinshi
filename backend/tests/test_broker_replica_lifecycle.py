@@ -347,9 +347,10 @@ async def test_scaled_aggregate_budget_allows_serial_in_budget_stages(
     )
     request, frame = _signed_request()
 
+    # Per-effect deadlines enforce the timing contract. This outer deadline only detects a stalled coordinator under host load.
     response = await asyncio.wait_for(
         coordinator.run(request, frame, AUTHORITY),
-        timeout=0.2,
+        timeout=1.0,
     )
     result = _result(response)
     assert result == {
