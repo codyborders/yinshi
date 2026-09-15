@@ -13,10 +13,18 @@ from yinshi.exceptions import GitError
 
 
 def init_repo(tmp_path):
-    """Create one tiny git repository."""
+    """Create one tiny git repository with a repository-local test identity."""
     repo = tmp_path / "repo"
     repo.mkdir()
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.name", "Yinshi Test"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.email", "test@yinshi.invalid"],
+        check=True,
+    )
     subprocess.run(
         ["git", "-C", str(repo), "commit", "--allow-empty", "-qm", "init"],
         check=True,

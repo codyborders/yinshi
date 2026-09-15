@@ -75,7 +75,7 @@ _GIT_ENV = {
     "GCM_INTERACTIVE": "Never",
     "GIT_CONFIG_NOSYSTEM": "1",
     "GIT_CONFIG_GLOBAL": os.devnull,
-    "GIT_CONFIG_COUNT": "5",
+    "GIT_CONFIG_COUNT": "6",
     "GIT_CONFIG_KEY_0": "core.hooksPath",
     "GIT_CONFIG_VALUE_0": os.devnull,
     "GIT_CONFIG_KEY_1": "protocol.allow",
@@ -86,6 +86,8 @@ _GIT_ENV = {
     "GIT_CONFIG_VALUE_3": "false",
     "GIT_CONFIG_KEY_4": "core.logAllRefUpdates",
     "GIT_CONFIG_VALUE_4": "false",
+    "GIT_CONFIG_KEY_5": "pack.writeReverseIndex",
+    "GIT_CONFIG_VALUE_5": "false",
 }
 
 

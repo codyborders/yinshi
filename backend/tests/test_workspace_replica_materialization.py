@@ -67,6 +67,27 @@ def modeled_mount_ids(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
+def test_isolated_git_config_disables_pack_reverse_index(tmp_path: Path) -> None:
+    """Isolated Git config pins pack.writeReverseIndex=false for supported Git."""
+    from yinshi.services.workspace_replica_materialization import _GIT_ENV
+
+    repository = tmp_path / "config-probe"
+    subprocess.run(
+        ["git", "init", "-q", str(repository)],
+        check=True,
+        capture_output=True,
+    )
+    completed = subprocess.run(
+        ["git", "config", "pack.writeReverseIndex"],
+        cwd=repository,
+        env={**os.environ, **_GIT_ENV},
+        check=True,
+        capture_output=True,
+    )
+
+    assert completed.stdout.strip() == b"false"
+
+
 def binding(role: str, media_type: str, artifact_id: str, content: bytes) -> ReplicaArtifactBinding:
     return ReplicaArtifactBinding(
         role=role,  # type: ignore[arg-type]

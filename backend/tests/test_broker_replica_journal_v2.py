@@ -1213,6 +1213,13 @@ os._exit(92)
 
 
 def _checkpoint_wal_and_crash(journal: BrokerReplicaJournalV2) -> Path:
+    wal_path = Path(f"{journal.path}-wal")
+    shm_path = Path(f"{journal.path}-shm")
+    # Some supported SQLite versions unlink -shm during the WAL-to-DELETE
+    # transition. Preserve the exact shm bytes and mode observed at the
+    # checkpoint boundary so the shm-only fixture stays deterministic.
+    shm_bytes = shm_path.read_bytes()
+    shm_mode = stat.S_IMODE(shm_path.stat().st_mode)
     script = """
 import os
 import sqlite3
@@ -1231,9 +1238,10 @@ os._exit(93)
         timeout=30.0,
     )
     assert completed.returncode == 93, completed.stderr
-    wal_path = Path(f"{journal.path}-wal")
-    shm_path = Path(f"{journal.path}-shm")
     assert not wal_path.exists()
+    if not shm_path.exists():
+        shm_path.write_bytes(shm_bytes)
+        os.chmod(shm_path, shm_mode)
     assert shm_path.stat().st_size > 0
     return shm_path
 

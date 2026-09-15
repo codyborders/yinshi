@@ -444,12 +444,21 @@ def test_validator_rejects_existing_unit_before_filesystem_work(tmp_path: Path) 
         pass
 
 
+def short_temp_root() -> Path:
+    """Select a short, physical, searchable temp root for pinned Unix sockets."""
+    candidate = Path("/private/tmp")
+    if not (candidate.is_dir() and not candidate.is_symlink()):
+        candidate = Path(tempfile.gettempdir()).resolve()
+    assert candidate.is_dir() and not candidate.is_symlink()
+    return candidate
+
+
 def test_validator_pins_socket_before_broker_path_replacement(tmp_path: Path) -> None:
     """Systemd source remains the accepted inode after broker path replacement."""
     current_uid = os.getuid()
     current_gid = os.getgid()
     tmp_path.chmod(0o755)
-    short_root = Path(tempfile.mkdtemp(prefix="yp-", dir="/private/tmp"))
+    short_root = Path(tempfile.mkdtemp(prefix="yp-", dir=short_temp_root()))
     short_root.chmod(0o755)
     os.chown(short_root, -1, current_gid)
     layout = LaunchLayout(
@@ -539,7 +548,7 @@ def test_socket_replacement_during_transition_keeps_broker_metadata(
     """Root changes metadata only through its protected temporary hard link."""
     current_uid = os.getuid()
     current_gid = os.getgid()
-    short_root = Path(tempfile.mkdtemp(prefix="yp-", dir="/private/tmp"))
+    short_root = Path(tempfile.mkdtemp(prefix="yp-", dir=short_temp_root()))
     runtime = short_root / OPERATION_ID
     pins = short_root / "pins"
     runtime.mkdir(mode=0o700)
@@ -672,7 +681,7 @@ def test_executor_requires_other_execute_permission() -> None:
     """Root-owned executables must be executable by the executor account."""
     current_uid = os.getuid()
     current_gid = os.getgid()
-    short_root = Path(tempfile.mkdtemp(prefix="yp-", dir="/private/tmp"))
+    short_root = Path(tempfile.mkdtemp(prefix="yp-", dir=short_temp_root()))
     short_root.chmod(0o755)
     os.chown(short_root, -1, current_gid)
     executable = short_root / "executor"
@@ -997,7 +1006,7 @@ def test_quarantined_allocation_does_not_reserve_pool_slot(
 
 
 def test_tree_less_socket_pin_recovers_nonzero_executor_identity(tmp_path: Path) -> None:
-    short_root = Path(tempfile.mkdtemp(prefix="yp-", dir="/private/tmp"))
+    short_root = Path(tempfile.mkdtemp(prefix="yp-", dir=short_temp_root()))
     replicas = short_root / "replicas"
     quarantine = short_root / "quarantine"
     pins = short_root / "pins"

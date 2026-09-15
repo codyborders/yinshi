@@ -505,8 +505,17 @@ def test_reclaim_removes_socket_pin_before_last_identity_tree(tmp_path: Path) ->
     assert events[:2] == ["pin", "tree"]
 
 
+def short_temp_root() -> Path:
+    """Select a short, physical, searchable temp root for pinned Unix sockets."""
+    candidate = Path("/private/tmp")
+    if not (candidate.is_dir() and not candidate.is_symlink()):
+        candidate = Path(tempfile.gettempdir()).resolve()
+    assert candidate.is_dir() and not candidate.is_symlink()
+    return candidate
+
+
 def test_reclaim_removes_valid_socket_pin_after_quiescence(tmp_path: Path) -> None:
-    short_root = Path(tempfile.mkdtemp(prefix="yp-", dir="/private/tmp"))
+    short_root = Path(tempfile.mkdtemp(prefix="yp-", dir=short_temp_root()))
     layout = replace(lifecycle_layout(tmp_path), socket_pins_root=short_root)
     short_root.chmod(0o700)
     stage_operation(layout)
@@ -532,7 +541,7 @@ def test_reclaim_removes_temporary_socket_pin_after_interrupted_publication(
     tmp_path: Path,
     mode: int,
 ) -> None:
-    short_root = Path(tempfile.mkdtemp(prefix="yp-", dir="/private/tmp"))
+    short_root = Path(tempfile.mkdtemp(prefix="yp-", dir=short_temp_root()))
     layout = replace(lifecycle_layout(tmp_path), socket_pins_root=short_root)
     short_root.chmod(0o700)
     stage_operation(layout)
