@@ -1,0 +1,27 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "4b798f1dade9",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "frontend/src/runtime/runtimeTransport.test.ts",
+    "frontend/src/runtime/runtimeTransport.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/4b/798f1dade9/0/metadata.json",
+      "transcript": "/4b/798f1dade9/0/full.jsonl",
+      "compact_transcript": "/4b/798f1dade9/0/transcript.jsonl",
+      "content_hash": "/4b/798f1dade9/0/content_hash.txt",
+      "prompt": "/4b/798f1dade9/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 32605373,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 1135829760,
+    "output_tokens": 2574346,
+    "api_call_count": 8482
+  }
+}
