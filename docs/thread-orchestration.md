@@ -1,6 +1,6 @@
 # Thread Orchestration Contract
 
-Status: Phases 0 through 6 are functionally complete at commit `88ef80cf74fa9bfd02e0e8dbd4a8e7fd5f536d66`. Release qualification is not complete.
+Status: Phases 0 through 6 are functionally complete at commit `88ef80cf74fa9bfd02e0e8dbd4a8e7fd5f536d66`. Release qualification passed after the CI portability and dependency corrections culminating in commit `22b66a93b7a0b00532bada40cf57fe9d6aec2389`. Phase 7 remains deferred and has not started.
 
 Source: `yinshi-thread-orchestration-plan.md`, based on commit `e18c86948f533ffb002bd6ca46118b8ee3fcaafb`.
 
@@ -39,15 +39,17 @@ The accepted public-boundary scenarios are:
 
 ## Release qualification status
 
-As of 2026-09-15, controlled dogfooding is blocked. Commit `88ef80cf74fa9bfd02e0e8dbd4a8e7fd5f536d66` is pushed to `origin/main`. GitHub Actions run `34927831622` is red. The desktop job passed, and the other three required jobs failed.
+GitHub Actions run `34943500410` passed on commit `22b66a93b7a0b00532bada40cf57fe9d6aec2389`. Backend, frontend, sidecar, and desktop jobs passed. The Linux release smoke also passed.
 
-Local Phase 6 tests, strict mypy, Ruff formatting, and the Linux smoke pass. The sidecar run has 119 passes and one host-dependent skip. The frontend run has 427 passes, and its production build passes. A full backend run has 3,097 passes, one skip, and one timing failure in an unchanged replica lifecycle test. Bounded reruns classify that failure as a wall-clock test problem outside Phase 6 behavior. One earlier thread-result read failure did not recur in eleven bounded runs.
+Final backend validation passed 3,099 tests and skipped one. Frontend validation passed 427 tests. Local sidecar validation passed 119 tests with one host-dependent skip. Linux Node 22 passed all 120 sidecar tests. Audits, type checks, formatting checks, builds, and the container build passed.
 
-The latest backend CI installs sidecar dependencies successfully. Remaining Linux failures affect deferred replica tests, SQLite fixtures, Git identity, temporary paths, and artifact relay timing. Sidecar CI has an unchanged timer-test cancellation. Frontend CI reports dependency audit findings. Broader CI correction remains outside the Phase 6 product boundary.
+Historical CI failures had bounded causes. The relay and sidecar timeout fixtures depended on test isolation. SQLite shared-memory, Git identity, and temporary-root fixtures required host portability corrections. Git reverse-index output also required a host portability correction. Reconstruction now disables optional reverse-index generation while preserving strict topology validation. The frontend audit failure came from dependency drift. The aggregate-budget watchdog and bounded result recovery used preexisting timing assumptions.
 
-Track backend timing in [issue 62](https://github.com/codyborders/yinshi/issues/62). Track CI portability in [issue 63](https://github.com/codyborders/yinshi/issues/63). Track frontend dependency updates in [issue 64](https://github.com/codyborders/yinshi/issues/64).
+Issues [62](https://github.com/codyborders/yinshi/issues/62), [63](https://github.com/codyborders/yinshi/issues/63), and [64](https://github.com/codyborders/yinshi/issues/64) were updated and closed.
 
-Do not enable agent delegation for real users until the required CI jobs pass on one exact commit.
+No Phase 6 feature expansion or Phase 7 implementation occurred during CI remediation. Changes were limited to test isolation, host portability, dependency remediation, formatting, and one production Git compatibility setting. That setting disables optional reverse-index generation while preserving strict topology validation.
+
+The CI prerequisite has passed. Begin only controlled internal dogfooding under the rollout controls below. Keep delegation disabled by default for ordinary users. `THREAD_MAX_DEPTH` remains `1`. Phase 7 and deferred architecture remain out of scope.
 
 ## Verified runtime locations
 
@@ -60,7 +62,7 @@ Hosted request tests verify selected tenant storage and prevent fallback storage
 | Capability | Control | Default | Initial dogfood setting |
 | --- | --- | --- | --- |
 | Thread hierarchy | `THREAD_HIERARCHY_ENABLED` | `true` | `true` |
-| Agent delegation | `AGENT_DELEGATION_ENABLED` | `false` | `true` only after release qualification passes |
+| Agent delegation | `AGENT_DELEGATION_ENABLED` | `false` | `true` only for controlled internal dogfooding |
 | Nested delegation | `THREAD_MAX_DEPTH` | `1` | Keep `1`. Any increase requires a new approved plan. |
 | Automatic integration | No production control or execution path | Off | Keep off. |
 | Automatic retry after restart | No production control or execution path | Off | Keep off. |
