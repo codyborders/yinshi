@@ -3,11 +3,14 @@
   "checkpoint_id": "bca5bf3dbdde",
   "strategy": "manual-commit",
   "branch": "main",
-  "checkpoints_count": 4,
+  "checkpoints_count": 10,
   "files_touched": [
     "backend/pyproject.toml",
     "backend/src/yinshi/api/auth_routes.py",
-    "backend/src/yinshi/services/runner_rpc.py"
+    "backend/src/yinshi/api/stream.py",
+    "backend/src/yinshi/services/git.py",
+    "backend/src/yinshi/services/runner_rpc.py",
+    "backend/tests/test_properties.py"
   ],
   "sessions": [
     {
@@ -37,13 +40,20 @@
       "compact_transcript": "/bc/a5bf3dbdde/3/transcript.jsonl",
       "content_hash": "/bc/a5bf3dbdde/3/content_hash.txt",
       "prompt": "/bc/a5bf3dbdde/3/prompt.txt"
+    },
+    {
+      "metadata": "/bc/a5bf3dbdde/4/metadata.json",
+      "transcript": "/bc/a5bf3dbdde/4/full.jsonl",
+      "compact_transcript": "/bc/a5bf3dbdde/4/transcript.jsonl",
+      "content_hash": "/bc/a5bf3dbdde/4/content_hash.txt",
+      "prompt": "/bc/a5bf3dbdde/4/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 65475908,
+    "input_tokens": 66084493,
     "cache_creation_tokens": 0,
-    "cache_read_tokens": 2271870336,
-    "output_tokens": 5145666,
-    "api_call_count": 16956
+    "cache_read_tokens": 2281026560,
+    "output_tokens": 5165486,
+    "api_call_count": 17023
   }
 }
