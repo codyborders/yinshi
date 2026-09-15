@@ -1,0 +1,27 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "bca5bf3dbdde",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "backend/src/yinshi/api/auth_routes.py",
+    "backend/src/yinshi/services/runner_rpc.py"
+  ],
+  "sessions": [
+    {
+      "metadata": "/bc/a5bf3dbdde/0/metadata.json",
+      "transcript": "/bc/a5bf3dbdde/0/full.jsonl",
+      "compact_transcript": "/bc/a5bf3dbdde/0/transcript.jsonl",
+      "content_hash": "/bc/a5bf3dbdde/0/content_hash.txt",
+      "prompt": "/bc/a5bf3dbdde/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 32605373,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 1135829760,
+    "output_tokens": 2574346,
+    "api_call_count": 8482
+  }
+}
