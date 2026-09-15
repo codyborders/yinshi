@@ -1,0 +1,59 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "c0eaa2641c37",
+  "session_id": "session",
+  "strategy": "manual-commit",
+  "created_at": "2026-09-15T07:47:16.247242Z",
+  "branch": "main",
+  "checkpoints_count": 1,
+  "save_step_count": 1,
+  "files_touched": [
+    "backend/tests/test_broker_replica_lifecycle.py"
+  ],
+  "agent": "Pi",
+  "model": "gpt-5.6-sol",
+  "turn_id": "f720f9c81bb7",
+  "checkpoint_transcript_start": 289,
+  "transcript_lines_at_start": 289,
+  "compact_transcript_start": 18,
+  "token_usage": {
+    "input_tokens": 185074,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 72576,
+    "output_tokens": 3966,
+    "api_call_count": 3
+  },
+  "session_metrics": {
+    "turn_count": 283
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-09-15T07:47:15.509366Z",
+    "agent_lines": 0,
+    "agent_removed": 0,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 1,
+    "total_committed": 0,
+    "total_lines_changed": 1,
+    "agent_percentage": 0,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 91,
+      "user_lines_removed": 1,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".pi-subagents/artifacts/cbccce6e_final-review_input.md": 63,
+        ".pi-subagents/artifacts/cbccce6e_final-review_transcript.jsonl": 2,
+        ".pi-subagents/missions/d3da4307-4083-413a-8ee6-2b199c8bb55a.json": 24,
+        "backend/tests/test_broker_replica_lifecycle.py": 2
+      },
+      "user_removed_per_file": {
+        "backend/tests/test_broker_replica_lifecycle.py": 1
+      }
+    }
+  ]
+}
