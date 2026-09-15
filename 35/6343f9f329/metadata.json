@@ -3,7 +3,7 @@
   "checkpoint_id": "356343f9f329",
   "strategy": "manual-commit",
   "branch": "main",
-  "checkpoints_count": 2,
+  "checkpoints_count": 3,
   "files_touched": [
     "docs/thread-orchestration.md"
   ],
@@ -21,6 +21,13 @@
       "compact_transcript": "/35/6343f9f329/1/transcript.jsonl",
       "content_hash": "/35/6343f9f329/1/content_hash.txt",
       "prompt": "/35/6343f9f329/1/prompt.txt"
+    },
+    {
+      "metadata": "/35/6343f9f329/2/metadata.json",
+      "transcript": "/35/6343f9f329/2/full.jsonl",
+      "compact_transcript": "/35/6343f9f329/2/transcript.jsonl",
+      "content_hash": "/35/6343f9f329/2/content_hash.txt",
+      "prompt": "/35/6343f9f329/2/prompt.txt"
     }
   ],
   "token_usage": {
