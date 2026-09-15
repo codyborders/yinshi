@@ -51,7 +51,7 @@ jobs:
           python -c 'import json; payload=json.load(open("managed-recovery-result.json", encoding="utf-8")); assert payload["status"] == "pending_live_staging_integration"'
       - name: Upload sanitized pending receipt
         if: always()
-        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: managed-recovery-result-${{ github.run_id }}
           path: backend/managed-recovery-result.json
