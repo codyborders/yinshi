@@ -20,6 +20,13 @@ import {
 
 export type { TurnBlock } from "../utils/turnEvents";
 
+export interface ChatAttachment {
+  id: string;
+  filename: string;
+  mediaType: string;
+  sizeBytes: number;
+}
+
 export interface ChatMessage {
   id: string;
   role: "user" | "assistant" | "error";
@@ -29,6 +36,7 @@ export interface ChatMessage {
   turnStatus?: TurnStatus;
   turnId?: string | null;
   timestamp: number;
+  attachments?: ChatAttachment[];
 }
 
 let messageIdCounter = 0;
@@ -45,6 +53,7 @@ interface QueuedPrompt {
   prompt: string;
   model?: string;
   thinking?: ThinkingLevel;
+  attachments: ChatAttachment[];
 }
 
 export function useAgentStream(
@@ -181,7 +190,12 @@ export function useAgentStream(
   );
 
   const startPrompt = useCallback(
-    async (prompt: string, model?: string, thinking?: ThinkingLevel) => {
+    async (
+      prompt: string,
+      model?: string,
+      thinking?: ThinkingLevel,
+      attachments: ChatAttachment[] = [],
+    ) => {
       if (!sessionId) return;
       const selectedSessionId = sessionId;
       const selectedTransport = runtimeTransport;
@@ -204,6 +218,7 @@ export function useAgentStream(
           content: normalizedPrompt,
           blocks: [],
           timestamp: Date.now(),
+          attachments,
         },
       ]);
       updateRunState("running");
@@ -216,6 +231,7 @@ export function useAgentStream(
               prompt: normalizedPrompt,
               model,
               thinking,
+              attachmentIds: attachments.map((attachment) => attachment.id),
               signal: controller.signal,
             })
           : null;
@@ -231,6 +247,7 @@ export function useAgentStream(
               model,
               thinking,
               controller.signal,
+              attachments.map((attachment) => attachment.id),
             );
         await consumeEvents(
           eventSource,
@@ -270,6 +287,7 @@ export function useAgentStream(
             queuedPrompt.prompt,
             queuedPrompt.model,
             queuedPrompt.thinking,
+            queuedPrompt.attachments,
           );
         }
       }
@@ -320,6 +338,7 @@ export function useAgentStream(
             queuedPrompt.prompt,
             queuedPrompt.model,
             queuedPrompt.thinking,
+            queuedPrompt.attachments,
           );
         }
       }
@@ -394,21 +413,26 @@ export function useAgentStream(
   }, [isCurrent, runtimeTransport, sessionId, updateRunState]);
 
   const sendPrompt = useCallback(
-    async (prompt: string, model?: string, thinking?: ThinkingLevel) => {
+    async (
+      prompt: string,
+      model?: string,
+      thinking?: ThinkingLevel,
+      attachments: ChatAttachment[] = [],
+    ) => {
       if (!sessionId) return;
       const normalizedPrompt = prompt.trim();
       if (!normalizedPrompt) return;
 
       if (runStateRef.current === "running") {
-        queuedPromptRef.current = { prompt: normalizedPrompt, model, thinking };
+        queuedPromptRef.current = { prompt: normalizedPrompt, model, thinking, attachments };
         await cancel();
         return;
       }
       if (runStateRef.current === "stopping") {
-        queuedPromptRef.current = { prompt: normalizedPrompt, model, thinking };
+        queuedPromptRef.current = { prompt: normalizedPrompt, model, thinking, attachments };
         return;
       }
-      await startPrompt(normalizedPrompt, model, thinking);
+      await startPrompt(normalizedPrompt, model, thinking, attachments);
     },
     [cancel, sessionId, startPrompt],
   );

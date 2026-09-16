@@ -18,7 +18,11 @@ import WorkspaceInspector, {
   type WorkspaceTool,
 } from "../components/WorkspaceInspector";
 import ThreadPanel from "../components/thread/ThreadPanel";
-import { useAgentStream, type ChatMessage } from "../hooks/useAgentStream";
+import {
+  useAgentStream,
+  type ChatAttachment,
+  type ChatMessage,
+} from "../hooks/useAgentStream";
 import { useAuth } from "../hooks/useAuth";
 import { useCatalog } from "../hooks/useCatalog";
 import { usePiCommands } from "../hooks/usePiCommands";
@@ -37,6 +41,7 @@ import {
   initializeSessionModelPreference,
   rememberSessionModel,
 } from "../models/sessionModelPreference";
+import { uploadSessionAttachment } from "../runtime/attachmentUpload";
 import { findActiveRuntimePromptRun } from "../runtime/promptStream";
 import { loadSessionHistory } from "../runtime/sessionHistory";
 import {
@@ -716,8 +721,41 @@ export default function Session() {
     [addSystemMessage, updateSessionModel],
   );
 
+  const handleAttachmentUpload = useCallback(
+    async (file: File): Promise<ChatAttachment> => {
+      if (!id || !transport) throw new Error("Session runtime is unavailable");
+      const selectedModel = getSessionModelOption(
+        pendingModelSelection ?? sessionModel,
+        catalog?.models ?? [],
+      );
+      if (
+        file.type.startsWith("image/") &&
+        selectedModel !== null &&
+        !selectedModel.inputs.includes("image")
+      ) {
+        throw new Error("The selected model does not support image attachments");
+      }
+      const attachment = await uploadSessionAttachment(transport, id, file);
+      return {
+        id: attachment.id,
+        filename: attachment.filename,
+        mediaType: attachment.media_type,
+        sizeBytes: attachment.size_bytes,
+      };
+    },
+    [catalog?.models, id, pendingModelSelection, sessionModel, transport],
+  );
+
+  const handleAttachmentRemove = useCallback(
+    async (attachment: ChatAttachment): Promise<void> => {
+      if (!id || !transport) return;
+      await transport.delete(`/api/sessions/${id}/attachments/${attachment.id}`);
+    },
+    [id, transport],
+  );
+
   const handleSend = useCallback(
-    async (prompt: string) => {
+    async (prompt: string, attachments: ChatAttachment[] = []) => {
       if (inputDisabledReason) return;
       if (id && historyCacheEligible && userId) {
         invalidateSessionHistoryCache(userId, id);
@@ -728,11 +766,20 @@ export default function Session() {
       // If the user starts a prompt while the model save is still in flight,
       // include the selected model in this prompt so the run does not fall back
       // to the previously persisted session model.
-      await sendPrompt(
-        prompt,
-        pendingModelSelection ?? undefined,
-        promptThinkingOverride,
-      );
+      if (attachments.length > 0) {
+        await sendPrompt(
+          prompt,
+          pendingModelSelection ?? undefined,
+          promptThinkingOverride,
+          attachments,
+        );
+      } else {
+        await sendPrompt(
+          prompt,
+          pendingModelSelection ?? undefined,
+          promptThinkingOverride,
+        );
+      }
     },
     [
       historyCacheEligible,
@@ -954,6 +1001,8 @@ export default function Session() {
                   streaming={streaming}
                   onSend={handleSend}
                   onCancel={cancel}
+                  onUpload={handleAttachmentUpload}
+                  onRemoveAttachment={handleAttachmentRemove}
                   onCommand={handleCommand}
                   inputDisabledReason={inputDisabledReason}
                   piCommands={piCommands}

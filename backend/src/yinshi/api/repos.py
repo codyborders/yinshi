@@ -1,5 +1,6 @@
 """CRUD endpoints for repositories."""
 
+import asyncio
 import logging
 import sqlite3
 import uuid
@@ -26,6 +27,7 @@ from yinshi.exceptions import (
 )
 from yinshi.models import RepoCreate, RepoOut, RepoUpdate
 from yinshi.rate_limit import limiter
+from yinshi.services.attachments import delete_session_attachment_files
 from yinshi.services.git import (
     cleanup_repository_worktrees,
     clone_local_repo,
@@ -513,6 +515,18 @@ async def _delete_repo_locked(
                 status_code=500,
                 detail="Repository cleanup failed; deletion can be retried",
             ) from None
+
+        try:
+            attachment_data_dir = (
+                tenant.data_dir if tenant is not None else get_settings().user_data_dir
+            )
+            await asyncio.to_thread(
+                delete_session_attachment_files,
+                attachment_data_dir,
+                session_ids,
+            )
+        except (OSError, ValueError):
+            logger.error("Repository attachment cleanup failed")
 
         try:
             await cleanup_repository_worktrees(

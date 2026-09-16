@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { ChatMessage } from "../hooks/useAgentStream";
+import type { ChatAttachment, ChatMessage } from "../hooks/useAgentStream";
 import AssistantTurn from "./AssistantTurn";
 import MessageBubble from "./MessageBubble";
 import SlashCommandMenu, { type SlashCommand } from "./SlashCommandMenu";
@@ -58,8 +58,10 @@ function resizeInput(element: HTMLTextAreaElement | null): void {
 interface ChatViewProps {
   messages: ChatMessage[];
   streaming: boolean;
-  onSend: (prompt: string) => void | Promise<void>;
+  onSend: (prompt: string, attachments?: ChatAttachment[]) => void | Promise<void>;
   onCancel: () => void | Promise<void>;
+  onUpload?: (file: File) => Promise<ChatAttachment>;
+  onRemoveAttachment?: (attachment: ChatAttachment) => void | Promise<void>;
   onCommand?: (name: string, args: string) => void | Promise<void>;
   inputDisabledReason?: string | null;
   // Pi-provided slash commands (skills, prompts, extension commands). These
@@ -73,6 +75,8 @@ export default function ChatView({
   streaming,
   onSend,
   onCancel,
+  onUpload,
+  onRemoveAttachment,
   onCommand,
   inputDisabledReason,
   piCommands,
@@ -81,8 +85,12 @@ export default function ChatView({
   const [caret, setCaret] = useState(0);
   const [showMenu, setShowMenu] = useState(false);
   const [menuIndex, setMenuIndex] = useState(0);
+  const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const isNearBottom = useRef(true);
   // When selectCommand mutates the input, it also needs to move the caret to
   // land right after the inserted command. React resets selection when the
@@ -188,11 +196,46 @@ export default function ChatView({
     [input, caret, onCommand],
   );
 
+  const uploadFiles = useCallback(
+    async (files: FileList | File[]) => {
+      if (!onUpload || uploading) return;
+      const selected = Array.from(files);
+      if (selected.length === 0) return;
+      if (attachments.length + selected.length > 8) {
+        setUploadError("A prompt can contain at most 8 files.");
+        return;
+      }
+      setUploading(true);
+      setUploadError(null);
+      try {
+        for (const file of selected) {
+          const uploaded = await onUpload(file);
+          setAttachments((current) => [...current, uploaded]);
+        }
+      } catch (error) {
+        setUploadError(error instanceof Error ? error.message : "File upload failed");
+      } finally {
+        setUploading(false);
+        if (fileInputRef.current) fileInputRef.current.value = "";
+      }
+    },
+    [attachments.length, onUpload, uploading],
+  );
+
+  const removeAttachment = useCallback(
+    (attachment: ChatAttachment) => {
+      setAttachments((current) => current.filter((item) => item.id !== attachment.id));
+      void onRemoveAttachment?.(attachment);
+    },
+    [onRemoveAttachment],
+  );
+
   const handleSubmit = useCallback(
     (e?: React.FormEvent) => {
       e?.preventDefault();
       const text = input.trim();
-      if (!text || inputDisabledReason) return;
+      if ((!text && attachments.length === 0) || inputDisabledReason || uploading) return;
+      const submittedText = text || "Please inspect the attached files.";
 
       // Only intercept slash commands whose first token matches a builtin Yinshi
       // UI command. Pi skill / prompt / extension commands pass through to onSend
@@ -213,16 +256,21 @@ export default function ChatView({
         }
       }
 
-      void onSend(text);
+      if (attachments.length > 0) {
+        void onSend(submittedText, attachments);
+      } else {
+        void onSend(submittedText);
+      }
+      setAttachments([]);
       setInput("");
       setCaret(0);
       setShowMenu(false);
       resizeInput(inputRef.current);
     },
-    [input, inputDisabledReason, streaming, onSend, onCommand],
+    [attachments, input, inputDisabledReason, onSend, onCommand, uploading],
   );
 
-  const hasInput = input.trim().length > 0;
+  const hasInput = input.trim().length > 0 || attachments.length > 0;
   const inputDisabled = Boolean(inputDisabledReason);
 
   const handleKeyDown = useCallback(
@@ -291,6 +339,7 @@ export default function ChatView({
                 key={msg.id}
                 role="user"
                 content={msg.content}
+                attachments={msg.attachments}
               />
             );
           }
@@ -344,7 +393,45 @@ export default function ChatView({
             {inputDisabledReason}
           </div>
         )}
-        <form onSubmit={handleSubmit} className="flex items-end gap-2">
+        {(attachments.length > 0 || uploading || uploadError) && (
+          <div className="mb-2 flex flex-wrap items-center gap-2 text-xs">
+            {attachments.map((attachment) => (
+              <span key={attachment.id} className="flex max-w-52 items-center gap-1 rounded-lg bg-gray-800 px-2 py-1 text-gray-200">
+                <span className="truncate">{attachment.filename}</span>
+                <button type="button" onClick={() => removeAttachment(attachment)} aria-label={`Remove ${attachment.filename}`} className="text-gray-400 hover:text-white">x</button>
+              </span>
+            ))}
+            {uploading && <span className="text-gray-400">Uploading file...</span>}
+            {uploadError && <span className="text-red-300">{uploadError}</span>}
+          </div>
+        )}
+        <form
+          onSubmit={handleSubmit}
+          onDragOver={(event) => event.preventDefault()}
+          onDrop={(event) => {
+            event.preventDefault();
+            void uploadFiles(event.dataTransfer.files);
+          }}
+          className="flex items-end gap-2"
+        >
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            className="hidden"
+            onChange={(event) => {
+              if (event.target.files) void uploadFiles(event.target.files);
+            }}
+          />
+          <button
+            type="button"
+            disabled={!onUpload || inputDisabled || uploading}
+            onClick={() => fileInputRef.current?.click()}
+            className="flex h-11 w-11 items-center justify-center rounded-xl bg-gray-800 text-gray-300 disabled:opacity-30"
+            aria-label="Attach files"
+          >
+            <span aria-hidden="true" className="text-xl">+</span>
+          </button>
           <textarea
             ref={inputRef}
             value={input}
@@ -353,6 +440,13 @@ export default function ChatView({
             onKeyUp={syncCaretFromInput}
             onClick={syncCaretFromInput}
             onSelect={syncCaretFromInput}
+            onPaste={(event) => {
+              const files = Array.from(event.clipboardData.files);
+              if (files.length > 0) {
+                event.preventDefault();
+                void uploadFiles(files);
+              }
+            }}
             placeholder={inputDisabledReason || "Describe what to build..."}
             disabled={inputDisabled}
             rows={1}
@@ -385,7 +479,7 @@ export default function ChatView({
           ) : (
             <button
               type="submit"
-              disabled={!hasInput || inputDisabled}
+              disabled={!hasInput || inputDisabled || uploading}
               className="flex h-11 w-11 items-center justify-center rounded-xl bg-blue-500 text-white disabled:opacity-30 active:bg-blue-600"
               aria-label={streaming ? "Steer" : "Send"}
             >

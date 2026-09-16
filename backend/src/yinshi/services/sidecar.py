@@ -321,6 +321,7 @@ class SidecarClient:
         agent_dir: str | None = None,
         settings_payload: dict[str, Any] | None = None,
         pi_session_file: str | None = None,
+        attachments: list[dict[str, object]] | None = None,
         orchestration_capability: OrchestrationCapability | None = None,
         orchestration_handlers: (
             Mapping[str, OrchestrationHandler | ThreadOrchestrationHandler] | None
@@ -357,6 +358,10 @@ class SidecarClient:
                 settings_payload=settings_payload,
                 pi_session_file=pi_session_file,
             )
+            if attachments:
+                if len(attachments) > 8:
+                    raise SidecarError("Query has too many attachments")
+                query_options["attachments"] = attachments
             if self._orchestration_capability is not None:
                 query_options["orchestration"] = {
                     "capability": self._orchestration_capability.token,

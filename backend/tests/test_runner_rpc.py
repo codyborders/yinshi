@@ -86,6 +86,41 @@ def test_active_run_discovery_requires_session_stream_scope() -> None:
         _required_scope(near_match)
 
 
+def test_attachment_routes_require_session_stream_scope() -> None:
+    """Only exact session attachment mutations receive stream authority."""
+    session_id = "a" * 32
+    attachment_id = "b" * 32
+    cases = (
+        ("POST", f"/api/sessions/{session_id}/attachments"),
+        ("POST", f"/api/sessions/{session_id}/attachments/{attachment_id}/chunks/0"),
+        ("POST", f"/api/sessions/{session_id}/attachments/{attachment_id}/complete"),
+        ("DELETE", f"/api/sessions/{session_id}/attachments/{attachment_id}"),
+    )
+    for method, path in cases:
+        request = RunnerRpcRequest(
+            version=1,
+            sequence=0,
+            request_id=str(uuid.uuid4()),
+            method=method,
+            path=path,
+            body=None,
+            query={},
+        )
+        assert _required_scope(request) == "session.stream"
+
+    near_match = RunnerRpcRequest(
+        version=1,
+        sequence=0,
+        request_id=str(uuid.uuid4()),
+        method="POST",
+        path=f"/api/sessions/{session_id}/attachments/{attachment_id}/chunks/10000",
+        body=None,
+        query={},
+    )
+    with pytest.raises(ValueError, match="not allowed"):
+        _required_scope(near_match)
+
+
 def test_thread_routes_require_exact_session_scopes() -> None:
     """Thread reads and mutations use separate session capabilities."""
     session_id = "a" * 32

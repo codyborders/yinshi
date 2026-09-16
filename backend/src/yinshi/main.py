@@ -23,6 +23,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from yinshi import db as database_module
 from yinshi.api import (
+    attachments,
     auth_routes,
     catalog,
     datadog_proxy,
@@ -690,6 +691,7 @@ def _include_routes(
         settings.router,
     )
     local_execution_routers: tuple[APIRouter, ...] = (
+        attachments.router,
         catalog.router,
         repos.router,
         workspaces.router,

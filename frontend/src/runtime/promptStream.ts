@@ -52,6 +52,7 @@ export interface RuntimePromptOptions extends RuntimePromptPollingOptions {
   readonly prompt: string;
   readonly model?: string;
   readonly thinking?: ThinkingLevel;
+  readonly attachmentIds?: readonly string[];
   readonly idempotencyKey?: string;
 }
 
@@ -331,6 +332,14 @@ export async function startRuntimePrompt(
   if (!prompt || prompt.length > 100_000) {
     throw new Error("Prompt content has an invalid length");
   }
+  const attachmentIds = options.attachmentIds ?? [];
+  if (
+    attachmentIds.length > 8 ||
+    new Set(attachmentIds).size !== attachmentIds.length ||
+    attachmentIds.some((id) => !RESOURCE_ID_PATTERN.test(id))
+  ) {
+    throw new Error("Prompt attachment IDs are invalid");
+  }
   const idempotencyKey = options.idempotencyKey ?? crypto.randomUUID();
   if (typeof idempotencyKey !== "string" || idempotencyKey.length !== 36) {
     throw new Error("Prompt idempotency key is invalid");
@@ -341,6 +350,7 @@ export async function startRuntimePrompt(
       prompt,
       model: options.model ?? null,
       thinking: options.thinking ?? null,
+      attachment_ids: attachmentIds,
       idempotency_key: idempotencyKey,
     }),
     sessionId,

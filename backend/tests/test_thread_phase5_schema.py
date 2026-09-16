@@ -71,4 +71,4 @@ def test_tenant_upgrade_preserves_legacy_automatic_start_policy(db) -> None:
     _ensure_current_user_db_schema(db)
     columns = {row[1]: row for row in db.execute("PRAGMA table_info(thread_delegations)")}
     assert columns["auto_start"][4] == "0"
-    assert db.execute("PRAGMA user_version").fetchone()[0] == 3
+    assert db.execute("PRAGMA user_version").fetchone()[0] == 4

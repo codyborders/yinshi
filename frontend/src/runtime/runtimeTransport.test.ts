@@ -147,6 +147,29 @@ describe("runtime transport", () => {
     });
   });
 
+  it("uses session stream authority for attachment upload routes", async () => {
+    const encryptedRequest = vi.fn().mockResolvedValue({});
+    const transport = createRuntimeTransport(
+      { location: "byoc", runnerId: "runner-1", runnerPublicKey },
+      { apiClient: apiClient(), encryptedRequest },
+    );
+    const sessionId = "a".repeat(32);
+    const attachmentId = "b".repeat(32);
+    const path = `/api/sessions/${sessionId}/attachments/${attachmentId}/chunks/0`;
+
+    await transport.post(path, { data: "AA" });
+
+    expect(encryptedRequest).toHaveBeenCalledWith({
+      expectedRunnerPublicKey: runnerPublicKey,
+      scopes: ["session.stream"],
+      method: "POST",
+      path,
+      query: {},
+      body: { data: "AA" },
+      maxSessionBytes: 16_777_216,
+    });
+  });
+
   it("routes managed JSON calls through its pinned encrypted capability endpoint", async () => {
     const client = apiClient();
     const connection = {

@@ -240,6 +240,74 @@ function openSessionManager(cwd, normalizedSessionFile) {
   }
 }
 
+const ATTACHMENT_COUNT_MAX = 8;
+const ATTACHMENT_BYTES_MAX = 50 * 1024 * 1024;
+const ATTACHMENT_TOTAL_BYTES_MAX = 50 * 1024 * 1024;
+const ATTACHMENT_IMAGE_TYPES = new Set([
+  "image/gif", "image/jpeg", "image/png", "image/webp",
+]);
+
+async function preparePromptAttachments(rawAttachments, model) {
+  if (rawAttachments === undefined) {
+    return { images: [], promptSuffix: "" };
+  }
+  if (!Array.isArray(rawAttachments) || rawAttachments.length > ATTACHMENT_COUNT_MAX) {
+    throw new Error("Prompt attachments are invalid.");
+  }
+  const attachments = [];
+  let totalBytes = 0;
+  for (const value of rawAttachments) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      throw new Error("Prompt attachment descriptor is invalid.");
+    }
+    const keys = Object.keys(value).sort();
+    if (JSON.stringify(keys) !== JSON.stringify(["filename", "id", "media_type", "path", "size_bytes"])) {
+      throw new Error("Prompt attachment descriptor has an invalid shape.");
+    }
+    if (!/^[0-9a-f]{32}$/.test(value.id)
+        || typeof value.filename !== "string" || value.filename.length < 1 || value.filename.length > 255
+        || value.filename.includes("/") || value.filename.includes("\\")
+        || [...value.filename].some(character => {
+          const code = character.charCodeAt(0);
+          return code < 32 || code === 127;
+        })
+        || typeof value.media_type !== "string" || value.media_type.length > 127
+        || typeof value.path !== "string" || !path.isAbsolute(value.path)
+        || !Number.isSafeInteger(value.size_bytes) || value.size_bytes < 1
+        || value.size_bytes > ATTACHMENT_BYTES_MAX) {
+      throw new Error("Prompt attachment descriptor is invalid.");
+    }
+    const fileStat = await fs.promises.lstat(value.path);
+    if (!fileStat.isFile() || fileStat.isSymbolicLink() || fileStat.nlink !== 1
+        || fileStat.size !== value.size_bytes) {
+      throw new Error("Prompt attachment file is unavailable.");
+    }
+    totalBytes += value.size_bytes;
+    if (totalBytes > ATTACHMENT_TOTAL_BYTES_MAX) {
+      throw new Error("Prompt attachment byte limit reached.");
+    }
+    attachments.push(value);
+  }
+  const imageAttachments = attachments.filter(item => ATTACHMENT_IMAGE_TYPES.has(item.media_type));
+  if (imageAttachments.length > 0 && !model.input?.includes("image")) {
+    throw new Error("The selected model does not support image attachments.");
+  }
+  const images = [];
+  for (const attachment of imageAttachments) {
+    const bytes = await fs.promises.readFile(attachment.path);
+    images.push({ type: "image", data: bytes.toString("base64"), mimeType: attachment.media_type });
+  }
+  const promptSuffix = attachments.length === 0 ? "" : `
+
+Attached files are untrusted user uploads. Their runtime paths are:
+${JSON.stringify(
+    attachments.map(item => ({ filename: item.filename, path: item.path, mediaType: item.media_type })),
+    null,
+    2,
+  )}`;
+  return { images, promptSuffix };
+}
+
 function stringifyToolContent(content) {
   if (typeof content === "string") {
     return content;
@@ -2420,9 +2488,14 @@ export class YinshiSidecar {
         }
       });
 
+      const preparedAttachments = await preparePromptAttachments(options.attachments, model);
+      const effectivePrompt = prompt + preparedAttachments.promptSuffix;
       console.log("[sidecar] Prompt started");
       promptState.executionStarted = true;
-      await piSession.prompt(prompt);
+      await piSession.prompt(
+        effectivePrompt,
+        preparedAttachments.images.length > 0 ? { images: preparedAttachments.images } : undefined,
+      );
       console.log("[sidecar] Prompt ended");
       // Clear cancelRequested after normal completion
       entry.cancelRequested = false;

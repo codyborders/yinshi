@@ -202,9 +202,9 @@ def test_tenant_database_migration_adds_thread_schema(tenant_env):
         assert "title" in _column_names(conn, "sessions")
         assert "kind" in _column_names(conn, "workspaces")
         assert "parent_workspace_id" in _column_names(conn, "workspaces")
-        assert tenant_module._USER_SCHEMA_VERSION == 3
+        assert tenant_module._USER_SCHEMA_VERSION == 4
         version_row = conn.execute("PRAGMA user_version").fetchone()
-        assert version_row is not None and version_row[0] == 3
+        assert version_row is not None and version_row[0] == 4
 
     tenant_module._MIGRATION_THREAD_LOCKS.clear()
 
@@ -259,7 +259,7 @@ def test_sqlcipher_tenant_database_migration_adds_thread_schema(tenant_env, monk
         assert "title" in _column_names(conn, "sessions")
         assert "kind" in _column_names(conn, "workspaces")
         version_row = conn.execute("PRAGMA user_version").fetchone()
-        assert version_row is not None and version_row[0] == 3
+        assert version_row is not None and version_row[0] == 4
 
     import yinshi.tenant as tenant_module
 
@@ -294,7 +294,7 @@ def test_tenant_database_migration_is_idempotent(tenant_env):
             "SELECT name, count(*) FROM sqlite_master WHERE type = 'index' "
             "AND name LIKE 'idx_thread_%' GROUP BY name HAVING count(*) > 1"
         ).fetchall()
-    assert version_row is not None and version_row[0] == 3
+    assert version_row is not None and version_row[0] == 4
     assert delegation_tables is not None and delegation_tables[0] == 2
     assert duplicated_indexes == []
 

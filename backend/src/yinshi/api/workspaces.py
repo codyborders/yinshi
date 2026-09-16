@@ -23,6 +23,7 @@ from yinshi.exceptions import (
     WorkspaceNotFoundError,
 )
 from yinshi.models import WorkspaceCreate, WorkspaceOut, WorkspaceUpdate
+from yinshi.services.attachments import delete_session_attachment_files
 from yinshi.services.run_coordinator import get_run_coordinator
 from yinshi.services.sidecar import release_sessions
 from yinshi.services.workspace import (
@@ -226,6 +227,14 @@ async def remove_workspace(workspace_id: str, request: Request) -> None:
             await run_db_operation_for_request(
                 request,
                 lambda db: finalize_workspace_deletion(db, target),
+            )
+            attachment_data_dir = (
+                tenant.data_dir if tenant is not None else get_settings().user_data_dir
+            )
+            await asyncio.to_thread(
+                delete_session_attachment_files,
+                attachment_data_dir,
+                target.session_ids,
             )
     except (WorkspaceNotFoundError, RepoNotFoundError):
         raise HTTPException(status_code=404, detail="Workspace not found")

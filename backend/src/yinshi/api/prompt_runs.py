@@ -115,6 +115,7 @@ async def start_prompt_run(
         prompt=body.prompt,
         model=body.model,
         thinking=body.thinking,
+        attachment_ids=body.attachment_ids,
     )
     try:
         run = await _prompt_journal(request).start(

@@ -585,6 +585,7 @@ export async function* streamPrompt(
   model?: string,
   thinking?: ThinkingLevel,
   signal?: AbortSignal,
+  attachmentIds: readonly string[] = [],
 ): AsyncGenerator<SSEEvent> {
   const res = await fetch(`/api/sessions/${sessionId}/prompt`, {
     method: "POST",
@@ -593,7 +594,7 @@ export async function* streamPrompt(
       "X-Requested-With": "XMLHttpRequest",
     },
     credentials: "include",
-    body: JSON.stringify({ prompt, model, thinking }),
+    body: JSON.stringify({ prompt, model, thinking, attachment_ids: attachmentIds }),
     signal,
   });
 

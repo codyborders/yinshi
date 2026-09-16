@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 
 import { YinshiSidecar } from "../src/sidecar.js";
@@ -334,5 +337,41 @@ test("socket close does not cancel a completed prompt", async () => {
 
   assert.equal(abortCalls, 0);
   assert.equal(sidecar.activePromptSessionsBySocket.size, 0);
+  sidecar.cleanup();
+});
+
+test("query passes validated image attachments to Pi", async (context) => {
+  const directory = await fs.promises.mkdtemp(path.join(os.tmpdir(), "yinshi-attachment-"));
+  context.after(async () => fs.promises.rm(directory, { recursive: true, force: true }));
+  const attachmentPath = path.join(directory, "attachment");
+  const attachmentBytes = Buffer.from("89504e470d0a1a0a74657374", "hex");
+  await fs.promises.writeFile(attachmentPath, attachmentBytes, { mode: 0o600 });
+
+  const sidecar = new YinshiSidecar();
+  const socket = recordingSocket();
+  let receivedPrompt;
+  let receivedOptions;
+  const result = sessionResult();
+  result.model.input = ["text", "image"];
+  result.session.prompt = async (prompt, options) => {
+    receivedPrompt = prompt;
+    receivedOptions = options;
+  };
+  sidecar._createPiSession = async () => result;
+
+  await sidecar.processQuery("session-1", socket, "Inspect this", {
+    attachments: [{
+      id: "a".repeat(32),
+      filename: "screen.png",
+      media_type: "image/png",
+      path: attachmentPath,
+      size_bytes: attachmentBytes.length,
+    }],
+  });
+
+  assert.match(receivedPrompt, /screen\.png/);
+  assert.equal(receivedOptions.images.length, 1);
+  assert.equal(receivedOptions.images[0].mimeType, "image/png");
+  assert.equal(receivedOptions.images[0].data, attachmentBytes.toString("base64"));
   sidecar.cleanup();
 });

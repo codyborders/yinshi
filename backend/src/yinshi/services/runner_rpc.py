@@ -66,6 +66,16 @@ _PROMPT_RUN_EVENTS_PATH = re.compile(
     rf"^/api/sessions/{_RESOURCE_ID}/runs/{_RESOURCE_ID}/events/[0-9]{{1,6}}$"
 )
 _PROMPT_RUN_CANCEL_PATH = re.compile(rf"^/api/sessions/{_RESOURCE_ID}/runs/{_RESOURCE_ID}/cancel$")
+_ATTACHMENT_COLLECTION_PATH = re.compile(rf"^/api/sessions/{_RESOURCE_ID}/attachments$")
+_ATTACHMENT_CHUNK_PATH = re.compile(
+    rf"^/api/sessions/{_RESOURCE_ID}/attachments/{_RESOURCE_ID}/chunks/[0-9]{{1,4}}$"
+)
+_ATTACHMENT_COMPLETE_PATH = re.compile(
+    rf"^/api/sessions/{_RESOURCE_ID}/attachments/{_RESOURCE_ID}/complete$"
+)
+_ATTACHMENT_MEMBER_PATH = re.compile(
+    rf"^/api/sessions/{_RESOURCE_ID}/attachments/{_RESOURCE_ID}$"
+)
 _WORKSPACE_FILE_READ_PATH = re.compile(
     rf"^/api/workspaces/{_RESOURCE_ID}/files/(?:changed|diff|preview|tree)$"
 )
@@ -241,6 +251,16 @@ def _required_scope(request: RunnerRpcRequest) -> str:
     if request.method == "POST" and (is_prompt_run_collection or is_prompt_run_cancel):
         return "session.stream"
     if request.method == "GET" and (is_prompt_run_active or is_prompt_run_events):
+        return "session.stream"
+    is_attachment_collection = _ATTACHMENT_COLLECTION_PATH.fullmatch(request.path) is not None
+    is_attachment_chunk = _ATTACHMENT_CHUNK_PATH.fullmatch(request.path) is not None
+    is_attachment_complete = _ATTACHMENT_COMPLETE_PATH.fullmatch(request.path) is not None
+    is_attachment_member = _ATTACHMENT_MEMBER_PATH.fullmatch(request.path) is not None
+    if request.method == "POST" and (
+        is_attachment_collection or is_attachment_chunk or is_attachment_complete
+    ):
+        return "session.stream"
+    if request.method == "DELETE" and is_attachment_member:
         return "session.stream"
     if request.method == "GET" and _WORKSPACE_FILE_READ_PATH.fullmatch(request.path):
         return "files.read"

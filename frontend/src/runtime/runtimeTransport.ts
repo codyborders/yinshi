@@ -101,6 +101,18 @@ const PROMPT_RUN_EVENTS_PATH = new RegExp(
 const PROMPT_RUN_CANCEL_PATH = new RegExp(
   `^/api/sessions/${RESOURCE_ID}/runs/${RESOURCE_ID}/cancel$`,
 );
+const ATTACHMENT_COLLECTION_PATH = new RegExp(
+  `^/api/sessions/${RESOURCE_ID}/attachments$`,
+);
+const ATTACHMENT_CHUNK_PATH = new RegExp(
+  `^/api/sessions/${RESOURCE_ID}/attachments/${RESOURCE_ID}/chunks/[0-9]{1,4}$`,
+);
+const ATTACHMENT_COMPLETE_PATH = new RegExp(
+  `^/api/sessions/${RESOURCE_ID}/attachments/${RESOURCE_ID}/complete$`,
+);
+const ATTACHMENT_MEMBER_PATH = new RegExp(
+  `^/api/sessions/${RESOURCE_ID}/attachments/${RESOURCE_ID}$`,
+);
 const WORKSPACE_FILE_READ_PATH = new RegExp(
   `^/api/workspaces/${RESOURCE_ID}/files/(?:changed|diff|preview|tree)$`,
 );
@@ -155,6 +167,18 @@ function managedConnectionLane(
     TERMINAL_EVENTS_PATH.test(path)
   ) {
     return "terminal:events";
+  }
+  if (
+    scope === "session.stream" &&
+    method === "POST" &&
+    ATTACHMENT_CHUNK_PATH.test(path)
+  ) {
+    const parts = path.split("/");
+    const attachmentId = parts[5];
+    const chunkIndex = Number.parseInt(parts[7], 10);
+    const laneIndex =
+      (Number.parseInt(attachmentId.slice(-1), 16) + chunkIndex) % 8;
+    return `session.stream:attachment:${laneIndex}`;
   }
   if (
     scope === "session.read" &&
@@ -235,6 +259,19 @@ function requiredScope(method: RuntimeMethod, path: string): string {
     return "session.stream";
   }
   if (method === "GET" && (promptRunActive || promptRunEvents)) {
+    return "session.stream";
+  }
+  const attachmentCollection = ATTACHMENT_COLLECTION_PATH.test(path);
+  const attachmentChunk = ATTACHMENT_CHUNK_PATH.test(path);
+  const attachmentComplete = ATTACHMENT_COMPLETE_PATH.test(path);
+  const attachmentMember = ATTACHMENT_MEMBER_PATH.test(path);
+  if (
+    method === "POST" &&
+    (attachmentCollection || attachmentChunk || attachmentComplete)
+  ) {
+    return "session.stream";
+  }
+  if (method === "DELETE" && attachmentMember) {
     return "session.stream";
   }
   if (method === "GET" && WORKSPACE_FILE_READ_PATH.test(path)) {

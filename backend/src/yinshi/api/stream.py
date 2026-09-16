@@ -39,6 +39,11 @@ from yinshi.exceptions import (
 )
 from yinshi.model_catalog import get_provider_metadata, normalize_model_ref
 from yinshi.rate_limit import limiter
+from yinshi.services.attachments import (
+    SessionAttachment,
+    attachment_display_content,
+    claim_prompt_attachments,
+)
 from yinshi.services.container import (
     ContainerActivityReservation,
     ContainerManager,
@@ -307,6 +312,21 @@ class PromptRequest(BaseModel):
     prompt: str = Field(..., max_length=100_000)
     model: str | None = None
     thinking: ThinkingLevel | None = None
+    attachment_ids: list[str] = Field(default_factory=list, max_length=8)
+
+    @field_validator("attachment_ids")
+    @classmethod
+    def validate_attachment_ids(cls, value: list[str]) -> list[str]:
+        """Require unique canonical attachment resource IDs."""
+        if len(set(value)) != len(value):
+            raise ValueError("attachment_ids must be unique")
+        for attachment_id in value:
+            if (
+                len(attachment_id) != 32
+                or any(character not in "0123456789abcdef" for character in attachment_id)
+            ):
+                raise ValueError("attachment_ids must contain resource IDs")
+        return value
 
     @field_validator("thinking", mode="before")
     @classmethod
@@ -983,6 +1003,37 @@ async def _prepare_prompt_workspace_checkout(
         )
 
 
+def _attachment_data_dir(request: Request, tenant: TenantContext | None) -> str:
+    """Return the request-owned storage root for session attachments."""
+    return tenant.data_dir if tenant is not None else get_settings().user_data_dir
+
+
+def _sidecar_attachments(
+    attachments: list[SessionAttachment],
+    *,
+    tenant: TenantContext | None,
+    containerized: bool,
+) -> list[dict[str, object]]:
+    """Build trusted attachment descriptors in the sidecar path namespace."""
+    descriptors: list[dict[str, object]] = []
+    for attachment in attachments:
+        path = attachment.path
+        if containerized:
+            if tenant is None:
+                raise RuntimeError("containerized attachments require a tenant")
+            path = _remap_path(path, tenant.data_dir)
+        descriptors.append(
+            {
+                "id": attachment.id,
+                "filename": attachment.filename,
+                "media_type": attachment.media_type,
+                "size_bytes": attachment.size_bytes,
+                "path": path,
+            }
+        )
+    return descriptors
+
+
 @router.post("/api/sessions/{session_id}/prompt")
 @limiter.limit("120/hour")
 async def prompt_session(
@@ -1036,8 +1087,9 @@ async def prompt_session(
 
     durable_run_id = get_active_prompt_run_id()
     turn_id = durable_run_id or uuid.uuid4().hex
+    prompt_attachments: list[SessionAttachment] = []
 
-    # Atomically claim the session and persist one deterministic user turn.
+    # Atomically claim the session, attachments, and deterministic user turn.
     def reserve_prompt(database: sqlite3.Connection) -> None:
         # One immediate write transaction serializes the reservation. A
         # competing reservation blocks on the write lock instead of entering
@@ -1048,6 +1100,14 @@ async def prompt_session(
                WHERE session_id = ? AND role = 'user' AND turn_id = ?""",
             (session_id, turn_id),
         ).fetchone()
+        claimed_attachments = claim_prompt_attachments(
+            database,
+            data_dir=_attachment_data_dir(request, tenant),
+            session_id=session_id,
+            attachment_ids=body.attachment_ids,
+            turn_id=turn_id,
+        )
+        display_content = attachment_display_content(prompt, claimed_attachments)
         status_row = database.execute(
             "SELECT id, status, pi_context_version FROM sessions WHERE id = ?",
             (session_id,),
@@ -1055,11 +1115,12 @@ async def prompt_session(
         if status_row is None:
             raise HTTPException(status_code=404, detail="Session not found")
         if existing is not None:
-            if existing["content"] != prompt or status_row["status"] != "running":
+            if existing["content"] != display_content or status_row["status"] != "running":
                 raise RuntimeError("prompt reservation identity conflict")
             # Close the idempotent existing-turn check without leaving the
             # immediate transaction open; there is nothing to write.
             database.commit()
+            prompt_attachments.extend(claimed_attachments)
             return
         # One current snapshot decides the Pi context gate and the session
         # claim, so a concurrent first prompt can never pair a stale context
@@ -1073,8 +1134,9 @@ async def prompt_session(
             raise HTTPException(status_code=409, detail="Session already has an active stream")
         database.execute(
             "INSERT INTO messages (session_id, role, content, turn_id) VALUES (?, 'user', ?, ?)",
-            (session_id, prompt, turn_id),
+            (session_id, display_content, turn_id),
         )
+        prompt_attachments.extend(claimed_attachments)
         if session["workspace_name"] == session["workspace_branch"]:
             database.execute(
                 "UPDATE workspaces SET name = ? WHERE id = ?",
@@ -1087,6 +1149,10 @@ async def prompt_session(
     except asyncio.CancelledError:
         await _cleanup_cancelled_prompt_reservation(request, session_id, turn_id)
         raise
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="Attachment not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     try:
         context = await _resolve_execution_context(
@@ -1190,6 +1256,11 @@ async def prompt_session(
             sidecar_events = sidecar.query(
                 session_id,
                 prompt,
+                attachments=_sidecar_attachments(
+                    prompt_attachments,
+                    tenant=tenant,
+                    containerized=context.sidecar_socket is not None,
+                ),
                 orchestration_capability=generate_orchestration_capability(
                     session_id,
                     run_id=turn_id,

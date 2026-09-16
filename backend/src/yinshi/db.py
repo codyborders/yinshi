@@ -21,7 +21,7 @@ from yinshi.model_catalog import DEFAULT_SESSION_MODEL
 
 logger = logging.getLogger(__name__)
 
-_SCHEMA_VERSION = 7
+_SCHEMA_VERSION = 8
 _SQLCIPHER_MODULE_NAMES = ("sqlcipher3.dbapi2", "pysqlcipher3.dbapi2")
 _PLAINTEXT_ROLLBACK_SUFFIX = ".plaintext.rollback"
 
@@ -137,6 +137,26 @@ CREATE TABLE IF NOT EXISTS messages (
     turn_id TEXT,
     turn_status TEXT
 );
+
+CREATE TABLE IF NOT EXISTS attachments (
+    id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    filename TEXT NOT NULL,
+    media_type TEXT NOT NULL,
+    size_bytes INTEGER NOT NULL CHECK (size_bytes BETWEEN 1 AND 52428800),
+    sha256 TEXT NOT NULL CHECK (length(sha256) = 64),
+    status TEXT NOT NULL CHECK (status IN ('uploading', 'ready')),
+    next_chunk_index INTEGER NOT NULL DEFAULT 0 CHECK (next_chunk_index >= 0),
+    received_bytes INTEGER NOT NULL DEFAULT 0 CHECK (received_bytes >= 0),
+    turn_id TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_attachments_session
+    ON attachments(session_id, status, created_at);
+CREATE INDEX IF NOT EXISTS idx_attachments_turn
+    ON attachments(session_id, turn_id) WHERE turn_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS prompt_runs (
     id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
@@ -690,6 +710,29 @@ def _migrate(conn: sqlite3.Connection) -> None:
 
     if current < 7:
         migrate_thread_agent_schema(conn)
+
+    if current < 8:
+        conn.executescript(
+            """CREATE TABLE IF NOT EXISTS attachments (
+                id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+                session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                filename TEXT NOT NULL,
+                media_type TEXT NOT NULL,
+                size_bytes INTEGER NOT NULL CHECK (size_bytes BETWEEN 1 AND 52428800),
+                sha256 TEXT NOT NULL CHECK (length(sha256) = 64),
+                status TEXT NOT NULL CHECK (status IN ('uploading', 'ready')),
+                next_chunk_index INTEGER NOT NULL DEFAULT 0 CHECK (next_chunk_index >= 0),
+                received_bytes INTEGER NOT NULL DEFAULT 0 CHECK (received_bytes >= 0),
+                turn_id TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_attachments_session
+                ON attachments(session_id, status, created_at);
+            CREATE INDEX IF NOT EXISTS idx_attachments_turn
+                ON attachments(session_id, turn_id) WHERE turn_id IS NOT NULL;
+            """
+        )
 
     if current != _SCHEMA_VERSION:
         conn.execute("DELETE FROM schema_version")

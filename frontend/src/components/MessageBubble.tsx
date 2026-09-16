@@ -1,10 +1,12 @@
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import type { ChatAttachment } from "../hooks/useAgentStream";
 
 interface MessageBubbleProps {
   role: string;
   content: string;
   streaming?: boolean;
+  attachments?: ChatAttachment[];
 }
 
 function bubbleStyle(role: string): string {
@@ -21,6 +23,7 @@ export default function MessageBubble({
   role,
   content,
   streaming,
+  attachments = [],
 }: MessageBubbleProps) {
   const isUser = role === "user";
 
@@ -40,6 +43,15 @@ export default function MessageBubble({
             <ReactMarkdown remarkPlugins={[remarkGfm]}>
               {content}
             </ReactMarkdown>
+          </div>
+        )}
+        {attachments.length > 0 && (
+          <div className="mt-2 flex flex-wrap gap-1 border-t border-white/20 pt-2">
+            {attachments.map((attachment) => (
+              <span key={attachment.id} className="max-w-52 truncate rounded bg-black/20 px-2 py-1 text-xs">
+                {attachment.filename}
+              </span>
+            ))}
           </div>
         )}
         {streaming && (
