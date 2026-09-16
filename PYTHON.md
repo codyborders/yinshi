@@ -161,7 +161,6 @@ python-project/
 │   ├── base.txt          # Base requirements
 │   ├── dev.txt           # Development requirements
 │   └── prod.txt          # Production requirements
-├── .env.example           # Example environment variables
 ├── .gitignore
 ├── .pre-commit-config.yaml
 ├── pyproject.toml         # Project configuration

@@ -31,8 +31,7 @@ cd backend
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements/base.txt
-cp .env.example .env
-uvicorn yinshi.main:app --reload
+DISABLE_AUTH=true CONTAINER_ENABLED=false uvicorn yinshi.main:app --reload
 ```
 
 ## Project Structure
