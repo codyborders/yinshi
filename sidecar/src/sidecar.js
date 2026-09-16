@@ -1020,6 +1020,10 @@ export class YinshiSidecar {
     this.socketPath = process.env.SIDECAR_SOCKET_PATH || "/tmp/yinshi-sidecar.sock";
     this.server = net.createServer((socket) => this.handleConnection(socket));
     this.healthCheckInterval = null;
+    // Set only while this instance owns the filesystem socket entry created
+    // by its own successful start(). A non-owner must never delete the path.
+    this.ownedSocketIdentity = null;
+    this.serverCloseWouldDeleteForeignSocket = false;
   }
 
   initialize() {
@@ -1185,15 +1189,90 @@ export class YinshiSidecar {
     this.activeTerminals.delete(id);
   }
 
+  _socketEntryIdentity() {
+    try {
+      const stats = fs.lstatSync(this.socketPath);
+      return { dev: stats.dev, ino: stats.ino, isSocket: stats.isSocket() };
+    } catch (error) {
+      if (error.code === "ENOENT") {
+        return null;
+      }
+      throw error;
+    }
+  }
+
+  _socketIdentitiesMatch(left, right) {
+    return Boolean(left && right && left.dev === right.dev && left.ino === right.ino);
+  }
+
+  _probeSocketListener() {
+    return new Promise((resolve) => {
+      let settled = false;
+      const probe = net.createConnection(this.socketPath);
+      const finish = (isActive) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        clearTimeout(timer);
+        probe.destroy();
+        resolve(isActive);
+      };
+      const timer = setTimeout(() => finish(true), 1_000);
+      probe.once("connect", () => finish(true));
+      probe.once("error", (error) => {
+        finish(!["ECONNREFUSED", "ENOENT"].includes(error.code));
+      });
+      probe.on("error", () => {});
+    });
+  }
+
+  async _prepareSocketPath() {
+    const existingIdentity = this._socketEntryIdentity();
+    if (!existingIdentity) {
+      return;
+    }
+    if (!existingIdentity.isSocket) {
+      const error = new Error(
+        `Sidecar socket path ${this.socketPath} is occupied by a non-socket entry`,
+      );
+      error.code = "EADDRINUSE";
+      throw error;
+    }
+    if (await this._probeSocketListener()) {
+      const error = new Error(
+        `Sidecar socket ${this.socketPath} has an active listener; refusing to replace it`,
+      );
+      error.code = "EADDRINUSE";
+      throw error;
+    }
+    const currentIdentity = this._socketEntryIdentity();
+    if (!this._socketIdentitiesMatch(existingIdentity, currentIdentity)) {
+      return;
+    }
+    try {
+      fs.unlinkSync(this.socketPath);
+    } catch (error) {
+      if (error.code !== "ENOENT") {
+        throw error;
+      }
+    }
+  }
+
   async start() {
     this.cleanup();
+    await this._prepareSocketPath();
 
     return new Promise((resolve, reject) => {
       this.server.listen(this.socketPath, () => {
         try {
+          this.ownedSocketIdentity = this._socketEntryIdentity();
+          if (!this.ownedSocketIdentity) {
+            throw new Error(`Sidecar socket ${this.socketPath} disappeared after bind`);
+          }
           fs.chmodSync(this.socketPath, 0o600);
         } catch (error) {
-          this.server.close();
+          this.cleanup();
           reject(error);
           return;
         }
@@ -2512,17 +2591,39 @@ export class YinshiSidecar {
   }
 
   cleanup() {
-    try {
-      if (fs.existsSync(this.socketPath)) {
-        fs.unlinkSync(this.socketPath);
+    const ownedIdentity = this.ownedSocketIdentity;
+    this.ownedSocketIdentity = null;
+    let shouldCloseServer = !this.serverCloseWouldDeleteForeignSocket;
+
+    if (ownedIdentity) {
+      let currentIdentity;
+      try {
+        currentIdentity = this._socketEntryIdentity();
+      } catch {
+        currentIdentity = undefined;
       }
-    } catch {
-      // ignore cleanup races
+      if (this._socketIdentitiesMatch(ownedIdentity, currentIdentity)) {
+        try {
+          fs.unlinkSync(this.socketPath);
+        } catch {
+          // ignore cleanup races
+        }
+      } else if (currentIdentity !== null) {
+        this.serverCloseWouldDeleteForeignSocket = true;
+        shouldCloseServer = false;
+        console.error(
+          `[sidecar] Preserving socket entry not owned by this instance: ${this.socketPath}`,
+        );
+      }
     }
 
     if (this.server) {
       try {
-        this.server.close();
+        if (shouldCloseServer) {
+          this.server.close();
+        } else {
+          this.server.unref();
+        }
       } catch {
         // ignore cleanup races
       }
