@@ -1,0 +1,17 @@
+Seeing failures and the terminal disappeared with an error. Why is this happening?   /Users/user/Desktop/Screenshot\ 2026-09-16\ at\ 7.34.57 AM.png
+
+---
+
+So can i resume the sessions I was working in?
+
+---
+
+ANd how do we fix the issue?
+
+---
+
+Before we go fixing that I need to figure out where we can't reach `api.github.com`: /Users/user/Desktop/Screenshot\ 2026-09-16\ at\ 8.07.11 AM.png
+
+---
+
+ok, let's fix and deploy the subdomain allowlist now
