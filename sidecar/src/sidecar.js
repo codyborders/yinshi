@@ -32,9 +32,16 @@ const PI_PACKAGE_NAME = "@earendil-works/pi-coding-agent";
 const DEFAULT_MODEL_REF = "minimax/MiniMax-M2.7";
 const DEFAULT_THINKING_LEVEL = "medium";
 const OFF_THINKING_LEVEL = "off";
-const STANDARD_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high"];
-const XHIGH_THINKING_LEVELS = [...STANDARD_THINKING_LEVELS, "xhigh"];
-const THINKING_LEVELS = new Set(XHIGH_THINKING_LEVELS);
+const THINKING_LEVEL_ORDER = [
+  "off",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+];
+const THINKING_LEVELS = new Set(THINKING_LEVEL_ORDER);
 const OAUTH_FLOW_COUNT_MAX = 8;
 const OAUTH_FLOW_TTL_MS = 30 * 60 * 1000;
 const PI_SESSION_IDLE_TTL_MS = 30 * 60 * 1000;
@@ -544,12 +551,8 @@ async function createModelRegistry(providerAuth, agentDir) {
   return { credentials, modelRuntime, registry };
 }
 
-function getThinkingLevels(model) {
-  if (!model.reasoning) {
-    return [OFF_THINKING_LEVEL];
-  }
-  const supportedLevels = new Set(getSupportedThinkingLevels(model));
-  return supportedLevels.has("xhigh") ? XHIGH_THINKING_LEVELS : STANDARD_THINKING_LEVELS;
+export function getThinkingLevels(model) {
+  return [...getSupportedThinkingLevels(model)];
 }
 
 function toCatalogModel(model) {

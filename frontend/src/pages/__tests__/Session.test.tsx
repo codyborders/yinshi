@@ -1045,7 +1045,7 @@ describe("Session", () => {
       models: [
         {
           ...minimaxModel,
-          thinking_levels: ["off", "minimal", "low", "medium", "high", "xhigh"],
+          thinking_levels: ["low", "high", "xhigh", "max"],
         },
       ],
     });
@@ -1056,12 +1056,13 @@ describe("Session", () => {
     const thinkingSelect = await screen.findByLabelText("Thinking");
 
     expect(thinkingSelect).toHaveTextContent("Model default");
-    expect(thinkingSelect).toHaveTextContent("Off");
-    expect(thinkingSelect).toHaveTextContent("Minimal");
     expect(thinkingSelect).toHaveTextContent("Low");
-    expect(thinkingSelect).toHaveTextContent("Medium");
     expect(thinkingSelect).toHaveTextContent("High");
     expect(thinkingSelect).toHaveTextContent("XHigh");
+    expect(thinkingSelect).toHaveTextContent("Max");
+    expect(thinkingSelect).not.toHaveTextContent("Off");
+    expect(thinkingSelect).not.toHaveTextContent("Minimal");
+    expect(thinkingSelect).not.toHaveTextContent("Medium");
   });
 
   it("keeps metadata success when bounded history loading fails", async () => {

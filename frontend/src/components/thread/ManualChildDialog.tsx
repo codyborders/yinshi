@@ -197,6 +197,7 @@ export default function ManualChildDialog({
           <option value="medium">Medium</option>
           <option value="high">High</option>
           <option value="xhigh">Extra high</option>
+          <option value="max">Max</option>
         </select>
         <label htmlFor="child-start-immediately" className="flex items-center gap-2 text-sm text-gray-300">
           <input

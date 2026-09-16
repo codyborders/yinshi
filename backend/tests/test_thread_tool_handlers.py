@@ -61,7 +61,7 @@ async def test_read_tool_options_default_true_and_reject_transcript_fields(opera
     [
         (
             "spawn_thread",
-            {"title": "Child", "task": "Inspect"},
+            {"title": "Child", "task": "Inspect", "thinking": "max"},
             {"title": "Child", "task": "Inspect", "parent_session_id": "forged"},
             "spawn_child",
         ),

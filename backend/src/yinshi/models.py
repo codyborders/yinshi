@@ -244,7 +244,7 @@ class SessionOut(BaseModel):
     title: str | None = None
 
 
-_THREAD_THINKING_LEVELS = ("off", "minimal", "low", "medium", "high", "xhigh")
+_THREAD_THINKING_LEVELS = ("off", "minimal", "low", "medium", "high", "xhigh", "max")
 
 
 class ThreadChildCreate(BaseModel):

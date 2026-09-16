@@ -3155,6 +3155,18 @@ def test_prompt_enables_reasoning_with_pi_thinking_level(
     mock_sidecar.get_catalog.assert_awaited_once()
 
 
+def test_catalog_thinking_levels_preserve_unsupported_gaps() -> None:
+    """Catalog parsing must preserve Pi's exact model-specific level list."""
+    from yinshi.api.stream import _catalog_model_thinking_levels
+
+    assert _catalog_model_thinking_levels(
+        {
+            "reasoning": True,
+            "thinking_levels": ["low", "high", "max"],
+        }
+    ) == ("low", "high", "max")
+
+
 def test_prompt_forwards_explicit_thinking_level(
     client: TestClient,
     session_id: str,
@@ -3173,7 +3185,7 @@ def test_prompt_forwards_explicit_thinking_level(
         settings_payload=None,
     ):
         del sid, prompt, model, cwd, provider_auth, provider_config, agent_dir
-        assert settings_payload == {"defaultThinkingLevel": "xhigh"}
+        assert settings_payload == {"defaultThinkingLevel": "max"}
         yield {
             "type": "message",
             "data": {"type": "result", "usage": {}},
@@ -3193,6 +3205,7 @@ def test_prompt_forwards_explicit_thinking_level(
                         "medium",
                         "high",
                         "xhigh",
+                        "max",
                     ],
                 }
             ]
@@ -3221,12 +3234,12 @@ def test_prompt_forwards_explicit_thinking_level(
     ):
         response = client.post(
             f"/api/sessions/{session_id}/prompt",
-            json={"prompt": "say hello", "thinking": "xhigh"},
+            json={"prompt": "say hello", "thinking": "max"},
         )
 
     assert response.status_code == 200
     assert mock_sidecar.warmup.call_args.kwargs["settings_payload"] == {
-        "defaultThinkingLevel": "xhigh",
+        "defaultThinkingLevel": "max",
     }
     mock_sidecar.get_catalog.assert_awaited_once()
 

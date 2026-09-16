@@ -8,7 +8,7 @@ import { Check } from "typebox/value";
 test("published thread schemas enforce model input bounds without authority fields", async t => {
   const tools = toolsModule.createThreadTools({ allowedOperations: THREAD_OPERATIONS, rpcForCall: () => null });
   const cases = {
-    spawn_thread: [{ title: "Child", task: "Inspect" }, [{ title: "x".repeat(201), task: "Inspect" }, { title: "Child", task: "Inspect", parent_session_id: "forged" }]],
+    spawn_thread: [{ title: "Child", task: "Inspect", thinking: "max" }, [{ title: "x".repeat(201), task: "Inspect" }, { title: "Child", task: "Inspect", parent_session_id: "forged" }]],
     list_children: [{ include_terminal: false }, [{ parent_id: "forged" }, { include_terminal: "false" }]],
     get_thread: [{ thread_id: "child", include_result: false }, [{ thread_id: "child", include_result: "true" }, { thread_id: "child", include_messages: true }]],
     wait_for_threads: [{ thread_ids: ["child"], timeout_seconds: 60 }, [{ thread_ids: ["child"], timeout_seconds: 61 }, { thread_ids: ["child", "child"] }]],

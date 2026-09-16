@@ -58,7 +58,7 @@ const threadSchemas = {
     context: Type.Optional(boundedText(20000)),
     role: Type.Optional(choices(["general", "research", "implementation", "test", "review", "debug"])),
     model: Type.Optional(boundedText(200)),
-    thinking: Type.Optional(choices(["off", "minimal", "low", "medium", "high", "xhigh"])),
+    thinking: Type.Optional(choices(["off", "minimal", "low", "medium", "high", "xhigh", "max"])),
   }),
   list_children: strictObject({ include_terminal: Type.Optional(Type.Boolean({ default: true })) }),
   get_thread: strictObject({ thread_id: threadId, include_result: Type.Optional(Type.Boolean({ default: true })) }),

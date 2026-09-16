@@ -68,7 +68,7 @@ describe("ManualChildDialog", () => {
       target: { value: "provider/model" },
     });
     fireEvent.change(screen.getByLabelText("Thinking"), {
-      target: { value: "high" },
+      target: { value: "max" },
     });
     fireEvent.click(screen.getByLabelText("Start immediately"));
     fireEvent.click(screen.getByRole("button", { name: "Create child" }));
@@ -80,7 +80,7 @@ describe("ManualChildDialog", () => {
       context: "Focus on malformed input.",
       role: "implementation",
       model: "provider/model",
-      thinking: "high",
+      thinking: "max",
       start_immediately: false,
     });
   });

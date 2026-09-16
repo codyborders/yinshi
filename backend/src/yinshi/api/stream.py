@@ -88,7 +88,7 @@ router = APIRouter()
 # Batch DB writes every N chunks to reduce I/O
 _PERSIST_BATCH_SIZE = 10
 _STORED_TURN_SCHEMA = "yinshi.assistant_turn.v1"
-ThinkingLevel = Literal["off", "minimal", "low", "medium", "high", "xhigh"]
+ThinkingLevel = Literal["off", "minimal", "low", "medium", "high", "xhigh", "max"]
 
 _AUTH_SESSION_RECHECK_INTERVAL_S = 1.0
 _STREAM_LIFETIME_S_MAX = 2 * 60 * 60
@@ -101,9 +101,10 @@ _THINKING_LEVEL_ORDER: tuple[ThinkingLevel, ...] = (
     "medium",
     "high",
     "xhigh",
+    "max",
 )
 _THINKING_LEVELS = frozenset(_THINKING_LEVEL_ORDER)
-_STANDARD_THINKING_LEVELS = _THINKING_LEVEL_ORDER[:-1]
+_STANDARD_THINKING_LEVELS = _THINKING_LEVEL_ORDER[:-2]
 
 
 @dataclass(frozen=True, slots=True)
@@ -347,8 +348,6 @@ def _catalog_model_thinking_levels(
             if level not in thinking_levels:
                 thinking_levels.append(level)
         if thinking_levels:
-            if _THINKING_LEVEL_OFF not in thinking_levels:
-                thinking_levels.insert(0, _THINKING_LEVEL_OFF)
             return tuple(thinking_levels)
 
     reasoning_value = model_payload.get("reasoning")

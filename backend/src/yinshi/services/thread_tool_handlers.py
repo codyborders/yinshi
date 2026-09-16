@@ -49,7 +49,7 @@ class _SpawnInput(_ToolInput):
     context: str | None = Field(default=None, max_length=20_000)
     role: Literal["general", "research", "implementation", "test", "review", "debug"] = "general"
     model: str | None = Field(default=None, max_length=200)
-    thinking: Literal["off", "minimal", "low", "medium", "high", "xhigh"] | None = None
+    thinking: Literal["off", "minimal", "low", "medium", "high", "xhigh", "max"] | None = None
 
     @field_validator("title", "task")
     @classmethod

@@ -46,7 +46,7 @@ export interface ProviderDescriptor {
 }
 
 export type ThinkingLevel =
-  "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+  "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
 export interface ModelDescriptor {
   ref: string;

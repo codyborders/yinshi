@@ -775,9 +775,9 @@ def test_thread_child_create_normalizes_and_rejects_thinking() -> None:
         idempotency_key=str(uuid.uuid4()),
         title="t",
         task="task",
-        thinking=" High ",
+        thinking=" Max ",
     )
-    assert body.thinking == "high"
+    assert body.thinking == "max"
     with pytest.raises(ValidationError):
         ThreadChildCreate(
             idempotency_key=str(uuid.uuid4()),
