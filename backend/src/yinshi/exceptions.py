@@ -17,10 +17,6 @@ class WorkspaceHasDelegatedThreads(YinshiError):
     """Raised when deleting a workspace that parents delegated child threads."""
 
 
-class SessionNotFoundError(YinshiError):
-    """Raised when a session is not found."""
-
-
 class GitError(YinshiError):
     """Raised when a git operation fails."""
 
@@ -105,10 +101,6 @@ class SidecarNotConnectedError(SidecarError):
 
 class KeyNotFoundError(YinshiError):
     """Raised when no API key is available for a provider."""
-
-
-class CreditExhaustedError(YinshiError):
-    """Raised when a legacy platform-credit path runs out of allowance."""
 
 
 class EncryptionNotConfiguredError(YinshiError):
