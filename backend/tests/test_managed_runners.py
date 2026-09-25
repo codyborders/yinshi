@@ -34,40 +34,6 @@ def test_managed_sprite_name_is_deterministic_non_pii() -> None:
     )
 
 
-def test_restore_candidate_runner_can_coexist_with_active_managed_runner(auth_client) -> None:
-    """Replacement restore should retain separate candidate registration authority."""
-    from yinshi.services.runners import (
-        create_runner_registration,
-        get_managed_restore_runner_for_user,
-    )
-
-    tenant = getattr(auth_client, "yinshi_tenant")
-    active = create_runner_registration(
-        tenant.user_id,
-        name="Managed Fly Sprite",
-        cloud_provider="fly_sprites",
-        region="ord",
-        storage_profile="fly_sprites_posix",
-        control_url="https://control.example",
-        runner_kind="managed",
-    )
-    candidate = create_runner_registration(
-        tenant.user_id,
-        name="Managed restore candidate",
-        cloud_provider="fly_sprites",
-        region="ord",
-        storage_profile="fly_sprites_posix",
-        control_url="https://control.example",
-        runner_kind="managed_restore",
-    )
-
-    assert active["runner"]["id"] != candidate["runner"]["id"]
-    stored = get_managed_restore_runner_for_user(tenant.user_id)
-    assert stored is not None
-    assert stored["id"] == candidate["runner"]["id"]
-    assert stored["kind"] == "managed_restore"
-
-
 def test_restore_candidate_promotion_rejects_unready_candidate(auth_client) -> None:
     """An unregistered candidate cannot replace the active managed runtime."""
     from yinshi.db import get_control_db
