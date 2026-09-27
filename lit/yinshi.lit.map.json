@@ -7,10 +7,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 796,
+          "outputCount": 860,
           "chunkName": "backend-src-yinshi-main-py",
-          "litmdStart": 84,
-          "litmdCount": 796,
+          "litmdStart": 153,
+          "litmdCount": 860,
           "indent": ""
         }
       ]
@@ -20,10 +20,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 603,
+          "outputCount": 674,
           "chunkName": "backend-src-yinshi-config-py",
-          "litmdStart": 887,
-          "litmdCount": 603,
+          "litmdStart": 1020,
+          "litmdCount": 674,
           "indent": ""
         }
       ]
@@ -33,10 +33,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 745,
+          "outputCount": 1114,
           "chunkName": "backend-src-yinshi-models-py",
-          "litmdStart": 1497,
-          "litmdCount": 745,
+          "litmdStart": 1701,
+          "litmdCount": 1114,
           "indent": ""
         }
       ]
@@ -48,7 +48,7 @@
           "outputStart": 0,
           "outputCount": 260,
           "chunkName": "backend-src-yinshi-model-catalog-py",
-          "litmdStart": 2249,
+          "litmdStart": 2822,
           "litmdCount": 260,
           "indent": ""
         }
@@ -59,10 +59,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 127,
+          "outputCount": 131,
           "chunkName": "backend-src-yinshi-exceptions-py",
-          "litmdStart": 2516,
-          "litmdCount": 127,
+          "litmdStart": 3089,
+          "litmdCount": 131,
           "indent": ""
         }
       ]
@@ -74,7 +74,7 @@
           "outputStart": 0,
           "outputCount": 28,
           "chunkName": "backend-src-yinshi-rate-limit-py",
-          "litmdStart": 2650,
+          "litmdStart": 3227,
           "litmdCount": 28,
           "indent": ""
         }
@@ -85,10 +85,49 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 15,
+          "outputCount": 19,
           "chunkName": "backend-src-yinshi-utils-paths-py",
-          "litmdStart": 2685,
-          "litmdCount": 15,
+          "litmdStart": 3262,
+          "litmdCount": 19,
+          "indent": ""
+        }
+      ]
+    },
+    "backend/src/yinshi/__init__.py": {
+      "rootChunk": "backend-src-yinshi-init-py",
+      "segments": [
+        {
+          "outputStart": 0,
+          "outputCount": 1,
+          "chunkName": "backend-src-yinshi-init-py",
+          "litmdStart": 3288,
+          "litmdCount": 1,
+          "indent": ""
+        }
+      ]
+    },
+    "backend/src/yinshi/api/__init__.py": {
+      "rootChunk": "backend-src-yinshi-api-init-py",
+      "segments": [
+        {
+          "outputStart": 0,
+          "outputCount": 1,
+          "chunkName": "backend-src-yinshi-api-init-py",
+          "litmdStart": 3296,
+          "litmdCount": 1,
+          "indent": ""
+        }
+      ]
+    },
+    "backend/src/yinshi/services/__init__.py": {
+      "rootChunk": "backend-src-yinshi-services-init-py",
+      "segments": [
+        {
+          "outputStart": 0,
+          "outputCount": 1,
+          "chunkName": "backend-src-yinshi-services-init-py",
+          "litmdStart": 3304,
+          "litmdCount": 1,
           "indent": ""
         }
       ]
@@ -98,10 +137,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 1636,
+          "outputCount": 1893,
           "chunkName": "backend-src-yinshi-db-py",
-          "litmdStart": 2711,
-          "litmdCount": 1636,
+          "litmdStart": 3320,
+          "litmdCount": 1893,
           "indent": ""
         }
       ]
@@ -111,10 +150,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 894,
+          "outputCount": 1209,
           "chunkName": "backend-src-yinshi-tenant-py",
-          "litmdStart": 4354,
-          "litmdCount": 894,
+          "litmdStart": 5220,
+          "litmdCount": 1209,
           "indent": ""
         }
       ]
@@ -124,10 +163,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 819,
+          "outputCount": 826,
           "chunkName": "backend-src-yinshi-backup-py",
-          "litmdStart": 5259,
-          "litmdCount": 819,
+          "litmdStart": 6443,
+          "litmdCount": 826,
           "indent": ""
         }
       ]
@@ -139,7 +178,7 @@
           "outputStart": 0,
           "outputCount": 352,
           "chunkName": "backend-src-yinshi-auth-py",
-          "litmdStart": 6085,
+          "litmdStart": 7276,
           "litmdCount": 352,
           "indent": ""
         }
@@ -152,7 +191,7 @@
           "outputStart": 0,
           "outputCount": 122,
           "chunkName": "backend-src-yinshi-services-live-auth-sessions-py",
-          "litmdStart": 6444,
+          "litmdStart": 7635,
           "litmdCount": 122,
           "indent": ""
         }
@@ -163,10 +202,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 1256,
+          "outputCount": 1262,
           "chunkName": "backend-src-yinshi-api-auth-routes-py",
-          "litmdStart": 6573,
-          "litmdCount": 1256,
+          "litmdStart": 7764,
+          "litmdCount": 1262,
           "indent": ""
         }
       ]
@@ -176,10 +215,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 103,
+          "outputCount": 239,
           "chunkName": "backend-src-yinshi-api-deps-py",
-          "litmdStart": 7836,
-          "litmdCount": 103,
+          "litmdStart": 9033,
+          "litmdCount": 239,
           "indent": ""
         }
       ]
@@ -189,10 +228,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 513,
+          "outputCount": 528,
           "chunkName": "backend-src-yinshi-api-repos-py",
-          "litmdStart": 7950,
-          "litmdCount": 513,
+          "litmdStart": 9286,
+          "litmdCount": 528,
           "indent": ""
         }
       ]
@@ -202,10 +241,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 153,
+          "outputCount": 238,
           "chunkName": "backend-src-yinshi-api-workspaces-py",
-          "litmdStart": 8470,
-          "litmdCount": 153,
+          "litmdStart": 9821,
+          "litmdCount": 238,
           "indent": ""
         }
       ]
@@ -215,10 +254,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 545,
+          "outputCount": 1263,
           "chunkName": "backend-src-yinshi-services-git-py",
-          "litmdStart": 8630,
-          "litmdCount": 545,
+          "litmdStart": 10066,
+          "litmdCount": 1263,
           "indent": ""
         }
       ]
@@ -230,7 +269,7 @@
           "outputStart": 0,
           "outputCount": 69,
           "chunkName": "backend-src-yinshi-services-git-runtime-py",
-          "litmdStart": 9182,
+          "litmdStart": 11336,
           "litmdCount": 69,
           "indent": ""
         }
@@ -241,10 +280,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 450,
+          "outputCount": 882,
           "chunkName": "backend-src-yinshi-services-workspace-py",
-          "litmdStart": 9258,
-          "litmdCount": 450,
+          "litmdStart": 11412,
+          "litmdCount": 882,
           "indent": ""
         }
       ]
@@ -254,10 +293,36 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 78,
+          "outputCount": 159,
           "chunkName": "backend-src-yinshi-services-workspace-runtime-paths-py",
-          "litmdStart": 9715,
-          "litmdCount": 78,
+          "litmdStart": 12301,
+          "litmdCount": 159,
+          "indent": ""
+        }
+      ]
+    },
+    "backend/src/yinshi/services/workspace_admission.py": {
+      "rootChunk": "backend-src-yinshi-services-workspace-admission-py",
+      "segments": [
+        {
+          "outputStart": 0,
+          "outputCount": 574,
+          "chunkName": "backend-src-yinshi-services-workspace-admission-py",
+          "litmdStart": 12467,
+          "litmdCount": 574,
+          "indent": ""
+        }
+      ]
+    },
+    "backend/src/yinshi/services/workspace_publication.py": {
+      "rootChunk": "backend-src-yinshi-services-workspace-publication-py",
+      "segments": [
+        {
+          "outputStart": 0,
+          "outputCount": 2761,
+          "chunkName": "backend-src-yinshi-services-workspace-publication-py",
+          "litmdStart": 13048,
+          "litmdCount": 2761,
           "indent": ""
         }
       ]
@@ -267,10 +332,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 1275,
+          "outputCount": 1458,
           "chunkName": "backend-src-yinshi-api-stream-py",
-          "litmdStart": 9804,
-          "litmdCount": 1275,
+          "litmdStart": 15820,
+          "litmdCount": 1458,
           "indent": ""
         }
       ]
@@ -280,10 +345,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 626,
+          "outputCount": 876,
           "chunkName": "backend-src-yinshi-services-sidecar-py",
-          "litmdStart": 11086,
-          "litmdCount": 626,
+          "litmdStart": 17285,
+          "litmdCount": 876,
           "indent": ""
         }
       ]
@@ -293,10 +358,127 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 62,
+          "outputCount": 98,
           "chunkName": "backend-src-yinshi-services-run-coordinator-py",
-          "litmdStart": 11719,
-          "litmdCount": 62,
+          "litmdStart": 18168,
+          "litmdCount": 98,
+          "indent": ""
+        }
+      ]
+    },
+    "backend/src/yinshi/api/threads.py": {
+      "rootChunk": "backend-src-yinshi-api-threads-py",
+      "segments": [
+        {
+          "outputStart": 0,
+          "outputCount": 327,
+          "chunkName": "backend-src-yinshi-api-threads-py",
+          "litmdStart": 18314,
+          "litmdCount": 327,
+          "indent": ""
+        }
+      ]
+    },
+    "backend/src/yinshi/services/thread_lifecycle.py": {
+      "rootChunk": "backend-src-yinshi-services-thread-lifecycle-py",
+      "segments": [
+        {
+          "outputStart": 0,
+          "outputCount": 111,
+          "chunkName": "backend-src-yinshi-services-thread-lifecycle-py",
+          "litmdStart": 18648,
+          "litmdCount": 111,
+          "indent": ""
+        }
+      ]
+    },
+    "backend/src/yinshi/services/thread_queries.py": {
+      "rootChunk": "backend-src-yinshi-services-thread-queries-py",
+      "segments": [
+        {
+          "outputStart": 0,
+          "outputCount": 631,
+          "chunkName": "backend-src-yinshi-services-thread-queries-py",
+          "litmdStart": 18766,
+          "litmdCount": 631,
+          "indent": ""
+        }
+      ]
+    },
+    "backend/src/yinshi/services/thread_orchestration.py": {
+      "rootChunk": "backend-src-yinshi-services-thread-orchestration-py",
+      "segments": [
+        {
+          "outputStart": 0,
+          "outputCount": 3138,
+          "chunkName": "backend-src-yinshi-services-thread-orchestration-py",
+          "litmdStart": 19404,
+          "litmdCount": 3138,
+          "indent": ""
+        }
+      ]
+    },
+    "backend/src/yinshi/services/thread_workspaces.py": {
+      "rootChunk": "backend-src-yinshi-services-thread-workspaces-py",
+      "segments": [
+        {
+          "outputStart": 0,
+          "outputCount": 1578,
+          "chunkName": "backend-src-yinshi-services-thread-workspaces-py",
+          "litmdStart": 22549,
+          "litmdCount": 1578,
+          "indent": ""
+        }
+      ]
+    },
+    "backend/src/yinshi/services/thread_git_ownership.py": {
+      "rootChunk": "backend-src-yinshi-services-thread-git-ownership-py",
+      "segments": [
+        {
+          "outputStart": 0,
+          "outputCount": 438,
+          "chunkName": "backend-src-yinshi-services-thread-git-ownership-py",
+          "litmdStart": 24134,
+          "litmdCount": 438,
+          "indent": ""
+        }
+      ]
+    },
+    "backend/src/yinshi/services/thread_reconciliation.py": {
+      "rootChunk": "backend-src-yinshi-services-thread-reconciliation-py",
+      "segments": [
+        {
+          "outputStart": 0,
+          "outputCount": 333,
+          "chunkName": "backend-src-yinshi-services-thread-reconciliation-py",
+          "litmdStart": 24579,
+          "litmdCount": 333,
+          "indent": ""
+        }
+      ]
+    },
+    "backend/src/yinshi/services/orchestration_bridge.py": {
+      "rootChunk": "backend-src-yinshi-services-orchestration-bridge-py",
+      "segments": [
+        {
+          "outputStart": 0,
+          "outputCount": 453,
+          "chunkName": "backend-src-yinshi-services-orchestration-bridge-py",
+          "litmdStart": 24919,
+          "litmdCount": 453,
+          "indent": ""
+        }
+      ]
+    },
+    "backend/src/yinshi/services/thread_tool_handlers.py": {
+      "rootChunk": "backend-src-yinshi-services-thread-tool-handlers-py",
+      "segments": [
+        {
+          "outputStart": 0,
+          "outputCount": 287,
+          "chunkName": "backend-src-yinshi-services-thread-tool-handlers-py",
+          "litmdStart": 25379,
+          "litmdCount": 287,
           "indent": ""
         }
       ]
@@ -308,7 +490,7 @@
           "outputStart": 0,
           "outputCount": 1082,
           "chunkName": "backend-src-yinshi-services-container-py",
-          "litmdStart": 11792,
+          "litmdStart": 25677,
           "litmdCount": 1082,
           "indent": ""
         }
@@ -319,10 +501,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 686,
+          "outputCount": 758,
           "chunkName": "backend-src-yinshi-services-sidecar-runtime-py",
-          "litmdStart": 12881,
-          "litmdCount": 686,
+          "litmdStart": 26766,
+          "litmdCount": 758,
           "indent": ""
         }
       ]
@@ -332,10 +514,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 238,
+          "outputCount": 306,
           "chunkName": "backend-src-yinshi-api-workspace-files-py",
-          "litmdStart": 13578,
-          "litmdCount": 238,
+          "litmdStart": 27538,
+          "litmdCount": 306,
           "indent": ""
         }
       ]
@@ -345,10 +527,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 538,
+          "outputCount": 624,
           "chunkName": "backend-src-yinshi-services-workspace-files-py",
-          "litmdStart": 13823,
-          "litmdCount": 538,
+          "litmdStart": 27851,
+          "litmdCount": 624,
           "indent": ""
         }
       ]
@@ -358,10 +540,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 426,
+          "outputCount": 454,
           "chunkName": "backend-src-yinshi-api-terminals-py",
-          "litmdStart": 14368,
-          "litmdCount": 426,
+          "litmdStart": 28482,
+          "litmdCount": 454,
           "indent": ""
         }
       ]
@@ -373,7 +555,7 @@
           "outputStart": 0,
           "outputCount": 249,
           "chunkName": "backend-src-yinshi-services-crypto-py",
-          "litmdStart": 14805,
+          "litmdStart": 28950,
           "litmdCount": 249,
           "indent": ""
         }
@@ -384,10 +566,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 76,
+          "outputCount": 108,
           "chunkName": "backend-src-yinshi-services-control-encryption-py",
-          "litmdStart": 15061,
-          "litmdCount": 76,
+          "litmdStart": 29206,
+          "litmdCount": 108,
           "indent": ""
         }
       ]
@@ -399,7 +581,7 @@
           "outputStart": 0,
           "outputCount": 263,
           "chunkName": "backend-src-yinshi-services-keys-py",
-          "litmdStart": 15144,
+          "litmdStart": 29321,
           "litmdCount": 263,
           "indent": ""
         }
@@ -410,10 +592,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 385,
+          "outputCount": 389,
           "chunkName": "backend-src-yinshi-api-settings-py",
-          "litmdStart": 15418,
-          "litmdCount": 385,
+          "litmdStart": 29595,
+          "litmdCount": 389,
           "indent": ""
         }
       ]
@@ -425,7 +607,7 @@
           "outputStart": 0,
           "outputCount": 419,
           "chunkName": "backend-src-yinshi-services-provider-connections-py",
-          "litmdStart": 15810,
+          "litmdStart": 29991,
           "litmdCount": 419,
           "indent": ""
         }
@@ -436,10 +618,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 1087,
+          "outputCount": 1132,
           "chunkName": "backend-src-yinshi-services-pi-config-py",
-          "litmdStart": 16236,
-          "litmdCount": 1087,
+          "litmdStart": 30417,
+          "litmdCount": 1132,
           "indent": ""
         }
       ]
@@ -451,7 +633,7 @@
           "outputStart": 0,
           "outputCount": 170,
           "chunkName": "backend-src-yinshi-services-user-settings-py",
-          "litmdStart": 17330,
+          "litmdStart": 31556,
           "litmdCount": 170,
           "indent": ""
         }
@@ -464,7 +646,7 @@
           "outputStart": 0,
           "outputCount": 229,
           "chunkName": "backend-src-yinshi-services-pi-releases-py",
-          "litmdStart": 17507,
+          "litmdStart": 31733,
           "litmdCount": 229,
           "indent": ""
         }
@@ -475,10 +657,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 136,
+          "outputCount": 144,
           "chunkName": "backend-src-yinshi-api-catalog-py",
-          "litmdStart": 17743,
-          "litmdCount": 136,
+          "litmdStart": 31969,
+          "litmdCount": 144,
           "indent": ""
         }
       ]
@@ -490,7 +672,7 @@
           "outputStart": 0,
           "outputCount": 29,
           "chunkName": "backend-src-yinshi-api-github-py",
-          "litmdStart": 17890,
+          "litmdStart": 32124,
           "litmdCount": 29,
           "indent": ""
         }
@@ -501,10 +683,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 500,
+          "outputCount": 507,
           "chunkName": "backend-src-yinshi-services-github-app-py",
-          "litmdStart": 17926,
-          "litmdCount": 500,
+          "litmdStart": 32160,
+          "litmdCount": 507,
           "indent": ""
         }
       ]
@@ -516,7 +698,7 @@
           "outputStart": 0,
           "outputCount": 362,
           "chunkName": "backend-src-yinshi-services-accounts-py",
-          "litmdStart": 18437,
+          "litmdStart": 32678,
           "litmdCount": 362,
           "indent": ""
         }
@@ -527,10 +709,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 262,
+          "outputCount": 306,
           "chunkName": "backend-src-yinshi-api-runners-py",
-          "litmdStart": 18806,
-          "litmdCount": 262,
+          "litmdStart": 33047,
+          "litmdCount": 306,
           "indent": ""
         }
       ]
@@ -540,10 +722,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 991,
+          "outputCount": 997,
           "chunkName": "backend-src-yinshi-services-runners-py",
-          "litmdStart": 19075,
-          "litmdCount": 991,
+          "litmdStart": 33360,
+          "litmdCount": 997,
           "indent": ""
         }
       ]
@@ -553,10 +735,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 1050,
+          "outputCount": 1173,
           "chunkName": "backend-src-yinshi-runner-agent-py",
-          "litmdStart": 20073,
-          "litmdCount": 1050,
+          "litmdStart": 34364,
+          "litmdCount": 1173,
           "indent": ""
         }
       ]
@@ -568,8 +750,21 @@
           "outputStart": 0,
           "outputCount": 175,
           "chunkName": "backend-src-yinshi-api-datadog-proxy-py",
-          "litmdStart": 21130,
+          "litmdStart": 35544,
           "litmdCount": 175,
+          "indent": ""
+        }
+      ]
+    },
+    "backend/src/yinshi/services/event_loop_watchdog.py": {
+      "rootChunk": "backend-src-yinshi-services-event-loop-watchdog-py",
+      "segments": [
+        {
+          "outputStart": 0,
+          "outputCount": 140,
+          "chunkName": "backend-src-yinshi-services-event-loop-watchdog-py",
+          "litmdStart": 35726,
+          "litmdCount": 140,
           "indent": ""
         }
       ]
@@ -581,7 +776,7 @@
           "outputStart": 0,
           "outputCount": 46,
           "chunkName": "backend-src-yinshi-api-desktop-devices-py",
-          "litmdStart": 21315,
+          "litmdStart": 35876,
           "litmdCount": 46,
           "indent": ""
         }
@@ -594,7 +789,7 @@
           "outputStart": 0,
           "outputCount": 150,
           "chunkName": "backend-src-yinshi-desktop-bootstrap-py",
-          "litmdStart": 21367,
+          "litmdStart": 35928,
           "litmdCount": 150,
           "indent": ""
         }
@@ -607,7 +802,7 @@
           "outputStart": 0,
           "outputCount": 164,
           "chunkName": "backend-src-yinshi-desktop-runtime-py",
-          "litmdStart": 21523,
+          "litmdStart": 36084,
           "litmdCount": 164,
           "indent": ""
         }
@@ -620,7 +815,7 @@
           "outputStart": 0,
           "outputCount": 402,
           "chunkName": "backend-src-yinshi-services-desktop-auth-py",
-          "litmdStart": 21693,
+          "litmdStart": 36254,
           "litmdCount": 402,
           "indent": ""
         }
@@ -633,7 +828,7 @@
           "outputStart": 0,
           "outputCount": 100,
           "chunkName": "backend-src-yinshi-services-desktop-devices-py",
-          "litmdStart": 22101,
+          "litmdStart": 36662,
           "litmdCount": 100,
           "indent": ""
         }
@@ -646,7 +841,7 @@
           "outputStart": 0,
           "outputCount": 76,
           "chunkName": "backend-src-yinshi-services-desktop-terminal-py",
-          "litmdStart": 22207,
+          "litmdStart": 36768,
           "litmdCount": 76,
           "indent": ""
         }
@@ -659,7 +854,7 @@
           "outputStart": 0,
           "outputCount": 183,
           "chunkName": "backend-src-yinshi-services-desktop-tokens-py",
-          "litmdStart": 22289,
+          "litmdStart": 36850,
           "litmdCount": 183,
           "indent": ""
         }
@@ -670,10 +865,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 312,
+          "outputCount": 383,
           "chunkName": "backend-src-yinshi-api-managed-runtime-py",
-          "litmdStart": 22482,
-          "litmdCount": 312,
+          "litmdStart": 37046,
+          "litmdCount": 383,
           "indent": ""
         }
       ]
@@ -685,7 +880,7 @@
           "outputStart": 0,
           "outputCount": 101,
           "chunkName": "backend-src-yinshi-managed-sprite-cleanup-py",
-          "litmdStart": 22800,
+          "litmdStart": 37435,
           "litmdCount": 101,
           "indent": ""
         }
@@ -696,10 +891,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 131,
+          "outputCount": 155,
           "chunkName": "backend-src-yinshi-services-managed-artifacts-py",
-          "litmdStart": 22907,
-          "litmdCount": 131,
+          "litmdStart": 37542,
+          "litmdCount": 155,
           "indent": ""
         }
       ]
@@ -711,7 +906,7 @@
           "outputStart": 0,
           "outputCount": 277,
           "chunkName": "backend-src-yinshi-services-managed-guest-installer-py",
-          "litmdStart": 23044,
+          "litmdStart": 37703,
           "litmdCount": 277,
           "indent": ""
         }
@@ -724,7 +919,7 @@
           "outputStart": 0,
           "outputCount": 31,
           "chunkName": "backend-src-yinshi-services-managed-hosted-runtime-py",
-          "litmdStart": 23327,
+          "litmdStart": 37986,
           "litmdCount": 31,
           "indent": ""
         }
@@ -737,7 +932,7 @@
           "outputStart": 0,
           "outputCount": 43,
           "chunkName": "backend-src-yinshi-services-managed-operation-failures-py",
-          "litmdStart": 23364,
+          "litmdStart": 38023,
           "litmdCount": 43,
           "indent": ""
         }
@@ -750,7 +945,7 @@
           "outputStart": 0,
           "outputCount": 816,
           "chunkName": "backend-src-yinshi-services-managed-runners-py",
-          "litmdStart": 23413,
+          "litmdStart": 38072,
           "litmdCount": 816,
           "indent": ""
         }
@@ -761,10 +956,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 812,
+          "outputCount": 882,
           "chunkName": "backend-src-yinshi-services-managed-runtime-manager-py",
-          "litmdStart": 24235,
-          "litmdCount": 812,
+          "litmdStart": 38894,
+          "litmdCount": 882,
           "indent": ""
         }
       ]
@@ -776,7 +971,7 @@
           "outputStart": 0,
           "outputCount": 252,
           "chunkName": "backend-src-yinshi-services-managed-sprite-reconciliation-py",
-          "litmdStart": 25053,
+          "litmdStart": 39782,
           "litmdCount": 252,
           "indent": ""
         }
@@ -789,7 +984,7 @@
           "outputStart": 0,
           "outputCount": 114,
           "chunkName": "backend-src-yinshi-services-managed-sprite-registry-py",
-          "litmdStart": 25311,
+          "litmdStart": 40040,
           "litmdCount": 114,
           "indent": ""
         }
@@ -802,7 +997,7 @@
           "outputStart": 0,
           "outputCount": 146,
           "chunkName": "backend-src-yinshi-services-sprite-task-lease-py",
-          "litmdStart": 25431,
+          "litmdStart": 40160,
           "litmdCount": 146,
           "indent": ""
         }
@@ -815,7 +1010,7 @@
           "outputStart": 0,
           "outputCount": 1256,
           "chunkName": "backend-src-yinshi-services-sprites-py",
-          "litmdStart": 25583,
+          "litmdStart": 40312,
           "litmdCount": 1256,
           "indent": ""
         }
@@ -828,7 +1023,7 @@
           "outputStart": 0,
           "outputCount": 62,
           "chunkName": "backend-src-yinshi-api-managed-recovery-drills-py",
-          "litmdStart": 26849,
+          "litmdStart": 41583,
           "litmdCount": 62,
           "indent": ""
         }
@@ -839,10 +1034,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 862,
+          "outputCount": 885,
           "chunkName": "backend-src-yinshi-managed-backup-guest-py",
-          "litmdStart": 26917,
-          "litmdCount": 862,
+          "litmdStart": 41651,
+          "litmdCount": 885,
           "indent": ""
         }
       ]
@@ -854,7 +1049,7 @@
           "outputStart": 0,
           "outputCount": 55,
           "chunkName": "backend-src-yinshi-managed-operations-check-py",
-          "litmdStart": 27785,
+          "litmdStart": 42542,
           "litmdCount": 55,
           "indent": ""
         }
@@ -867,7 +1062,7 @@
           "outputStart": 0,
           "outputCount": 105,
           "chunkName": "backend-src-yinshi-managed-recovery-drill-controller-py",
-          "litmdStart": 27846,
+          "litmdStart": 42603,
           "litmdCount": 105,
           "indent": ""
         }
@@ -880,7 +1075,7 @@
           "outputStart": 0,
           "outputCount": 50,
           "chunkName": "backend-src-yinshi-managed-recovery-live-py",
-          "litmdStart": 27957,
+          "litmdStart": 42714,
           "litmdCount": 50,
           "indent": ""
         }
@@ -893,7 +1088,7 @@
           "outputStart": 0,
           "outputCount": 297,
           "chunkName": "backend-src-yinshi-managed-recovery-staging-py",
-          "litmdStart": 28013,
+          "litmdStart": 42770,
           "litmdCount": 297,
           "indent": ""
         }
@@ -906,7 +1101,7 @@
           "outputStart": 0,
           "outputCount": 213,
           "chunkName": "backend-src-yinshi-managed-source-loss-recovery-py",
-          "litmdStart": 28316,
+          "litmdStart": 43073,
           "litmdCount": 213,
           "indent": ""
         }
@@ -919,7 +1114,7 @@
           "outputStart": 0,
           "outputCount": 204,
           "chunkName": "backend-src-yinshi-services-managed-backup-crypto-py",
-          "litmdStart": 28535,
+          "litmdStart": 43292,
           "litmdCount": 204,
           "indent": ""
         }
@@ -930,10 +1125,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 1337,
+          "outputCount": 1329,
           "chunkName": "backend-src-yinshi-services-managed-backup-manager-py",
-          "litmdStart": 28745,
-          "litmdCount": 1337,
+          "litmdStart": 43502,
+          "litmdCount": 1329,
           "indent": ""
         }
       ]
@@ -943,10 +1138,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 662,
+          "outputCount": 673,
           "chunkName": "backend-src-yinshi-services-managed-backup-store-py",
-          "litmdStart": 30088,
-          "litmdCount": 662,
+          "litmdStart": 44837,
+          "litmdCount": 673,
           "indent": ""
         }
       ]
@@ -956,10 +1151,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 1135,
+          "outputCount": 1159,
           "chunkName": "backend-src-yinshi-services-managed-backups-py",
-          "litmdStart": 30756,
-          "litmdCount": 1135,
+          "litmdStart": 45516,
+          "litmdCount": 1159,
           "indent": ""
         }
       ]
@@ -971,7 +1166,7 @@
           "outputStart": 0,
           "outputCount": 61,
           "chunkName": "backend-src-yinshi-services-managed-operational-failures-py",
-          "litmdStart": 31897,
+          "litmdStart": 46681,
           "litmdCount": 61,
           "indent": ""
         }
@@ -984,8 +1179,21 @@
           "outputStart": 0,
           "outputCount": 205,
           "chunkName": "backend-src-yinshi-services-managed-operational-status-py",
-          "litmdStart": 31964,
+          "litmdStart": 46748,
           "litmdCount": 205,
+          "indent": ""
+        }
+      ]
+    },
+    "backend/src/yinshi/services/managed_backup_protocol.py": {
+      "rootChunk": "backend-src-yinshi-services-managed-backup-protocol-py",
+      "segments": [
+        {
+          "outputStart": 0,
+          "outputCount": 37,
+          "chunkName": "backend-src-yinshi-services-managed-backup-protocol-py",
+          "litmdStart": 46960,
+          "litmdCount": 37,
           "indent": ""
         }
       ]
@@ -995,10 +1203,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 173,
+          "outputCount": 196,
           "chunkName": "backend-src-yinshi-api-prompt-runs-py",
-          "litmdStart": 32179,
-          "litmdCount": 173,
+          "litmdStart": 47012,
+          "litmdCount": 196,
           "indent": ""
         }
       ]
@@ -1008,10 +1216,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 153,
+          "outputCount": 243,
           "chunkName": "backend-src-yinshi-api-runner-relay-py",
-          "litmdStart": 32358,
-          "litmdCount": 153,
+          "litmdStart": 47214,
+          "litmdCount": 243,
           "indent": ""
         }
       ]
@@ -1023,7 +1231,7 @@
           "outputStart": 0,
           "outputCount": 166,
           "chunkName": "backend-src-yinshi-api-runtime-uploads-py",
-          "litmdStart": 32517,
+          "litmdStart": 47463,
           "litmdCount": 166,
           "indent": ""
         }
@@ -1034,10 +1242,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 187,
+          "outputCount": 809,
           "chunkName": "backend-src-yinshi-api-sessions-py",
-          "litmdStart": 32689,
-          "litmdCount": 187,
+          "litmdStart": 47635,
+          "litmdCount": 809,
           "indent": ""
         }
       ]
@@ -1047,10 +1255,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 338,
+          "outputCount": 378,
           "chunkName": "backend-src-yinshi-api-terminal-channels-py",
-          "litmdStart": 32882,
-          "litmdCount": 338,
+          "litmdStart": 48450,
+          "litmdCount": 378,
           "indent": ""
         }
       ]
@@ -1060,10 +1268,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 339,
+          "outputCount": 314,
           "chunkName": "backend-src-yinshi-runner-worker-py",
-          "litmdStart": 33226,
-          "litmdCount": 339,
+          "litmdStart": 48834,
+          "litmdCount": 314,
           "indent": ""
         }
       ]
@@ -1075,7 +1283,7 @@
           "outputStart": 0,
           "outputCount": 218,
           "chunkName": "backend-src-yinshi-services-encrypted-uploads-py",
-          "litmdStart": 33571,
+          "litmdStart": 49154,
           "litmdCount": 218,
           "indent": ""
         }
@@ -1086,10 +1294,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 634,
+          "outputCount": 955,
           "chunkName": "backend-src-yinshi-services-prompt-journal-py",
-          "litmdStart": 33795,
-          "litmdCount": 634,
+          "litmdStart": 49378,
+          "litmdCount": 955,
           "indent": ""
         }
       ]
@@ -1101,7 +1309,7 @@
           "outputStart": 0,
           "outputCount": 100,
           "chunkName": "backend-src-yinshi-services-relay-process-lock-py",
-          "litmdStart": 34435,
+          "litmdStart": 50339,
           "litmdCount": 100,
           "indent": ""
         }
@@ -1112,10 +1320,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 334,
+          "outputCount": 353,
           "chunkName": "backend-src-yinshi-services-repository-lifecycle-py",
-          "litmdStart": 34541,
-          "litmdCount": 334,
+          "litmdStart": 50445,
+          "litmdCount": 353,
           "indent": ""
         }
       ]
@@ -1125,10 +1333,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 275,
+          "outputCount": 279,
           "chunkName": "backend-src-yinshi-services-runner-agent-relay-py",
-          "litmdStart": 34881,
-          "litmdCount": 275,
+          "litmdStart": 50804,
+          "litmdCount": 279,
           "indent": ""
         }
       ]
@@ -1140,7 +1348,7 @@
           "outputStart": 0,
           "outputCount": 368,
           "chunkName": "backend-src-yinshi-services-runner-capabilities-py",
-          "litmdStart": 35162,
+          "litmdStart": 51089,
           "litmdCount": 368,
           "indent": ""
         }
@@ -1153,7 +1361,7 @@
           "outputStart": 0,
           "outputCount": 240,
           "chunkName": "backend-src-yinshi-services-runner-data-key-py",
-          "litmdStart": 35536,
+          "litmdStart": 51463,
           "litmdCount": 240,
           "indent": ""
         }
@@ -1166,7 +1374,7 @@
           "outputStart": 0,
           "outputCount": 251,
           "chunkName": "backend-src-yinshi-services-runner-noise-py",
-          "litmdStart": 35782,
+          "litmdStart": 51709,
           "litmdCount": 251,
           "indent": ""
         }
@@ -1179,7 +1387,7 @@
           "outputStart": 0,
           "outputCount": 281,
           "chunkName": "backend-src-yinshi-services-runner-noise-session-py",
-          "litmdStart": 36039,
+          "litmdStart": 51966,
           "litmdCount": 281,
           "indent": ""
         }
@@ -1190,10 +1398,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 574,
+          "outputCount": 633,
           "chunkName": "backend-src-yinshi-services-runner-relay-py",
-          "litmdStart": 36326,
-          "litmdCount": 574,
+          "litmdStart": 52253,
+          "litmdCount": 633,
           "indent": ""
         }
       ]
@@ -1203,10 +1411,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 584,
+          "outputCount": 760,
           "chunkName": "backend-src-yinshi-services-runner-rpc-py",
-          "litmdStart": 36906,
-          "litmdCount": 584,
+          "litmdStart": 52892,
+          "litmdCount": 760,
           "indent": ""
         }
       ]
@@ -1218,7 +1426,7 @@
           "outputStart": 0,
           "outputCount": 22,
           "chunkName": "backend-src-yinshi-services-runner-rpc-transport-py",
-          "litmdStart": 37497,
+          "litmdStart": 53659,
           "litmdCount": 22,
           "indent": ""
         }
@@ -1229,10 +1437,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 537,
+          "outputCount": 714,
           "chunkName": "backend-src-yinshi-services-terminal-journal-py",
-          "litmdStart": 37526,
-          "litmdCount": 537,
+          "litmdStart": 53688,
+          "litmdCount": 714,
           "indent": ""
         }
       ]
@@ -1244,7 +1452,7 @@
           "outputStart": 0,
           "outputCount": 136,
           "chunkName": "backend-src-yinshi-worker-auth-py",
-          "litmdStart": 38070,
+          "litmdStart": 54409,
           "litmdCount": 136,
           "indent": ""
         }
@@ -1257,8 +1465,320 @@
           "outputStart": 0,
           "outputCount": 173,
           "chunkName": "backend-src-yinshi-worker-runtime-py",
-          "litmdStart": 38213,
+          "litmdStart": 54552,
           "litmdCount": 173,
+          "indent": ""
+        }
+      ]
+    },
+    "backend/src/yinshi/artifact_upload_daemon.py": {
+      "rootChunk": "backend-src-yinshi-artifact-upload-daemon-py",
+      "segments": [
+        {
+          "outputStart": 0,
+          "outputCount": 318,
+          "chunkName": "backend-src-yinshi-artifact-upload-daemon-py",
+          "litmdStart": 54761,
+          "litmdCount": 318,
+          "indent": ""
+        }
+      ]
+    },
+    "backend/src/yinshi/broker_artifact_stdio_relay.py": {
+      "rootChunk": "backend-src-yinshi-broker-artifact-stdio-relay-py",
+      "segments": [
+        {
+          "outputStart": 0,
+          "outputCount": 257,
+          "chunkName": "backend-src-yinshi-broker-artifact-stdio-relay-py",
+          "litmdStart": 55086,
+          "litmdCount": 257,
+          "indent": ""
+        }
+      ]
+    },
+    "backend/src/yinshi/broker_stdio_relay.py": {
+      "rootChunk": "backend-src-yinshi-broker-stdio-relay-py",
+      "segments": [
+        {
+          "outputStart": 0,
+          "outputCount": 166,
+          "chunkName": "backend-src-yinshi-broker-stdio-relay-py",
+          "litmdStart": 55350,
+          "litmdCount": 166,
+          "indent": ""
+        }
+      ]
+    },
+    "backend/src/yinshi/execution_daemons.py": {
+      "rootChunk": "backend-src-yinshi-execution-daemons-py",
+      "segments": [
+        {
+          "outputStart": 0,
+          "outputCount": 1346,
+          "chunkName": "backend-src-yinshi-execution-daemons-py",
+          "litmdStart": 55523,
+          "litmdCount": 1346,
+          "indent": ""
+        }
+      ]
+    },
+    "backend/src/yinshi/root_launcher.py": {
+      "rootChunk": "backend-src-yinshi-root-launcher-py",
+      "segments": [
+        {
+          "outputStart": 0,
+          "outputCount": 2429,
+          "chunkName": "backend-src-yinshi-root-launcher-py",
+          "litmdStart": 56876,
+          "litmdCount": 2429,
+          "indent": ""
+        }
+      ]
+    },
+    "backend/src/yinshi/services/broker_artifact_store.py": {
+      "rootChunk": "backend-src-yinshi-services-broker-artifact-store-py",
+      "segments": [
+        {
+          "outputStart": 0,
+          "outputCount": 1140,
+          "chunkName": "backend-src-yinshi-services-broker-artifact-store-py",
+          "litmdStart": 59312,
+          "litmdCount": 1140,
+          "indent": ""
+        }
+      ]
+    },
+    "backend/src/yinshi/services/broker_artifact_transport.py": {
+      "rootChunk": "backend-src-yinshi-services-broker-artifact-transport-py",
+      "segments": [
+        {
+          "outputStart": 0,
+          "outputCount": 286,
+          "chunkName": "backend-src-yinshi-services-broker-artifact-transport-py",
+          "litmdStart": 60459,
+          "litmdCount": 286,
+          "indent": ""
+        }
+      ]
+    },
+    "backend/src/yinshi/services/broker_journal.py": {
+      "rootChunk": "backend-src-yinshi-services-broker-journal-py",
+      "segments": [
+        {
+          "outputStart": 0,
+          "outputCount": 1174,
+          "chunkName": "backend-src-yinshi-services-broker-journal-py",
+          "litmdStart": 60752,
+          "litmdCount": 1174,
+          "indent": ""
+        }
+      ]
+    },
+    "backend/src/yinshi/services/broker_protocol.py": {
+      "rootChunk": "backend-src-yinshi-services-broker-protocol-py",
+      "segments": [
+        {
+          "outputStart": 0,
+          "outputCount": 428,
+          "chunkName": "backend-src-yinshi-services-broker-protocol-py",
+          "litmdStart": 61933,
+          "litmdCount": 428,
+          "indent": ""
+        }
+      ]
+    },
+    "backend/src/yinshi/services/broker_replica_artifact_effects.py": {
+      "rootChunk": "backend-src-yinshi-services-broker-replica-artifact-effects-py",
+      "segments": [
+        {
+          "outputStart": 0,
+          "outputCount": 502,
+          "chunkName": "backend-src-yinshi-services-broker-replica-artifact-effects-py",
+          "litmdStart": 62368,
+          "litmdCount": 502,
+          "indent": ""
+        }
+      ]
+    },
+    "backend/src/yinshi/services/broker_replica_journal.py": {
+      "rootChunk": "backend-src-yinshi-services-broker-replica-journal-py",
+      "segments": [
+        {
+          "outputStart": 0,
+          "outputCount": 2321,
+          "chunkName": "backend-src-yinshi-services-broker-replica-journal-py",
+          "litmdStart": 62877,
+          "litmdCount": 2321,
+          "indent": ""
+        }
+      ]
+    },
+    "backend/src/yinshi/services/broker_replica_journal_v2.py": {
+      "rootChunk": "backend-src-yinshi-services-broker-replica-journal-v2-py",
+      "segments": [
+        {
+          "outputStart": 0,
+          "outputCount": 3481,
+          "chunkName": "backend-src-yinshi-services-broker-replica-journal-v2-py",
+          "litmdStart": 65205,
+          "litmdCount": 3481,
+          "indent": ""
+        }
+      ]
+    },
+    "backend/src/yinshi/services/broker_replica_lifecycle.py": {
+      "rootChunk": "backend-src-yinshi-services-broker-replica-lifecycle-py",
+      "segments": [
+        {
+          "outputStart": 0,
+          "outputCount": 718,
+          "chunkName": "backend-src-yinshi-services-broker-replica-lifecycle-py",
+          "litmdStart": 68693,
+          "litmdCount": 718,
+          "indent": ""
+        }
+      ]
+    },
+    "backend/src/yinshi/services/broker_replica_lifecycle_v2.py": {
+      "rootChunk": "backend-src-yinshi-services-broker-replica-lifecycle-v2-py",
+      "segments": [
+        {
+          "outputStart": 0,
+          "outputCount": 907,
+          "chunkName": "backend-src-yinshi-services-broker-replica-lifecycle-v2-py",
+          "litmdStart": 69418,
+          "litmdCount": 907,
+          "indent": ""
+        }
+      ]
+    },
+    "backend/src/yinshi/services/broker_runtime.py": {
+      "rootChunk": "backend-src-yinshi-services-broker-runtime-py",
+      "segments": [
+        {
+          "outputStart": 0,
+          "outputCount": 175,
+          "chunkName": "backend-src-yinshi-services-broker-runtime-py",
+          "litmdStart": 70332,
+          "litmdCount": 175,
+          "indent": ""
+        }
+      ]
+    },
+    "backend/src/yinshi/services/execution_broker.py": {
+      "rootChunk": "backend-src-yinshi-services-execution-broker-py",
+      "segments": [
+        {
+          "outputStart": 0,
+          "outputCount": 548,
+          "chunkName": "backend-src-yinshi-services-execution-broker-py",
+          "litmdStart": 70514,
+          "litmdCount": 548,
+          "indent": ""
+        }
+      ]
+    },
+    "backend/src/yinshi/services/filesystem_identity.py": {
+      "rootChunk": "backend-src-yinshi-services-filesystem-identity-py",
+      "segments": [
+        {
+          "outputStart": 0,
+          "outputCount": 25,
+          "chunkName": "backend-src-yinshi-services-filesystem-identity-py",
+          "litmdStart": 71069,
+          "litmdCount": 25,
+          "indent": ""
+        }
+      ]
+    },
+    "backend/src/yinshi/services/replica_artifact_contract.py": {
+      "rootChunk": "backend-src-yinshi-services-replica-artifact-contract-py",
+      "segments": [
+        {
+          "outputStart": 0,
+          "outputCount": 100,
+          "chunkName": "backend-src-yinshi-services-replica-artifact-contract-py",
+          "litmdStart": 71101,
+          "litmdCount": 100,
+          "indent": ""
+        }
+      ]
+    },
+    "backend/src/yinshi/services/workspace_replica.py": {
+      "rootChunk": "backend-src-yinshi-services-workspace-replica-py",
+      "segments": [
+        {
+          "outputStart": 0,
+          "outputCount": 4638,
+          "chunkName": "backend-src-yinshi-services-workspace-replica-py",
+          "litmdStart": 71208,
+          "litmdCount": 4638,
+          "indent": ""
+        }
+      ]
+    },
+    "backend/src/yinshi/services/workspace_replica_artifact.py": {
+      "rootChunk": "backend-src-yinshi-services-workspace-replica-artifact-py",
+      "segments": [
+        {
+          "outputStart": 0,
+          "outputCount": 937,
+          "chunkName": "backend-src-yinshi-services-workspace-replica-artifact-py",
+          "litmdStart": 75853,
+          "litmdCount": 937,
+          "indent": ""
+        }
+      ]
+    },
+    "backend/src/yinshi/services/workspace_replica_bundle.py": {
+      "rootChunk": "backend-src-yinshi-services-workspace-replica-bundle-py",
+      "segments": [
+        {
+          "outputStart": 0,
+          "outputCount": 600,
+          "chunkName": "backend-src-yinshi-services-workspace-replica-bundle-py",
+          "litmdStart": 76797,
+          "litmdCount": 600,
+          "indent": ""
+        }
+      ]
+    },
+    "backend/src/yinshi/services/workspace_replica_materialization.py": {
+      "rootChunk": "backend-src-yinshi-services-workspace-replica-materialization-py",
+      "segments": [
+        {
+          "outputStart": 0,
+          "outputCount": 2487,
+          "chunkName": "backend-src-yinshi-services-workspace-replica-materialization-py",
+          "litmdStart": 77404,
+          "litmdCount": 2487,
+          "indent": ""
+        }
+      ]
+    },
+    "backend/src/yinshi/services/workspace_replica_object_pack.py": {
+      "rootChunk": "backend-src-yinshi-services-workspace-replica-object-pack-py",
+      "segments": [
+        {
+          "outputStart": 0,
+          "outputCount": 467,
+          "chunkName": "backend-src-yinshi-services-workspace-replica-object-pack-py",
+          "litmdStart": 79898,
+          "litmdCount": 467,
+          "indent": ""
+        }
+      ]
+    },
+    "backend/src/yinshi/services/workspace_replica_publication.py": {
+      "rootChunk": "backend-src-yinshi-services-workspace-replica-publication-py",
+      "segments": [
+        {
+          "outputStart": 0,
+          "outputCount": 2497,
+          "chunkName": "backend-src-yinshi-services-workspace-replica-publication-py",
+          "litmdStart": 80372,
+          "litmdCount": 2497,
           "indent": ""
         }
       ]
@@ -1270,7 +1790,7 @@
           "outputStart": 0,
           "outputCount": 159,
           "chunkName": "desktop-src-accountlease-ts",
-          "litmdStart": 38396,
+          "litmdStart": 82882,
           "litmdCount": 159,
           "indent": ""
         }
@@ -1283,7 +1803,7 @@
           "outputStart": 0,
           "outputCount": 125,
           "chunkName": "desktop-src-accountsession-ts",
-          "litmdStart": 38561,
+          "litmdStart": 83047,
           "litmdCount": 125,
           "indent": ""
         }
@@ -1296,7 +1816,7 @@
           "outputStart": 0,
           "outputCount": 149,
           "chunkName": "desktop-src-appcontroller-ts",
-          "litmdStart": 38692,
+          "litmdStart": 83178,
           "litmdCount": 149,
           "indent": ""
         }
@@ -1309,7 +1829,7 @@
           "outputStart": 0,
           "outputCount": 175,
           "chunkName": "desktop-src-authcallbacklistener-ts",
-          "litmdStart": 38847,
+          "litmdStart": 83333,
           "litmdCount": 175,
           "indent": ""
         }
@@ -1322,7 +1842,7 @@
           "outputStart": 0,
           "outputCount": 92,
           "chunkName": "desktop-src-automaticupdates-ts",
-          "litmdStart": 39028,
+          "litmdStart": 83514,
           "litmdCount": 92,
           "indent": ""
         }
@@ -1335,7 +1855,7 @@
           "outputStart": 0,
           "outputCount": 262,
           "chunkName": "desktop-src-credentialstore-ts",
-          "litmdStart": 39126,
+          "litmdStart": 83612,
           "litmdCount": 262,
           "indent": ""
         }
@@ -1348,7 +1868,7 @@
           "outputStart": 0,
           "outputCount": 51,
           "chunkName": "desktop-src-desktopapi-ts",
-          "litmdStart": 39394,
+          "litmdStart": 83880,
           "litmdCount": 51,
           "indent": ""
         }
@@ -1361,7 +1881,7 @@
           "outputStart": 0,
           "outputCount": 41,
           "chunkName": "desktop-src-diskencryption-ts",
-          "litmdStart": 39451,
+          "litmdStart": 83937,
           "litmdCount": 41,
           "indent": ""
         }
@@ -1374,7 +1894,7 @@
           "outputStart": 0,
           "outputCount": 56,
           "chunkName": "desktop-src-helperbootstrap-ts",
-          "litmdStart": 39498,
+          "litmdStart": 83984,
           "litmdCount": 56,
           "indent": ""
         }
@@ -1387,7 +1907,7 @@
           "outputStart": 0,
           "outputCount": 48,
           "chunkName": "desktop-src-helperprotocol-ts",
-          "litmdStart": 39560,
+          "litmdStart": 84046,
           "litmdCount": 48,
           "indent": ""
         }
@@ -1398,10 +1918,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 136,
+          "outputCount": 189,
           "chunkName": "desktop-src-helpersupervisor-ts",
-          "litmdStart": 39614,
-          "litmdCount": 136,
+          "litmdStart": 84100,
+          "litmdCount": 189,
           "indent": ""
         }
       ]
@@ -1413,7 +1933,7 @@
           "outputStart": 0,
           "outputCount": 110,
           "chunkName": "desktop-src-hostedaccesssession-ts",
-          "litmdStart": 39756,
+          "litmdStart": 84295,
           "litmdCount": 110,
           "indent": ""
         }
@@ -1426,7 +1946,7 @@
           "outputStart": 0,
           "outputCount": 392,
           "chunkName": "desktop-src-hostedapigateway-ts",
-          "litmdStart": 39872,
+          "litmdStart": 84411,
           "litmdCount": 392,
           "indent": ""
         }
@@ -1437,10 +1957,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 365,
+          "outputCount": 369,
           "chunkName": "desktop-src-hostedauth-ts",
-          "litmdStart": 40270,
-          "litmdCount": 365,
+          "litmdStart": 84809,
+          "litmdCount": 369,
           "indent": ""
         }
       ]
@@ -1450,10 +1970,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 154,
+          "outputCount": 212,
           "chunkName": "desktop-src-localrepositoryimport-ts",
-          "litmdStart": 40641,
-          "litmdCount": 154,
+          "litmdStart": 85184,
+          "litmdCount": 212,
           "indent": ""
         }
       ]
@@ -1465,7 +1985,7 @@
           "outputStart": 0,
           "outputCount": 98,
           "chunkName": "desktop-src-localruntime-ts",
-          "litmdStart": 40801,
+          "litmdStart": 85402,
           "litmdCount": 98,
           "indent": ""
         }
@@ -1476,10 +1996,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 705,
+          "outputCount": 698,
           "chunkName": "desktop-src-main-ts",
-          "litmdStart": 40905,
-          "litmdCount": 705,
+          "litmdStart": 85506,
+          "litmdCount": 698,
           "indent": ""
         }
       ]
@@ -1491,7 +2011,7 @@
           "outputStart": 0,
           "outputCount": 30,
           "chunkName": "desktop-src-preload-ts",
-          "litmdStart": 41616,
+          "litmdStart": 86210,
           "litmdCount": 30,
           "indent": ""
         }
@@ -1504,7 +2024,7 @@
           "outputStart": 0,
           "outputCount": 181,
           "chunkName": "desktop-src-runtimelaunchconfig-ts",
-          "litmdStart": 41652,
+          "litmdStart": 86246,
           "litmdCount": 181,
           "indent": ""
         }
@@ -1517,7 +2037,7 @@
           "outputStart": 0,
           "outputCount": 89,
           "chunkName": "desktop-src-runtimesecrets-ts",
-          "litmdStart": 41839,
+          "litmdStart": 86433,
           "litmdCount": 89,
           "indent": ""
         }
@@ -1530,7 +2050,7 @@
           "outputStart": 0,
           "outputCount": 170,
           "chunkName": "desktop-src-securejsonstore-ts",
-          "litmdStart": 41934,
+          "litmdStart": 86528,
           "litmdCount": 170,
           "indent": ""
         }
@@ -1543,7 +2063,7 @@
           "outputStart": 0,
           "outputCount": 30,
           "chunkName": "desktop-src-security-ts",
-          "litmdStart": 42110,
+          "litmdStart": 86704,
           "litmdCount": 30,
           "indent": ""
         }
@@ -1556,7 +2076,7 @@
           "outputStart": 0,
           "outputCount": 84,
           "chunkName": "desktop-src-shellpolicy-ts",
-          "litmdStart": 42146,
+          "litmdStart": 86740,
           "litmdCount": 84,
           "indent": ""
         }
@@ -1569,7 +2089,7 @@
           "outputStart": 0,
           "outputCount": 207,
           "chunkName": "desktop-src-sidecarsupervisor-ts",
-          "litmdStart": 42236,
+          "litmdStart": 86830,
           "litmdCount": 207,
           "indent": ""
         }
@@ -1582,8 +2102,21 @@
           "outputStart": 0,
           "outputCount": 62,
           "chunkName": "desktop-src-signinrenderer-ts",
-          "litmdStart": 42449,
+          "litmdStart": 87043,
           "litmdCount": 62,
+          "indent": ""
+        }
+      ]
+    },
+    "desktop/src/mainRouting.ts": {
+      "rootChunk": "desktop-src-mainrouting-ts",
+      "segments": [
+        {
+          "outputStart": 0,
+          "outputCount": 3,
+          "chunkName": "desktop-src-mainrouting-ts",
+          "litmdStart": 87112,
+          "litmdCount": 3,
           "indent": ""
         }
       ]
@@ -1595,7 +2128,7 @@
           "outputStart": 0,
           "outputCount": 31,
           "chunkName": "frontend-src-main-tsx",
-          "litmdStart": 42522,
+          "litmdStart": 87129,
           "litmdCount": 31,
           "indent": ""
         }
@@ -1608,7 +2141,7 @@
           "outputStart": 0,
           "outputCount": 64,
           "chunkName": "frontend-src-rum-ts",
-          "litmdStart": 42560,
+          "litmdStart": 87167,
           "litmdCount": 64,
           "indent": ""
         }
@@ -1621,7 +2154,7 @@
           "outputStart": 0,
           "outputCount": 41,
           "chunkName": "frontend-src-app-tsx",
-          "litmdStart": 42631,
+          "litmdStart": 87238,
           "litmdCount": 41,
           "indent": ""
         }
@@ -1634,7 +2167,7 @@
           "outputStart": 0,
           "outputCount": 219,
           "chunkName": "frontend-src-index-css",
-          "litmdStart": 42679,
+          "litmdStart": 87286,
           "litmdCount": 219,
           "indent": ""
         }
@@ -1647,7 +2180,7 @@
           "outputStart": 0,
           "outputCount": 40,
           "chunkName": "frontend-src-components-layout-tsx",
-          "litmdStart": 42905,
+          "litmdStart": 87512,
           "litmdCount": 40,
           "indent": ""
         }
@@ -1660,7 +2193,7 @@
           "outputStart": 0,
           "outputCount": 12,
           "chunkName": "frontend-src-components-requireauth-tsx",
-          "litmdStart": 42952,
+          "litmdStart": 87559,
           "litmdCount": 12,
           "indent": ""
         }
@@ -1673,7 +2206,7 @@
           "outputStart": 0,
           "outputCount": 147,
           "chunkName": "frontend-src-components-chunkerrorboundary-tsx",
-          "litmdStart": 42971,
+          "litmdStart": 87578,
           "litmdCount": 147,
           "indent": ""
         }
@@ -1686,7 +2219,7 @@
           "outputStart": 0,
           "outputCount": 262,
           "chunkName": "frontend-src-pages-landing-tsx",
-          "litmdStart": 43129,
+          "litmdStart": 87736,
           "litmdCount": 262,
           "indent": ""
         }
@@ -1699,7 +2232,7 @@
           "outputStart": 0,
           "outputCount": 83,
           "chunkName": "frontend-src-pages-login-tsx",
-          "litmdStart": 43398,
+          "litmdStart": 88005,
           "litmdCount": 83,
           "indent": ""
         }
@@ -1712,7 +2245,7 @@
           "outputStart": 0,
           "outputCount": 9,
           "chunkName": "frontend-src-pages-emptystate-tsx",
-          "litmdStart": 43488,
+          "litmdStart": 88095,
           "litmdCount": 9,
           "indent": ""
         }
@@ -1723,10 +2256,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 698,
+          "outputCount": 1089,
           "chunkName": "frontend-src-pages-session-tsx",
-          "litmdStart": 43504,
-          "litmdCount": 698,
+          "litmdStart": 88111,
+          "litmdCount": 1089,
           "indent": ""
         }
       ]
@@ -1738,8 +2271,21 @@
           "outputStart": 0,
           "outputCount": 1187,
           "chunkName": "frontend-src-pages-settings-tsx",
-          "litmdStart": 44209,
+          "litmdStart": 89207,
           "litmdCount": 1187,
+          "indent": ""
+        }
+      ]
+    },
+    "frontend/src/pages/Landing.css": {
+      "rootChunk": "frontend-src-pages-landing-css",
+      "segments": [
+        {
+          "outputStart": 0,
+          "outputCount": 750,
+          "chunkName": "frontend-src-pages-landing-css",
+          "litmdStart": 90401,
+          "litmdCount": 750,
           "indent": ""
         }
       ]
@@ -1749,10 +2295,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 585,
+          "outputCount": 646,
           "chunkName": "frontend-src-api-client-ts",
-          "litmdStart": 45407,
-          "litmdCount": 585,
+          "litmdStart": 91162,
+          "litmdCount": 646,
           "indent": ""
         }
       ]
@@ -1764,7 +2310,7 @@
           "outputStart": 0,
           "outputCount": 76,
           "chunkName": "frontend-src-api-picommandscache-ts",
-          "litmdStart": 45999,
+          "litmdStart": 91815,
           "litmdCount": 76,
           "indent": ""
         }
@@ -1777,7 +2323,7 @@
           "outputStart": 0,
           "outputCount": 107,
           "chunkName": "frontend-src-hooks-useauth-tsx",
-          "litmdStart": 46082,
+          "litmdStart": 91898,
           "litmdCount": 107,
           "indent": ""
         }
@@ -1790,7 +2336,7 @@
           "outputStart": 0,
           "outputCount": 29,
           "chunkName": "frontend-src-hooks-usetheme-tsx",
-          "litmdStart": 46196,
+          "litmdStart": 92012,
           "litmdCount": 29,
           "indent": ""
         }
@@ -1803,7 +2349,7 @@
           "outputStart": 0,
           "outputCount": 44,
           "chunkName": "frontend-src-hooks-usecatalog-ts",
-          "litmdStart": 46232,
+          "litmdStart": 92048,
           "litmdCount": 44,
           "indent": ""
         }
@@ -1816,7 +2362,7 @@
           "outputStart": 0,
           "outputCount": 77,
           "chunkName": "frontend-src-hooks-usepicommands-ts",
-          "litmdStart": 46283,
+          "litmdStart": 92099,
           "litmdCount": 77,
           "indent": ""
         }
@@ -1827,10 +2373,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 262,
+          "outputCount": 287,
           "chunkName": "frontend-src-hooks-usepiconfig-ts",
-          "litmdStart": 46367,
-          "litmdCount": 262,
+          "litmdStart": 92183,
+          "litmdCount": 287,
           "indent": ""
         }
       ]
@@ -1842,7 +2388,7 @@
           "outputStart": 0,
           "outputCount": 48,
           "chunkName": "frontend-src-hooks-usepireleasenotes-ts",
-          "litmdStart": 46636,
+          "litmdStart": 92477,
           "litmdCount": 48,
           "indent": ""
         }
@@ -1853,10 +2399,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 257,
+          "outputCount": 425,
           "chunkName": "frontend-src-hooks-useagentstream-ts",
-          "litmdStart": 46691,
-          "litmdCount": 257,
+          "litmdStart": 92532,
+          "litmdCount": 425,
           "indent": ""
         }
       ]
@@ -1868,7 +2414,7 @@
           "outputStart": 0,
           "outputCount": 9,
           "chunkName": "frontend-src-hooks-usemobiledrawer-ts",
-          "litmdStart": 46955,
+          "litmdStart": 92964,
           "litmdCount": 9,
           "indent": ""
         }
@@ -1881,7 +2427,7 @@
           "outputStart": 0,
           "outputCount": 169,
           "chunkName": "frontend-src-models-sessionmodels-ts",
-          "litmdStart": 46971,
+          "litmdStart": 92980,
           "litmdCount": 169,
           "indent": ""
         }
@@ -1894,7 +2440,7 @@
           "outputStart": 0,
           "outputCount": 73,
           "chunkName": "frontend-src-models-sessionmodelpreference-ts",
-          "litmdStart": 47147,
+          "litmdStart": 93156,
           "litmdCount": 73,
           "indent": ""
         }
@@ -1907,7 +2453,7 @@
           "outputStart": 0,
           "outputCount": 21,
           "chunkName": "frontend-src-utils-repo-ts",
-          "litmdStart": 47227,
+          "litmdStart": 93236,
           "litmdCount": 21,
           "indent": ""
         }
@@ -1920,8 +2466,60 @@
           "outputStart": 0,
           "outputCount": 285,
           "chunkName": "frontend-src-utils-turnevents-ts",
-          "litmdStart": 47255,
+          "litmdStart": 93264,
           "litmdCount": 285,
+          "indent": ""
+        }
+      ]
+    },
+    "frontend/src/api/errors.ts": {
+      "rootChunk": "frontend-src-api-errors-ts",
+      "segments": [
+        {
+          "outputStart": 0,
+          "outputCount": 75,
+          "chunkName": "frontend-src-api-errors-ts",
+          "litmdStart": 93556,
+          "litmdCount": 75,
+          "indent": ""
+        }
+      ]
+    },
+    "frontend/src/hooks/useThreadTree.ts": {
+      "rootChunk": "frontend-src-hooks-usethreadtree-ts",
+      "segments": [
+        {
+          "outputStart": 0,
+          "outputCount": 214,
+          "chunkName": "frontend-src-hooks-usethreadtree-ts",
+          "litmdStart": 93638,
+          "litmdCount": 214,
+          "indent": ""
+        }
+      ]
+    },
+    "frontend/src/types/desktop.d.ts": {
+      "rootChunk": "frontend-src-types-desktop-d-ts",
+      "segments": [
+        {
+          "outputStart": 0,
+          "outputCount": 38,
+          "chunkName": "frontend-src-types-desktop-d-ts",
+          "litmdStart": 93859,
+          "litmdCount": 38,
+          "indent": ""
+        }
+      ]
+    },
+    "frontend/src/types/noise-c-wasm.d.ts": {
+      "rootChunk": "frontend-src-types-noise-c-wasm-d-ts",
+      "segments": [
+        {
+          "outputStart": 0,
+          "outputCount": 49,
+          "chunkName": "frontend-src-types-noise-c-wasm-d-ts",
+          "litmdStart": 93904,
+          "litmdCount": 49,
           "indent": ""
         }
       ]
@@ -1931,10 +2529,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 400,
+          "outputCount": 411,
           "chunkName": "frontend-src-components-chatview-tsx",
-          "litmdStart": 47551,
-          "litmdCount": 400,
+          "litmdStart": 93967,
+          "litmdCount": 411,
           "indent": ""
         }
       ]
@@ -1946,7 +2544,7 @@
           "outputStart": 0,
           "outputCount": 209,
           "chunkName": "frontend-src-components-assistantturn-tsx",
-          "litmdStart": 47958,
+          "litmdStart": 94385,
           "litmdCount": 209,
           "indent": ""
         }
@@ -1959,7 +2557,7 @@
           "outputStart": 0,
           "outputCount": 51,
           "chunkName": "frontend-src-components-messagebubble-tsx",
-          "litmdStart": 48174,
+          "litmdStart": 94601,
           "litmdCount": 51,
           "indent": ""
         }
@@ -1972,7 +2570,7 @@
           "outputStart": 0,
           "outputCount": 69,
           "chunkName": "frontend-src-components-thinkingblock-tsx",
-          "litmdStart": 48232,
+          "litmdStart": 94659,
           "litmdCount": 69,
           "indent": ""
         }
@@ -1985,7 +2583,7 @@
           "outputStart": 0,
           "outputCount": 395,
           "chunkName": "frontend-src-components-toolcallblock-tsx",
-          "litmdStart": 48308,
+          "litmdStart": 94735,
           "litmdCount": 395,
           "indent": ""
         }
@@ -1998,7 +2596,7 @@
           "outputStart": 0,
           "outputCount": 18,
           "chunkName": "frontend-src-components-streamingdots-tsx",
-          "litmdStart": 48710,
+          "litmdStart": 95137,
           "litmdCount": 18,
           "indent": ""
         }
@@ -2011,7 +2609,7 @@
           "outputStart": 0,
           "outputCount": 99,
           "chunkName": "frontend-src-components-slashcommandmenu-tsx",
-          "litmdStart": 48735,
+          "litmdStart": 95162,
           "litmdCount": 99,
           "indent": ""
         }
@@ -2022,10 +2620,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 1248,
+          "outputCount": 1302,
           "chunkName": "frontend-src-components-sidebar-tsx",
-          "litmdStart": 48841,
-          "litmdCount": 1248,
+          "litmdStart": 95268,
+          "litmdCount": 1302,
           "indent": ""
         }
       ]
@@ -2035,10 +2633,75 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 758,
+          "outputCount": 793,
           "chunkName": "frontend-src-components-workspaceinspector-tsx",
-          "litmdStart": 50096,
-          "litmdCount": 758,
+          "litmdStart": 96577,
+          "litmdCount": 793,
+          "indent": ""
+        }
+      ]
+    },
+    "frontend/src/components/thread/ManualChildDialog.tsx": {
+      "rootChunk": "frontend-src-components-thread-manualchilddialog-tsx",
+      "segments": [
+        {
+          "outputStart": 0,
+          "outputCount": 230,
+          "chunkName": "frontend-src-components-thread-manualchilddialog-tsx",
+          "litmdStart": 97377,
+          "litmdCount": 230,
+          "indent": ""
+        }
+      ]
+    },
+    "frontend/src/components/thread/ThreadNode.tsx": {
+      "rootChunk": "frontend-src-components-thread-threadnode-tsx",
+      "segments": [
+        {
+          "outputStart": 0,
+          "outputCount": 77,
+          "chunkName": "frontend-src-components-thread-threadnode-tsx",
+          "litmdStart": 97614,
+          "litmdCount": 77,
+          "indent": ""
+        }
+      ]
+    },
+    "frontend/src/components/thread/ThreadPanel.tsx": {
+      "rootChunk": "frontend-src-components-thread-threadpanel-tsx",
+      "segments": [
+        {
+          "outputStart": 0,
+          "outputCount": 41,
+          "chunkName": "frontend-src-components-thread-threadpanel-tsx",
+          "litmdStart": 97698,
+          "litmdCount": 41,
+          "indent": ""
+        }
+      ]
+    },
+    "frontend/src/components/thread/ThreadResult.tsx": {
+      "rootChunk": "frontend-src-components-thread-threadresult-tsx",
+      "segments": [
+        {
+          "outputStart": 0,
+          "outputCount": 105,
+          "chunkName": "frontend-src-components-thread-threadresult-tsx",
+          "litmdStart": 97746,
+          "litmdCount": 105,
+          "indent": ""
+        }
+      ]
+    },
+    "frontend/src/components/thread/ThreadStatusBadge.tsx": {
+      "rootChunk": "frontend-src-components-thread-threadstatusbadge-tsx",
+      "segments": [
+        {
+          "outputStart": 0,
+          "outputCount": 56,
+          "chunkName": "frontend-src-components-thread-threadstatusbadge-tsx",
+          "litmdStart": 97858,
+          "litmdCount": 56,
           "indent": ""
         }
       ]
@@ -2048,10 +2711,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 837,
+          "outputCount": 869,
           "chunkName": "frontend-src-components-cloudrunnersection-tsx",
-          "litmdStart": 50865,
-          "litmdCount": 837,
+          "litmdStart": 97925,
+          "litmdCount": 869,
           "indent": ""
         }
       ]
@@ -2061,10 +2724,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 273,
+          "outputCount": 276,
           "chunkName": "frontend-src-components-piconfigsection-tsx",
-          "litmdStart": 51709,
-          "litmdCount": 273,
+          "litmdStart": 98801,
+          "litmdCount": 276,
           "indent": ""
         }
       ]
@@ -2076,7 +2739,7 @@
           "outputStart": 0,
           "outputCount": 190,
           "chunkName": "frontend-src-components-pireleasenotessection-tsx",
-          "litmdStart": 51989,
+          "litmdStart": 99084,
           "litmdCount": 190,
           "indent": ""
         }
@@ -2087,10 +2750,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 282,
+          "outputCount": 318,
           "chunkName": "frontend-src-crypto-noiseik-ts",
-          "litmdStart": 52189,
-          "litmdCount": 282,
+          "litmdStart": 99287,
+          "litmdCount": 318,
           "indent": ""
         }
       ]
@@ -2100,10 +2763,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 697,
+          "outputCount": 858,
           "chunkName": "frontend-src-runner-encryptedrunnerclient-ts",
-          "litmdStart": 52477,
-          "litmdCount": 697,
+          "litmdStart": 99611,
+          "litmdCount": 858,
           "indent": ""
         }
       ]
@@ -2115,7 +2778,7 @@
           "outputStart": 0,
           "outputCount": 111,
           "chunkName": "frontend-src-runner-repositories-ts",
-          "litmdStart": 53180,
+          "litmdStart": 100475,
           "litmdCount": 111,
           "indent": ""
         }
@@ -2128,7 +2791,7 @@
           "outputStart": 0,
           "outputCount": 121,
           "chunkName": "frontend-src-runner-runnerrpctransport-ts",
-          "litmdStart": 53297,
+          "litmdStart": 100592,
           "litmdCount": 121,
           "indent": ""
         }
@@ -2141,7 +2804,7 @@
           "outputStart": 0,
           "outputCount": 229,
           "chunkName": "frontend-src-runtime-encryptedupload-ts",
-          "litmdStart": 53424,
+          "litmdStart": 100719,
           "litmdCount": 229,
           "indent": ""
         }
@@ -2152,10 +2815,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 268,
+          "outputCount": 349,
           "chunkName": "frontend-src-runtime-promptstream-ts",
-          "litmdStart": 53659,
-          "litmdCount": 268,
+          "litmdStart": 100954,
+          "litmdCount": 349,
           "indent": ""
         }
       ]
@@ -2165,10 +2828,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 254,
+          "outputCount": 276,
           "chunkName": "frontend-src-runtime-resolveruntime-ts",
-          "litmdStart": 53933,
-          "litmdCount": 254,
+          "litmdStart": 101309,
+          "litmdCount": 276,
           "indent": ""
         }
       ]
@@ -2180,7 +2843,7 @@
           "outputStart": 0,
           "outputCount": 125,
           "chunkName": "frontend-src-runtime-runtimeref-ts",
-          "litmdStart": 54193,
+          "litmdStart": 101591,
           "litmdCount": 125,
           "indent": ""
         }
@@ -2191,10 +2854,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 502,
+          "outputCount": 626,
           "chunkName": "frontend-src-runtime-runtimetransport-ts",
-          "litmdStart": 54324,
-          "litmdCount": 502,
+          "litmdStart": 101722,
+          "litmdCount": 626,
           "indent": ""
         }
       ]
@@ -2204,10 +2867,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 227,
+          "outputCount": 436,
           "chunkName": "frontend-src-runtime-terminalchannel-ts",
-          "litmdStart": 54832,
-          "litmdCount": 227,
+          "litmdStart": 102354,
+          "litmdCount": 436,
           "indent": ""
         }
       ]
@@ -2219,8 +2882,34 @@
           "outputStart": 0,
           "outputCount": 83,
           "chunkName": "frontend-src-runtime-useruntimeresource-ts",
-          "litmdStart": 55065,
+          "litmdStart": 102796,
           "litmdCount": 83,
+          "indent": ""
+        }
+      ]
+    },
+    "frontend/src/runtime/sessionHistory.ts": {
+      "rootChunk": "frontend-src-runtime-sessionhistory-ts",
+      "segments": [
+        {
+          "outputStart": 0,
+          "outputCount": 897,
+          "chunkName": "frontend-src-runtime-sessionhistory-ts",
+          "litmdStart": 102886,
+          "litmdCount": 897,
+          "indent": ""
+        }
+      ]
+    },
+    "frontend/src/runtime/sessionHistoryCacheClient.ts": {
+      "rootChunk": "frontend-src-runtime-sessionhistorycacheclient-ts",
+      "segments": [
+        {
+          "outputStart": 0,
+          "outputCount": 518,
+          "chunkName": "frontend-src-runtime-sessionhistorycacheclient-ts",
+          "litmdStart": 103790,
+          "litmdCount": 518,
           "indent": ""
         }
       ]
@@ -2232,7 +2921,7 @@
           "outputStart": 0,
           "outputCount": 1,
           "chunkName": "sidecar-src-constants-js",
-          "litmdStart": 55160,
+          "litmdStart": 104323,
           "litmdCount": 1,
           "indent": ""
         }
@@ -2245,7 +2934,7 @@
           "outputStart": 0,
           "outputCount": 29,
           "chunkName": "sidecar-src-index-js",
-          "litmdStart": 55168,
+          "litmdStart": 104331,
           "litmdCount": 29,
           "indent": ""
         }
@@ -2256,10 +2945,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 2366,
+          "outputCount": 2660,
           "chunkName": "sidecar-src-sidecar-js",
-          "litmdStart": 55204,
-          "litmdCount": 2366,
+          "litmdStart": 104367,
+          "litmdCount": 2660,
           "indent": ""
         }
       ]
@@ -2269,10 +2958,10 @@
       "segments": [
         {
           "outputStart": 0,
-          "outputCount": 505,
+          "outputCount": 532,
           "chunkName": "sidecar-src-git-auth-js",
-          "litmdStart": 57577,
-          "litmdCount": 505,
+          "litmdStart": 107034,
+          "litmdCount": 532,
           "indent": ""
         }
       ]
@@ -2284,8 +2973,34 @@
           "outputStart": 0,
           "outputCount": 43,
           "chunkName": "sidecar-src-git-askpass-client-js",
-          "litmdStart": 58089,
+          "litmdStart": 107573,
           "litmdCount": 43,
+          "indent": ""
+        }
+      ]
+    },
+    "sidecar/src/orchestration_rpc.js": {
+      "rootChunk": "sidecar-src-orchestration-rpc-js",
+      "segments": [
+        {
+          "outputStart": 0,
+          "outputCount": 329,
+          "chunkName": "sidecar-src-orchestration-rpc-js",
+          "litmdStart": 107623,
+          "litmdCount": 329,
+          "indent": ""
+        }
+      ]
+    },
+    "sidecar/src/orchestration_tools.js": {
+      "rootChunk": "sidecar-src-orchestration-tools-js",
+      "segments": [
+        {
+          "outputStart": 0,
+          "outputCount": 143,
+          "chunkName": "sidecar-src-orchestration-tools-js",
+          "litmdStart": 107959,
+          "litmdCount": 143,
           "indent": ""
         }
       ]
