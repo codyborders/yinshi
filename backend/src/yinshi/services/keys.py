@@ -1,4 +1,4 @@
-"""BYOK key resolution, DEK wrapping, and usage logging."""
+"""DEK wrapping and usage logging."""
 
 from __future__ import annotations
 
@@ -9,7 +9,6 @@ from yinshi.config import get_settings
 from yinshi.db import get_control_db
 from yinshi.exceptions import EncryptionNotConfiguredError, KeyNotFoundError
 from yinshi.services.crypto import (
-    decrypt_api_key,
     generate_dek,
     is_wrapped_dek_envelope,
     unwrap_dek,
@@ -147,53 +146,6 @@ def get_user_dek(user_id: str) -> bytes:
 def wrap_new_user_dek(dek: bytes, user_id: str) -> bytes:
     """Wrap a freshly generated user DEK for account provisioning."""
     return _wrap_user_dek(dek, user_id)
-
-
-def resolve_user_api_key(user_id: str, provider: str) -> str | None:
-    """Look up and decrypt the user's stored BYOK key for a provider.
-
-    Returns the plaintext API key, or None if no key is stored.
-    """
-    normalized_user_id = _require_user_id(user_id)
-    if not isinstance(provider, str):
-        raise TypeError("provider must be a string")
-    normalized_provider = provider.strip()
-    if not normalized_provider:
-        raise ValueError("provider must not be empty")
-
-    with get_control_db() as db:
-        row = db.execute(
-            "SELECT encrypted_key FROM api_keys WHERE user_id = ? AND provider = ? "
-            "ORDER BY created_at DESC LIMIT 1",
-            (normalized_user_id, normalized_provider),
-        ).fetchone()
-
-        if not row:
-            return None
-
-        dek = get_user_dek(normalized_user_id)
-        key = decrypt_api_key(row["encrypted_key"], dek)
-
-        db.execute(
-            "UPDATE api_keys SET last_used_at = CURRENT_TIMESTAMP "
-            "WHERE user_id = ? AND provider = ?",
-            (normalized_user_id, normalized_provider),
-        )
-        db.commit()
-
-    return key
-
-
-def resolve_api_key_for_prompt(user_id: str, provider: str) -> tuple[str, str]:
-    """Resolve which API key to use for a prompt.
-
-    Returns (api_key, key_source). Authenticated users must provide BYOK keys.
-    """
-    byok_key = resolve_user_api_key(user_id, provider)
-    if byok_key:
-        return byok_key, "byok"
-
-    raise KeyNotFoundError(f"No API key found for {provider}. Add your own key in Settings.")
 
 
 def estimate_cost_cents(provider: str, usage: dict[str, int]) -> float:
