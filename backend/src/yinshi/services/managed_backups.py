@@ -324,48 +324,6 @@ def clear_managed_backup_candidate(
     return result.rowcount == 1
 
 
-def advance_managed_backup_operation(
-    *,
-    job_id: str,
-    lease_token: str,
-    runtime_generation: int,
-    expected_phase: str,
-    next_phase: str,
-    now: datetime,
-) -> bool:
-    """Advance one owned job only across its expected durable boundary."""
-    for value, name in (
-        (job_id, "job_id"),
-        (lease_token, "lease_token"),
-        (expected_phase, "expected_phase"),
-        (next_phase, "next_phase"),
-    ):
-        if not isinstance(value, str) or not value or len(value) > 128:
-            raise ValueError(f"{name} must be bounded non-empty text")
-    if type(runtime_generation) is not int or runtime_generation <= 0:
-        raise ValueError("runtime_generation must be a positive integer")
-    timestamp = _timestamp(now)
-    with get_control_db() as database:
-        result = database.execute(
-            """UPDATE managed_backup_operations
-               SET phase = ?, updated_at = ?
-               WHERE job_id = ? AND lease_token = ? AND status = 'running'
-                 AND runtime_generation = ? AND phase = ?
-                 AND lease_expires_at > ?""",
-            (
-                next_phase,
-                timestamp,
-                job_id,
-                lease_token,
-                runtime_generation,
-                expected_phase,
-                timestamp,
-            ),
-        )
-        database.commit()
-    return result.rowcount == 1
-
-
 def record_managed_backup_upload_intent(
     *,
     job_id: str,
@@ -831,69 +789,6 @@ def complete_managed_backup_deletion(
             database.execute(
                 "DELETE FROM managed_backup_operations WHERE user_id = ? AND job_id = ?",
                 (normalized_user_id, job_id),
-            )
-            database.commit()
-            return True
-        except Exception:
-            database.rollback()
-            raise
-
-
-def fail_managed_backup_creation(
-    user_id: str,
-    *,
-    job_id: str,
-    runtime_generation: int,
-    error_code: str,
-    now: datetime,
-) -> bool:
-    """Fail one matching create operation and release its maintenance fence."""
-    normalized_user_id = _require_user_id(user_id)
-    if not isinstance(job_id, str) or not job_id:
-        raise ValueError("job_id must not be empty")
-    if type(runtime_generation) is not int or runtime_generation <= 0:
-        raise ValueError("runtime_generation must be a positive integer")
-    if (
-        not isinstance(error_code, str)
-        or not error_code
-        or len(error_code) > 100
-        or any(character not in "abcdefghijklmnopqrstuvwxyz_" for character in error_code)
-    ):
-        raise ValueError("error_code must be bounded lowercase identifier text")
-    timestamp = _timestamp(now)
-    with get_control_db() as database:
-        try:
-            database.execute("BEGIN IMMEDIATE")
-            operation = database.execute(
-                """SELECT archive_id FROM managed_backup_operations
-                   WHERE user_id = ? AND job_id = ? AND operation = 'create'
-                     AND status = 'running' AND runtime_generation = ?""",
-                (normalized_user_id, job_id, runtime_generation),
-            ).fetchone()
-            if operation is None:
-                database.rollback()
-                return False
-            result = database.execute(
-                """UPDATE managed_backup_archives
-                   SET status = 'failed', completed_at = ?, last_error = ?
-                   WHERE id = ? AND user_id = ? AND status = 'creating'
-                     AND runtime_generation = ?""",
-                (
-                    timestamp,
-                    error_code,
-                    operation["archive_id"],
-                    normalized_user_id,
-                    runtime_generation,
-                ),
-            )
-            if result.rowcount != 1:
-                database.rollback()
-                return False
-            database.execute(
-                """UPDATE managed_backup_operations
-                   SET status = 'failed', updated_at = ?, last_error = ?
-                   WHERE user_id = ? AND job_id = ? AND status = 'running'""",
-                (timestamp, error_code, normalized_user_id, job_id),
             )
             database.commit()
             return True
