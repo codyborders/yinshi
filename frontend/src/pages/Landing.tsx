@@ -35,14 +35,24 @@ const CAPABILITIES: Capability[] = [
     ],
   },
   {
-    title: "AI agent sessions",
+    title: "AI coding threads",
     description:
-      "Converse with a coding agent that reads, writes, and refactors code inside your workspace. Every change is tracked on its own branch - review, merge, or discard.",
+      "Work with pi in a dedicated thread to read, write, and refactor code. Follow streamed messages, tool calls, and file edits while changes stay in an isolated Git worktree.",
+  },
+  {
+    title: "Child threads",
+    description:
+      "Break a task into child threads with separate workspaces. Track their progress, inspect results, cancel work, or create a retry. Child changes are not automatically merged into the parent workspace.",
+  },
+  {
+    title: "Files and terminals",
+    description:
+      "Browse workspace files and use an integrated terminal alongside your agent conversation. Inspect changes and run checks without leaving the workspace.",
   },
   {
     title: "Mobile-first interface",
     description:
-      "Work from anywhere. The responsive interface adapts from phone to desktop, keeping your agent sessions accessible on any device.",
+      "Work from anywhere. The responsive interface adapts from phone to desktop, keeping your coding threads accessible on any device.",
   },
   {
     title: "Encrypted secrets",
@@ -105,19 +115,10 @@ function WorkspacePreview() {
 function Hero() {
   return (
     <section className="landing-hero" aria-labelledby="landing-title">
-      <div className="landing-hero-mark">
-        <img
-          src="/yinshi-scholar.jpg"
-          alt="Yinshi Scholar"
-          className="landing-hero-logo"
-          width={180}
-          height={180}
-        />
-      </div>
       <div className="landing-hero-text">
         <p className="landing-subtitle">Browser-based coding workspace</p>
         <h1 id="landing-title" className="landing-title">
-          Run coding agents against your repositories from any browser.
+          Run Pi sessions from anywhere.
         </h1>
         <p className="landing-desc">
           Import a GitHub or allowed local repository. Yinshi creates an isolated git worktree,
@@ -128,7 +129,7 @@ function Hero() {
             Start a workspace
           </a>
           <a href="/architecture.html" className="landing-cta landing-cta-secondary">
-            Read the architecture
+            Review the architecture
           </a>
         </div>
       </div>

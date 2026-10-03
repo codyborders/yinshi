@@ -24,7 +24,7 @@ describe("Landing", () => {
     expect(
       screen.getByRole("heading", {
         level: 1,
-        name: "Run coding agents against your repositories from any browser.",
+        name: "Run Pi sessions from anywhere.",
       }),
     ).toBeInTheDocument();
     expect(
@@ -76,7 +76,7 @@ describe("Landing", () => {
   it("keeps workspace evidence separate from the hero", () => {
     renderLanding();
     const hero = screen.getByRole("region", {
-      name: "Run coding agents against your repositories from any browser.",
+      name: "Run Pi sessions from anywhere.",
     });
     expect(
       within(hero).queryByLabelText("Example Yinshi coding workspace"),
@@ -112,26 +112,14 @@ describe("Landing", () => {
     );
   });
 
-  it("renders the mascot image", () => {
+  it("omits the hero logo and offers architecture review", () => {
     renderLanding();
-    const img = screen.getByAltText(/yinshi scholar/i);
-    expect(img).toBeInTheDocument();
-    expect(img).toHaveAttribute("src", "/yinshi-scholar.jpg");
-  });
-
-  it("renders a prominent scholar logo", () => {
-    renderLanding();
-    const logo = screen.getByAltText(/yinshi scholar/i);
-    expect(logo).toHaveAttribute("width", "180");
-    expect(logo).toHaveAttribute("height", "180");
-  });
-
-  it("places the scholar logo in the hero composition", () => {
-    renderLanding();
-    const hero = screen.getByRole("region", {
-      name: "Run coding agents against your repositories from any browser.",
-    });
-    expect(within(hero).getByAltText(/yinshi scholar/i)).toBeInTheDocument();
+    expect(screen.queryByAltText(/yinshi scholar/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Review the architecture" })).toHaveAttribute(
+      "href",
+      "/architecture.html",
+    );
+    expect(screen.queryByRole("link", { name: "Read the architecture" })).not.toBeInTheDocument();
   });
 
   it("renders sign-in links", () => {
@@ -150,7 +138,7 @@ describe("Landing", () => {
   it("renders the updated capabilities with architecture links", () => {
     renderLanding();
 
-    expect(screen.getByRole("heading", { level: 3, name: "AI agent sessions" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 3, name: "AI coding threads" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { level: 3, name: "Mobile-first interface" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { level: 3, name: "Tenant isolation" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { level: 3, name: "Encrypted secrets" })).toBeInTheDocument();
@@ -171,7 +159,11 @@ describe("Landing", () => {
       "/architecture.html#encryption-key-management",
     );
 
+    expect(screen.getByRole("heading", { level: 3, name: "Child threads" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 3, name: "Files and terminals" })).toBeInTheDocument();
+    expect(screen.getByText(/Child changes are not automatically merged/)).toBeInTheDocument();
+
     const capabilityTitles = screen.getAllByRole("heading", { level: 3 });
-    expect(capabilityTitles).toHaveLength(4);
+    expect(capabilityTitles).toHaveLength(6);
   });
 });

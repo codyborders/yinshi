@@ -121,22 +121,9 @@
   max-width: var(--landing-container-width);
   margin: 0 auto;
   padding: 3.5rem 2rem 3rem;
-  grid-template-columns: 15rem minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   align-items: center;
   gap: clamp(3rem, 7vw, 6rem);
-}
-
-.landing-hero-mark {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.landing-hero-logo {
-  width: 15rem;
-  height: 15rem;
-  border: 1px solid var(--landing-color-line);
-  object-fit: cover;
 }
 
 .landing-hero-text {
@@ -592,11 +579,6 @@
   .landing-hero {
     padding: 2rem 1rem 2.25rem;
     gap: 2rem;
-  }
-
-  .landing-hero-logo {
-    width: 12rem;
-    height: 12rem;
   }
 
   .landing-subtitle {
