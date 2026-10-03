@@ -6,7 +6,6 @@ def test_exception_hierarchy():
     from yinshi.exceptions import (
         GitError,
         RepoNotFoundError,
-        SessionNotFoundError,
         SidecarError,
         SidecarNotConnectedError,
         WorkspaceNotFoundError,
@@ -15,7 +14,6 @@ def test_exception_hierarchy():
 
     assert issubclass(RepoNotFoundError, YinshiError)
     assert issubclass(WorkspaceNotFoundError, YinshiError)
-    assert issubclass(SessionNotFoundError, YinshiError)
     assert issubclass(GitError, YinshiError)
     assert issubclass(SidecarError, YinshiError)
     assert issubclass(SidecarNotConnectedError, SidecarError)

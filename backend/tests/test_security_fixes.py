@@ -617,12 +617,10 @@ def test_keys_raises_domain_exceptions():
     """keys.py should raise domain exceptions, not HTTPException."""
     # Just verify the exception classes exist and are YinshiError subclasses
     from yinshi.exceptions import (
-        CreditExhaustedError,
         EncryptionNotConfiguredError,
         KeyNotFoundError,
         YinshiError,
     )
 
-    assert issubclass(CreditExhaustedError, YinshiError)
     assert issubclass(EncryptionNotConfiguredError, YinshiError)
     assert issubclass(KeyNotFoundError, YinshiError)
