@@ -119,7 +119,7 @@ def test_resolve_user_api_key_round_trip(test_user):
     assert resolve_user_api_key(user_id, "minimax") is None
 
 
-def test_record_usage_writes_usage_log_without_mutating_credit(test_user, caplog):
+def test_record_usage_writes_usage_log(test_user, caplog):
     """Usage logging should persist identifiers without exposing them in logs."""
     from yinshi.db import get_control_db
     from yinshi.services.keys import record_usage
@@ -144,10 +144,6 @@ def test_record_usage_writes_usage_log_without_mutating_credit(test_user, caplog
             "FROM usage_log WHERE session_id = ?",
             ("test-session-1",),
         ).fetchone()
-        user_row = db.execute(
-            "SELECT credit_used_cents FROM users WHERE id = ?",
-            (test_user.user_id,),
-        ).fetchone()
 
     assert usage_row["user_id"] == test_user.user_id
     assert usage_row["session_id"] == "test-session-1"
@@ -155,7 +151,6 @@ def test_record_usage_writes_usage_log_without_mutating_credit(test_user, caplog
     assert usage_row["model"] == "MiniMax-M2.7"
     assert usage_row["key_source"] == "byok"
     assert usage_row["cost_cents"] == pytest.approx(30.0)
-    assert user_row["credit_used_cents"] == 0
 
     usage_messages = [record.getMessage() for record in caplog.records]
     assert usage_messages == [

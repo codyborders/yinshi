@@ -785,8 +785,6 @@ CREATE TABLE IF NOT EXISTS users (
     disk_quota_mb INTEGER DEFAULT 5000,
     disk_used_mb INTEGER DEFAULT 0,
     encrypted_dek BLOB,
-    credit_used_cents INTEGER DEFAULT 0,
-    credit_limit_cents INTEGER DEFAULT 500,
     last_login_at TIMESTAMP,
     deletion_requested_at TIMESTAMP,
     deletion_scheduled_for TIMESTAMP
@@ -1149,13 +1147,6 @@ def get_control_db() -> Iterator[sqlite3.Connection]:
 
 def _migrate_control(conn: sqlite3.Connection) -> None:
     """Apply control DB schema migrations for existing databases."""
-    columns = [r[1] for r in conn.execute("PRAGMA table_info(users)").fetchall()]
-    if "credit_used_cents" not in columns:
-        logger.info("Control migration: adding credit tracking columns to users")
-        conn.execute("ALTER TABLE users ADD COLUMN credit_used_cents INTEGER DEFAULT 0")
-        conn.execute("ALTER TABLE users ADD COLUMN credit_limit_cents INTEGER DEFAULT 500")
-        conn.commit()
-
     pi_config_columns = [row[1] for row in conn.execute("PRAGMA table_info(pi_configs)").fetchall()]
     if pi_config_columns and "available_categories" not in pi_config_columns:
         logger.info("Control migration: adding available_categories column to pi_configs")
