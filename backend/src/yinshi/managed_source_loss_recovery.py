@@ -6,8 +6,7 @@ import json
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import UTC, datetime
-from typing import Any, Protocol
+from typing import Any
 
 _REQUIRED_ENVIRONMENT_NAMES = (
     "STAGING_CONTROL_URL",
@@ -25,15 +24,6 @@ _REQUIRED_ENVIRONMENT_NAMES = (
 
 class DrillConfigurationError(RuntimeError):
     """Raised when a staging drill cannot safely start."""
-
-
-_COUNT_CHECK_NAMES = ("archive_version_count", "multipart_upload_count")
-_BOOLEAN_CHECK_NAMES = (
-    "cleanup_verified",
-    "data_verified",
-    "replacement_authority_verified",
-)
-_CHECK_NAMES = _COUNT_CHECK_NAMES + _BOOLEAN_CHECK_NAMES
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,14 +85,6 @@ class ManagedSourceLossReceipt:
         ):
             if type(getattr(self, name)) is not bool:
                 raise TypeError(f"{name} must be Boolean")
-
-
-class ManagedSourceLossBoundary(Protocol):
-    """Run provider-specific destructive drill actions."""
-
-    def run(self, configuration: ManagedSourceLossConfiguration) -> ManagedSourceLossReceipt:
-        """Return required verification fields after cleanup."""
-        ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -181,33 +163,3 @@ def configuration_check_main() -> int:
     payload = sanitized_configuration_status(configuration)
     print(json.dumps(payload, separators=(",", ":"), sort_keys=True))
     return 3
-
-
-class ManagedSourceLossDrill:
-    """Emit only allow-listed recovery results from a drill boundary."""
-
-    def __init__(self, boundary: ManagedSourceLossBoundary) -> None:
-        self._boundary = boundary
-
-    def run(
-        self,
-        configuration: ManagedSourceLossConfiguration,
-        *,
-        commit_sha: str,
-    ) -> ManagedSourceLossResult:
-        """Run staging boundary and retain only aggregate checks."""
-        receipt = self._boundary.run(configuration)
-        checks: dict[str, bool | int] = {}
-        for name in _CHECK_NAMES:
-            value = getattr(receipt, name)
-            if name in _COUNT_CHECK_NAMES:
-                if type(value) is not int or value < 0:
-                    raise RuntimeError(f"drill boundary returned invalid check: {name}")
-            elif type(value) is not bool:
-                raise RuntimeError(f"drill boundary returned invalid check: {name}")
-            checks[name] = value
-        return ManagedSourceLossResult(
-            commit_sha=commit_sha,
-            started_at=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
-            checks=checks,
-        )
