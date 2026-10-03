@@ -834,20 +834,6 @@ function _normalizeManualInputPrompt(promptMessage) {
   return "Paste the final redirect URL or authorization code here.";
 }
 
-function _buildHostedCallbackInstructions(baseInstructions) {
-  const instructionParts = [];
-  if (typeof baseInstructions === "string") {
-    const normalizedBaseInstructions = baseInstructions.trim();
-    if (normalizedBaseInstructions) {
-      instructionParts.push(normalizedBaseInstructions);
-    }
-  }
-  instructionParts.push(
-    "If the browser lands on a localhost URL and shows an error, copy the full URL from the address bar and paste it back into Yinshi.",
-  );
-  return instructionParts.join(" ");
-}
-
 function _waitForOAuthManualInput(flow, promptMessage) {
   if (!flow || typeof flow !== "object") {
     throw new Error("OAuth flow is required");
