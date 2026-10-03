@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from math import isfinite
 from pathlib import Path
-from typing import Literal, cast
+from typing import Literal
 
 import httpx
 
@@ -52,8 +52,6 @@ _MAX_ALLOWED_DOMAINS = 256
 _MAX_DNS_NAME_LENGTH = 253
 _MAX_CHECKPOINT_COMMENT_LENGTH = 4096
 _MAX_MONITOR_DURATION_SECONDS = 86400.0
-_MAX_STATE_STARTED_AT_LENGTH = 128
-_MAX_STATE_ERROR_LENGTH = 4096
 _FILE_TRANSFER_CHUNK_BYTES = 4 * 1024 * 1024
 _FILE_TRANSFER_BYTES_MAX = 200 * 1024 * 1024 * 1024
 _CONTENT_RANGE_PATTERN = re.compile(r"bytes ([0-9]+)-([0-9]+)/([0-9]+)\Z")
@@ -291,7 +289,6 @@ class SpriteRecord:
 
 
 ServiceStatus = Literal["stopped", "starting", "running", "stopping", "failed"]
-_SERVICE_STATUSES = {"stopped", "starting", "running", "stopping", "failed"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -387,88 +384,6 @@ def _parse_sprite_record(payload: object, expected_name: str) -> SpriteRecord:
         name=payload["name"],
         status=payload["status"],
         created_at=_parse_provider_timestamp(payload.get("created_at")),
-    )
-
-
-def _parse_service_response(response: httpx.Response, expected_name: str) -> ServiceRecord:
-    """Decode and validate one provider service response."""
-    try:
-        payload = response.json()
-    except ValueError:
-        raise SpritesProtocolError("Sprite service response is not valid JSON") from None
-    if not isinstance(payload, dict):
-        raise SpritesProtocolError("Sprite service response is invalid")
-    name = payload.get("name")
-    command = payload.get("cmd")
-    args = payload.get("args")
-    needs = payload.get("needs")
-    http_port = payload.get("http_port")
-    if (
-        name != expected_name
-        or not isinstance(command, str)
-        or not command
-        or len(command) > _MAX_SERVICE_COMMAND_LENGTH
-    ):
-        raise SpritesProtocolError("Sprite service response is invalid")
-    if (
-        not isinstance(args, list)
-        or len(args) > _MAX_SERVICE_LIST_ITEMS
-        or not all(
-            isinstance(value, str) and len(value) <= _MAX_SERVICE_VALUE_LENGTH for value in args
-        )
-    ):
-        raise SpritesProtocolError("Sprite service response is invalid")
-    if needs is None:
-        needs = []
-    if (
-        not isinstance(needs, list)
-        or len(needs) > _MAX_SERVICE_LIST_ITEMS
-        or not all(
-            isinstance(value, str) and len(value) <= _MAX_SERVICE_VALUE_LENGTH for value in needs
-        )
-    ):
-        raise SpritesProtocolError("Sprite service response is invalid")
-    if http_port is not None and (
-        not isinstance(http_port, int) or isinstance(http_port, bool) or not 1 <= http_port <= 65535
-    ):
-        raise SpritesProtocolError("Sprite service response is invalid")
-    return ServiceRecord(
-        name=name,
-        command=command,
-        args=tuple(args),
-        needs=tuple(needs),
-        http_port=http_port,
-        state=_parse_service_state(payload.get("state"), expected_name),
-    )
-
-
-def _parse_service_state(payload: object, expected_name: str) -> ServiceState | None:
-    """Validate optional runtime state from a service response."""
-    if payload is None:
-        return None
-    if not isinstance(payload, dict):
-        raise SpritesProtocolError("Sprite service state is invalid")
-    name = payload.get("name")
-    status = payload.get("status")
-    pid = payload.get("pid")
-    started_at = payload.get("started_at")
-    error = payload.get("error")
-    if name != expected_name or status not in _SERVICE_STATUSES:
-        raise SpritesProtocolError("Sprite service state is invalid")
-    if pid is not None and (not isinstance(pid, int) or isinstance(pid, bool)):
-        raise SpritesProtocolError("Sprite service state is invalid")
-    if started_at is not None and (
-        not isinstance(started_at, str) or len(started_at) > _MAX_STATE_STARTED_AT_LENGTH
-    ):
-        raise SpritesProtocolError("Sprite service state is invalid")
-    if error is not None and (not isinstance(error, str) or len(error) > _MAX_STATE_ERROR_LENGTH):
-        raise SpritesProtocolError("Sprite service state is invalid")
-    return ServiceState(
-        name=name,
-        status=cast(ServiceStatus, status),
-        pid=pid,
-        started_at=started_at,
-        error=error,
     )
 
 
@@ -1101,61 +1016,6 @@ class SpritesClient:
         _raise_for_stream_error(
             httpx.Response(200, content=bytes(body)),
             "service restart",
-        )
-
-    async def get_service(
-        self,
-        name: str,
-        *,
-        service_name: str,
-    ) -> ServiceRecord | None:
-        """Return one typed Sprite service record when it exists."""
-        name = _validate_sprite_name(name)
-        service_name = _validate_service_name(service_name)
-        with _translate_transport_errors("get service"):
-            async with asyncio.timeout(_STANDARD_OPERATION_TIMEOUT_SECONDS):
-                async with self._http_client.stream(
-                    "GET",
-                    f"/v1/sprites/{name}/services/{service_name}",
-                    headers={"Authorization": f"Bearer {self._api_token}"},
-                    timeout=_STANDARD_OPERATION_TIMEOUT_SECONDS,
-                ) as response:
-                    body = await _read_bounded_response(
-                        response,
-                        "Sprite service response",
-                    )
-                    status_code = response.status_code
-        if status_code == 404:
-            return None
-        if not 200 <= status_code < 300:
-            raise SpritesProviderError(
-                f"Fly could not get service (status {status_code})"
-            ) from None
-        return _parse_service_response(
-            httpx.Response(status_code, content=body),
-            service_name,
-        )
-
-    async def configure_private_runner(
-        self,
-        name: str,
-        *,
-        command: str,
-        args: tuple[str, ...],
-        environment: Mapping[str, str],
-        working_directory: str,
-    ) -> None:
-        """Create or update the private Yinshi runner service."""
-        await self.configure_service(
-            name,
-            service_name="yinshi-runner",
-            command=command,
-            args=args,
-            environment=environment,
-            directory=working_directory,
-            needs=(),
-            http_port=None,
-            monitor_duration=None,
         )
 
     async def wake_sprite(self, name: str) -> None:

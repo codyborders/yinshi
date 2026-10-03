@@ -1017,76 +1017,6 @@ async def test_configure_service_rejects_invalid_fields_without_request(
 
 
 @pytest.mark.asyncio
-async def test_get_service_returns_typed_definition_and_state() -> None:
-    """Service lookup should decode provider details into typed records."""
-
-    def handle_request(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200,
-            json={
-                "name": "web",
-                "cmd": "python",
-                "args": ["-m", "http.server", "8080"],
-                "needs": ["database"],
-                "http_port": 8080,
-                "state": {
-                    "name": "web",
-                    "status": "running",
-                    "pid": 31,
-                    "started_at": "2026-08-11T10:00:00Z",
-                },
-            },
-        )
-
-    transport = httpx.MockTransport(handle_request)
-    async with httpx.AsyncClient(
-        base_url="https://api.sprites.dev",
-        transport=transport,
-    ) as http_client:
-        client = SpritesClient(api_token="provider-token", http_client=http_client)
-        service = await client.get_service("yinshi-test-user", service_name="web")
-
-    assert service is not None
-    assert type(service).__name__ == "ServiceRecord"
-    assert service.name == "web"
-    assert service.command == "python"
-    assert service.args == ("-m", "http.server", "8080")
-    assert service.needs == ("database",)
-    assert service.http_port == 8080
-    assert service.state is not None
-    assert type(service.state).__name__ == "ServiceState"
-    assert service.state.name == "web"
-    assert service.state.status == "running"
-    assert service.state.pid == 31
-    assert service.state.started_at == "2026-08-11T10:00:00Z"
-    assert service.state.error is None
-
-
-@pytest.mark.asyncio
-async def test_get_service_rejects_unsafe_service_name_before_request() -> None:
-    """Service names should be validated before endpoint construction."""
-    requests: list[httpx.Request] = []
-
-    def handle_request(request: httpx.Request) -> httpx.Response:
-        requests.append(request)
-        return httpx.Response(200)
-
-    transport = httpx.MockTransport(handle_request)
-    async with httpx.AsyncClient(
-        base_url="https://api.sprites.dev",
-        transport=transport,
-    ) as http_client:
-        client = SpritesClient(api_token="provider-token", http_client=http_client)
-        with pytest.raises(ValueError, match="Service name"):
-            await client.get_service(
-                "yinshi-test-user",
-                service_name="../yinshi-runner/restart",
-            )
-
-    assert requests == []
-
-
-@pytest.mark.asyncio
 async def test_restart_service_uses_duration_and_waits_for_completion() -> None:
     """Service restart should consume provider progress through completion."""
     requests: list[httpx.Request] = []
@@ -1140,46 +1070,6 @@ async def test_restart_service_stops_reading_at_stream_size_limit() -> None:
                 service_name="web",
                 monitor_duration=None,
             )
-
-
-@pytest.mark.asyncio
-async def test_configure_private_runner_uses_service_without_http_port() -> None:
-    """The managed runner should stay private while running as a Sprite service."""
-    requests: list[httpx.Request] = []
-
-    def handle_request(request: httpx.Request) -> httpx.Response:
-        requests.append(request)
-        return httpx.Response(
-            200,
-            content=b'{"type":"complete","timestamp":1767609000000}\n',
-            headers={"Content-Type": "application/x-ndjson"},
-        )
-
-    transport = httpx.MockTransport(handle_request)
-    async with httpx.AsyncClient(
-        base_url="https://api.sprites.dev",
-        transport=transport,
-    ) as http_client:
-        client = SpritesClient(api_token="provider-token", http_client=http_client)
-        await client.configure_private_runner(
-            "yinshi-test-user",
-            command="/bin/bash",
-            args=("-lc", "exec python -m yinshi"),
-            environment={"YINSHI_MODE": "worker", "RUNNER_TOKEN": "runner-token"},
-            working_directory="/opt/yinshi",
-        )
-
-    assert len(requests) == 1
-    assert requests[0].method == "PUT"
-    assert requests[0].url.path == ("/v1/sprites/yinshi-test-user/services/yinshi-runner")
-    assert requests[0].extensions["timeout"]["read"] == 120.0
-    assert json.loads(requests[0].content) == {
-        "cmd": "/bin/bash",
-        "args": ["-lc", "exec python -m yinshi"],
-        "env": {"YINSHI_MODE": "worker", "RUNNER_TOKEN": "runner-token"},
-        "dir": "/opt/yinshi",
-        "needs": [],
-    }
 
 
 @pytest.mark.asyncio
@@ -1439,13 +1329,11 @@ async def test_create_checkpoint_waits_for_provider_completion() -> None:
     (
         ("get", "get Sprite"),
         ("policy", "set network policy"),
-        ("runner", "configure runner service"),
         ("wake", "wake Sprite"),
         ("delete", "delete Sprite"),
         ("checkpoint", "create checkpoint"),
         ("write", "write Sprite file"),
         ("service-configure", "configure service"),
-        ("service-get", "get service"),
         ("restart", "restart service"),
         ("restore", "restore checkpoint"),
     ),
@@ -1473,14 +1361,6 @@ async def test_transport_failures_never_expose_authenticated_request(
                     "yinshi-test-user",
                     allowed_domains=("control.example.com",),
                 )
-            elif operation == "runner":
-                await client.configure_private_runner(
-                    "yinshi-test-user",
-                    command="python",
-                    args=("-m", "yinshi"),
-                    environment={"RUNNER_TOKEN": "runner-token"},
-                    working_directory="/opt/yinshi",
-                )
             elif operation == "write":
                 await client.write_file(
                     "yinshi-test-user",
@@ -1501,8 +1381,6 @@ async def test_transport_failures_never_expose_authenticated_request(
                     http_port=None,
                     monitor_duration=None,
                 )
-            elif operation == "service-get":
-                await client.get_service("yinshi-test-user", service_name="web")
             elif operation == "restart":
                 await client.restart_service(
                     "yinshi-test-user",
@@ -1596,67 +1474,6 @@ async def test_network_policy_failure_is_translated_without_token() -> None:
             )
 
     assert "provider-token" not in str(error.value)
-
-
-@pytest.mark.asyncio
-async def test_runner_service_failure_is_translated_without_secrets() -> None:
-    """Runner service failures should not expose provider or runner tokens."""
-
-    def handle_request(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(500, json={"error": "provider-token runner-token"})
-
-    transport = httpx.MockTransport(handle_request)
-    async with httpx.AsyncClient(
-        base_url="https://api.sprites.dev",
-        transport=transport,
-    ) as http_client:
-        client = SpritesClient(api_token="provider-token", http_client=http_client)
-        with pytest.raises(
-            SpritesProviderError,
-            match="configure runner service.*500",
-        ) as error:
-            await client.configure_private_runner(
-                "yinshi-test-user",
-                command="python",
-                args=("-m", "yinshi"),
-                environment={"RUNNER_TOKEN": "runner-token"},
-                working_directory="/opt/yinshi",
-            )
-
-    assert "provider-token" not in str(error.value)
-    assert "runner-token" not in str(error.value)
-
-
-@pytest.mark.asyncio
-async def test_runner_service_rejects_stream_error_without_secrets() -> None:
-    """Service stream errors should become safe protocol failures."""
-
-    def handle_request(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200,
-            content=(
-                b'{"type":"error","data":"runner-token provider-token",'
-                b'"timestamp":1767609000000}\n'
-            ),
-        )
-
-    transport = httpx.MockTransport(handle_request)
-    async with httpx.AsyncClient(
-        base_url="https://api.sprites.dev",
-        transport=transport,
-    ) as http_client:
-        client = SpritesClient(api_token="provider-token", http_client=http_client)
-        with pytest.raises(SpritesProtocolError, match="runner service") as error:
-            await client.configure_private_runner(
-                "yinshi-test-user",
-                command="python",
-                args=("-m", "yinshi"),
-                environment={"RUNNER_TOKEN": "runner-token"},
-                working_directory="/opt/yinshi",
-            )
-
-    assert "provider-token" not in str(error.value)
-    assert "runner-token" not in str(error.value)
 
 
 @pytest.mark.asyncio
@@ -1760,29 +1577,6 @@ async def test_checkpoint_rejects_oversized_stream() -> None:
         client = SpritesClient(api_token="provider-token", http_client=http_client)
         with pytest.raises(SpritesProtocolError, match="exceeds size limit"):
             await client.create_checkpoint("yinshi-test-user", comment="configured")
-
-
-@pytest.mark.asyncio
-async def test_runner_service_stops_reading_stream_at_size_limit() -> None:
-    """Runner service reading should stop when accumulated bytes exceed the limit."""
-
-    def handle_request(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, stream=OversizedResponseStream())
-
-    transport = httpx.MockTransport(handle_request)
-    async with httpx.AsyncClient(
-        base_url="https://api.sprites.dev",
-        transport=transport,
-    ) as http_client:
-        client = SpritesClient(api_token="provider-token", http_client=http_client)
-        with pytest.raises(SpritesProtocolError, match="exceeds size limit"):
-            await client.configure_private_runner(
-                "yinshi-test-user",
-                command="python",
-                args=(),
-                environment={},
-                working_directory="/opt/yinshi",
-            )
 
 
 @pytest.mark.asyncio
