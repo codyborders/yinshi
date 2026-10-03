@@ -52,9 +52,6 @@ def _info(tmp_path: Path) -> ContainerInfo:
         "orphan_cleanup_failed",
         "acquire_missing",
         "release_unmatched",
-        "begin_missing",
-        "end_missing",
-        "end_unmatched",
         "protect_missing",
         "unprotect_missing",
         "destroy",
@@ -90,13 +87,6 @@ async def test_container_logs_exclude_runtime_sentinels(
         await manager.acquire_activity(_SENTINEL_USER_ID, runtime_id=_SENTINEL_RUNTIME_ID)
     elif event == "release_unmatched":
         await manager.release_activity(ContainerActivityReservation(_SENTINEL_CONTAINER_KEY, info))
-    elif event == "begin_missing":
-        manager.begin_activity(_SENTINEL_USER_ID, runtime_id=_SENTINEL_RUNTIME_ID)
-    elif event == "end_missing":
-        manager.end_activity(_SENTINEL_USER_ID, runtime_id=_SENTINEL_RUNTIME_ID)
-    elif event == "end_unmatched":
-        manager._containers[_SENTINEL_CONTAINER_KEY] = info
-        manager.end_activity(_SENTINEL_USER_ID, runtime_id=_SENTINEL_RUNTIME_ID)
     elif event == "protect_missing":
         manager.protect(
             _SENTINEL_USER_ID,

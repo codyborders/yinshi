@@ -651,29 +651,6 @@ class ContainerManager:
             info.active_request_count -= 1
             info.last_activity = self._now()
 
-    def begin_activity(self, user_id: str, *, runtime_id: str | None = None) -> None:
-        """Mark a container as busy for the lifetime of one request."""
-        container_key = self._container_key(user_id, runtime_id)
-        info = self._containers.get(container_key)
-        if info is None:
-            logger.warning("Cannot mark activity for missing container")
-            return
-        info.active_request_count += 1
-        info.last_activity = self._now()
-
-    def end_activity(self, user_id: str, *, runtime_id: str | None = None) -> None:
-        """Release one active request marker for a runtime container."""
-        container_key = self._container_key(user_id, runtime_id)
-        info = self._containers.get(container_key)
-        if info is None:
-            logger.warning("Cannot end activity for missing container")
-            return
-        if info.active_request_count == 0:
-            logger.warning("Cannot end container activity without a matching begin")
-            return
-        info.active_request_count -= 1
-        info.last_activity = self._now()
-
     def protect(
         self,
         user_id: str,
