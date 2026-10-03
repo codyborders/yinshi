@@ -24,17 +24,6 @@ export default {
           500: "#c23b22",
           600: "#a02e18",
         },
-        accent: {
-          500: "#c23b22",
-          600: "#a02e18",
-          400: "#d4543d",
-        },
-      },
-      spacing: {
-        safe: "env(safe-area-inset-bottom)",
-        "safe-top": "env(safe-area-inset-top)",
-        "safe-left": "env(safe-area-inset-left)",
-        "safe-right": "env(safe-area-inset-right)",
       },
       minHeight: {
         touch: "44px",
