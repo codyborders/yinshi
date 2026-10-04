@@ -30,7 +30,7 @@ Runner 0.2 keeps identity and replay state under `YINSHI_RUNNER_DATA_DIR`. Each 
 - `runner-capability-replay.sqlite3` records consumed one-time capability identifiers.
 - `worker-runtime/account.binding` contains an opaque SHA-256 account binding that prevents a restarted runner from accepting a different account.
 
-Live SQLCipher databases follow `YINSHI_RUNNER_SQLITE_DIR`: `control.db` stores location-scoped provider credentials and `users/<account-hash>/yinshi.db` stores tenant records. Repository clones, worktrees, Pi configuration, and session context follow `YINSHI_RUNNER_SHARED_FILES_DIR/users`. The SQLCipher keys come from domain-separated HKDF output derived from the runner identity. This split keeps active SQLite off S3-style shared mounts while allowing project files to use the configured shared filesystem.
+Live SQLCipher databases follow `YINSHI_RUNNER_SQLITE_DIR`: `control.db` stores location-scoped provider credentials and `users/<account-hash>/yinshi.db` stores tenant records. Repository clones, worktrees, Pi configuration, and session context follow `YINSHI_RUNNER_SHARED_FILES_DIR/users`. The SQLCipher keys come from domain-separated HKDF output derived from a persistent data-protection key stored under `YINSHI_RUNNER_SQLITE_DIR`. This split keeps active SQLite off S3-style shared mounts while allowing project files to use the configured shared filesystem.
 
 Back up the Noise key with the runner data. Replacing it changes the full pairing fingerprint and requires explicit confirmation in Yinshi. Replacing the control-plane signing key also stops the runner until it is deliberately re-registered.
 
