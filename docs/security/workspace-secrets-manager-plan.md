@@ -1,8 +1,8 @@
 # Workspace Secrets Manager Plan
 
-Yinshi's terminal MVP uses `.env` files with Git guardrails. The app writes repo-local excludes, installs a pre-commit block, and hides `.env*` from browser file APIs.
+Yinshi's terminal MVP uses `.env` files with Git guardrails. The app writes repo-local excludes, installs pre-commit and pre-push hooks, wraps git to block .env operations even when hooks are bypassed, and hides `.env*` from browser file APIs.
 
-That protects the common accident: committing a secret from the web UI or from a normal `git commit`. It does not stop a user who has terminal access from reading the file, copying it elsewhere, or bypassing hooks. Managed secrets should become the default place for credentials.
+That protects the common accident: committing a secret from the web UI or from a normal `git commit`. It does not stop a user who has terminal access from reading the file or copying it elsewhere. Managed secrets should become the default place for credentials.
 
 The target system stores secrets in each user's encrypted tenant data, using the same envelope pattern as provider credentials. A secret can belong to a user, repo, or workspace. Each secret also declares its runtime target. Terminal-only secrets go to shells. Agent-only secrets go to agent turns. Shared secrets go to both. Managed secrets are injected into the runtime environment and are not written into the Git worktree by default.
 
