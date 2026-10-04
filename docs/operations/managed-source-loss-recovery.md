@@ -30,7 +30,7 @@ Exercise retention and exact-version deletion. Run Sprite reconciliation. Remove
 
 ## Sanitized output
 
-The retained JSON artifact may contain commit SHA, UTC start time, status, counts, Boolean checks, and bounded durations. It must not contain tenant paths, Sprite names, tokens, keys, bucket keys, provider bodies, or plaintext archive data.
+The retained JSON artifact may contain commit SHA, UTC start time, status, counts, and Boolean checks. It must not contain tenant paths, Sprite names, tokens, keys, bucket keys, provider bodies, or plaintext archive data.
 
 Keep artifacts for 14 days. A missing cleanup result must fail the workflow.
 
