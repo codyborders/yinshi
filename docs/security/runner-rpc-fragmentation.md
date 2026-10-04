@@ -20,7 +20,7 @@ Maximum Noise ciphertext size is 65,535 bytes. Each Noise tag uses 16 bytes. A f
 
 Request fragments start at index zero and arrive in order. Each non-final request fragment gets an empty acknowledgement. Its index must match. The count and total fields must also match.
 
-Final request fragments get the first response fragment. Clients get later response fragments with empty pull frames in exact order.
+Final request fragments get the first response fragment. Clients get later response fragments with empty pull frames in exact order. A request with `response_mode: push` receives every response fragment immediately without pulls.
 
 Fragment count is `max(1, ceil(total / 65502))`. Each fragment except the last carries 65,502 payload bytes. The last fragment carries the exact remainder.
 
