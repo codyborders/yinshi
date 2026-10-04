@@ -517,28 +517,6 @@ class MessageHistoryFieldChunkOut(BaseModel):
     next_offset: int | None
 
 
-class WSPrompt(BaseModel):
-    """WebSocket message from client to send a prompt."""
-
-    type: str = "prompt"
-    prompt: str = Field(..., max_length=100_000)
-    model: str | None = Field(None, max_length=100)
-
-    @field_validator("model")
-    @classmethod
-    def validate_model(cls, value: str | None) -> str | None:
-        """Normalize optional prompt model values to canonical refs."""
-        if value is None:
-            return None
-        return normalize_model_ref(value)
-
-
-class WSCancel(BaseModel):
-    """WebSocket message from client to cancel."""
-
-    type: str = "cancel"
-
-
 # --- Multi-tenant models ---
 
 ByocRunnerStorageProfile = Literal[
@@ -552,17 +530,6 @@ RunnerStorageProfile = Literal[
     "archil_all_posix",
     "fly_sprites_posix",
 ]
-
-
-class UserOut(BaseModel):
-    """User account response (from control plane)."""
-
-    id: str
-    email: str
-    display_name: str | None = None
-    avatar_url: str | None = None
-    status: str = "active"
-    tier: str = "free"
 
 
 class CloudRunnerCreate(BaseModel):
