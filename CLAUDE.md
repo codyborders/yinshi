@@ -9,7 +9,7 @@ Yinshi is a web app for managing coding agent workspaces. Users can import GitHu
 ## Tech Stack
 
 - **Backend**: Python (FastAPI), SQLite
-- **Frontend**: Next.js
+- **Frontend**: React 18 with Vite, React Router, TypeScript, Tailwind CSS
 - **Agent**: pi coding agent integration
 
 ## Architecture
