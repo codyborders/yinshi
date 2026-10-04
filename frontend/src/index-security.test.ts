@@ -10,7 +10,8 @@ describe("frontend index security", () => {
 
     expect(contentSecurityPolicy).toBeDefined();
     expect(contentSecurityPolicy).toContain("script-src 'self'");
-    expect(contentSecurityPolicy).not.toContain("worker-src");
+    // Replay compression uses a local Blob worker; inline scripts stay blocked.
+    expect(contentSecurityPolicy).toContain("worker-src 'self' blob:;");
     expect(contentSecurityPolicy).not.toContain(
       "script-src 'self' 'unsafe-inline'",
     );
