@@ -22,12 +22,9 @@ const filterRumEvent: RumBeforeSend = (event) => {
   if (!("type" in event) || event.type !== "view") {
     return false;
   }
-  if (event.usr !== undefined || event.account !== undefined) {
-    return false;
-  }
-  if (event.context !== undefined && Object.keys(event.context).length > 0) {
-    return false;
-  }
+  // View events cannot be discarded by beforeSend. Always sanitize their
+  // supported fields rather than returning early with the original metadata.
+  event.context = {};
 
   const normalizedPath = normalizeRumViewUrl(event.view.url);
   event.view.url = normalizedPath;
@@ -48,10 +45,10 @@ export function createRumConfiguration(version: string) {
     service: "yinshi",
     env: "prod",
     version,
-    sessionSampleRate: 10,
-    // Coding sessions render private source, prompts, and tool output. Replay
-    // remains disabled even though the SDK package supports it.
-    sessionReplaySampleRate: 0,
+    sessionSampleRate: 100,
+    // Record every eligible session while masking private workspace content.
+    sessionReplaySampleRate: 100,
+    startSessionReplayRecordingManually: false,
     trackResources: false,
     trackUserInteractions: false,
     trackLongTasks: false,

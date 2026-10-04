@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import type {
   RumErrorEvent,
   RumEventDomainContext,
@@ -8,15 +9,21 @@ import { describe, expect, it } from "vitest";
 import { createRumConfiguration } from "./rum";
 
 describe("createRumConfiguration", () => {
-  it("does not capture source, prompts, or tool output", () => {
+  it("allows the local worker required for replay compression", () => {
+    const html = readFileSync("index.html", "utf8");
+    expect(html).toContain("worker-src 'self' blob:;");
+    expect(html).toContain("script-src 'self' 'wasm-unsafe-eval';");
+  });
+  it("records all sessions and replays with maximum content masking", () => {
     const configuration = createRumConfiguration("audit-test-version");
 
-    expect(configuration.sessionReplaySampleRate).toBe(0);
+    expect(configuration.sessionReplaySampleRate).toBe(100);
+    expect(configuration.startSessionReplayRecordingManually).toBe(false);
     expect(configuration.defaultPrivacyLevel).toBe("mask");
     expect(configuration.trackUserInteractions).toBe(false);
     expect(configuration.trackResources).toBe(false);
     expect(configuration.trackLongTasks).toBe(false);
-    expect(configuration.sessionSampleRate).toBeLessThanOrEqual(10);
+    expect(configuration.sessionSampleRate).toBe(100);
   });
 
   it("drops automatic error events because their messages can contain user input", () => {
@@ -73,7 +80,7 @@ describe("createRumConfiguration", () => {
     { field: "user", extra: { usr: { email: "CANARY_EMAIL" } } },
     { field: "account", extra: { account: { id: "id", name: "CANARY_ACCOUNT" } } },
     { field: "custom context", extra: { context: { prompt: "CANARY_PROMPT" } } },
-  ])("drops view events carrying $field data", ({ extra }) => {
+  ])("sanitizes view metadata even when $field data is present", ({ extra }) => {
     const configuration = createRumConfiguration("audit-test-version");
     const viewEvent = {
       type: "view",
@@ -81,6 +88,10 @@ describe("createRumConfiguration", () => {
       ...extra,
     } as RumViewEvent;
 
-    expect(configuration.beforeSend?.(viewEvent, {} as RumEventDomainContext)).toBe(false);
+    expect(configuration.beforeSend?.(viewEvent, {} as RumEventDomainContext)).toBe(true);
+    expect(viewEvent.context).toEqual({});
+    expect(viewEvent.view.url).toBe("/other");
+    expect(viewEvent.view.name).toBe("/other");
+    expect(viewEvent.view.referrer).toBe("");
   });
 });
