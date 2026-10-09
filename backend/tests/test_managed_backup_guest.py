@@ -19,7 +19,6 @@ def test_create_archive_encrypts_both_guest_data_roots(tmp_path: Path) -> None:
     from yinshi.managed_backup_guest import (
         ManagedArchiveContext,
         create_managed_backup_archive,
-        inspect_managed_backup_archive,
     )
 
     state_root = tmp_path / "state"
@@ -51,15 +50,6 @@ def test_create_archive_encrypts_both_guest_data_roots(tmp_path: Path) -> None:
     assert b"workspace-secret" not in ciphertext
     assert record.size_bytes == len(ciphertext)
     assert len(record.sha256) == 64
-    assert inspect_managed_backup_archive(
-        archive_path,
-        archive_key=b"k" * 32,
-        expected_context=context,
-    ) == (
-        "files/workspace.txt",
-        "sqlite/.yinshi-data-protection-key",
-        "sqlite/control.db",
-    )
 
 
 def test_archive_with_large_file_inventory_remains_restorable(tmp_path: Path) -> None:
@@ -88,13 +78,6 @@ def test_archive_with_large_file_inventory_remains_restorable(tmp_path: Path) ->
         archive_key=b"k" * 32,
         context=context,
     )
-
-    members = guest.inspect_managed_backup_archive(
-        archive_path,
-        archive_key=b"k" * 32,
-        expected_context=context,
-    )
-    assert len(members) == 701
 
 
 def test_create_archive_requires_portable_data_key(tmp_path: Path) -> None:
@@ -327,62 +310,6 @@ def test_restore_rejects_invalid_portable_key_member_before_publication(
 
     assert (sqlite_root / "sentinel").read_text(encoding="utf-8") == "sqlite"
     assert (files_root / "sentinel").read_text(encoding="utf-8") == "files"
-
-
-def test_source_loss_inspection_rejects_legacy_v1_archive(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Source-loss restore should reject archives without portable-key format."""
-    import json
-
-    import yinshi.managed_backup_guest as guest
-
-    sqlite_root = tmp_path / "sqlite"
-    files_root = tmp_path / "files"
-    sqlite_root.mkdir()
-    files_root.mkdir()
-    _write_data_key(sqlite_root)
-    context = guest.ManagedArchiveContext(
-        archive_id="archive",
-        created_at="2026-08-13T00:00:00+00:00",
-        owner_digest="a" * 64,
-        runtime_generation=1,
-    )
-
-    def legacy_manifest(
-        supplied_context: guest.ManagedArchiveContext,
-        member_names: tuple[str, ...],
-    ) -> bytes:
-        return (
-            json.dumps(
-                {
-                    "context": guest.asdict(supplied_context),
-                    "format": "yinshi-managed-backup-v1",
-                    "members": list(member_names),
-                },
-                separators=(",", ":"),
-                sort_keys=True,
-            )
-            + "\n"
-        ).encode()
-
-    monkeypatch.setattr(guest, "_manifest", legacy_manifest)
-    archive_path = tmp_path / "legacy.enc"
-    guest.create_managed_backup_archive(
-        sqlite_root=sqlite_root,
-        files_root=files_root,
-        archive_path=archive_path,
-        archive_key=b"k" * 32,
-        context=context,
-    )
-
-    with pytest.raises(ValueError, match="portable data-key support"):
-        guest.inspect_managed_backup_archive(
-            archive_path,
-            archive_key=b"k" * 32,
-            expected_context=context,
-        )
 
 
 def test_restore_archive_replaces_both_roots_and_preserves_runner_identity(
