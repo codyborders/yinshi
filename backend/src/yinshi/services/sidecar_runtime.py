@@ -663,40 +663,6 @@ def touch_tenant_container(
     )
 
 
-def begin_tenant_container_activity(
-    request: Request,
-    tenant: TenantContext | None,
-    *,
-    runtime_id: str | None = None,
-) -> None:
-    """Mark one tenant container as busy for the duration of a request step."""
-    container_manager, user_id = _tenant_container_manager(request, tenant)
-    if container_manager is None or user_id is None:
-        return
-    _call_container_method(
-        getattr(container_manager, "begin_activity", None),
-        user_id,
-        runtime_id=runtime_id,
-    )
-
-
-def end_tenant_container_activity(
-    request: Request,
-    tenant: TenantContext | None,
-    *,
-    runtime_id: str | None = None,
-) -> None:
-    """Release one in-flight request marker from a tenant container."""
-    container_manager, user_id = _tenant_container_manager(request, tenant)
-    if container_manager is None or user_id is None:
-        return
-    _call_container_method(
-        getattr(container_manager, "end_activity", None),
-        user_id,
-        runtime_id=runtime_id,
-    )
-
-
 def protect_tenant_container(
     request: Request,
     tenant: TenantContext | None,
