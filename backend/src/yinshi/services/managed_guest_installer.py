@@ -97,8 +97,6 @@ class ManagedGuestInstaller:
         bootstrap_script: bytes,
         bootstrap_timeout_seconds: float,
         storage_encryption_confirmed: bool,
-        clock: Callable[[], float],
-        sleep: Callable[[float], Awaitable[None]],
     ) -> None:
         if (
             not isinstance(bootstrap_script, bytes)
@@ -123,15 +121,9 @@ class ManagedGuestInstaller:
             raise ValueError("bootstrap_timeout_seconds must be between 600 and 86400")
         if storage_encryption_confirmed is not True:
             raise ValueError("storage_encryption_confirmed must be explicitly true")
-        if not callable(clock):
-            raise ValueError("clock must be callable")
-        if not callable(sleep):
-            raise ValueError("sleep must be callable")
         self._client = client
         self._bootstrap_script = bootstrap_script
         self._bootstrap_timeout_seconds = bootstrap_timeout
-        self._clock = clock
-        self._sleep = sleep
 
     async def install(
         self,

@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable
+from typing import Any
 
 import pytest
 
@@ -158,10 +158,6 @@ class FakeSpritesClient:
         ("bootstrap_timeout_seconds", "600"),
         ("bootstrap_timeout_seconds", 10**1000),
         ("storage_encryption_confirmed", False),
-        ("clock", None),
-        ("clock", 1),
-        ("sleep", None),
-        ("sleep", 1),
     ),
 )
 def test_constructor_rejects_invalid_local_configuration(
@@ -171,16 +167,11 @@ def test_constructor_rejects_invalid_local_configuration(
     """Invalid local configuration must fail before installation can start."""
     from yinshi.services.managed_guest_installer import ManagedGuestInstaller
 
-    async def no_sleep(seconds: float) -> None:
-        del seconds
-
     options: dict[str, Any] = {
         "client": FakeSpritesClient(),
         "bootstrap_script": b"#!/bin/bash\n",
         "bootstrap_timeout_seconds": 600.0,
         "storage_encryption_confirmed": True,
-        "clock": lambda: 0.0,
-        "sleep": no_sleep,
     }
     options[field] = invalid_value
 
@@ -190,22 +181,14 @@ def test_constructor_rejects_invalid_local_configuration(
 
 def _installer(
     client: FakeSpritesClient,
-    *,
-    clock: Callable[[], float] = lambda: 0.0,
-    sleep: Callable[[float], Awaitable[None]] | None = None,
 ) -> Any:
     from yinshi.services.managed_guest_installer import ManagedGuestInstaller
-
-    async def no_sleep(seconds: float) -> None:
-        assert seconds == 1.0
 
     return ManagedGuestInstaller(
         client=client,
         bootstrap_script=b"#!/bin/bash\n",
         bootstrap_timeout_seconds=600.0,
         storage_encryption_confirmed=True,
-        clock=clock,
-        sleep=sleep or no_sleep,
     )
 
 

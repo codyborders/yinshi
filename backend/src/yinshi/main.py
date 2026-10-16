@@ -345,8 +345,6 @@ async def _initialize_managed_runtime(
             bootstrap_script=bootstrap_script,
             bootstrap_timeout_seconds=app_settings.sprites_operation_stale_seconds,
             storage_encryption_confirmed=app_settings.sprites_storage_encryption_confirmed,
-            clock=asyncio.get_running_loop().time,
-            sleep=asyncio.sleep,
         )
         manager = ManagedRuntimeManager(
             provider=provider,
