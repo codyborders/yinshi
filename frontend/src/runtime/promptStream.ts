@@ -309,17 +309,6 @@ export async function findActiveRuntimePromptRun(
   return active.id;
 }
 
-export async function getActiveRuntimePrompt(
-  transport: RuntimeTransport,
-  sessionIdValue: string,
-  options: RuntimePromptPollingOptions = {},
-): Promise<RuntimePromptHandle | null> {
-  const runId = await findActiveRuntimePromptRun(transport, sessionIdValue);
-  return runId === null
-    ? null
-    : attachRuntimePrompt(transport, sessionIdValue, runId, options);
-}
-
 export async function startRuntimePrompt(
   transport: RuntimeTransport,
   sessionIdValue: string,

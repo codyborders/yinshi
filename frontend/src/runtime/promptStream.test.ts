@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { RunnerRelayConnectionError } from "../runner/encryptedRunnerClient";
 import type { RuntimeTransport } from "./runtimeTransport";
-import { getActiveRuntimePrompt, startRuntimePrompt } from "./promptStream";
+import { startRuntimePrompt } from "./promptStream";
 
 const sessionId = "a".repeat(32);
 const runId = "b".repeat(32);
@@ -21,56 +21,6 @@ function transport(): RuntimeTransport {
 }
 
 describe("runtime prompt stream", () => {
-  it("discovers and attaches to an active run without starting another", async () => {
-    const runtimeTransport = transport();
-    vi.mocked(runtimeTransport.get)
-      .mockResolvedValueOnce({
-        id: runId,
-        session_id: sessionId,
-        status: "running",
-      })
-      .mockResolvedValueOnce({
-        run_id: runId,
-        status: "completed",
-        events: [
-          { type: "tool_use", id: "tool-1", name: "read", input: {} },
-          { type: "tool_result", tool_use_id: "tool-1", content: "done" },
-          { type: "result" },
-        ],
-        next_sequence: 3,
-      });
-
-    const handle = await getActiveRuntimePrompt(runtimeTransport, sessionId, {
-      pollDelayMs: 0,
-    });
-    expect(handle).not.toBeNull();
-    const events = [];
-    for await (const event of handle!.events()) {
-      events.push(event.type);
-    }
-
-    expect(events).toEqual(["tool_use", "tool_result", "result"]);
-    expect(runtimeTransport.post).not.toHaveBeenCalled();
-    expect(runtimeTransport.get).toHaveBeenNthCalledWith(
-      1,
-      `/api/sessions/${sessionId}/runs/active`,
-    );
-    expect(runtimeTransport.get).toHaveBeenNthCalledWith(
-      2,
-      `/api/sessions/${sessionId}/runs/${runId}/events/0`,
-    );
-  });
-
-  it("returns null when the session has no active run", async () => {
-    const runtimeTransport = transport();
-    vi.mocked(runtimeTransport.get).mockResolvedValueOnce(null);
-
-    await expect(
-      getActiveRuntimePrompt(runtimeTransport, sessionId),
-    ).resolves.toBeNull();
-    expect(runtimeTransport.post).not.toHaveBeenCalled();
-  });
-
   it("reconnects from durable event sequence until terminal status", async () => {
     const runtimeTransport = transport();
     vi.mocked(runtimeTransport.post).mockResolvedValue({
