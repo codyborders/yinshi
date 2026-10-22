@@ -1,4 +1,4 @@
-FROM node:22.19.0-slim@sha256:4a4884e8a44826194dff92ba316264f392056cbe243dcc9fd3551e71cea02b90
+FROM node:22.23.4-slim@sha256:de170b39439eb0e5a3444ad7d60b015614a381e10fecae2e30ec9e735122f38d
 
 # Debian packages receive security updates at image-build time; the promoted image digest is immutable.
 # hadolint ignore=DL3008
@@ -19,6 +19,7 @@ RUN apt-get update && \
       python3-venv \
       ripgrep \
       unzip && \
+    dpkg --compare-versions "$(dpkg-query -W -f='${Version}' ca-certificates)" ge 20250419~deb12u2 && \
     rm -rf /var/lib/apt/lists/*
 
 COPY bin/git /usr/local/bin/git

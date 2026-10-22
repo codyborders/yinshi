@@ -24,6 +24,19 @@ interface PackageManifest {
 }
 
 describe("desktop packaging configuration", () => {
+  it("pins the patched Node runtime with its verified archive digest", async () => {
+    const source = await readFile(
+      path.resolve(process.cwd(), "scripts/prepareRuntime.mjs"),
+      "utf-8",
+    );
+
+    expect(source).toContain('const nodeVersion = "v24.22.1";');
+    expect(source).toContain(
+      'const nodeArchiveSha256 = "89c682593d76cd44233fa53b1563264e7de9cbb189cad169135c5b4fadfbc0a7";',
+    );
+    expect(source).toContain("digest !== sha256");
+  });
+
   it("targets Apple Silicon Macs running macOS Sonoma or newer", async () => {
     const packagePath = path.resolve(process.cwd(), "package.json");
     const manifest = JSON.parse(

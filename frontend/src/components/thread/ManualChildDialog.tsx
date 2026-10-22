@@ -23,8 +23,9 @@ export default function ManualChildDialog({
   submitting = false,
   serverError,
 }: ManualChildDialogProps) {
+  // The form's space-y utility owns spacing between labels and fields.
   const fieldClass =
-    "mt-1 w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-gray-100 outline-none focus:border-blue-500";
+    "w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-gray-100 outline-hidden focus:border-blue-500";
   const labelClass = "block text-xs font-medium text-gray-400";
   const [title, setTitle] = useState("");
   const [task, setTask] = useState("");

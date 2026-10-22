@@ -190,7 +190,7 @@ function optionCardClass(isSelected: boolean): string {
   const baseClass =
     "block h-full cursor-pointer rounded-xl border bg-gray-900/70 p-4 transition focus-within:ring-2 focus-within:ring-blue-400";
   if (isSelected) {
-    return `${baseClass} border-blue-400/70 shadow-sm shadow-blue-900/20`;
+    return `${baseClass} border-blue-400/70 shadow-xs shadow-blue-900/20`;
   }
   return `${baseClass} border-gray-800 hover:border-gray-600`;
 }

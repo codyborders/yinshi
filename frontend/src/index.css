@@ -1,8 +1,28 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss" source(none);
+@config "../tailwind.config.ts";
+@source "../index.html";
+@source "./";
 
 @layer base {
+  /* Retain the v3 defaults instead of changing the existing UI with v4. */
+  *,
+  ::after,
+  ::before,
+  ::backdrop,
+  ::file-selector-button {
+    border-color: rgb(var(--gray-200));
+  }
+
+  input::placeholder,
+  textarea::placeholder {
+    color: rgb(var(--gray-400));
+  }
+
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+
   html {
     -webkit-tap-highlight-color: transparent;
     overscroll-behavior: none;
