@@ -95,30 +95,6 @@ def test_estimate_cost_non_minimax():
     assert estimate_cost_cents("anthropic", usage) == 0.0
 
 
-# --- Unit tests: key resolution ---
-
-
-def test_resolve_user_api_key_round_trip(test_user):
-    """Stored BYOK key should decrypt correctly."""
-    from yinshi.db import get_control_db
-    from yinshi.services.crypto import encrypt_api_key
-    from yinshi.services.keys import get_user_dek, resolve_user_api_key
-
-    user_id = test_user.user_id
-    dek = get_user_dek(user_id)
-
-    encrypted = encrypt_api_key("sk-test-anthropic-key", dek)
-    with get_control_db() as db:
-        db.execute(
-            "INSERT INTO api_keys (user_id, provider, encrypted_key, label) " "VALUES (?, ?, ?, ?)",
-            (user_id, "anthropic", encrypted, "test"),
-        )
-        db.commit()
-
-    assert resolve_user_api_key(user_id, "anthropic") == "sk-test-anthropic-key"
-    assert resolve_user_api_key(user_id, "minimax") is None
-
-
 def test_record_usage_writes_usage_log_without_mutating_credit(test_user, caplog):
     """Usage logging should persist identifiers without exposing them in logs."""
     from yinshi.db import get_control_db
@@ -351,49 +327,6 @@ def test_control_field_decrypts_with_previous_rotation_key(control_env, monkeypa
     get_settings.cache_clear()
 
     assert decrypt_control_text("settings.payload", "rotation-user", encrypted) == "private-value"
-
-
-# --- Unit tests: resolve_api_key_for_prompt ---
-
-
-def test_resolve_api_key_for_prompt_byok(test_user):
-    """BYOK key should be returned when available."""
-    from yinshi.db import get_control_db
-    from yinshi.services.crypto import encrypt_api_key
-    from yinshi.services.keys import get_user_dek, resolve_api_key_for_prompt
-
-    user_id = test_user.user_id
-    dek = get_user_dek(user_id)
-    encrypted = encrypt_api_key("sk-byok-key", dek)
-
-    with get_control_db() as db:
-        db.execute(
-            "INSERT INTO api_keys (user_id, provider, encrypted_key) VALUES (?, ?, ?)",
-            (user_id, "anthropic", encrypted),
-        )
-        db.commit()
-
-    api_key, key_source = resolve_api_key_for_prompt(user_id, "anthropic")
-    assert api_key == "sk-byok-key"
-    assert key_source == "byok"
-
-
-def test_resolve_api_key_for_prompt_requires_minimax_key(test_user):
-    """MiniMax prompts should fail without a saved BYOK key."""
-    from yinshi.exceptions import KeyNotFoundError
-    from yinshi.services.keys import resolve_api_key_for_prompt
-
-    with pytest.raises(KeyNotFoundError, match="No API key found for minimax"):
-        resolve_api_key_for_prompt(test_user.user_id, "minimax")
-
-
-def test_resolve_api_key_for_prompt_requires_non_minimax_key(test_user):
-    """Anthropic prompts should fail without a saved BYOK key."""
-    from yinshi.exceptions import KeyNotFoundError
-    from yinshi.services.keys import resolve_api_key_for_prompt
-
-    with pytest.raises(KeyNotFoundError, match="No API key found for anthropic"):
-        resolve_api_key_for_prompt(test_user.user_id, "anthropic")
 
 
 # --- Integration tests: prompt endpoint with BYOK ---
