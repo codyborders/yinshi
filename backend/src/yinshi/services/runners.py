@@ -721,17 +721,6 @@ def revoke_managed_restore_runner_for_job(user_id: str, job_id: str) -> bool:
     return result.rowcount == 1
 
 
-def get_managed_restore_runner_for_user(user_id: str) -> dict[str, Any] | None:
-    """Return the non-active replacement runner for one managed restore."""
-    normalized_user_id = _require_user_id(user_id)
-    with get_control_db() as database:
-        row = database.execute(
-            "SELECT * FROM user_runners WHERE user_id = ? AND kind = 'managed_restore'",
-            (normalized_user_id,),
-        ).fetchone()
-    return _serialize_runner(row) if row is not None else None
-
-
 def create_runner_registration(
     user_id: str,
     *,
@@ -756,24 +745,6 @@ def create_runner_registration(
         )
         db.commit()
     return registration
-
-
-def revoke_managed_restore_runner_for_user(user_id: str) -> bool:
-    """Revoke the non-active replacement runner and all of its credentials."""
-    normalized_user_id = _require_user_id(user_id)
-    revoked_at = _datetime_to_storage(_utc_now())
-    with get_control_db() as database:
-        result = database.execute(
-            """UPDATE user_runners
-               SET status = 'revoked', revoked_at = ?,
-                   registration_token_hash = NULL,
-                   registration_token_expires_at = NULL,
-                   runner_token_hash = NULL
-               WHERE user_id = ? AND kind = 'managed_restore' AND revoked_at IS NULL""",
-            (revoked_at, normalized_user_id),
-        )
-        database.commit()
-    return result.rowcount == 1
 
 
 def revoke_runner_for_user(user_id: str) -> bool:
