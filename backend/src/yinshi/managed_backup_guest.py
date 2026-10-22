@@ -359,23 +359,6 @@ def _inspect_tar(tar_path: Path, expected_context: ManagedArchiveContext) -> tup
     return tuple(sorted(members))
 
 
-def inspect_managed_backup_archive(
-    archive_path: Path,
-    *,
-    archive_key: bytes,
-    expected_context: ManagedArchiveContext,
-) -> tuple[str, ...]:
-    """Authenticate one managed archive and return its validated members."""
-    _require_context(expected_context)
-    key = _require_key(archive_key)
-    if not isinstance(archive_path, Path) or not archive_path.is_file():
-        raise FileNotFoundError(archive_path)
-    with tempfile.TemporaryDirectory(prefix="yinshi-managed-inspect-") as directory_name:
-        tar_path = Path(directory_name) / "archive.tar"
-        _decrypt_to_temporary(archive_path, key, tar_path)
-        return _inspect_tar(tar_path, expected_context)
-
-
 def _extract_validated_tar(tar_path: Path, stage_root: Path) -> None:
     """Copy previously validated members into private restore staging."""
     with tarfile.open(tar_path, mode="r") as archive:
