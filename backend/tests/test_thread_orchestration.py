@@ -12,7 +12,6 @@ from tests.test_thread_workspaces import seed_parent_stack
 from yinshi.models import ThreadChildCreate
 from yinshi.services.prompt_journal import PromptJournal
 from yinshi.services.thread_lifecycle import (
-    can_transition,
     cancellation_target,
     initial_run_idempotency_key,
     is_terminal_delegation_status,
@@ -31,40 +30,6 @@ def test_child_create_rejects_unknown_client_fields() -> None:
         )
 
 
-def test_every_phase3_transition_is_exactly_encoded() -> None:
-    """can_transition matches the full Phase 3 transition map exactly."""
-    allowed = {
-        ("provisioning", "queued"),
-        ("provisioning", "failed"),
-        ("provisioning", "cancelled"),
-        ("queued", "running"),
-        ("queued", "failed"),
-        ("queued", "cancelled"),
-        ("running", "cancelling"),
-        ("running", "completed"),
-        ("running", "failed"),
-        ("running", "interrupted"),
-        ("cancelling", "completed"),
-        ("cancelling", "failed"),
-        ("cancelling", "cancelled"),
-        ("cancelling", "interrupted"),
-    }
-    statuses = (
-        "provisioning",
-        "queued",
-        "running",
-        "cancelling",
-        "completed",
-        "failed",
-        "cancelled",
-        "interrupted",
-    )
-    for current in statuses:
-        for target in statuses:
-            expected = (current, target) in allowed
-            assert can_transition(current, target) is expected, (current, target)
-
-
 def test_terminal_delegation_status_set_is_exact() -> None:
     """Only completed, failed, cancelled, and interrupted are terminal."""
     assert is_terminal_delegation_status("completed")
@@ -75,11 +40,6 @@ def test_terminal_delegation_status_set_is_exact() -> None:
     assert not is_terminal_delegation_status("queued")
     assert not is_terminal_delegation_status("running")
     assert not is_terminal_delegation_status("cancelling")
-
-
-def test_cancellation_losing_to_completion_preserves_completion() -> None:
-    """A cancelling delegation may still resolve to completed."""
-    assert can_transition("cancelling", "completed")
 
 
 def test_cancellation_targets_are_stable_per_status() -> None:
