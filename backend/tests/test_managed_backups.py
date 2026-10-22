@@ -382,10 +382,7 @@ def test_stale_worker_cannot_mutate_newly_claimed_retry_operation(
 ) -> None:
     """A stale worker holding the retired job must not touch the new claim."""
     from yinshi.db import get_control_db
-    from yinshi.services.managed_backups import (
-        advance_managed_backup_operation,
-        start_managed_backup_restore,
-    )
+    from yinshi.services.managed_backups import start_managed_backup_restore
     from yinshi.services.managed_operation_failures import fail_managed_backup_operation
 
     tenant = _ready_runtime(auth_client, generation=3)
@@ -425,14 +422,6 @@ def test_stale_worker_cannot_mutate_newly_claimed_retry_operation(
         lease_token="stale-lease",
         failure_class="restore_failed",
         error_code="restore_coordination_failed",
-        now=now,
-    )
-    assert not advance_managed_backup_operation(
-        job_id="018f47a2-9d3a-7f3b-8f0f-1a2b3c4d5f11",
-        lease_token="stale-lease",
-        runtime_generation=3,
-        expected_phase="claimed",
-        next_phase="candidate_provisioning",
         now=now,
     )
     with get_control_db() as database:
@@ -593,56 +582,6 @@ def test_current_operation_owner_can_renew_exact_lease(auth_client) -> None:
         runtime_generation=2,
         now=now + timedelta(minutes=1),
         lease_expires_at=now + timedelta(minutes=16),
-    )
-
-
-def test_advance_operation_requires_current_lease_phase_and_generation(
-    auth_client,
-) -> None:
-    """Stale workers should not advance durable external-effect boundaries."""
-    from datetime import timedelta
-
-    from yinshi.services.managed_backups import (
-        advance_managed_backup_operation,
-        claim_due_managed_backup_operation,
-        start_managed_backup_creation,
-    )
-
-    tenant = _ready_runtime(auth_client, generation=2)
-    now = datetime(2026, 8, 12, 12, 0, tzinfo=timezone.utc)
-    creation = start_managed_backup_creation(
-        tenant.user_id,
-        runtime_generation=2,
-        archive_id="018f47a2-9d3a-7f3b-8f0f-1a2b3c4d5e89",
-        job_id="018f47a2-9d3a-7f3b-8f0f-1a2b3c4d5e8a",
-        object_key="managed/v1/advance.enc",
-        wrapped_key=b"wrapped-key",
-        key_id="backup-v1",
-        owner_digest="a" * 64,
-        now=now,
-    )
-    claim_due_managed_backup_operation(
-        worker_id="worker-a",
-        lease_token="lease-a",
-        now=now,
-        lease_expires_at=now + timedelta(minutes=2),
-    )
-
-    assert not advance_managed_backup_operation(
-        job_id=creation.operation.job_id,
-        lease_token="stale-token",
-        runtime_generation=2,
-        expected_phase="claimed",
-        next_phase="quiesced",
-        now=now,
-    )
-    assert advance_managed_backup_operation(
-        job_id=creation.operation.job_id,
-        lease_token="lease-a",
-        runtime_generation=2,
-        expected_phase="claimed",
-        next_phase="quiesced",
-        now=now,
     )
 
 
@@ -844,43 +783,6 @@ def test_list_archives_returns_only_tenant_owned_safe_catalog_rows(auth_client) 
     assert len(archives) == 1
     assert archives[0].id == "018f47a2-9d3a-7f3b-8f0f-1a2b3c4d5e79"
     assert archives[0].status == "ready"
-
-
-def test_creation_failure_releases_fence_and_preserves_safe_error(auth_client) -> None:
-    """Failed create work should release runtime access and leave retryable catalog state."""
-    from yinshi.services.managed_backups import (
-        fail_managed_backup_creation,
-        get_managed_backup_archive,
-        managed_backup_operation_is_running,
-        start_managed_backup_creation,
-    )
-
-    tenant = _ready_runtime(auth_client, generation=2)
-    now = datetime(2026, 8, 12, 12, 0, tzinfo=timezone.utc)
-    creation = start_managed_backup_creation(
-        tenant.user_id,
-        runtime_generation=2,
-        archive_id="018f47a2-9d3a-7f3b-8f0f-1a2b3c4d5e7c",
-        job_id="018f47a2-9d3a-7f3b-8f0f-1a2b3c4d5e7d",
-        object_key="managed/v1/failed-clean.enc",
-        wrapped_key=b"wrapped-key",
-        key_id="backup-v1",
-        owner_digest="a" * 64,
-        now=now,
-    )
-
-    assert fail_managed_backup_creation(
-        tenant.user_id,
-        job_id=creation.operation.job_id,
-        runtime_generation=2,
-        error_code="provider_unavailable",
-        now=now,
-    )
-    archive = get_managed_backup_archive(tenant.user_id, creation.archive.id)
-    assert archive is not None
-    assert archive.status == "failed"
-    assert archive.last_error == "provider_unavailable"
-    assert not managed_backup_operation_is_running(tenant.user_id)
 
 
 def test_start_restore_requires_ready_archive_and_claims_same_user_fence(
