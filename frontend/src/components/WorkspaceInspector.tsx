@@ -350,7 +350,7 @@ function FileViewer({
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
             spellCheck={false}
-            className="min-h-0 flex-1 resize-none bg-gray-950 p-3 font-mono text-xs leading-relaxed text-gray-200 outline-none focus:ring-1 focus:ring-blue-500"
+            className="min-h-0 flex-1 resize-none bg-gray-950 p-3 font-mono text-xs leading-relaxed text-gray-200 outline-hidden focus:ring-1 focus:ring-blue-500"
           />
           <div className="border-t border-gray-800 p-2 text-right">
             <button

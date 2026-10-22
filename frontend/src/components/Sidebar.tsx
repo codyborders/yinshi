@@ -749,7 +749,7 @@ function RepoSection({
                   onChange={(event) => setAgentsMdDraft(event.target.value)}
                   rows={10}
                   spellCheck={false}
-                  className="mt-2 w-full rounded-md border border-gray-800 bg-gray-900 px-3 py-2 text-sm text-gray-100 outline-none focus:border-blue-500"
+                  className="mt-2 w-full rounded-md border border-gray-800 bg-gray-900 px-3 py-2 text-sm text-gray-100 outline-hidden focus:border-blue-500"
                   placeholder="Leave blank to disable the repo-level override."
                 />
                 {settingsError && (
@@ -1263,7 +1263,7 @@ function ImportForm({
         }
         value={input}
         onChange={(e) => setInput(e.target.value)}
-        className="w-full rounded-md bg-gray-800 px-3 py-2 text-sm text-gray-100 placeholder-gray-500 outline-none focus:ring-1 focus:ring-blue-500"
+        className="w-full rounded-md bg-gray-800 px-3 py-2 text-sm text-gray-100 placeholder-gray-500 outline-hidden focus:ring-1 focus:ring-blue-500"
         autoFocus
       />
       {error && (

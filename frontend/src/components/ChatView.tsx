@@ -356,7 +356,7 @@ export default function ChatView({
             placeholder={inputDisabledReason || "Describe what to build..."}
             disabled={inputDisabled}
             rows={1}
-            className="flex-1 resize-none rounded-xl bg-gray-800 px-4 py-3 text-sm text-gray-100 placeholder-gray-500 outline-none focus:ring-2 focus:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-60"
+            className="flex-1 resize-none rounded-xl bg-gray-800 px-4 py-3 text-sm text-gray-100 placeholder-gray-500 outline-hidden focus:ring-2 focus:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-60"
             style={{ maxHeight: "120px" }}
           />
           {streaming && !hasInput ? (

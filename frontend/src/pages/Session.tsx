@@ -864,7 +864,7 @@ export default function Session() {
             onChange={(event) => {
               handleModelChange(event.target.value);
             }}
-            className="w-0 min-w-0 max-w-full flex-1 rounded-lg border border-gray-800 bg-gray-900 px-2 py-1 text-xs text-gray-300 outline-none focus:border-blue-500 disabled:cursor-not-allowed disabled:opacity-60 md:w-auto md:flex-none"
+            className="w-0 min-w-0 max-w-full flex-1 rounded-lg border border-gray-800 bg-gray-900 px-2 py-1 text-xs text-gray-300 outline-hidden focus:border-blue-500 disabled:cursor-not-allowed disabled:opacity-60 md:w-auto md:flex-none"
           >
             {!selectedModelOption && (
               <option value={sessionModel}>{sessionModel}</option>
@@ -899,7 +899,7 @@ export default function Session() {
                 value === "default" ? null : (value as ThinkingLevel),
               );
             }}
-            className="w-0 min-w-0 max-w-full flex-1 rounded-lg border border-gray-800 bg-gray-900 px-2 py-1 text-xs text-gray-300 outline-none focus:border-blue-500 disabled:cursor-not-allowed disabled:opacity-40 md:w-auto md:flex-none"
+            className="w-0 min-w-0 max-w-full flex-1 rounded-lg border border-gray-800 bg-gray-900 px-2 py-1 text-xs text-gray-300 outline-hidden focus:border-blue-500 disabled:cursor-not-allowed disabled:opacity-40 md:w-auto md:flex-none"
             title={
               canOverrideThinking
                 ? "Select a thinking level for the next prompt"

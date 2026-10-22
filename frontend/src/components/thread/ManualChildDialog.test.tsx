@@ -3,6 +3,16 @@ import { describe, expect, it, vi } from "vitest";
 import ManualChildDialog from "./ManualChildDialog";
 
 describe("ManualChildDialog", () => {
+  it("lets the form own field spacing without additional top margins", () => {
+    render(<ManualChildDialog open onClose={vi.fn()} onSubmit={vi.fn()} />);
+
+    const title = screen.getByLabelText("Title");
+    expect(title.closest("form")).toHaveClass("space-y-4");
+    for (const label of ["Title", "Task", "Context", "Role", "Model", "Thinking"]) {
+      expect(screen.getByLabelText(label)).not.toHaveClass("mt-1");
+    }
+  });
+
   it("renders labelled task fields when open", () => {
     render(<ManualChildDialog open onClose={() => {}} onSubmit={() => {}} />);
     expect(screen.getByRole("dialog")).toBeInTheDocument();

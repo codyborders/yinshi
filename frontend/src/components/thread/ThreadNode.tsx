@@ -57,7 +57,7 @@ export default function ThreadNode({
         onClick={() => onNavigate?.(actionId)}
         aria-current={current ? "page" : undefined}
         aria-label={`Open ${title}`}
-        className="min-w-0 flex-1 rounded px-2 py-2 text-left text-sm text-gray-200 hover:bg-gray-800 focus:outline-none focus:ring-1 focus:ring-blue-500"
+        className="min-w-0 flex-1 rounded px-2 py-2 text-left text-sm text-gray-200 hover:bg-gray-800 focus:outline-hidden focus:ring-1 focus:ring-blue-500"
       >
         <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
           <span className="min-w-0 flex-1 truncate font-medium" title={title}>{title}</span>
@@ -67,10 +67,10 @@ export default function ThreadNode({
         </span>
       </button>
       {onCancel && cancellable ? (
-        <button type="button" onClick={() => onCancel(actionId)} aria-label={`Cancel ${title}`} className="min-h-touch shrink-0 rounded px-2 text-xs text-gray-400 hover:bg-gray-800 hover:text-gray-200 focus:outline-none focus:ring-1 focus:ring-blue-500">Cancel</button>
+        <button type="button" onClick={() => onCancel(actionId)} aria-label={`Cancel ${title}`} className="min-h-touch shrink-0 rounded px-2 text-xs text-gray-400 hover:bg-gray-800 hover:text-gray-200 focus:outline-hidden focus:ring-1 focus:ring-blue-500">Cancel</button>
       ) : null}
       {onRetry && retryable ? (
-        <button type="button" onClick={() => onRetry(actionId)} aria-label={`Retry ${title}`} className="min-h-touch shrink-0 rounded px-2 text-xs text-gray-400 hover:bg-gray-800 hover:text-gray-200 focus:outline-none focus:ring-1 focus:ring-blue-500">Retry</button>
+        <button type="button" onClick={() => onRetry(actionId)} aria-label={`Retry ${title}`} className="min-h-touch shrink-0 rounded px-2 text-xs text-gray-400 hover:bg-gray-800 hover:text-gray-200 focus:outline-hidden focus:ring-1 focus:ring-blue-500">Retry</button>
       ) : null}
     </div>
   );
