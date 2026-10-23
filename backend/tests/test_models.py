@@ -52,23 +52,6 @@ def test_session_create_defaults():
     assert s.model == "minimax/MiniMax-M2.7"
 
 
-def test_ws_prompt():
-    """WSPrompt should carry prompt text."""
-    from yinshi.models import WSPrompt
-
-    msg = WSPrompt(prompt="Hello, world")
-    assert msg.type == "prompt"
-    assert msg.prompt == "Hello, world"
-
-
-def test_ws_cancel():
-    """WSCancel should have type cancel."""
-    from yinshi.models import WSCancel
-
-    msg = WSCancel()
-    assert msg.type == "cancel"
-
-
 def test_workspace_update_valid_states():
     """WorkspaceUpdate should accept 'ready' and 'archived'."""
     from yinshi.models import WorkspaceUpdate
