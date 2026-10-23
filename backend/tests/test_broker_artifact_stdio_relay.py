@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import io
 import tomllib
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Generator
@@ -25,19 +24,6 @@ def _reader(content: bytes, *, eof: bool = True) -> asyncio.StreamReader:
     if eof:
         reader.feed_eof()
     return reader
-
-
-def test_control_reader_accepts_fragmented_unbuffered_reads() -> None:
-    from yinshi.broker_artifact_stdio_relay import read_blocking_control_frame
-
-    class Fragmented(io.BytesIO):
-        def read(self, size: int = -1) -> bytes:
-            return super().read(min(size, 2))
-
-    control = b"signed-control"
-    stream = Fragmented(_frame(control) + b"artifact-bytes")
-    assert read_blocking_control_frame(stream) == control
-    assert stream.read() == b"artifact-bytes"
 
 
 @pytest.fixture

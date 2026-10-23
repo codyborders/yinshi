@@ -37,27 +37,6 @@ class RelayError(RuntimeError):
         self.code = code
 
 
-def _read_blocking_exact(stream: BinaryIO, count: int) -> bytes:
-    parts: list[bytes] = []
-    remaining = count
-    while remaining:
-        content = stream.read(remaining)
-        if not isinstance(content, bytes) or not content:
-            raise RelayError("input_invalid")
-        parts.append(content)
-        remaining -= len(content)
-    return b"".join(parts)
-
-
-def read_blocking_control_frame(stream: BinaryIO) -> bytes:
-    """Read one bounded control frame while leaving artifact bytes unread."""
-    prefix = _read_blocking_exact(stream, LENGTH_PREFIX_BYTES)
-    length = int.from_bytes(prefix, "big")
-    if not 1 <= length <= BROKER_FRAME_BYTES_MAX:
-        raise RelayError("input_limit" if length > BROKER_FRAME_BYTES_MAX else "input_invalid")
-    return _read_blocking_exact(stream, length)
-
-
 async def _read_response(reader: asyncio.StreamReader) -> bytes:
     try:
         prefix = await reader.readexactly(LENGTH_PREFIX_BYTES)
