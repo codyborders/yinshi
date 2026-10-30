@@ -3,7 +3,6 @@ import { ApiError, apiErrorFromPayload } from "../api/errors";
 import {
   createNoiseIkInitiator,
   createNoiseIkKeypair,
-  preloadNoiseIkLibrary,
   type NoiseIkInitiator,
   type NoiseIkKeypair,
 } from "../crypto/noiseIk";
@@ -82,10 +81,6 @@ export interface EncryptedRunnerConnection {
   readonly expiresAtMs?: number;
   request<T>(operation: EncryptedRunnerOperation): Promise<T>;
   close(): void;
-}
-
-export function preloadEncryptedRunnerCrypto(): Promise<void> {
-  return preloadNoiseIkLibrary();
 }
 
 export class RunnerRelayConnectionError extends Error {
