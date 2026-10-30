@@ -6,7 +6,6 @@ import {
   type ThreadChildCreate,
   type ThreadLimitsOut,
   type ThreadResultOut,
-  type ThreadResultReportCreate,
   type ThreadRetryCreate,
   type ThreadSpawnOut,
   type ThreadTreeOut,
@@ -24,10 +23,6 @@ export interface UseThreadTreeState {
   createChild: (body: ThreadChildCreate) => Promise<ThreadSpawnOut | null>;
   cancelChild: (threadId: string) => Promise<boolean>;
   retryChild: (threadId: string, body: ThreadRetryCreate) => Promise<ThreadSpawnOut | null>;
-  reportResult: (
-    threadId: string,
-    body: ThreadResultReportCreate,
-  ) => Promise<ThreadResultOut | null>;
 }
 
 function statusOf(error: unknown): number | null {
@@ -184,20 +179,6 @@ export function useThreadTree(
     return response;
   }
 
-  async function reportResult(
-    threadId: string,
-    body: ThreadResultReportCreate,
-  ): Promise<ThreadResultOut | null> {
-    const response = await runMutation(
-      `report:${threadId}`,
-      () => transport!.post<ThreadResultOut>(`/api/threads/${threadId}/report`, body),
-      "Failed to report thread result",
-    );
-    if (!response) return null;
-    await refresh();
-    return response;
-  }
-
   return {
     loading,
     error,
@@ -209,6 +190,5 @@ export function useThreadTree(
     createChild,
     cancelChild,
     retryChild,
-    reportResult,
   };
 }

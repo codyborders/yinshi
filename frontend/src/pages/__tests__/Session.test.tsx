@@ -440,7 +440,6 @@ describe("Session", () => {
       createChild: vi.fn().mockResolvedValue(null),
       cancelChild: vi.fn().mockResolvedValue(false),
       retryChild: vi.fn().mockResolvedValue(null),
-      reportResult: vi.fn().mockResolvedValue(null),
     });
     apiPatchMock.mockResolvedValue({ model: minimaxModel.ref });
   });
@@ -590,7 +589,6 @@ describe("Session", () => {
       createChild: vi.fn().mockResolvedValue(null),
       cancelChild: vi.fn().mockResolvedValue(false),
       retryChild: vi.fn().mockResolvedValue(null),
-      reportResult: vi.fn().mockResolvedValue(null),
     });
     const Location = () => <output data-testid="route">{useLocation().pathname}</output>;
 
