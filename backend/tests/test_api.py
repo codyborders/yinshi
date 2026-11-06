@@ -747,7 +747,13 @@ async def test_repository_delete_lock_blocks_workspace_deletion(
 ) -> None:
     """Workspace deletion should wait while repository deletion owns lifecycle."""
     from yinshi.services.repository_lifecycle import repository_lifecycle
-    from yinshi.services.workspace import delete_workspace
+    from yinshi.services.workspace import (
+        apply_workspace_deletion,
+        claim_workspace_deletion,
+        finalize_workspace_deletion,
+        prepare_workspace_deletion,
+        workspace_deletion_lifecycle,
+    )
 
     lock_root = Path(get_settings().db_path).expanduser().absolute().parent
     repo_id = "repository-workspace-delete-lock"
@@ -765,8 +771,16 @@ async def test_repository_delete_lock_blocks_workspace_deletion(
     db.commit()
 
     with patch("yinshi.services.workspace.delete_worktree", new_callable=AsyncMock):
+        target = prepare_workspace_deletion(db, workspace_id)
+
+        async def delete_workspace_via_lifecycle() -> None:
+            async with workspace_deletion_lifecycle(target):
+                claim_workspace_deletion(db, target)
+                await apply_workspace_deletion(target)
+                finalize_workspace_deletion(db, target)
+
         async with repository_lifecycle(repo_id, lock_root):
-            deletion = asyncio.create_task(delete_workspace(db, workspace_id))
+            deletion = asyncio.create_task(delete_workspace_via_lifecycle())
             await asyncio.sleep(0)
             assert not deletion.done()
 

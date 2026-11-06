@@ -171,60 +171,36 @@ async def test_workspace_session_cleanup_log_excludes_session_id(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Session-file cleanup failures use fixed warning text."""
-    from collections.abc import AsyncIterator
-    from contextlib import asynccontextmanager
-
-    from yinshi.services import workspace
+    from yinshi.services.workspace import (
+        WorkspaceDeletionTarget,
+        apply_workspace_deletion,
+    )
 
     session_id = "SESSION_FILE_PRIVATE_SENTINEL"
-    workspace_id = "workspace-log-privacy"
-    workspace_row = {
-        "id": workspace_id,
-        "repo_id": "repository-log-privacy",
-        "path": "/tmp/workspace-log-privacy",
-    }
-    first_workspace_result = Mock()
-    first_workspace_result.fetchone.return_value = workspace_row
-    second_workspace_result = Mock()
-    second_workspace_result.fetchone.return_value = workspace_row
-    delegation_result = Mock()
-    delegation_result.fetchone.return_value = {"child_count": 0}
-    sessions_result = Mock()
-    sessions_result.fetchall.return_value = [{"id": session_id}]
-    repository_result = Mock()
-    repository_result.fetchone.return_value = {
-        "id": "repository-log-privacy",
-        "root_path": "/tmp/repository-log-privacy",
-    }
-    delete_result = Mock()
-    database = Mock()
-    database.execute.side_effect = [
-        first_workspace_result,
-        second_workspace_result,
-        delegation_result,
-        sessions_result,
-        repository_result,
-        delete_result,
-    ]
+    target = WorkspaceDeletionTarget(
+        workspace_id="workspace-log-privacy",
+        repo_id="repository-log-privacy",
+        repo_path="/tmp/repository-log-privacy",
+        workspace_path="/tmp/workspace-log-privacy",
+        branch="branch-log-privacy",
+        session_ids=(session_id,),
+        lock_root="/tmp",
+        delegation_id=None,
+        snapshot_ref=None,
+        snapshot_commit=None,
+        result_ref=None,
+        result_commit=None,
+    )
     caplog.set_level(logging.WARNING, logger="yinshi.services.workspace")
 
-    @asynccontextmanager
-    async def unlocked(_repo_id: str, _lock_root: Path) -> AsyncIterator[None]:
-        yield
-
     with (
-        patch("yinshi.services.workspace.repository_lifecycle", side_effect=unlocked),
-        patch(
-            "yinshi.services.repository_lifecycle.get_settings",
-            return_value=Mock(db_path="/tmp/yinshi.db"),
-        ),
+        patch("yinshi.services.workspace.delete_worktree", new=AsyncMock()),
         patch(
             "yinshi.services.workspace.delete_local_pi_session_file",
             side_effect=OSError("SESSION_FILE_PATH_PRIVATE_SENTINEL"),
         ),
-        patch("yinshi.services.workspace.delete_worktree", new=AsyncMock()),
     ):
-        await workspace.delete_workspace(database, workspace_id)
+        await apply_workspace_deletion(target)
 
     assert session_id not in caplog.text
     assert "SESSION_FILE_PATH_PRIVATE_SENTINEL" not in caplog.text

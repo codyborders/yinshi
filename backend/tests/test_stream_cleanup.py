@@ -195,7 +195,11 @@ async def test_prompt_workspace_preparation_blocks_concurrent_deletion(
     from yinshi.api import stream
     from yinshi.services.workspace import (
         WorkspaceCheckoutPreparation,
-        delete_workspace,
+        apply_workspace_deletion,
+        claim_workspace_deletion,
+        finalize_workspace_deletion,
+        prepare_workspace_deletion,
+        workspace_deletion_lifecycle,
     )
     from yinshi.tenant import TenantContext
 
@@ -261,7 +265,15 @@ async def test_prompt_workspace_preparation_blocks_concurrent_deletion(
         stream._prepare_prompt_workspace_checkout(object(), tenant, workspace_id)
     )
     await asyncio.wait_for(preparation_entered.wait(), timeout=1)
-    deletion = asyncio.create_task(delete_workspace(db, workspace_id))
+    async def delete_workspace_via_lifecycle() -> None:
+        pre_target = prepare_workspace_deletion(db, workspace_id)
+        async with workspace_deletion_lifecycle(pre_target):
+            target = prepare_workspace_deletion(db, workspace_id)
+            claim_workspace_deletion(db, target)
+            await apply_workspace_deletion(target)
+            finalize_workspace_deletion(db, target)
+
+    deletion = asyncio.create_task(delete_workspace_via_lifecycle())
     await asyncio.sleep(0)
 
     assert not deletion.done()

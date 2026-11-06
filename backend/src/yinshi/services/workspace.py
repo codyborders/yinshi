@@ -529,21 +529,6 @@ async def relink_github_repos_for_tenant(
     return refreshed_repo_count
 
 
-async def ensure_workspace_checkout_for_tenant(
-    db: sqlite3.Connection,
-    tenant: TenantContext,
-    workspace_id: str,
-) -> dict[str, Any]:
-    """Repair the repo backing a workspace and return the updated workspace row."""
-    workspace = _fetch_workspace(db, workspace_id)
-    repo_id = workspace["repo_id"]
-    assert repo_id, "workspace repo_id must not be empty"
-
-    await ensure_repo_checkout_for_tenant(db, tenant, repo_id)
-    updated_workspace = _fetch_workspace(db, workspace_id)
-    return dict(updated_workspace)
-
-
 async def create_workspace_for_repo(
     db: sqlite3.Connection,
     repo_id: str,
@@ -832,51 +817,4 @@ def finalize_workspace_deletion(
         raise WorkspaceNotFoundError(target.workspace_id)
     ensure_workspace_has_no_delegated_children(db, target.workspace_id)
     db.execute("DELETE FROM workspaces WHERE id = ?", (target.workspace_id,))
-    db.commit()
-
-
-async def delete_workspace(
-    db: sqlite3.Connection,
-    workspace_id: str,
-    *,
-    tenant: TenantContext | None = None,
-) -> None:
-    """Delete a workspace while holding its repository lifecycle lock."""
-    workspace = _fetch_workspace(db, workspace_id)
-    repo_id = str(workspace["repo_id"])
-    lock_root = repository_lifecycle_root(db, tenant)
-    async with repository_lifecycle(repo_id, lock_root):
-        await _delete_workspace_unlocked(db, workspace_id, tenant=tenant)
-
-
-async def _delete_workspace_unlocked(
-    db: sqlite3.Connection,
-    workspace_id: str,
-    *,
-    tenant: TenantContext | None = None,
-) -> None:
-    """Delete one workspace after repository lifecycle serialization."""
-    workspace = _fetch_workspace(db, workspace_id)
-    ensure_workspace_has_no_delegated_children(db, workspace_id)
-
-    session_rows = []
-    if tenant is None:
-        session_rows = db.execute(
-            "SELECT id FROM sessions WHERE workspace_id = ?",
-            (workspace_id,),
-        ).fetchall()
-
-    repo = _fetch_repo(db, workspace["repo_id"])
-    await delete_worktree(repo["root_path"], workspace["path"])
-
-    if tenant is not None:
-        delete_workspace_runtime_home(tenant, workspace_id)
-    else:
-        for session_row in session_rows:
-            try:
-                delete_local_pi_session_file(session_row["id"])
-            except OSError:
-                logger.warning("Failed to delete Pi session file")
-
-    db.execute("DELETE FROM workspaces WHERE id = ?", (workspace_id,))
     db.commit()
